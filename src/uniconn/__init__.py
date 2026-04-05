@@ -32,7 +32,7 @@
 
 from ._config import ConnectionConfig
 from ._connection import Connection
-from ._logging import SecretMaskingFilter, get_logger
+from ._logging import SecretMaskingFilter, get_logger, setup_file_logging
 from ._pool import ConnectionPool
 from ._sync import SyncConnection
 from .exceptions import (
@@ -64,5 +64,6 @@ __all__ = [
     "BMCCapabilityError",
     # Логирование
     "get_logger",
+    "setup_file_logging",
     "SecretMaskingFilter",
 ]
