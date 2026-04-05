@@ -1,6 +1,6 @@
 [project]
 name = "uniconn"
-version = "0.1.0"
+version = "0.2.0"
 description = "Universal library for remote command execution"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -11,7 +11,6 @@ readme = "README.md"
 dependencies = [
     "pydantic>=2.0",           # Config validation, SecretStr
     "tenacity>=8.0",           # Retry logic (async support)
-    "typing_extensions>=4.0",  # Self и другие типы для совместимости
 ]
 
 # Optional dependencies (extras)
@@ -26,13 +25,13 @@ dev = [
     "pytest-asyncio>=0.21",
     "pytest-mock>=3.12",
     "pytest-cov>=4.1",
-    "mypy>=1.5",
+    "pyright>=1.1",
     "ruff>=0.1",
     "mkdocs>=1.5",
     "mkdocstrings[python]>=0.23",
     "testcontainers>=3.7",     # Docker containers for integration tests
+    "pyyaml>=6.0",             # YAML support for from_file()
 ]
-
 
 # Entry points for plugin architecture
 [project.entry-points."uniconn.transports"]
@@ -50,8 +49,8 @@ uniconn = "uniconn.cli:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.uv]
-dev-dependencies = ["uniconn[dev,cli]"]
+[dependency-groups]
+dev = ["uniconn[dev,cli]"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -61,11 +60,14 @@ markers = [
     "slow: marks tests as slow running",
 ]
 
-[tool.mypy]
-strict = true
-python_version = "3.11"
-warn_return_any = true
-warn_unused_configs = true
+[tool.pyright]
+pythonVersion = "3.11"
+typeCheckingMode = "standard"
+include = ["src/uniconn"]
+exclude = [".venv", "tests"]
+reportMissingTypeStubs = false
+reportMissingImports = "warning"
+reportOptionalMemberAccess = "warning"
 
 [tool.ruff]
 line-length = 100
