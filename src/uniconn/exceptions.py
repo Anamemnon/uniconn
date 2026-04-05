@@ -1,17 +1,18 @@
 # src/uniconn/exceptions.py
-from typing import Optional
+
 
 class UniconnError(Exception):
-    """Базовое исключение библиотеки"""
+    """Базовое исключение библиотеки."""
+
     def __init__(
         self,
         message: str,
         *,
-        command: Optional[str] = None,
-        exit_code: Optional[int] = None,
-        stdout: Optional[str] = None,
-        stderr: Optional[str] = None,
-        host: Optional[str] = None
+        command: str | None = None,
+        exit_code: int | None = None,
+        stdout: str | None = None,
+        stderr: str | None = None,
+        host: str | None = None
     ):
         super().__init__(message)
         self.command = command
@@ -19,7 +20,7 @@ class UniconnError(Exception):
         self.stdout = stdout
         self.stderr = stderr
         self.host = host
-    
+
     def __str__(self) -> str:
         parts = [super().__str__()]
         if self.command:
@@ -30,30 +31,36 @@ class UniconnError(Exception):
 
 
 class ConnectionError(UniconnError):
-    """Ошибки подключения (сеть, auth, timeout)"""
+    """Ошибки подключения (сеть, auth, timeout)."""
+
     pass
 
 
 class ExecutionError(UniconnError):
-    """Ошибки выполнения команды (non-zero exit code)"""
+    """Ошибки выполнения команды (non-zero exit code)."""
+
     pass
 
 
 class TimeoutError(UniconnError):
-    """Таймаут операции (исключение uniconn, не путать со встроенным TimeoutError)"""
+    """Таймаут операции (исключение uniconn, не путать со встроенным TimeoutError)."""
+
     pass
 
 
 class TransportNotFoundError(UniconnError):
-    """Транспорт не найден (не установлен extra)"""
+    """Транспорт не найден (не установлен extra)."""
+
     pass
 
 
 class AuthenticationError(ConnectionError):
-    """Ошибка аутентификации"""
+    """Ошибка аутентификации."""
+
     pass
 
 
 class BMCCapabilityError(UniconnError):
-    """BMC не поддерживает запрошенную операцию"""
+    """BMC не поддерживает запрошенную операцию."""
+
     pass
