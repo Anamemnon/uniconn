@@ -1,7 +1,10 @@
 # src/uniconn/_connection.py
+import json
 import logging
+from pathlib import Path
 from typing import Self
 
+from pydantic import SecretStr
 from tenacity import (
     AsyncRetrying,
     retry_if_exception_type,
@@ -16,6 +19,7 @@ from .result import Result
 from .transports._base import BaseTransport
 
 logger = logging.getLogger(__name__)
+
 
 class Connection:
     """Основной класс для работы с удалёнными хостами.
@@ -37,6 +41,8 @@ class Connection:
         self._config = config
         self._retry_attempts = retry_attempts
         self._logger = logger or logging.getLogger(__name__)
+
+    # ─── Фабричные методы ──────────────────────────────────────────
 
     @classmethod
     def from_uri(
@@ -62,6 +68,203 @@ class Connection:
         transport_class = TransportLoader.get(config.transport)
         transport = transport_class(config)
         return cls(transport, config, retry_attempts, logger)
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: dict,
+        retry_attempts: int = 3,
+        logger: logging.Logger | None = None
+    ) -> Self:
+        """Создать подключение из словаря.
+
+        Args:
+            data: Словарь с параметрами подключения.
+                Поддерживаемые ключи: transport, host, port, username,
+                password, key_file, timeout, options.
+            retry_attempts: Количество попыток при ошибке
+            logger: Кастомный логгер
+
+        Returns:
+            Connection
+
+        Пример:
+            >>> Connection.from_dict({
+            ...     "transport": "ssh",
+            ...     "host": "example.com",
+            ...     "username": "admin",
+            ...     "timeout": 60,
+            ... })
+
+        """
+        # Извлекаем retry_attempts из данных если есть
+        retry = data.get("retry_attempts", retry_attempts)
+        config = ConnectionConfig(**{
+            k: v for k, v in data.items()
+            if k not in ("retry_attempts", "logger")
+        })
+        transport_class = TransportLoader.get(config.transport)
+        transport = transport_class(config)
+        return cls(transport, config, retry, logger)
+
+    @classmethod
+    def from_file(
+        cls,
+        path: str | Path,
+        retry_attempts: int = 3,
+        logger: logging.Logger | None = None
+    ) -> list[Self]:
+        """Создать подключения из JSON или YAML файла.
+
+        Файл должен содержать список объектов конфигурации:
+        ```json
+        [
+            {"transport": "ssh", "host": "node1"},
+            {"transport": "ssh", "host": "node2", "username": "admin"}
+        ]
+        ```
+
+        YAML формат:
+        ```yaml
+        - transport: ssh
+          host: node1
+        - transport: ssh
+          host: node2
+          username: admin
+        ```
+
+        Args:
+            path: Путь к файлу (.json, .yaml, .yml)
+            retry_attempts: Количество попыток при ошибке
+            logger: Кастомный логгер
+
+        Returns:
+            Список Connection объектов
+
+        """
+        filepath = Path(path)
+        content = filepath.read_text(encoding="utf-8")
+
+        if filepath.suffix in (".yaml", ".yml"):
+            try:
+                import yaml
+                data_list = yaml.safe_load(content)
+            except ImportError:
+                raise ImportError(
+                    "PyYAML not installed. "
+                    "Run: pip install pyyaml"
+                ) from None
+        elif filepath.suffix == ".json":
+            data_list = json.loads(content)
+        else:
+            raise ValueError(
+                f"Unsupported file format: {filepath.suffix}. "
+                "Use .json, .yaml or .yml"
+            )
+
+        if not isinstance(data_list, list):
+            data_list = [data_list]
+
+        return [
+            cls.from_dict(data, retry_attempts, logger)
+            for data in data_list
+        ]
+
+    # ─── Клонирование и модификация ────────────────────────────────
+
+    def copy(
+        self,
+        host: str | None = None,
+        port: int | None = None,
+        username: str | None = None,
+        password: str | SecretStr | None = None,
+        key_file: str | None = None,
+        timeout: float | None = None,
+        options: dict | None = None,
+        retry_attempts: int | None = None,
+        logger: logging.Logger | None = None
+    ) -> Self:
+        """Создать копию подключения с возможностью изменения параметров.
+
+        Все не указанные параметры наследуются из оригинала.
+        Если пароль не указан, берётся из оригинала.
+
+        Args:
+            host: Новый хост
+            port: Новый порт
+            username: Новый пользователь
+            password: Новый пароль
+            key_file: Новый путь к ключу
+            timeout: Новый таймаут
+            options: Новые опции
+            retry_attempts: Новое количество попыток
+            logger: Новый логгер
+
+        Returns:
+            Новый Connection с изменёнными параметрами
+
+        Пример:
+            >>> conn = Connection.from_uri("ssh://admin@prod")
+            >>> dev = conn.copy(host="dev", username="developer")
+
+        """
+        new_config = ConnectionConfig(
+            transport=self._config.transport,
+            host=host if host is not None else self._config.host,
+            port=port if port is not None else self._config.port,
+            username=username if username is not None else self._config.username,
+            password=(
+                SecretStr(password) if isinstance(password, str)
+                else password if password is not None
+                else self._config.password
+            ),
+            key_file=key_file if key_file is not None else self._config.key_file,
+            timeout=timeout if timeout is not None else self._config.timeout,
+            options=options if options is not None else self._config.options,
+        )
+        transport_class = TransportLoader.get(new_config.transport)
+        transport = transport_class(new_config)
+        return type(self)(
+            transport,
+            new_config,
+            retry_attempts or self._retry_attempts,
+            logger or self._logger,
+        )
+
+    def with_overrides(self, **overrides) -> Self:
+        """Создать копию подключения с переопределёнными параметрами.
+
+        Удобный метод для пакетного изменения множества параметров
+        через словарь.
+
+        Args:
+            **overrides: Параметры для переопределения.
+                Поддерживаются: host, port, username, password,
+                key_file, timeout, options, retry_attempts, logger.
+
+        Returns:
+            Новый Connection с переопределёнными параметрами
+
+        Пример:
+            >>> prod = Connection.from_uri("ssh://admin@prod:22")
+            >>> staging = prod.with_overrides(
+            ...     host="staging",
+            ...     timeout=60,
+            ...     options={"compress": True}
+            ... )
+
+        """
+        return self.copy(
+            host=overrides.get("host"),
+            port=overrides.get("port"),
+            username=overrides.get("username"),
+            password=overrides.get("password"),
+            key_file=overrides.get("key_file"),
+            timeout=overrides.get("timeout"),
+            options=overrides.get("options"),
+            retry_attempts=overrides.get("retry_attempts"),
+            logger=overrides.get("logger"),
+        )
 
     async def run(
         self,
@@ -139,7 +342,7 @@ class Connection:
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         await self._transport.disconnect()
 
-    def to_sync(self) -> "SyncConnection":
+    def to_sync(self) -> "SyncConnection":  # noqa: F821
         """Конвертировать в синхронную версию."""
         from ._sync import SyncConnection
         return SyncConnection(self)
