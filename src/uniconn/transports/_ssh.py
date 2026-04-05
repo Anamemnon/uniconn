@@ -260,3 +260,59 @@ class SSHTransport(BaseTransport):
         async with self._conn.create_process(command, env=env) as proc:
             async for line in proc.stdout:
                 yield line.rstrip()
+
+    async def upload(
+        self,
+        local_path: str,
+        remote_path: str,
+        **kwargs
+    ) -> None:
+        """Загрузить файл на удалённый хост через SFTP.
+
+        Args:
+            local_path: Путь к локальному файлу
+            remote_path: Путь на удалённом хосте
+            **kwargs: Дополнительные аргументы для asyncssh (например, recurse)
+
+        Raises:
+            ConnectionError: Если нет подключения или ошибка SFTP
+        """
+        if not self._connected or not self._conn:
+            raise ConnectionError("Not connected", host=self.config.host)
+
+        try:
+            async with self._conn.start_sftp_client() as sftp:
+                await sftp.put(local_path, remote_path, **kwargs)
+        except asyncssh.Error as e:
+            raise ConnectionError(
+                f"SFTP upload failed: {local_path} -> {remote_path}: {e}",
+                host=self.config.host
+            ) from e
+
+    async def download(
+        self,
+        remote_path: str,
+        local_path: str,
+        **kwargs
+    ) -> None:
+        """Скачать файл с удалённого хоста через SFTP.
+
+        Args:
+            remote_path: Путь на удалённом хосте
+            local_path: Путь для сохранения локально
+            **kwargs: Дополнительные аргументы для asyncssh
+
+        Raises:
+            ConnectionError: Если нет подключения или ошибка SFTP
+        """
+        if not self._connected or not self._conn:
+            raise ConnectionError("Not connected", host=self.config.host)
+
+        try:
+            async with self._conn.start_sftp_client() as sftp:
+                await sftp.get(remote_path, local_path, **kwargs)
+        except asyncssh.Error as e:
+            raise ConnectionError(
+                f"SFTP download failed: {remote_path} -> {local_path}: {e}",
+                host=self.config.host
+            ) from e

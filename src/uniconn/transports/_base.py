@@ -80,3 +80,39 @@ class BaseTransport(ABC):
             return result.ok
         except Exception:
             return False
+
+    async def upload(
+        self,
+        local_path: str,
+        remote_path: str,
+        **kwargs
+    ) -> None:
+        """Загрузить файл на удалённый хост.
+
+        Базовая реализация вызывает NotImplementedError.
+        Переопределяется в транспортах с поддержкой файловых операций.
+
+        Raises:
+            NotImplementedError: Если транспорт не поддерживает файловые операции
+        """
+        raise NotImplementedError(
+            f"Upload not supported for {self.name} transport"
+        )
+
+    async def download(
+        self,
+        remote_path: str,
+        local_path: str,
+        **kwargs
+    ) -> None:
+        """Скачать файл с удалённого хоста.
+
+        Базовая реализация вызывает NotImplementedError.
+        Переопределяется в транспортах с поддержкой файловых операций.
+
+        Raises:
+            NotImplementedError: Если транспорт не поддерживает файловые операции
+        """
+        raise NotImplementedError(
+            f"Download not supported for {self.name} transport"
+        )

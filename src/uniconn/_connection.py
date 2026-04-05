@@ -359,6 +359,55 @@ class Connection:
         """
         return await self._transport.ping(timeout=timeout)
 
+    async def upload(
+        self,
+        local_path: str,
+        remote_path: str,
+        **kwargs
+    ) -> None:
+        """Загрузить файл на удалённый хост.
+
+        Работает только для SSH транспорта (SFTP).
+
+        Args:
+            local_path: Путь к локальному файлу
+            remote_path: Путь на удалённом хосте
+            **kwargs: Дополнительные аргументы для транспорта
+                - recurse: Рекурсивная загрузка директории (SSH)
+
+        Raises:
+            ConnectionError: Если транспорт не поддерживает файловые операции
+
+        Пример:
+            >>> async with Connection.from_uri("ssh://user@host") as conn:
+            ...     await conn.upload("/local/file.txt", "/remote/file.txt")
+        """
+        await self._transport.upload(local_path, remote_path, **kwargs)
+
+    async def download(
+        self,
+        remote_path: str,
+        local_path: str,
+        **kwargs
+    ) -> None:
+        """Скачать файл с удалённого хоста.
+
+        Работает только для SSH транспорта (SFTP).
+
+        Args:
+            remote_path: Путь на удалённом хосте
+            local_path: Путь для сохранения локально
+            **kwargs: Дополнительные аргументы для транспорта
+
+        Raises:
+            ConnectionError: Если транспорт не поддерживает файловые операции
+
+        Пример:
+            >>> async with Connection.from_uri("ssh://user@host") as conn:
+            ...     await conn.download("/remote/file.txt", "/local/file.txt")
+        """
+        await self._transport.download(remote_path, local_path, **kwargs)
+
     async def __aenter__(self) -> Self:
         await self._transport.connect()
         return self
