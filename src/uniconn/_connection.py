@@ -363,50 +363,111 @@ class Connection:
         self,
         local_path: str,
         remote_path: str,
+        recurse: bool = False,
         **kwargs
     ) -> None:
-        """Загрузить файл на удалённый хост.
+        """Загрузить файл или директорию на удалённый хост.
 
         Работает только для SSH транспорта (SFTP).
+        Автоматически определяет рекурсию если local_path — директория.
 
         Args:
-            local_path: Путь к локальному файлу
+            local_path: Путь к локальному файлу или директории
             remote_path: Путь на удалённом хосте
+            recurse: Принудительная рекурсивная загрузка
             **kwargs: Дополнительные аргументы для транспорта
-                - recurse: Рекурсивная загрузка директории (SSH)
-
-        Raises:
-            ConnectionError: Если транспорт не поддерживает файловые операции
 
         Пример:
-            >>> async with Connection.from_uri("ssh://user@host") as conn:
-            ...     await conn.upload("/local/file.txt", "/remote/file.txt")
+            >>> await conn.upload("/local/file.txt", "/remote/file.txt")
+            >>> await conn.upload("/local/dir", "/remote/dir", recurse=True)
         """
-        await self._transport.upload(local_path, remote_path, **kwargs)
+        await self._transport.upload(
+            local_path, remote_path, recurse=recurse, **kwargs
+        )
 
     async def download(
         self,
         remote_path: str,
         local_path: str,
+        recurse: bool = False,
         **kwargs
     ) -> None:
-        """Скачать файл с удалённого хоста.
+        """Скачать файл или директорию с удалённого хоста.
 
         Работает только для SSH транспорта (SFTP).
 
         Args:
             remote_path: Путь на удалённом хосте
             local_path: Путь для сохранения локально
+            recurse: Рекурсивная загрузка директории
             **kwargs: Дополнительные аргументы для транспорта
 
-        Raises:
-            ConnectionError: Если транспорт не поддерживает файловые операции
+        Пример:
+            >>> await conn.download("/remote/file.txt", "/local/file.txt")
+            >>> await conn.download("/remote/dir", "/local/dir", recurse=True)
+        """
+        await self._transport.download(
+            remote_path, local_path, recurse=recurse, **kwargs
+        )
+
+    async def chmod(
+        self,
+        remote_path: str,
+        mode: int,
+    ) -> None:
+        """Изменить права доступа к файлу на удалённом хосте.
+
+        Работает только для SSH транспорта (SFTP).
+
+        Args:
+            remote_path: Путь к файлу на удалённом хосте
+            mode: Права доступа (например, ``0o755``, ``0o644``)
 
         Пример:
-            >>> async with Connection.from_uri("ssh://user@host") as conn:
-            ...     await conn.download("/remote/file.txt", "/local/file.txt")
+            >>> await conn.chmod("/var/www/app.py", 0o755)
         """
-        await self._transport.download(remote_path, local_path, **kwargs)
+        await self._transport.chmod(remote_path, mode)
+
+    async def stat(
+        self,
+        remote_path: str,
+    ) -> dict:
+        """Получить информацию о файле на удалённом хосте.
+
+        Работает только для SSH транспорта (SFTP).
+
+        Args:
+            remote_path: Путь к файлу на удалённом хосте
+
+        Returns:
+            Словарь: size, uid, gid, permissions, atime, mtime,
+            is_file, is_dir, is_symlink
+
+        Пример:
+            >>> info = await conn.stat("/var/log/syslog")
+            >>> print(info["size"], info["permissions"])
+        """
+        return await self._transport.stat(remote_path)
+
+    async def listdir(
+        self,
+        remote_path: str = ".",
+    ) -> list[str]:
+        """Список файлов в директории на удалённом хосте.
+
+        Работает только для SSH транспорта (SFTP).
+
+        Args:
+            remote_path: Путь к директории (по умолчанию ".")
+
+        Returns:
+            Список имён файлов и директорий
+
+        Пример:
+            >>> files = await conn.listdir("/var/log")
+            >>> print(files)
+        """
+        return await self._transport.listdir(remote_path)
 
     async def __aenter__(self) -> Self:
         await self._transport.connect()

@@ -265,24 +265,38 @@ class SSHTransport(BaseTransport):
         self,
         local_path: str,
         remote_path: str,
+        recurse: bool = False,
         **kwargs
     ) -> None:
-        """Загрузить файл на удалённый хост через SFTP.
+        """Загрузить файл или директорию на удалённый хост через SFTP.
 
         Args:
-            local_path: Путь к локальному файлу
+            local_path: Путь к локальному файлу или директории
             remote_path: Путь на удалённом хосте
-            **kwargs: Дополнительные аргументы для asyncssh (например, recurse)
+            recurse: Рекурсивная загрузка директории
+            **kwargs: Дополнительные аргументы для asyncssh SFTP
 
         Raises:
             ConnectionError: Если нет подключения или ошибка SFTP
+
+        Пример:
+            >>> await transport.upload("/local/file.txt", "/remote/file.txt")
+            >>> await transport.upload("/local/dir", "/remote/dir", recurse=True)
         """
         if not self._connected or not self._conn:
             raise ConnectionError("Not connected", host=self.config.host)
 
+        # Автоопределение рекурсии если local_path — директория
+        import os
+        if recurse is False and os.path.isdir(local_path):
+            recurse = True
+
         try:
             async with self._conn.start_sftp_client() as sftp:
-                await sftp.put(local_path, remote_path, **kwargs)
+                if recurse:
+                    await sftp.put(local_path, remote_path, recurse=True, **kwargs)
+                else:
+                    await sftp.put(local_path, remote_path, **kwargs)
         except asyncssh.Error as e:
             raise ConnectionError(
                 f"SFTP upload failed: {local_path} -> {remote_path}: {e}",
@@ -293,26 +307,151 @@ class SSHTransport(BaseTransport):
         self,
         remote_path: str,
         local_path: str,
+        recurse: bool = False,
         **kwargs
     ) -> None:
-        """Скачать файл с удалённого хоста через SFTP.
+        """Скачать файл или директорию с удалённого хоста через SFTP.
 
         Args:
             remote_path: Путь на удалённом хосте
             local_path: Путь для сохранения локально
+            recurse: Рекурсивная загрузка директории
             **kwargs: Дополнительные аргументы для asyncssh
 
         Raises:
             ConnectionError: Если нет подключения или ошибка SFTP
+
+        Пример:
+            >>> await transport.download("/remote/file.txt", "/local/file.txt")
+            >>> await transport.download("/remote/dir", "/local/dir", recurse=True)
         """
         if not self._connected or not self._conn:
             raise ConnectionError("Not connected", host=self.config.host)
 
         try:
             async with self._conn.start_sftp_client() as sftp:
-                await sftp.get(remote_path, local_path, **kwargs)
+                if recurse:
+                    await sftp.get(remote_path, local_path, recurse=True, **kwargs)
+                else:
+                    await sftp.get(remote_path, local_path, **kwargs)
         except asyncssh.Error as e:
             raise ConnectionError(
                 f"SFTP download failed: {remote_path} -> {local_path}: {e}",
+                host=self.config.host
+            ) from e
+
+    async def chmod(
+        self,
+        remote_path: str,
+        mode: int,
+    ) -> None:
+        """Изменить права доступа к файлу через SFTP chmod.
+
+        Args:
+            remote_path: Путь к файлу на удалённом хосте
+            mode: Права доступа в восьмеричном формате
+                (например, ``0o755``, ``0o644``)
+
+        Raises:
+            ConnectionError: Если нет подключения или ошибка SFTP
+
+        Пример:
+            >>> await transport.chmod("/var/www/app.py", 0o755)
+            >>> await transport.chmod("/etc/config.ini", 0o600)
+        """
+        if not self._connected or not self._conn:
+            raise ConnectionError("Not connected", host=self.config.host)
+
+        try:
+            async with self._conn.start_sftp_client() as sftp:
+                await sftp.chmod(remote_path, mode)
+        except asyncssh.Error as e:
+            raise ConnectionError(
+                f"SFTP chmod failed: {remote_path}: {e}",
+                host=self.config.host
+            ) from e
+
+    async def stat(
+        self,
+        remote_path: str,
+    ) -> dict:
+        """Получить информацию о файле через SFTP stat.
+
+        Возвращает словарь с атрибутами файла:
+        - ``size`` — размер в байтах
+        - ``uid`` / ``gid`` — идентификаторы владельца/группы
+        - ``permissions`` — права доступа (октальные)
+        - ``atime`` / ``mtime`` — время доступа/модификации (timestamp)
+        - ``is_file`` / ``is_dir`` / ``is_symlink`` — тип
+
+        Args:
+            remote_path: Путь к файлу на удалённом хосте
+
+        Returns:
+            Словарь с атрибутами файла
+
+        Raises:
+            ConnectionError: Если нет подключения или ошибка SFTP
+
+        Пример:
+            >>> info = await transport.stat("/var/log/syslog")
+            >>> print(info["size"], info["permissions"])
+        """
+        if not self._connected or not self._conn:
+            raise ConnectionError("Not connected", host=self.config.host)
+
+        try:
+            async with self._conn.start_sftp_client() as sftp:
+                attrs = await sftp.stat(remote_path)
+
+            import stat as stat_module
+            perms = attrs.permissions
+            return {
+                "size": attrs.size,
+                "uid": attrs.uid,
+                "gid": attrs.gid,
+                "permissions": oct(perms) if perms is not None else None,
+                "atime": attrs.atime,
+                "mtime": attrs.mtime,
+                "is_file": stat_module.S_ISREG(perms) if perms else False,
+                "is_dir": stat_module.S_ISDIR(perms) if perms else False,
+                "is_symlink": stat_module.S_ISLNK(perms) if perms else False,
+            }
+        except asyncssh.Error as e:
+            raise ConnectionError(
+                f"SFTP stat failed: {remote_path}: {e}",
+                host=self.config.host
+            ) from e
+
+    async def listdir(
+        self,
+        remote_path: str = ".",
+    ) -> list[str]:
+        """Список файлов и директорий через SFTP readdir.
+
+        Args:
+            remote_path: Путь к директории на удалённом хосте
+
+        Returns:
+            Список имён файлов и директорий
+
+        Raises:
+            ConnectionError: Если нет подключения или ошибка SFTP
+
+        Пример:
+            >>> files = await transport.listdir("/var/log")
+            >>> print(files)
+            ['syslog', 'auth.log', 'kern.log']
+        """
+        if not self._connected or not self._conn:
+            raise ConnectionError("Not connected", host=self.config.host)
+
+        try:
+            async with self._conn.start_sftp_client() as sftp:
+                entries = await sftp.readdir(remote_path)
+            return [entry.filename for entry in entries]
+        except asyncssh.Error as e:
+            raise ConnectionError(
+                f"SFTP listdir failed: {remote_path}: {e}",
                 host=self.config.host
             ) from e

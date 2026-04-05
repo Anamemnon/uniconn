@@ -116,3 +116,31 @@ class BaseTransport(ABC):
         raise NotImplementedError(
             f"Download not supported for {self.name} transport"
         )
+
+    async def chmod(
+        self,
+        remote_path: str,
+        mode: int,
+    ) -> None:
+        """Изменить права доступа к файлу."""
+        raise NotImplementedError(
+            f"chmod not supported for {self.name} transport"
+        )
+
+    async def stat(
+        self,
+        remote_path: str,
+    ) -> dict:
+        """Получить информацию о файле."""
+        raise NotImplementedError(
+            f"stat not supported for {self.name} transport"
+        )
+
+    async def listdir(
+        self,
+        remote_path: str = ".",
+    ) -> list[str]:
+        """Список файлов в директории."""
+        raise NotImplementedError(
+            f"listdir not supported for {self.name} transport"
+        )
