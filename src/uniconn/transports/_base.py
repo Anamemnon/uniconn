@@ -60,3 +60,23 @@ class BaseTransport(ABC):
     @property
     def is_connected(self) -> bool:
         return self._connected
+
+    async def ping(self, timeout: float | None = None) -> bool:
+        """Проверить живость подключения.
+
+        Базовая реализация: выполняет команду ``echo`` и проверяет ответ.
+        Переопределяется в транспортах для более эффективной проверки.
+
+        Args:
+            timeout: Таймаут проверки в секундах
+
+        Returns:
+            True если подключение живо
+        """
+        if not self._connected:
+            return False
+        try:
+            result = await self.run("echo ping", timeout=timeout or 5.0)
+            return result.ok
+        except Exception:
+            return False

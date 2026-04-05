@@ -22,6 +22,10 @@ class LocalTransport(BaseTransport):
     async def disconnect(self) -> None:
         self._connected = False
 
+    async def ping(self, timeout: float | None = None) -> bool:
+        """Для локального транспорта всегда True (нет сетевого подключения)."""
+        return self._connected
+
     async def run(
         self,
         command: str,

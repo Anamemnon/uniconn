@@ -112,6 +112,10 @@ class SyncConnection:
         lines = self._run_coro(_collect_lines())
         yield from lines
 
+    def is_alive(self, timeout: float | None = None) -> bool:
+        """Проверить живость подключения (синхронно)."""
+        return self._run_coro(self._async_conn.is_alive(timeout=timeout))
+
     def close(self) -> None:
         """Закрыть подключение и освободить ресурсы."""
         if self._closed:

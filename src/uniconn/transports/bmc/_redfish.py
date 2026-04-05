@@ -18,6 +18,7 @@ Redfish - открытый стандарт DMTF для управления с�
     aiohttp >= 3.8
 """
 
+import asyncio
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -185,6 +186,27 @@ class RedfishTransport(BaseTransport):
             await self._session.close()
             self._session = None
         self._connected = False
+
+    async def ping(self, timeout: float | None = None) -> bool:
+        """Проверить доступность Redfish API через запрос корневого ресурса.
+
+        Args:
+            timeout: Таймаут в секундах
+
+        Returns:
+            True если Redfish API доступен
+        """
+        if not self._connected or not self._session:
+            return False
+        try:
+            timeout_val = timeout or self.config.timeout
+            async with asyncio.timeout(timeout_val):
+                async with self._session.get(
+                    f"{self._base_url}{self.REDFISH_ROOT}"
+                ) as resp:
+                    return resp.status == 200
+        except Exception:
+            return False
 
     async def run(
         self,

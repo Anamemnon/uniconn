@@ -335,6 +335,30 @@ class Connection:
         """Закрыть подключение."""
         await self._transport.disconnect()
 
+    async def is_alive(self, timeout: float | None = None) -> bool:
+        """Проверить живость подключения.
+
+        Делегирует проверку транспорту через ``ping()``.
+        Для SSH — выполняет ``true`` через `asyncssh.run()`.
+        Для Redfish — GET запрос к корневому ресурсу.
+        Для IPMI — ``get_power`` команда.
+        Для Local — всегда True (если подключён).
+
+        Args:
+            timeout: Таймаут проверки в секундах
+
+        Returns:
+            True если подключение живо и отвечает
+
+        Пример:
+            >>> async with Connection.from_uri("ssh://user@host") as conn:
+            ...     if await conn.is_alive():
+            ...         print("Host is alive")
+            ...     else:
+            ...         print("Host is unreachable")
+        """
+        return await self._transport.ping(timeout=timeout)
+
     async def __aenter__(self) -> Self:
         await self._transport.connect()
         return self

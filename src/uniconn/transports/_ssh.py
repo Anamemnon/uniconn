@@ -176,6 +176,29 @@ class SSHTransport(BaseTransport):
             await self._conn.wait_closed()
         self._connected = False
 
+    async def ping(self, timeout: float | None = None) -> bool:
+        """Проверить живость SSH подключения через лёгкую команду.
+
+        Использует ``asyncssh.run()`` для выполнения ``true``,
+        что не создаёт PTY и минимально нагружает сервер.
+
+        Args:
+            timeout: Таймаут в секундах
+
+        Returns:
+            True если SSH сессия активна
+        """
+        if not self._connected or not self._conn:
+            return False
+        try:
+            result = await asyncio.wait_for(
+                self._conn.run("true"),
+                timeout=timeout or 5.0,
+            )
+            return result.exit_status == 0
+        except Exception:
+            return False
+
     async def run(
         self,
         command: str,

@@ -44,6 +44,25 @@ class IPMITransport(BaseTransport):
     async def disconnect(self) -> None:
         self._connected = False
 
+    async def ping(self, timeout: float | None = None) -> bool:
+        """Проверить доступность BMC через лёгкую IPMI команду.
+
+        Выполняет ``get_power`` для проверки отклика BMC.
+
+        Args:
+            timeout: Таймаут в секундах
+
+        Returns:
+            True если BMC отвечает
+        """
+        if not self._connected:
+            return False
+        try:
+            result = await self.run("power status", timeout=timeout)
+            return result.ok
+        except Exception:
+            return False
+
     async def run(
         self,
         command: str,
