@@ -28,12 +28,18 @@
     >>> from uniconn import ConnectionPool
     >>> pool = ConnectionPool(["ssh://host1", "ssh://host2"])
     >>> results = await pool.map("uptime")
+
+    >>> # Пул SSH-сессий для одного хоста (мультиплексинг каналов)
+    >>> from uniconn import SSHSessionPool
+    >>> pool = SSHSessionPool("ssh://host", max_sessions_per_conn=6)
+    >>> results = await pool.map(["lshw", "dmidecode", "nvme list"])
 """
 
 from ._config import ConnectionConfig
 from ._connection import Connection
 from ._logging import SecretMaskingFilter, get_logger, setup_file_logging
 from ._pool import ConnectionPool
+from ._session_pool import SSHSessionPool
 from ._sync import SyncConnection
 from .exceptions import (
     AuthenticationError,
@@ -52,6 +58,7 @@ __all__ = [
     "Connection",
     "SyncConnection",
     "ConnectionPool",
+    "SSHSessionPool",
     "ConnectionConfig",
     "Result",
     # Исключения
