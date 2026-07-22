@@ -35,6 +35,8 @@
     >>> results = await pool.map(["lshw", "dmidecode", "nvme list"])
 """
 
+from importlib.metadata import PackageNotFoundError, version
+
 from ._config import ConnectionConfig
 from ._connection import Connection
 from ._logging import SecretMaskingFilter, get_logger, setup_file_logging
@@ -52,7 +54,10 @@ from .exceptions import (
 )
 from .result import Result
 
-__version__ = "0.1.0"
+try:
+    __version__ = version("uniconn")
+except PackageNotFoundError:  # пакет не установлен (запуск из исходников)
+    __version__ = "0.0.0+unknown"
 __all__ = [
     # Основные классы
     "Connection",

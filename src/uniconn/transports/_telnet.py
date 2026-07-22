@@ -13,6 +13,7 @@
 """
 
 import asyncio
+import logging
 import time
 from collections.abc import AsyncIterator
 
@@ -60,6 +61,11 @@ class TelnetTransport(BaseTransport):
             host = self.config.host
             port = self.config.port or 23
             timeout = self.config.timeout
+
+            logging.getLogger("uniconn").warning(
+                "Telnet — незашифрованный протокол: трафик и учётные данные "
+                "передаются в открытом виде. Рекомендуется использовать SSH."
+            )
 
             # Подключаемся
             self._reader, self._writer = await asyncio.wait_for(

@@ -6,6 +6,7 @@ from uniconn.result import Result
 from datetime import datetime
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 async def test_redfish_power_on(mocker):
     """Тест Redfish транспорта с моком HTTP"""
     # Мокаем aiohttp сессию
@@ -30,6 +31,7 @@ async def test_redfish_power_on(mocker):
         mock_session.post.assert_called()
 
 @pytest.mark.asyncio
+@pytest.mark.integration
 async def test_ipmi_power_status(mocker):
     """Тест IPMI транспорта"""
     from uniconn.transports.bmc._ipmi import IPMITransport

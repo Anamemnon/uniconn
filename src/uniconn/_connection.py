@@ -317,6 +317,44 @@ class Connection:
 
         return result
 
+    async def run_commands(
+        self,
+        commands: list[str],
+        stop_on_error: bool = True,
+        **kwargs
+    ) -> list[Result]:
+        """Последовательно выполнить список команд на удалённом хосте.
+
+        Args:
+            commands: Список команд для выполнения
+            stop_on_error: Прервать выполнение при первой команде
+                с ненулевым exit_code (по умолчанию True)
+            **kwargs: Дополнительные аргументы для ``run()``
+                (timeout, raise_on_error и т.д.)
+
+        Returns:
+            Список Result в порядке выполнения команд.
+            При ``stop_on_error=True`` и ошибке — только результаты
+            до первой неудачной команды включительно.
+
+        Пример:
+            >>> results = await conn.run_commands(["uptime", "df -h", "free -m"])
+            >>> for r in results:
+            ...     print(r.command, r.exit_code)
+
+        """
+        results: list[Result] = []
+        for command in commands:
+            result = await self.run(command, **kwargs)
+            results.append(result)
+            if stop_on_error and not result.ok:
+                self._logger.warning(
+                    f"run_commands: остановка на команде {command!r} "
+                    f"(exit_code={result.exit_code})"
+                )
+                break
+        return results
+
     async def stream(
         self,
         command: str,

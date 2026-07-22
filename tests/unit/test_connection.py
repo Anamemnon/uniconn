@@ -81,3 +81,108 @@ def test_sync_connection_wrapper(mocker):
     
     assert result.exit_code == 0
     mock_async_conn.run.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_run_commands_success(mock_transport, mocker):
+    """Все команды выполняются последовательно и в порядке списка."""
+    mocker.patch(
+        'uniconn.plugins._loader.TransportLoader.get',
+        return_value=lambda config: mock_transport
+    )
+
+    async def run_side_effect(command, **kwargs):
+        return Result(
+            exit_code=0, stdout=f"out:{command}", stderr="",
+            duration=1.0, command=command, timestamp=datetime.now()
+        )
+
+    mock_transport.run = mocker.AsyncMock(side_effect=run_side_effect)
+
+    conn = Connection.from_uri("ssh://user@host")
+    results = await conn.run_commands(["cmd1", "cmd2", "cmd3"])
+
+    assert [r.command for r in results] == ["cmd1", "cmd2", "cmd3"]
+    assert [r.stdout for r in results] == ["out:cmd1", "out:cmd2", "out:cmd3"]
+    assert mock_transport.run.call_count == 3
+
+@pytest.mark.asyncio
+async def test_run_commands_stop_on_error(mock_transport, mocker):
+    """При stop_on_error=True выполнение прерывается на первой ошибке."""
+    mocker.patch(
+        'uniconn.plugins._loader.TransportLoader.get',
+        return_value=lambda config: mock_transport
+    )
+
+    async def run_side_effect(command, **kwargs):
+        exit_code = 1 if command == "bad" else 0
+        return Result(
+            exit_code=exit_code, stdout="", stderr="",
+            duration=1.0, command=command, timestamp=datetime.now()
+        )
+
+    mock_transport.run = mocker.AsyncMock(side_effect=run_side_effect)
+
+    conn = Connection.from_uri("ssh://user@host")
+    results = await conn.run_commands(["ok1", "bad", "ok2"])
+
+    # "ok2" не должна выполняться
+    assert [r.command for r in results] == ["ok1", "bad"]
+    assert mock_transport.run.call_count == 2
+
+@pytest.mark.asyncio
+async def test_run_commands_continue_on_error(mock_transport, mocker):
+    """При stop_on_error=False выполняются все команды."""
+    mocker.patch(
+        'uniconn.plugins._loader.TransportLoader.get',
+        return_value=lambda config: mock_transport
+    )
+
+    async def run_side_effect(command, **kwargs):
+        exit_code = 1 if command == "bad" else 0
+        return Result(
+            exit_code=exit_code, stdout="", stderr="",
+            duration=1.0, command=command, timestamp=datetime.now()
+        )
+
+    mock_transport.run = mocker.AsyncMock(side_effect=run_side_effect)
+
+    conn = Connection.from_uri("ssh://user@host")
+    results = await conn.run_commands(["ok1", "bad", "ok2"], stop_on_error=False)
+
+    assert [r.exit_code for r in results] == [0, 1, 0]
+    assert mock_transport.run.call_count == 3
+
+@pytest.mark.asyncio
+async def test_run_commands_empty_list(mock_transport, mocker):
+    """Пустой список команд — пустой результат без вызовов транспорта."""
+    mocker.patch(
+        'uniconn.plugins._loader.TransportLoader.get',
+        return_value=lambda config: mock_transport
+    )
+
+    conn = Connection.from_uri("ssh://user@host")
+    results = await conn.run_commands([])
+
+    assert results == []
+    mock_transport.run.assert_not_called()
+
+def test_sync_run_commands(mocker):
+    """Тест синхронной обертки run_commands."""
+    from uniconn._sync import SyncConnection
+
+    mock_async_conn = mocker.AsyncMock()
+    mock_async_conn.run_commands = mocker.AsyncMock(
+        return_value=[
+            Result(
+                exit_code=0, stdout="ok", stderr="",
+                duration=1.0, command="test", timestamp=datetime.now()
+            )
+        ]
+    )
+
+    sync_conn = SyncConnection(mock_async_conn)
+    results = sync_conn.run_commands(["test"])
+
+    assert len(results) == 1
+    assert results[0].exit_code == 0
+    mock_async_conn.run_commands.assert_called_once()

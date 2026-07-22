@@ -17,6 +17,7 @@
 
 import asyncio
 import contextlib
+import logging
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -129,6 +130,11 @@ class SerialTransport(BaseTransport):
         try:
             self._device = self._get_device()
             kwargs = self._get_serial_kwargs()
+
+            logging.getLogger("uniconn").warning(
+                "Serial — незашифрованное соединение: данные передаются "
+                "в открытом виде."
+            )
 
             self._reader, self._writer = await serial_asyncio.open_serial_connection(
                 url=self._device,

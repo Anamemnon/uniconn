@@ -90,6 +90,31 @@ class SyncConnection:
             )
         )
 
+    def run_commands(
+        self,
+        commands: list[str],
+        stop_on_error: bool = True,
+        **kwargs
+    ) -> list[Result]:
+        """Последовательно выполнить список команд (синхронно).
+
+        Args:
+            commands: Список команд для выполнения
+            stop_on_error: Прервать выполнение при первой ошибке
+            **kwargs: Дополнительные аргументы для ``run()``
+
+        Returns:
+            Список Result в порядке выполнения команд
+
+        """
+        return self._run_coro(
+            self._async_conn.run_commands(
+                commands,
+                stop_on_error=stop_on_error,
+                **kwargs
+            )
+        )
+
     def stream(self, command: str, timeout: float | None = None, **kwargs):
         """Синхронный генератор для потокового выполнения команды.
 

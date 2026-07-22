@@ -133,6 +133,27 @@ class TestSerialConnect:
             serial_mock.open_serial_connection.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_connect_warns_unencrypted(self, serial_config, mock_serial_asyncio, caplog):
+        """Предупреждение о незашифрованном соединении при подключении."""
+        import logging
+
+        serial_mock, _, _ = mock_serial_asyncio
+
+        with (
+            patch(
+                "uniconn.transports._serial.serial_asyncio", serial_mock
+            ),
+            caplog.at_level(logging.WARNING, logger="uniconn"),
+        ):
+            from uniconn.transports._serial import SerialTransport
+            transport = SerialTransport(serial_config)
+            await transport.connect()
+
+            assert any(
+                "незашифрованное" in record.message for record in caplog.records
+            )
+
+    @pytest.mark.asyncio
     async def test_connect_failure(self, serial_config, mock_serial_asyncio):
         """Ошибка подключения"""
         serial_mock, _, _ = mock_serial_asyncio

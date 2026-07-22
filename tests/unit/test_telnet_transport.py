@@ -88,6 +88,24 @@ class TestTelnetConnect:
             telnetlib3_mock.open_connection.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_connect_warns_unencrypted(self, telnet_config, mock_telnetlib, caplog):
+        """Предупреждение о незашифрованном протоколе при подключении."""
+        import logging
+
+        telnetlib3_mock, _, _ = mock_telnetlib
+
+        with (
+            patch("uniconn.transports._telnet.telnetlib3", telnetlib3_mock),
+            caplog.at_level(logging.WARNING, logger="uniconn"),
+        ):
+            transport = TelnetTransport(telnet_config)
+            await transport.connect()
+
+            assert any(
+                "незашифрованный" in record.message for record in caplog.records
+            )
+
+    @pytest.mark.asyncio
     async def test_connect_with_auth(self, telnet_config_with_auth, mock_telnetlib, mocker):
         """Подключение с аутентификацией"""
         telnetlib3_mock, reader, writer = mock_telnetlib
