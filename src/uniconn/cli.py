@@ -382,6 +382,280 @@ def main():
 
         asyncio.run(_interactive())
 
+    @app.command("screen-run")
+    def screen_run(
+        uri: str | None = typer.Argument(None, help="Connection URI (ssh://user:pass@host)"),
+        config: str | None = typer.Option(None, "--config", "-f", help="ScreenPool config file"),
+        command: list[str] | None = typer.Option(  # noqa: B008
+            None, "--command", "-c", help="Command to run (repeatable)"
+        ),
+        instances: int = typer.Option(1, "--instances", "-n", help="Sessions per command"),
+        logs: bool = typer.Option(False, "--logs", "-l", help="Stream session logs to console"),
+        verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+    ):
+        """Start commands in background GNU screen sessions.
+
+        Examples:
+            uniconn screen-run --config stress_config.yaml -c "stress-ng --cpu 4"
+            uniconn screen-run "ssh://user@host" --instances 4 -c "stress-ng --cpu 4" --logs
+
+        """
+        if config is None and uri is None:
+            console.print("[red]ERROR:[/red] URI argument or --config option is required")
+            raise typer.Exit(code=1)
+
+        commands = list(command or [])
+        if not commands:
+            console.print("[red]ERROR:[/red] at least one --command is required")
+            raise typer.Exit(code=1)
+
+        async def _execute():
+            # Ленивый импорт: uniconn --help не зависит от background-подсистемы
+            from .background import ScreenPool
+
+            logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
+
+            try:
+                if config is not None:
+                    pool = ScreenPool.from_file(config)
+                else:
+                    pool = ScreenPool(uri, logger=logger)
+
+                async with pool:
+                    started = []
+                    for cmd in commands:
+                        for _ in range(instances):
+                            session = await pool.start(cmd)
+                            started.append((session, cmd))
+
+                    table = Table(
+                        title=f"Started {len(started)} screen session(s)",
+                        box=box.ROUNDED,
+                        show_header=True,
+                        header_style="bold cyan"
+                    )
+                    table.add_column("Session ID", style="cyan")
+                    table.add_column("Command", style="green")
+
+                    for session, cmd in started:
+                        table.add_row(session.session_id, cmd)
+
+                    console.print(table)
+                    console.print(
+                        "\n[dim]Sessions are detached and keep running after disconnect.[/dim]"
+                    )
+
+                    if logs:
+                        console.print("[dim]Streaming logs (Ctrl+C to stop)...[/dim]")
+                        async for event in pool.poll_logs():
+                            console.print(
+                                f"[cyan]{event.session_id}[/cyan] {event.line.rstrip()}"
+                            )
+
+            except Exception as e:
+                console.print(Panel(
+                    f"[red]ERROR:[/red] {e}",
+                    title="Exception",
+                    border_style="red"
+                ))
+                sys.exit(1)
+
+        asyncio.run(_execute())
+
+    @app.command("screen-logs")
+    def screen_logs(
+        uri: str = typer.Argument(..., help="Connection URI (ssh://user:pass@host)"),
+        session_id: str = typer.Option(..., "--session-id", "-s", help="Screen session ID"),
+        follow: bool = typer.Option(False, "--follow", "-f", help="Stream new log data"),
+        interval: float = typer.Option(2.0, "--interval", "-i", help="Poll interval (seconds)"),
+        verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+    ):
+        """Read logs of a background screen session.
+
+        Without --follow reads the log once; with --follow polls new chunks
+        until the session finishes.
+
+        Examples:
+            uniconn screen-logs "ssh://user@host" --session-id uniconn_abc123_0
+            uniconn screen-logs "ssh://user@host" --session-id uniconn_abc123_0 --follow
+
+        """
+        log_path = f"/tmp/{session_id}.log"
+
+        async def _execute():
+            logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
+
+            try:
+                async with Connection.from_uri(uri, logger=logger) as conn:
+                    if not follow:
+                        result = await conn.run(f"cat {log_path}", raise_on_error=False)
+                        if result.exit_code != 0:
+                            console.print(
+                                f"[red]ERROR:[/red] cannot read {log_path}: "
+                                f"{result.stderr.strip()}"
+                            )
+                            sys.exit(1)
+                        if result.stdout:
+                            console.print(result.stdout)
+                        return
+
+                    # Follow-режим: читаем порции по offset, пока сессия жива
+                    offset = 0
+                    while True:
+                        chunk = await conn.run(
+                            f"tail -c +{offset + 1} {log_path}",
+                            raise_on_error=False
+                        )
+                        data = chunk.stdout or ""
+                        if data:
+                            console.print(data, end="")
+                            offset += len(data.encode())
+
+                        alive = await conn.run(
+                            f"screen -ls | grep {session_id}",
+                            raise_on_error=False
+                        )
+                        if alive.exit_code != 0:
+                            break  # сессия завершилась, новых данных больше не будет
+                        await asyncio.sleep(interval)
+
+            except Exception as e:
+                console.print(Panel(
+                    f"[red]ERROR:[/red] {e}",
+                    title="Exception",
+                    border_style="red"
+                ))
+                sys.exit(1)
+
+        asyncio.run(_execute())
+
+    @app.command("screen-status")
+    def screen_status(
+        uri: str = typer.Argument(..., help="Connection URI (ssh://user:pass@host)"),
+        pool_id: str | None = typer.Option(None, "--pool-id", "-p", help="Filter by pool ID"),
+        verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+    ):
+        """Show status of background screen sessions on the host.
+
+        Examples:
+            uniconn screen-status "ssh://user@host"
+            uniconn screen-status "ssh://user@host" --pool-id abc123
+
+        """
+        prefix = f"uniconn_{pool_id}" if pool_id else "uniconn_"
+
+        async def _execute():
+            logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
+
+            try:
+                async with Connection.from_uri(uri, logger=logger) as conn:
+                    result = await conn.run("screen -ls", raise_on_error=False)
+
+                sessions = []
+                for line in result.stdout.splitlines():
+                    if prefix not in line:
+                        continue
+                    parts = line.strip().split()
+                    if not parts:
+                        continue
+                    pid, _, name = parts[0].partition(".")
+                    status = "Unknown"
+                    if "(" in line and ")" in line:
+                        status = line[line.find("(") + 1:line.rfind(")")]
+                    sessions.append((name, pid, status))
+
+                if not sessions:
+                    console.print(f"[yellow]No screen sessions matching '{prefix}'[/yellow]")
+                    return
+
+                table = Table(
+                    title=f"Screen sessions: {prefix}*",
+                    box=box.ROUNDED,
+                    show_header=True,
+                    header_style="bold cyan"
+                )
+                table.add_column("Session ID", style="cyan")
+                table.add_column("PID", style="dim")
+                table.add_column("Status", style="green")
+
+                for name, pid, status in sessions:
+                    table.add_row(name, pid, status)
+
+                console.print(table)
+
+            except Exception as e:
+                console.print(Panel(
+                    f"[red]ERROR:[/red] {e}",
+                    title="Exception",
+                    border_style="red"
+                ))
+                sys.exit(1)
+
+        asyncio.run(_execute())
+
+    @app.command("screen-kill")
+    def screen_kill(
+        uri: str = typer.Argument(..., help="Connection URI (ssh://user:pass@host)"),
+        session_id: str | None = typer.Option(None, "--session-id", "-s", help="Session ID"),
+        pool_id: str | None = typer.Option(None, "--pool-id", "-p", help="Pool ID to kill"),
+        all_sessions: bool = typer.Option(False, "--all", help="Kill all sessions of the pool"),
+        force: bool = typer.Option(False, "--force", help="Force kill (skip graceful Ctrl+C)"),
+        verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+    ):
+        """Kill background screen session(s).
+
+        Examples:
+            uniconn screen-kill "ssh://user@host" --session-id uniconn_abc123_0
+            uniconn screen-kill "ssh://user@host" --session-id uniconn_abc123_0 --force
+            uniconn screen-kill "ssh://user@host" --pool-id abc123 --all
+
+        """
+        if session_id is None and not (pool_id and all_sessions):
+            console.print("[red]ERROR:[/red] specify --session-id or --pool-id with --all")
+            raise typer.Exit(code=1)
+
+        async def _execute():
+            logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
+
+            try:
+                async with Connection.from_uri(uri, logger=logger) as conn:
+                    targets = [session_id] if session_id else []
+
+                    if pool_id and all_sessions:
+                        prefix = f"uniconn_{pool_id}_"
+                        result = await conn.run("screen -ls", raise_on_error=False)
+                        for line in result.stdout.splitlines():
+                            if prefix in line:
+                                parts = line.strip().split()
+                                if parts:
+                                    targets.append(parts[0].partition(".")[2])
+
+                    if not targets:
+                        console.print("[yellow]No matching screen sessions found[/yellow]")
+                        return
+
+                    for sid in targets:
+                        if force:
+                            await conn.run(f"screen -S {sid} -X kill", raise_on_error=False)
+                            console.print(f"[green]OK[/green] killed {sid}")
+                        else:
+                            # Graceful: отправляем Ctrl+C в сессию
+                            await conn.run(
+                                f"screen -S {sid} -X stuff $'\\003'",
+                                raise_on_error=False
+                            )
+                            console.print(f"[green]OK[/green] sent Ctrl+C to {sid}")
+
+            except Exception as e:
+                console.print(Panel(
+                    f"[red]ERROR:[/red] {e}",
+                    title="Exception",
+                    border_style="red"
+                ))
+                sys.exit(1)
+
+        asyncio.run(_execute())
+
     app()
 
 

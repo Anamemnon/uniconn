@@ -1,0 +1,26 @@
+# Пример конфигурации ScreenPool для мониторинга (см. examples/screen_monitoring.py)
+#
+# Загрузка: pool = ScreenPool.from_file("screen_pool_config.yaml")
+uri: "ssh://admin@web-server"
+max_screens: 8        # максимум одновременных screen-сессий
+max_monitors: 2       # максимум параллельных SSH-запросов мониторинга
+poll_interval: 5.0    # пауза между циклами опроса, сек
+
+log_config:
+  local_dir: "./logs"
+  max_log_size_mb: 100
+  rules:
+    # Логи nginx: стримим в реальном времени + пересылаем на backup-сервер
+    - pattern: "tail -f /var/log/nginx"
+      local_name: "nginx_{idx}.log"
+      download: true
+      download_strategy: "realtime"
+      forward_to: "sftp://backup-server/logs/nginx.log"
+    # Бенчмарк: скачиваем лог только после завершения (минимум нагрузки)
+    - pattern: "sysbench"
+      local_name: "sysbench_{timestamp:%Y%m%d_%H%M%S}.log"
+      download: true
+      download_strategy: "on_complete"
+    # Всё остальное — без сбора логов (silent mode)
+    - pattern: ".*"
+      collect: false

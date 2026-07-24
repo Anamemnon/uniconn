@@ -64,3 +64,27 @@ class BMCCapabilityError(UniconnError):
     """BMC не поддерживает запрошенную операцию."""
 
     pass
+
+
+class ScreenError(UniconnError):
+    """Базовое исключение подсистемы screen-сессий."""
+
+    pass
+
+
+class ScreenNotFoundError(ScreenError):
+    """GNU screen не установлен на удалённом хосте."""
+
+    pass
+
+
+class ScreenSessionExistsError(ScreenError):
+    """Screen-сессия с таким именем уже существует на хосте."""
+
+    pass
+
+
+class ScreenPoolFullError(ScreenError):
+    """Достигнут лимит одновременных сессий в пуле (max_screens)."""
+
+    pass

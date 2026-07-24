@@ -43,11 +43,16 @@ from ._logging import SecretMaskingFilter, get_logger, setup_file_logging
 from ._pool import ConnectionPool
 from ._session_pool import SSHSessionPool
 from ._sync import SyncConnection
+from .background import LogConfig, ScreenPool, ScreenResult, ScreenSession
 from .exceptions import (
     AuthenticationError,
     BMCCapabilityError,
     ConnectionError,
     ExecutionError,
+    ScreenError,
+    ScreenNotFoundError,
+    ScreenPoolFullError,
+    ScreenSessionExistsError,
     TimeoutError,
     TransportNotFoundError,
     UniconnError,
@@ -66,6 +71,11 @@ __all__ = [
     "SSHSessionPool",
     "ConnectionConfig",
     "Result",
+    # Screen-сессии (background)
+    "ScreenPool",
+    "ScreenSession",
+    "ScreenResult",
+    "LogConfig",
     # Исключения
     "UniconnError",
     "ConnectionError",
@@ -74,6 +84,10 @@ __all__ = [
     "TimeoutError",
     "TransportNotFoundError",
     "BMCCapabilityError",
+    "ScreenError",
+    "ScreenNotFoundError",
+    "ScreenSessionExistsError",
+    "ScreenPoolFullError",
     # Логирование
     "get_logger",
     "setup_file_logging",
