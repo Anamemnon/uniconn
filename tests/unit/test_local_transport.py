@@ -81,11 +81,13 @@ async def test_local_run_timeout(local_transport):
     """Таймаут выполнения команды"""
     await local_transport.connect()
 
-    # На Windows 'sleep' — это отдельная программа, не shell builtin
-    # Используем ping для имитации задержки
+    # На Windows 'sleep' — это отдельная программа, не shell builtin.
+    # Используем ping для имитации задержки. Короткая задержка: kill()
+    # завершает cmd.exe, но дочерний ping доживает до конца, удерживая
+    # пайпы — с длинной задержкой тест ждал бы полное время команды.
     import sys
     if sys.platform == "win32":
-        cmd = "ping -n 10 127.0.0.1 >nul"
+        cmd = "ping -n 2 127.0.0.1 >nul"
     else:
         cmd = "sleep 10"
 

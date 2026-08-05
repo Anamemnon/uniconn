@@ -52,10 +52,17 @@ async def test_connection_retry_on_failure(mock_transport, mocker):
         )
     
     mock_transport.run = flaky_run
-    
+
     mocker.patch(
         'uniconn.plugins._loader.TransportLoader.get',
         return_value=lambda config: mock_transport
+    )
+    # Убираем экспоненциальную задержку между попытками,
+    # чтобы тест не ждал реальные секунды backoff'а
+    from tenacity import wait_none
+    mocker.patch(
+        'uniconn._connection.wait_exponential_jitter',
+        return_value=wait_none()
     )
     
     conn = Connection.from_uri("ssh://user@host", retry_attempts=3)

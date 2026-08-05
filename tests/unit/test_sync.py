@@ -140,7 +140,7 @@ class TestSyncClose:
         sync.close()  # повторный вызов не падает
 
     def test_close_terminates_promptly(self):
-        """close() не зависает: loop.stop вызывается до shutdown executor'а."""
+        """close() не зависает: loop.stop вызывается до join потока loop'а."""
         sync = _make_sync(_make_transport())
         sync.run("uptime")  # инициализирует loop
 

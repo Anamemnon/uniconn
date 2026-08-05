@@ -202,18 +202,21 @@ class SyncConnection:
 
         self._closed = True
 
-        # Останавливаем run_forever, иначе executor.shutdown(wait=True)
-        # зависнет в ожидании рабочего потока
+        # Останавливаем run_forever и ждём завершения потока loop'а,
+        # иначе loop останется крутиться в фоне
         with self._loop_lock:
             if self._loop and not self._loop.is_closed():
                 self._loop.call_soon_threadsafe(self._loop.stop)
+            thread = self._loop_thread
 
-        self._executor.shutdown(wait=True)
+        if thread is not None:
+            thread.join(timeout=5.0)
 
         with self._loop_lock:
             if self._loop and not self._loop.is_closed():
                 self._loop.close()
-                self._loop = None
+            self._loop = None
+            self._loop_thread = None
 
     def __enter__(self) -> Self:
         self._run_coro(self._async_conn._transport.connect())
@@ -221,5 +224,5 @@ class SyncConnection:
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         # close() сам закрывает async-подключение (disconnect транспорта),
-        # останавливает loop и executor — отдельный disconnect не нужен
+        # останавливает loop и его поток — отдельный disconnect не нужен
         self.close()
