@@ -214,7 +214,9 @@ class TestTelnetRun:
 
     @pytest.mark.asyncio
     async def test_run_timeout(self, telnet_config, mock_telnetlib, mocker):
-        """Таймаут выполнения"""
+        """Таймаут чтения — uniconn TimeoutError, а не молчаливый exit_code=0"""
+        from uniconn.exceptions import TimeoutError as UniconnTimeoutError
+
         telnetlib3_mock, reader, writer = mock_telnetlib
 
         reader.readline = mocker.AsyncMock(
@@ -225,9 +227,8 @@ class TestTelnetRun:
             transport = TelnetTransport(telnet_config)
             await transport.connect()
 
-            # Не должен выбрасывать исключение — просто вернёт что прочитал
-            result = await transport.run("slow_command", timeout=0.1)
-            assert result.exit_code == 0  # Telnet не возвращает реальный exit code
+            with pytest.raises(UniconnTimeoutError, match="timeout"):
+                await transport.run("slow_command", timeout=0.1)
 
 
 class TestTelnetStream:

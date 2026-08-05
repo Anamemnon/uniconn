@@ -1,4 +1,5 @@
 # src/uniconn/_connection.py
+import builtins
 import json
 import logging
 from pathlib import Path
@@ -277,6 +278,10 @@ class Connection:
 
         Автоматически повторяет попытку при ConnectionError/TimeoutError
         с экспоненциальным backoff (до retry_attempts раз).
+        Retry срабатывает как на ``uniconn.exceptions.TimeoutError``,
+        так и на встроенный ``TimeoutError`` (например, из SSH-транспорта).
+        Перед каждой следующей попыткой выполняется переподключение
+        (disconnect + connect), т.к. соединение могло умереть.
 
         Args:
             command: Команда для выполнения
@@ -300,17 +305,28 @@ class Connection:
             f"Running command: {command!r} on {self._config.uri_safe}"
         )
 
-        # Динамический retry с использованием self._retry_attempts
+        # Динамический retry с использованием self._retry_attempts.
+        # builtins.TimeoutError — таймауты транспортов из asyncio.wait_for
+        # (SSH и Local пробрасывают именно его).
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(self._retry_attempts),
             wait=wait_exponential_jitter(initial=1, max=10),
-            retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+            retry=retry_if_exception_type(
+                (ConnectionError, TimeoutError, builtins.TimeoutError)
+            ),
             reraise=True,
         ):
             with attempt:
-                result = await self._transport.run(
-                    command, timeout=timeout, **kwargs
-                )
+                try:
+                    result = await self._transport.run(
+                        command, timeout=timeout, **kwargs
+                    )
+                except (ConnectionError, TimeoutError, builtins.TimeoutError):
+                    # Соединение могло умереть (в т.ч. после таймаута) —
+                    # переподключаемся перед следующей попыткой
+                    await self._transport.disconnect()
+                    await self._transport.connect()
+                    raise
 
         if raise_on_error:
             result.raise_for_status()
@@ -378,7 +394,6 @@ class Connection:
 
         Делегирует проверку транспорту через ``ping()``.
         Для SSH — выполняет ``true`` через `asyncssh.run()`.
-        Для Redfish — GET запрос к корневому ресурсу.
         Для IPMI — ``get_power`` команда.
         Для Local — всегда True (если подключён).
 

@@ -56,27 +56,6 @@ class TestNetworkURIParsing:
         config = URIParser.parse("ipmi://user@bmc")
         assert config.port == 623
 
-    def test_redfish_uri(self):
-        """Парсинг Redfish URI"""
-        config = URIParser.parse("redfish://admin:pass@idrac.local")
-        assert config.transport == "redfish"
-        assert config.host == "idrac.local"
-        assert config.port == 443
-        assert config.username == "admin"
-
-    def test_redfish_uri_with_path(self):
-        """Redfish URI с путём"""
-        config = URIParser.parse("redfish://admin:pass@bmc/redfish/v1")
-        assert config.options.get("base_path") == "/redfish/v1"
-
-    def test_redfish_uri_with_options(self):
-        """Redfish URI с опциями"""
-        config = URIParser.parse(
-            "redfish://admin:pass@bmc?verify_ssl=false&timeout=60"
-        )
-        assert config.options["verify_ssl"] is False
-        assert config.options["timeout"] == 60
-
 
 class TestSerialURIParsing:
     """Тесты парсинга Serial URI"""
@@ -85,8 +64,8 @@ class TestSerialURIParsing:
         """Serial URI для Linux"""
         config = URIParser.parse("serial:///dev/ttyUSB0?baudrate=9600")
         assert config.transport == "serial"
-        # _parse_serial убирает ведущий /
-        assert config.options["device"] == "dev/ttyUSB0"
+        # Ведущий / сохраняется — это часть пути устройства
+        assert config.options["device"] == "/dev/ttyUSB0"
         assert config.options["baudrate"] == 9600
 
     def test_serial_uri_windows(self):
@@ -110,7 +89,7 @@ class TestSerialURIParsing:
         config = URIParser.parse("serial:///dev/ttyS0")
         assert config.transport == "serial"
         # device извлекается из path
-        assert "device" in config.options
+        assert config.options["device"] == "/dev/ttyS0"
 
 
 class TestLocalURIParsing:
@@ -225,3 +204,53 @@ class TestURIErrorHandling:
         """Пустая строка"""
         with pytest.raises(ValueError):
             URIParser.parse("")
+
+
+class TestPercentEncoding:
+    """Тесты percent-decoding креденшелов и экранирования в build()"""
+
+    def test_parse_decodes_username_and_password(self):
+        """Percent-encoded логин/пароль декодируются при парсинге"""
+        config = URIParser.parse("ssh://user%40corp:p%40ss%3Aw%2Frd@host")
+        assert config.username == "user@corp"
+        assert config.password.get_secret_value() == "p@ss:w/rd"
+
+    def test_build_quotes_credentials(self):
+        """build() экранирует спецсимволы в логине/пароле"""
+        uri = URIParser.build(
+            "ssh", host="host", username="user@corp", password="p@ss:w/rd"
+        )
+        assert uri == "ssh://user%40corp:p%40ss%3Aw%2Frd@host"
+
+    def test_round_trip_special_chars(self):
+        """parse → build → parse сохраняет креденшелы со спецсимволами"""
+        config1 = URIParser.parse("ssh://user%40corp:p%40ss%3Aw%2Frd@host:2222")
+        uri = URIParser.build(
+            config1.transport,
+            host=config1.host,
+            port=config1.port,
+            username=config1.username,
+            password=config1.password.get_secret_value(),
+        )
+        config2 = URIParser.parse(uri)
+        assert config2.username == config1.username
+        assert (
+            config2.password.get_secret_value()
+            == config1.password.get_secret_value()
+        )
+        assert config2.host == config1.host
+        assert config2.port == config1.port
+
+
+class TestRepeatedQueryParams:
+    """Тесты повторяющихся query-параметров"""
+
+    def test_repeated_param_last_wins(self):
+        """?opt=1&opt=2 — побеждает последнее значение, без исключения"""
+        config = URIParser.parse("ssh://host?opt=1&opt=2")
+        assert config.options["opt"] == 2
+
+    def test_repeated_param_mixed_types(self):
+        """Повторяющийся параметр с разными значениями"""
+        config = URIParser.parse("ssh://host?timeout=10&timeout=60")
+        assert config.options["timeout"] == 60

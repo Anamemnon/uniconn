@@ -36,10 +36,12 @@ class ScreenPool:
     периодическим опросом их статуса и логов (polling + tail, без постоянного
     SSH-канала) и гарантированной очисткой ресурсов.
 
-    Число параллельных SSH-запросов мониторинга ограничено семафором
-    ``max_monitors``: семафор захватывается на каждый SSH-запрос, а не на
-    весь цикл опроса, поэтому N сессий опрашиваются конкурентно, но не более
-    ``max_monitors`` одновременных запросов.
+    Число параллельных SSH-запросов ограничено семафором ``max_monitors``:
+    семафор захватывается на каждый SSH-запрос мониторинга (опрос статуса,
+    чтение логов), а также на остановку сессий (``stop()``/force kill в
+    ``wait_all()``), а не на весь цикл опроса, поэтому N сессий
+    опрашиваются конкурентно, но не более ``max_monitors`` одновременных
+    запросов.
     """
 
     def __init__(
@@ -69,10 +71,10 @@ class ScreenPool:
         self._counter = 0
 
         self._monitor_sem = asyncio.Semaphore(max_monitors)
+        self._start_lock = asyncio.Lock()
         self._connection: Connection | None = None
         self._collector: ScreenLogCollector | None = None
         self._cleanup_manager = ScreenCleanupManager(self._pool_id, logger=self._logger)
-        self._server_side_installed = False
 
     @classmethod
     def from_config(
@@ -191,6 +193,9 @@ class ScreenPool:
     async def start(self, command: str, name: str | None = None) -> ScreenSession:
         """Запустить команду в новой detached screen-сессии.
 
+        Проверка лимита и регистрация сессии выполняются под lock —
+        конкурентные ``start()`` не могут превысить ``max_screens``.
+
         Args:
             command: Команда для выполнения на удалённом хосте
             name: Явное имя сессии (по умолчанию ``{prefix}_{idx}``)
@@ -204,30 +209,31 @@ class ScreenPool:
             ScreenSessionExistsError: Сессия с таким именем уже существует
 
         """
-        if len(self._sessions) >= self._max_screens:
-            raise ScreenPoolFullError(
-                f"Достигнут лимит сессий пула (max_screens={self._max_screens})"
+        async with self._start_lock:
+            if len(self._sessions) >= self._max_screens:
+                raise ScreenPoolFullError(
+                    f"Достигнут лимит сессий пула (max_screens={self._max_screens})"
+                )
+
+            connection = await self._ensure_connection()
+            idx = self._counter
+            self._counter += 1
+            session_id = name or f"{self._session_prefix}_{idx}"
+            session = ScreenSession(
+                connection, session_id, f"/tmp/{session_id}.log", logger=self._logger
             )
+            await session.create(command)
 
-        connection = await self._ensure_connection()
-        idx = self._counter
-        self._counter += 1
-        session_id = name or f"{self._session_prefix}_{idx}"
-        session = ScreenSession(
-            connection, session_id, f"/tmp/{session_id}.log", logger=self._logger
-        )
-        await session.create(command)
+            self._sessions[session_id] = session
+            self._rules[session_id] = self._log_config.match_rule(command)
+            self._build_pipeline(session, command, idx)
+            self._start_times[session_id] = time.monotonic()
+            self._cleanup_manager.register_session(session)
 
-        self._sessions[session_id] = session
-        self._rules[session_id] = self._log_config.match_rule(command)
-        self._build_pipeline(session, command, idx)
-        self._start_times[session_id] = time.monotonic()
-        self._cleanup_manager.register_session(session)
-
-        # Fail-safe на сервере (sentinel + cleanup-скрипт) — однократно
-        if not self._server_side_installed:
+            # Fail-safe на сервере (sentinel + cleanup-скрипт): обновляется
+            # при каждом старте, чтобы список сессий был актуален и включал
+            # сессии с пользовательскими именами
             await self._cleanup_manager.install_server_side(connection)
-            self._server_side_installed = True
 
         self._logger.info(f"Запущена screen-сессия {session_id}: {command!r}")
         return session
@@ -262,8 +268,11 @@ class ScreenPool:
         session_id = session.session_id
 
         lines, _ = await self._read_chunk_guarded(session)
-        if lines:
-            await self._pipelines[session_id].emit(session_id, lines)
+        # Доступ через .get(): сессия могла быть снята с учёта конкурентным
+        # stop()/wait_all() между проверкой живости и финализацией
+        pipeline = self._pipelines.get(session_id)
+        if lines and pipeline is not None:
+            await pipeline.emit(session_id, lines)
 
         exit_code = await session.get_exit_code()
         if exit_code is None:
@@ -310,7 +319,10 @@ class ScreenPool:
         session = self._sessions.get(session_id)
         if session is None:
             raise ScreenError(f"Сессия {session_id!r} не найдена в пуле")
-        await session.kill(graceful=graceful)
+        # Kill идёт через те же SSH-запросы (screen -ls/-X kill), что и
+        # мониторинг — тоже ограничиваем их семафором max_monitors
+        async with self._monitor_sem:
+            await session.kill(graceful=graceful)
         return await self._finalize_session(session)
 
     async def _stop_safe(self, session_id: str, graceful: bool) -> None:
@@ -360,7 +372,8 @@ class ScreenPool:
                     f"wait_all: таймаут {timeout}с, force kill {len(pending)} сессий"
                 )
                 for session in pending:
-                    await session.kill(graceful=False)
+                    async with self._monitor_sem:
+                        await session.kill(graceful=False)
                     results[session.session_id] = await self._finalize_session(session)
                 break
             await asyncio.sleep(self._poll_interval)
@@ -370,37 +383,76 @@ class ScreenPool:
     async def poll_logs(self, interval: float = 2.0) -> AsyncIterator[LogEvent]:
         """Периодически опрашивать логи всех сессий.
 
-        Бесконечный асинхронный генератор: каждая порция лога рассылается
-        в LogPipeline сессии (файл, forward и т.д.), а строки отдаются
-        наружу как LogEvent. Завершается, когда сессий не осталось.
+        Каждая порция лога рассылается в LogPipeline сессии (файл, forward
+        и т.д.), а строки отдаются наружу как LogEvent. Завершившиеся сессии
+        исключаются из опроса (но остаются в ``sessions`` — результаты
+        забираются через ``wait_all()``/``stop()``); генератор завершается,
+        когда активных сессий не осталось.
         """
-        while self._sessions:
-            sessions = list(self._sessions.values())
+        done: set[str] = set()
+        while True:
+            sessions = [s for s in self._sessions.values() if s.session_id not in done]
+            if not sessions:
+                break
             async with asyncio.TaskGroup() as tg:
                 reads = {s.session_id: tg.create_task(self._read_chunk_guarded(s))
                          for s in sessions}
-            for session_id, task in reads.items():
-                lines, _ = task.result()
-                if lines:
-                    await self._pipelines[session_id].emit(session_id, lines)
-                    for line in lines:
-                        yield LogEvent(session_id=session_id, line=line)
+                alives = {s.session_id: tg.create_task(self._is_alive_guarded(s))
+                          for s in sessions}
+            for session in sessions:
+                session_id = session.session_id
+                lines, _ = reads[session_id].result()
+                pipeline = self._pipelines.get(session_id)
+                if lines and pipeline is not None:
+                    await pipeline.emit(session_id, lines)
+                for line in lines:
+                    yield LogEvent(session_id=session_id, line=line)
+                if not alives[session_id].result():
+                    done.add(session_id)
+            if all(s.session_id in done or s.session_id not in self._sessions
+                   for s in sessions):
+                break
             await asyncio.sleep(interval)
 
     async def poll_status(self, interval: float = 5.0) -> AsyncIterator[StatusEvent]:
         """Периодически опрашивать статус всех сессий.
 
-        Бесконечный асинхронный генератор StatusEvent. Завершается,
-        когда сессий не осталось.
+        Завершившаяся сессия отдаёт финальный ``StatusEvent(alive=False,
+        exit_code=...)`` и исключается из дальнейшего опроса (но остаётся
+        в ``sessions`` — результаты забираются через ``wait_all()``/``stop()``).
+        Генератор завершается, когда активных сессий не осталось.
         """
-        while self._sessions:
-            sessions = list(self._sessions.values())
+        done: set[str] = set()
+        while True:
+            sessions = [s for s in self._sessions.values() if s.session_id not in done]
+            if not sessions:
+                break
             async with asyncio.TaskGroup() as tg:
                 checks = {s.session_id: tg.create_task(self._status_event(s))
                           for s in sessions}
             for session_id in checks:
-                yield checks[session_id].result()
+                event = checks[session_id].result()
+                yield event
+                if not event.alive:
+                    done.add(session_id)
+            if all(s.session_id in done or s.session_id not in self._sessions
+                   for s in sessions):
+                break
             await asyncio.sleep(interval)
+
+    async def disconnect(self) -> None:
+        """Закрыть SSH-подключение, НЕ останавливая screen-сессии.
+
+        Сессии продолжают работать в detached-режиме; серверный fail-safe
+        (sentinel + cleanup-скрипт) остаётся на месте. Локальные хуки
+        очистки (atexit/signal) снимаются, иначе они убили бы сессии
+        при завершении процесса.
+        """
+        if self._connection is not None:
+            await self._connection.close()
+            self._connection = None
+            self._collector = None
+        self._cleanup_manager.uninstall()
 
     async def cleanup(self) -> None:
         """Остановить все сессии и удалить артефакты пула на сервере."""

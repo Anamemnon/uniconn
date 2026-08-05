@@ -13,6 +13,24 @@ from ._models import LogEvent
 
 logger = logging.getLogger(__name__)
 
+# Символы, безопасные для подстановки в имя файла (без разделителей путей)
+_SAFE_NAME_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+)
+
+
+def _sanitize_name(value: str) -> str:
+    """Санитизировать значение для подстановки в шаблон имени файла.
+
+    Все символы вне ``[A-Za-z0-9._-]`` (в т.ч. ``/``, ``\\``, пробелы)
+    заменяются на ``_``; значение из одних точек (``""``, ``"."``, ``".."``)
+    тоже заменяется — иначе возможен выход за пределы ``local_dir``.
+    """
+    sanitized = "".join(c if c in _SAFE_NAME_CHARS else "_" for c in value)
+    if not sanitized.strip("."):
+        return "_"
+    return sanitized
+
 
 class LogHandler(ABC):
     """Абстрактный обработчик порций логов screen-сессии."""
@@ -74,15 +92,20 @@ class LocalFileHandler(LogHandler):
         self._last_flush: dict[str, float] = {}
 
     def local_path(self, session_id: str) -> Path:
-        """Путь к локальному файлу лога сессии (резолвится один раз)."""
+        """Путь к локальному файлу лога сессии (резолвится один раз).
+
+        Подставляемые в шаблон значения санитизируются: опасные символы
+        (``/``, ``\\``, ``..`` и т.п.) заменяются на ``_``, чтобы команда
+        или имя хоста не могли вывести путь за пределы ``local_dir``.
+        """
         if session_id not in self._paths:
             name = self._name_template.format(
-                pool_id=self._pool_id,
-                session_id=session_id,
+                pool_id=_sanitize_name(self._pool_id),
+                session_id=_sanitize_name(session_id),
                 idx=self._idx,
                 timestamp=datetime.now(),
-                host=self._host,
-                command=self._command,
+                host=_sanitize_name(self._host),
+                command=_sanitize_name(self._command),
             )
             self._paths[session_id] = self._local_dir / name
         return self._paths[session_id]

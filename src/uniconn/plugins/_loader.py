@@ -29,24 +29,28 @@ class TransportLoader:
         if transport_name in cls._cache:
             return cls._cache[transport_name]
 
+        # Python 3.10+ entry_points с group параметром
+        eps = entry_points(group="uniconn.transports")
+
+        # Транспорт не зарегистрирован — сразу осмысленная ошибка
+        # (без повторного обёртывания TransportNotFoundError)
+        if transport_name not in eps.names:
+            raise TransportNotFoundError(
+                f"Transport '{transport_name}' not found. "
+                f"Available: {', '.join(sorted(eps.names))}. "
+                f"Install with: pip install uniconn[{transport_name}]"
+            )
+
         try:
-            # Python 3.10+ entry_points с group параметром
-            eps = entry_points(group="uniconn.transports")
-            if transport_name not in eps.names:
-                raise TransportNotFoundError(
-                    f"Transport '{transport_name}' not found. "
-                    f"Install with: pip install uniconn[{transport_name}]"
-                )
-
             transport_class = eps[transport_name].load()
-            cls._cache[transport_name] = transport_class
-            logger.debug(f"Loaded transport: {transport_name} -> {transport_class}")
-            return transport_class
-
         except Exception as e:
             raise TransportNotFoundError(
                 f"Failed to load transport '{transport_name}': {e}"
             ) from e
+
+        cls._cache[transport_name] = transport_class
+        logger.debug(f"Loaded transport: {transport_name} -> {transport_class}")
+        return transport_class
 
     @classmethod
     def list_available(cls) -> list[str]:

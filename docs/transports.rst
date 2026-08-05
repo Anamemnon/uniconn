@@ -110,29 +110,3 @@ power status        Статус питания
 sensors             Данные сенсоров
 boot device         Boot устройство
 ==================  ===========================
-
-Redfish (BMC)
--------------
-
-URI формат::
-
-    redfish://[user[:password]@]host[:port][/path][?option=value]
-
-Примеры::
-
-    conn = Connection.from_uri("redfish://admin:pass@bmc.local")
-    conn = Connection.from_uri("redfish://admin:pass@bmc.local?verify_ssl=false")
-
-Доступные команды:
-
-==================  ===========================
-Команда             Описание
-==================  ===========================
-power on/off        Управление питанием
-power cycle         Перезагрузка
-boot device         Boot устройство
-sensors             Сенсоры
-info                Информация о системе
-get /path           Произвольный GET запрос
-post /path data     Произвольный POST запрос
-==================  ===========================

@@ -17,7 +17,14 @@ import logging
 import time
 from collections.abc import AsyncIterator
 
-from ..exceptions import AuthenticationError, ConnectionError, ExecutionError
+from ..exceptions import (
+    AuthenticationError,
+    ConnectionError,
+    ExecutionError,
+)
+from ..exceptions import (
+    TimeoutError as UniconnTimeoutError,
+)
 from ..result import Result
 from ._base import BaseTransport
 
@@ -208,7 +215,14 @@ class TelnetTransport(BaseTransport):
                             break
 
                 except TimeoutError:
-                    break
+                    # Таймаут чтения — команда не завершилась вовремя.
+                    # Не маскируем под успех (exit_code=0): бросаем
+                    # uniconn.TimeoutError, который поймает retry в Connection
+                    raise UniconnTimeoutError(
+                        f"Telnet command timeout after {cmd_timeout}s: {command!r}",
+                        command=command,
+                        host=self.config.host
+                    ) from None
 
             duration = time.monotonic() - start_time
 
@@ -232,6 +246,8 @@ class TelnetTransport(BaseTransport):
                 host=self.config.host
             )
 
+        except UniconnTimeoutError:
+            raise  # Таймаут не заворачиваем в ExecutionError
         except Exception as e:
             raise ExecutionError(
                 f"Telnet command execution failed: {e}",

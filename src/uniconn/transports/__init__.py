@@ -10,7 +10,6 @@
     - TelnetTransport: Telnet через telnetlib3
     - SerialTransport: Serial/UART через pyserial-asyncio
     - IPMITransport: IPMI BMC через pyghmi
-    - RedfishTransport: Redfish API через aiohttp
 """
 
 from ._base import BaseTransport

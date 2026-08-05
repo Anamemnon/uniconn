@@ -1,10 +1,10 @@
 """
-Управление серверами через BMC (IPMI / Redfish).
+Управление серверами через BMC (IPMI).
 
 Демонстрирует:
 - IPMI управление питанием
-- Redfish REST API
-- Получение информации о системе и сенсорах
+- Получение данных сенсоров
+- Массовые BMC операции на нескольких серверах
 """
 
 import asyncio
@@ -36,50 +36,13 @@ async def ipmi_sensors():
         print(result.stdout)
 
 
-# ─── Redfish ────────────────────────────────────────────────────────
-
-async def redfish_power_management():
-    """Управление питанием через Redfish."""
+async def ipmi_boot_device():
+    """Просмотр boot устройства через IPMI."""
     async with Connection.from_uri(
-        "redfish://admin:password@idrac.local"
-    ) as conn:
-        # Статус
-        result = await conn.run("power status")
-        print(f"Power: {result.stdout}")
-
-        # Graceful shutdown
-        result = await conn.run("power off")
-        print(f"Shutdown: {result.stdout}")
-
-
-async def redfish_system_info():
-    """Получение информации о системе."""
-    async with Connection.from_uri(
-        "redfish://admin:password@idrac.local"
-    ) as conn:
-        # Общая информация
-        result = await conn.run("info")
-        print(result.stdout)
-
-
-async def redfish_boot_device():
-    """Просмотр и изменение boot устройства."""
-    async with Connection.from_uri(
-        "redfish://admin:password@idrac.local"
+        "ipmi://admin:password@bmc.local"
     ) as conn:
         result = await conn.run("boot device")
         print(f"Boot device: {result.stdout}")
-
-
-async def redfish_custom_request():
-    """Произвольный REST запрос через Redfish."""
-    async with Connection.from_uri(
-        "redfish://admin:password@idrac.local"
-    ) as conn:
-        # GET запрос к произвольному эндпоинту
-        result = await conn.run("get /redfish/v1/Systems")
-        print(f"Status: {result.exit_code}")
-        print(f"Body: {result.stdout}")
 
 
 # ─── Batch BMC operations ───────────────────────────────────────────
@@ -89,9 +52,9 @@ async def batch_bmc():
     from uniconn import ConnectionPool
 
     bmc_hosts = [
-        "redfish://admin:pass@idrac1.local",
-        "redfish://admin:pass@idrac2.local",
-        "redfish://admin:pass@idrac3.local",
+        "ipmi://admin:pass@bmc1.local",
+        "ipmi://admin:pass@bmc2.local",
+        "ipmi://admin:pass@bmc3.local",
     ]
 
     pool = ConnectionPool(bmc_hosts, max_concurrent=5)
@@ -104,8 +67,8 @@ async def batch_bmc():
 # ─── Main ───────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("=== IPMI Sensors ===")
-    asyncio.run(ipmi_sensors())
+    print("=== IPMI Power Status ===")
+    asyncio.run(ipmi_power_cycle())
 
-    print("\n=== Redfish System Info ===")
-    asyncio.run(redfish_system_info())
+    print("\n=== IPMI Sensors ===")
+    asyncio.run(ipmi_sensors())

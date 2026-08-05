@@ -1,6 +1,7 @@
 # src/uniconn/background/_log_collector.py
 import asyncio
 import logging
+import shlex
 from collections.abc import AsyncIterator, Sequence
 
 from .._connection import Connection
@@ -40,7 +41,7 @@ class ScreenLogCollector:
         offset = self._offsets.get(session.session_id, 0)
         log_path = session.remote_log_path
 
-        size_result = await self._connection.run(f"stat -c %s {log_path}")
+        size_result = await self._connection.run(f"stat -c %s {shlex.quote(log_path)}")
         if not size_result.ok:
             return [], offset
         try:
@@ -57,7 +58,7 @@ class ScreenLogCollector:
         if size == offset:
             return [], offset
 
-        result = await self._connection.run(f"tail -c +{offset + 1} {log_path}")
+        result = await self._connection.run(f"tail -c +{offset + 1} {shlex.quote(log_path)}")
         if not result.ok or not result.stdout:
             return [], offset
 

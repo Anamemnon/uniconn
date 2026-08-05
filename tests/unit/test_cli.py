@@ -215,7 +215,7 @@ class TestCLIBMC:
 
         from uniconn import Connection
 
-        async with Connection.from_uri("redfish://admin:pass@bmc") as conn:
+        async with Connection.from_uri("ipmi://admin:pass@bmc") as conn:
             result = await conn.run("power status")
 
         assert result.exit_code == 0

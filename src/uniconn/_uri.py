@@ -7,11 +7,15 @@
     - serial:///dev/ttyUSB0?baudrate=9600&parity=N
     - local://[?option=value]
     - ipmi://[user[:password]@]host[:port]
-    - redfish://[user[:password]@]host[:port][/path]
+
+Логин и пароль при парсинге подвергаются percent-decoding (unquote),
+а в ``build()`` — экранируются (quote), так что спецсимволы вроде
+``@``, ``:``, ``/`` в креденшелах переживают round-trip parse → build.
+Повторяющиеся query-параметры: побеждает последнее значение.
 """
 
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 if TYPE_CHECKING:
     from ._config import ConnectionConfig
@@ -25,7 +29,6 @@ class URIParser:
         "ssh": 22,
         "telnet": 23,
         "ipmi": 623,
-        "redfish": 443,
     }
 
     @classmethod
@@ -62,7 +65,7 @@ class URIParser:
 
     @classmethod
     def _parse_network(cls, parsed, transport: str) -> "ConnectionConfig":
-        """Парсинг сетевых транспортов (ssh, telnet, ipmi, redfish)."""
+        """Парсинг сетевых транспортов (ssh, telnet, ipmi)."""
         from ._config import ConnectionConfig
 
         # Порт (с дефолтом для транспорта)
@@ -73,16 +76,13 @@ class URIParser:
         # Парсим query параметры
         options = cls._parse_options(parsed.query)
 
-        # Для redfish добавляем path в options
-        if transport == "redfish" and parsed.path and parsed.path != "/":
-            options["base_path"] = parsed.path
-
         return ConnectionConfig(
             transport=transport,
             host=parsed.hostname,
             port=port,
-            username=parsed.username,
-            password=parsed.password,
+            # Креденшелы могут быть percent-encoded (спецсимволы @ : /)
+            username=unquote(parsed.username) if parsed.username else None,
+            password=unquote(parsed.password) if parsed.password else None,
             options=options
         )
 
@@ -96,10 +96,10 @@ class URIParser:
 
         options = cls._parse_options(parsed.query)
 
-        # Путь устройства берём из netloc или path
+        # Путь устройства берём из netloc (Windows: serial://COM3)
+        # или из path (Linux: serial:///dev/ttyUSB0).
+        # Ведущий '/' у path сохраняем — это часть пути устройства.
         device = parsed.netloc or parsed.path
-        if device.startswith("/"):
-            device = device[1:]
 
         if device:
             options["device"] = device
@@ -138,6 +138,9 @@ class URIParser:
             - Числа с плавающей точкой: timeout=30.5
             - Булевы значения: verify_ssl=true/false/1/0/yes/no
             - Строки: encoding=utf-8
+
+        Повторяющиеся параметры: побеждает последнее значение
+        (``?opt=1&opt=2`` → ``opt == 2``), без исключений.
         """
         if not query:
             return {}
@@ -146,8 +149,7 @@ class URIParser:
         options: dict[str, Any] = {}
 
         for key, values in parsed.items():
-            value = values[0] if len(values) == 1 else values
-            options[key] = cls._convert_type(value)
+            options[key] = cls._convert_type(values[-1])
 
         return options
 
@@ -214,11 +216,13 @@ class URIParser:
             return f"serial://{device}"
 
         # Сетевые транспорты
+        # Креденшелы экранируем (quote), чтобы спецсимволы @ : /
+        # не ломали структуру URI и переживали round-trip parse → build
         auth = ""
         if username and password:
-            auth = f"{username}:{password}@"
+            auth = f"{quote(username, safe='')}:{quote(password, safe='')}@"
         elif username:
-            auth = f"{username}@"
+            auth = f"{quote(username, safe='')}@"
 
         port_str = f":{port}" if port else ""
 

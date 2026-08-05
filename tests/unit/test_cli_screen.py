@@ -60,6 +60,7 @@ def make_pool_mock():
         return session
 
     pool.start = AsyncMock(side_effect=fake_start)
+    pool.disconnect = AsyncMock()
     return pool
 
 

@@ -108,18 +108,29 @@ class ScreenSession:
             )
         self._logger.debug(f"Screen-сессия {self._session_id} создана: {start_cmd}")
 
+    @staticmethod
+    def _parse_screen_ls(output: str) -> dict[str, int]:
+        """Разобрать вывод ``screen -ls`` в отображение {имя сессии: PID}.
+
+        Формат строк: ``\\t{PID}.{name}\\t(Detached)``. Сравнение по имени
+        целиком, чтобы ``uniconn_x_1`` не совпадал с ``uniconn_x_12``.
+        """
+        sessions: dict[str, int] = {}
+        for line in output.splitlines():
+            match = re.match(r"\s*(\d+)\.(\S+)", line)
+            if match:
+                sessions[match.group(2)] = int(match.group(1))
+        return sessions
+
     async def is_alive(self) -> bool:
-        """Проверить, существует ли screen-сессия на хосте."""
+        """Проверить, существует ли screen-сессия на хосте (точное совпадение имени)."""
         result = await self._connection.run("screen -ls")
-        return f".{self._session_id}" in result.stdout
+        return self._session_id in self._parse_screen_ls(result.stdout)
 
     async def get_pid(self) -> int | None:
         """Получить PID screen-процесса (парсинг ``screen -ls``, формат ``{PID}.{name}``)."""
         result = await self._connection.run("screen -ls")
-        match = re.search(rf"(\d+)\.{re.escape(self._session_id)}\b", result.stdout)
-        if match:
-            return int(match.group(1))
-        return None
+        return self._parse_screen_ls(result.stdout).get(self._session_id)
 
     async def get_exit_code(self) -> int | None:
         """Получить exit code завершившейся команды.

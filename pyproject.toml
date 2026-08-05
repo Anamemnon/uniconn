@@ -4,8 +4,19 @@ version = "0.2.0"
 description = "Universal library for remote command execution"
 requires-python = ">=3.11"
 license = {text = "MIT"}
-authors = [{name = "Your Name", email = "your@email.com"}]
 readme = "README.md"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Networking",
+]
 
 # Core dependencies (minimal)
 dependencies = [
@@ -18,7 +29,7 @@ dependencies = [
 ssh = ["asyncssh>=2.13"]
 telnet = ["telnetlib3>=2.0"]
 serial = ["pyserial-asyncio>=0.6"]
-bmc = ["pyghmi>=1.5", "aiohttp>=3.8"]
+bmc = ["pyghmi>=1.5"]
 cli = ["typer>=0.9", "rich>=13.0"]
 dev = [
     "pytest>=7.4",
@@ -42,7 +53,6 @@ ssh = "uniconn.transports._ssh:SSHTransport"
 telnet = "uniconn.transports._telnet:TelnetTransport"
 serial = "uniconn.transports._serial:SerialTransport"
 ipmi = "uniconn.transports.bmc._ipmi:IPMITransport"
-redfish = "uniconn.transports.bmc._redfish:RedfishTransport"
 
 [project.scripts]
 uniconn = "uniconn.cli:main"

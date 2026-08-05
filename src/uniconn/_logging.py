@@ -179,6 +179,12 @@ def get_logger(
 ) -> logging.Logger:
     """Получить logger с маскированием секретов.
 
+    Маскирующий фильтр вешается на handlers, а не на logger:
+    фильтры логгера применяются только к записям самого логгера
+    и НЕ наследуются дочерними (``uniconn.transports._ssh`` и т.п.),
+    а фильтры handler'ов срабатывают и на записи, проброшенные
+    дочерними логгерами через propagation.
+
     Args:
         name: Имя логгера
         level: Уровень логирования
@@ -190,14 +196,16 @@ def get_logger(
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
-    if mask_secrets and not any(
-        isinstance(f, SecretMaskingFilter) for f in logger.filters
-    ):
-        logger.addFilter(SecretMaskingFilter())
-
     if not logger.handlers:
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter(DEFAULT_FORMAT))
         logger.addHandler(handler)
+
+    if mask_secrets:
+        for handler in logger.handlers:
+            if not any(
+                isinstance(f, SecretMaskingFilter) for f in handler.filters
+            ):
+                handler.addFilter(SecretMaskingFilter())
 
     return logger

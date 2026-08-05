@@ -1,6 +1,6 @@
 # uniconn
 
-Универсальная Python библиотека для выполнения команд на удалённых хостах через различные транспорты: SSH, Telnet, Serial/UART, IPMI, Redfish и локальное выполнение.
+Универсальная Python библиотека для выполнения команд на удалённых хостах через различные транспорты: SSH, Telnet, Serial/UART, IPMI и локальное выполнение.
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -8,12 +8,14 @@
 
 ## Особенности
 
-- 🚀 **Множественные транспорты**: SSH, Telnet, Serial/UART, IPMI, Redfish, локальное выполнение
+- 🚀 **Множественные транспорты**: SSH, Telnet, Serial/UART, IPMI, локальное выполнение
 - ⚡ **Async-first архитектура**: Построена на `asyncio` с синхронной обёрткой
 - 🔌 **Плагинная система**: Транспорты загружаются динамически через entry-points
 - 🔒 **Безопасность**: Маскирование секретов в логах, Pydantic SecretStr для паролей
 - 🔄 **Повторные попытки**: Встроенный retry с экспоненциальным backoff
 - 📊 **Пул соединений**: Параллельное выполнение на множестве хостов
+- 📁 **SFTP**: Загрузка/скачивание файлов и директорий через SSH
+- 🖥️ **ScreenPool**: Долгоживущие команды в detached GNU screen сессиях
 - 🛠️ **CLI инструмент**: Удобная командная строка для быстрых операций
 
 ## Установка
@@ -36,7 +38,7 @@ pip install uniconn[telnet]
 # Serial/UART
 pip install uniconn[serial]
 
-# BMC (IPMI + Redfish)
+# BMC (IPMI)
 pip install uniconn[bmc]
 
 # CLI интерфейс
@@ -153,6 +155,17 @@ result = await conn.run("ls -la", timeout=30, raise_on_error=True)
 print(result.stdout)
 ```
 
+##### `run_commands(commands, stop_on_error=True, **kwargs) -> List[Result]`
+
+Последовательно выполнить список команд на хосте.
+
+**Пример:**
+```python
+results = await conn.run_commands(["uptime", "df -h", "free -m"])
+for r in results:
+    print(r.command, r.exit_code)
+```
+
 ##### `stream(command, timeout=None, **kwargs) -> AsyncIterator[str]`
 
 Потоковое выполнение команды с построчным выводом.
@@ -163,9 +176,35 @@ async for line in conn.stream("tail -f /var/log/syslog"):
     print(line)
 ```
 
+##### `is_alive(timeout=None) -> bool`
+
+Проверить живость подключения (лёгкая проверка через транспорт).
+
+**Пример:**
+```python
+if await conn.is_alive():
+    print("Host is alive")
+```
+
 ##### `close() -> None`
 
 Закрыть подключение.
+
+#### Файловые операции (SFTP, только SSH)
+
+```python
+# Загрузка файла/директории на хост
+await conn.upload("/local/file.txt", "/remote/file.txt")
+await conn.upload("/local/dir", "/remote/dir", recurse=True)
+
+# Скачивание файла/директории с хоста
+await conn.download("/remote/file.txt", "/local/file.txt")
+
+# Права доступа, информация о файле, список директории
+await conn.chmod("/remote/script.sh", 0o755)
+info = await conn.stat("/remote/file.txt")   # size, mtime, is_dir, ...
+files = await conn.listdir("/var/log")
+```
 
 ##### `to_sync() -> SyncConnection`
 
@@ -208,7 +247,7 @@ config = ConnectionConfig(
 ```
 
 **Поля:**
-- `transport` (str): Тип транспорта (ssh, telnet, serial, local, ipmi, redfish)
+- `transport` (str): Тип транспорта (ssh, telnet, serial, local, ipmi)
 - `host` (str | None): Хост, IP или устройство
 - `port` (int | None): Порт подключения
 - `username` (str | None): Имя пользователя
@@ -309,7 +348,47 @@ with Connection.from_uri("ssh://user@host").to_sync() as conn:
 
 **Методы:**
 - `run(command, timeout=None, raise_on_error=False, **kwargs) -> Result`
+- `run_commands(commands, stop_on_error=True, **kwargs) -> List[Result]`
+- `stream(command, timeout=None, **kwargs) -> Iterator[str]` — инкрементальный стриминг
+- `is_alive(timeout=None) -> bool`
 - `close() -> None`
+
+### SSHSessionPool
+
+Пул SSH-сессий для одного хоста: мультиплексинг нескольких каналов по одному
+подключению (с дополнительными подключениями при превышении лимита).
+
+```python
+from uniconn import SSHSessionPool
+
+# До 6 параллельных каналов на одно SSH-подключение
+async with SSHSessionPool("ssh://user@host", max_sessions_per_conn=6) as pool:
+    results = await pool.map(["lshw", "dmidecode", "nvme list", "sensors"])
+```
+
+### ScreenPool
+
+Долгоживущие команды в detached GNU screen сессиях через SSH: сессии
+переживают обрыв SSH, логи собираются периодическим опросом.
+
+```python
+from uniconn import ScreenPool
+
+async with ScreenPool("ssh://admin@server", max_screens=8, max_monitors=2) as pool:
+    await pool.start("stress-ng --cpu 4")
+    await pool.start("sysbench --test=cpu run")
+
+    async for event in pool.poll_logs(interval=2.0):
+        print(f"[{event.session_id}] {event.line.rstrip()}")
+
+    results = await pool.wait_all(timeout=3600.0)
+```
+
+Также из конфигурационного файла (см. `examples/screen_pool_config.yaml`):
+
+```python
+pool = ScreenPool.from_file("screen_pool_config.yaml")
+```
 
 ## Поддерживаемые транспорты
 
@@ -388,34 +467,6 @@ result = await conn.run("sensors")       # Сенсоры
 
 **Зависимости:** `pip install uniconn[bmc]` (pyghmi)
 
-### Redfish (BMC)
-
-```python
-conn = Connection.from_uri("redfish://admin:password@bmc.local")
-
-# Отключить проверку SSL (для self-signed)
-conn = Connection.from_uri(
-    "redfish://admin:password@bmc.local?verify_ssl=false"
-)
-
-# Команды
-result = await conn.run("power status")
-result = await conn.run("power on")
-result = await conn.run("info")
-result = await conn.run("sensors")
-```
-
-**Доступные команды:**
-- `power status`, `power on`, `power off`, `power forceoff`
-- `power cycle`, `power restart`
-- `boot device` - Текущее boot устройство
-- `sensors` - Информация с сенсоров
-- `info` - Общая информация о системе
-- `get /path` - Произвольный GET запрос
-- `post /path data` - Произвольный POST запрос
-
-**Зависимости:** `pip install uniconn[bmc]` (aiohttp)
-
 ### Локальное выполнение
 
 ```python
@@ -466,13 +517,30 @@ uniconn run-multi "ssh://host1" "ssh://host2" -c "whoami" -f json
 
 ```bash
 # Статус питания
-uniconn bmc "redfish://admin:pass@idrac" "power status"
+uniconn bmc "ipmi://admin:pass@bmc" "power status"
 
 # Включить сервер
 uniconn bmc "ipmi://admin:pass@bmc" "power on"
 
-# Информация о системе
-uniconn bmc "redfish://admin:pass@idrac" info
+# Данные сенсоров
+uniconn bmc "ipmi://admin:pass@bmc" sensors
+```
+
+#### Фоновые screen-сессии
+
+```bash
+# Запустить команду в detached screen-сессии (переживает отключение)
+uniconn screen-run "ssh://user@host" -c "stress-ng --cpu 4"
+
+# Несколько экземпляров со стримингом логов
+uniconn screen-run "ssh://user@host" --instances 4 -c "sysbench cpu run" --logs
+
+# Логи и статус сессии
+uniconn screen-logs "ssh://user@host" --session-id uniconn_x_0 --follow
+uniconn screen-status "ssh://user@host"
+
+# Остановить сессию
+uniconn screen-kill "ssh://user@host" --session-id uniconn_x_0
 ```
 
 #### Интерактивная оболочка

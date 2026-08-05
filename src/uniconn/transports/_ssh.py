@@ -16,12 +16,17 @@
 
 Опции (query параметры):
     known_hosts: "strict" | "default" | путь к файлу | "no" (по умолчанию "no")
-        - "strict" — использовать ~/.ssh/known_hosts, ошибка если хост неизвестен
-        - "default" — ~/.ssh/known_hosts, автодобавление новых хостов
-        - "/path/to/file" — конкретный файл known_hosts
+        - "strict" — ~/.ssh/known_hosts, если файл существует (иначе без проверки)
+        - "default" — ~/.ssh/known_hosts, если файл существует (иначе без проверки)
+        - "/path/to/file" — конкретный файл known_hosts (ошибка, если файла нет)
         - "no" — отключить проверку (небезопасно, но по умолчанию для совместимости)
     proxy: comma-separated список jump хостов (user@host)
+
+Зависимости:
+    asyncssh >= 2.13
 """
+
+from __future__ import annotations
 
 import asyncio
 import time
@@ -29,19 +34,30 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-import asyncssh
-
 from ..exceptions import AuthenticationError, ConnectionError
 from ..result import Result
 from ._base import BaseTransport
+
+# Импорт опциональный (extra dependency)
+try:
+    import asyncssh
+except ImportError:
+    asyncssh = None  # type: ignore
 
 
 class SSHTransport(BaseTransport):
     """SSH транспорт на базе asyncssh."""
 
     def __init__(self, config):
+        if asyncssh is None:
+            raise ImportError(
+                "asyncssh not installed. "
+                "Run: pip install uniconn[ssh]"
+            )
         super().__init__(config)
         self._conn: asyncssh.SSHClientConnection | None = None
+        # Промежуточные proxy/jump подключения (в порядке построения цепочки)
+        self._tunnel_conns: list[asyncssh.SSHClientConnection] = []
         self._known_hosts = self.config.options.get("known_hosts", "no")
 
     @property
@@ -52,8 +68,8 @@ class SSHTransport(BaseTransport):
         """Определить политику проверки known_hosts.
 
         Returns:
-            None — отключено
-            asyncssh.SSHKnownHostPublicKey — загрузить из файла
+            None — проверка отключена
+            str — путь к файлу known_hosts (asyncssh загрузит и проверит сам)
 
         """
         mode = str(self._known_hosts).lower()
@@ -62,40 +78,37 @@ class SSHTransport(BaseTransport):
             # Отключено (текущее поведение по умолчанию)
             return None
 
-        if mode == "strict":
-            # Строгая проверка: ~/.ssh/known_hosts
+        if mode in ("strict", "default"):
+            # ~/.ssh/known_hosts; если файла нет — разрешаем подключение
+            # (asyncssh не поддерживает автодобавление новых хостов)
             known_hosts_path = Path.home() / ".ssh" / "known_hosts"
             if known_hosts_path.exists():
-                return asyncssh.SSHKnownHostPublicKey(
-                    str(known_hosts_path),
-                    strict=True
-                )
-            # Если файла нет — разрешаем подключение (как в OpenSSH)
-            return asyncssh.SSHKnownHostPublicKey(
-                str(known_hosts_path),
-                strict=False
-            )
+                return str(known_hosts_path)
+            return None
 
-        if mode == "default":
-            # Автодобавление: ~/.ssh/known_hosts
-            known_hosts_path = Path.home() / ".ssh" / "known_hosts"
-            return asyncssh.SSHKnownHostPublicKey(
-                str(known_hosts_path),
-                strict=False
-            )
-
-        # Считаем, что это путь к файлу
-        path = Path(mode).expanduser()
+        # Считаем, что это путь к файлу (регистр исходного значения сохраняем)
+        path = Path(str(self._known_hosts)).expanduser()
         if path.exists():
-            return asyncssh.SSHKnownHostPublicKey(str(path), strict=True)
+            return str(path)
 
         raise ConnectionError(
             f"known_hosts file not found: {path}",
             host=self.config.host
         )
 
-    async def _create_proxy_conn(self, proxy_host: str) -> asyncssh.SSHClientConnection:
-        """Создать подключение к jump/proxy хосту."""
+    async def _create_proxy_conn(
+        self,
+        proxy_host: str,
+        tunnel: asyncssh.SSHClientConnection | None = None,
+    ) -> asyncssh.SSHClientConnection:
+        """Создать подключение к jump/proxy хосту.
+
+        Args:
+            proxy_host: Хост в формате ``user@host`` или просто ``host``
+            tunnel: Предыдущее подключение цепочки, через которое
+                устанавливается это подключение (multi-hop)
+
+        """
         # Парсим user@host
         user: str | None = None
         host = proxy_host
@@ -110,6 +123,9 @@ class SSHTransport(BaseTransport):
             "connect_timeout": self.config.timeout,
         }
 
+        if tunnel is not None:
+            proxy_kwargs["tunnel"] = tunnel
+
         if self.config.password:
             proxy_kwargs["password"] = self.config.password.get_secret_value()
 
@@ -117,6 +133,13 @@ class SSHTransport(BaseTransport):
             proxy_kwargs["client_keys"] = [self.config.key_file]
 
         return await asyncssh.connect(**proxy_kwargs)
+
+    async def _close_tunnel_conns(self) -> None:
+        """Закрыть промежуточные proxy-подключения в обратном порядке."""
+        while self._tunnel_conns:
+            conn = self._tunnel_conns.pop()
+            conn.close()
+            await conn.wait_closed()
 
     async def connect(self) -> None:
         """Установить SSH подключение.
@@ -141,39 +164,49 @@ class SSHTransport(BaseTransport):
             # Обработка proxy/jump hosts
             proxy_option = self.config.options.get("proxy")
             if proxy_option:
-                proxy_hosts = [h.strip() for h in str(proxy_option).split(",")]
+                proxy_hosts = [
+                    h.strip() for h in str(proxy_option).split(",") if h.strip()
+                ]
 
-                # Строим цепочку подключений
-                last_conn = None
+                # Строим цепочку: каждый следующий hop подключается
+                # через предыдущий (tunnel=), последний hop — туннель к цели
                 for proxy_host in proxy_hosts:
-                    last_conn = await self._create_proxy_conn(proxy_host)
-                    # Последний proxy используем как tunnel
-                    connect_kwargs["tunnel"] = last_conn
+                    tunnel = self._tunnel_conns[-1] if self._tunnel_conns else None
+                    proxy_conn = await self._create_proxy_conn(proxy_host, tunnel)
+                    self._tunnel_conns.append(proxy_conn)
+
+                connect_kwargs["tunnel"] = self._tunnel_conns[-1]
 
             self._conn = await asyncssh.connect(**connect_kwargs)
             self._connected = True
 
         except asyncssh.PermissionDenied as e:
+            await self._close_tunnel_conns()
             raise AuthenticationError(
                 f"SSH authentication failed: {e}",
                 host=self.config.host
             ) from e
         except asyncssh.DisconnectError as e:
+            await self._close_tunnel_conns()
             raise ConnectionError(
                 f"SSH connection failed: {e}",
                 host=self.config.host
             ) from e
         except Exception as e:
+            await self._close_tunnel_conns()
             raise ConnectionError(
                 f"SSH connection error: {e}",
                 host=self.config.host
             ) from e
 
     async def disconnect(self) -> None:
-        """Закрыть SSH подключение."""
+        """Закрыть SSH подключение и все промежуточные proxy-подключения."""
         if self._conn:
             self._conn.close()
             await self._conn.wait_closed()
+            self._conn = None
+        # Промежуточные hop'ы закрываем после основного подключения
+        await self._close_tunnel_conns()
         self._connected = False
 
     async def ping(self, timeout: float | None = None) -> bool:
@@ -215,7 +248,15 @@ class SSHTransport(BaseTransport):
         Returns:
             Result объект с результатом
 
+        Raises:
+            ConnectionError: Если нет активного подключения
+
         """
+        if not self._connected or not self._conn:
+            raise ConnectionError(
+                "SSH transport is not connected. Call connect() first",
+                host=self.config.host
+            )
         start_time = time.monotonic()
 
         env = kwargs.get("env")
@@ -255,7 +296,15 @@ class SSHTransport(BaseTransport):
         Yields:
             Строки вывода команды
 
+        Raises:
+            ConnectionError: Если нет активного подключения
+
         """
+        if not self._connected or not self._conn:
+            raise ConnectionError(
+                "SSH transport is not connected. Call connect() first",
+                host=self.config.host
+            )
         env = kwargs.get("env")
         async with self._conn.create_process(command, env=env) as proc:
             async for line in proc.stdout:

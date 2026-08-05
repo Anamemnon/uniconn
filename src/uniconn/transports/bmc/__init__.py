@@ -6,13 +6,10 @@
 
 Доступные транспорты:
     - IPMITransport: IPMI через pyghmi
-    - RedfishTransport: Redfish REST API через aiohttp
 """
 
 from ._ipmi import IPMITransport
-from ._redfish import RedfishTransport
 
 __all__ = [
     "IPMITransport",
-    "RedfishTransport",
 ]

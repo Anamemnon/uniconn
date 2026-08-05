@@ -2,7 +2,7 @@
 """CLI интерфейс для uniconn.
 
 Предоставляет командную строку для выполнения команд на удалённых хостах
-через различные транспорты: SSH, Telnet, Serial, IPMI, Redfish и локальный.
+через различные транспорты: SSH, Telnet, Serial, IPMI и локальный.
 
 Примеры использования:
     # Выполнить команду по SSH
@@ -11,8 +11,8 @@
     # Выполнить на нескольких хостах
     uniconn run-multi "ssh://host1" "ssh://host2" --command "uptime"
 
-    # Управление BMC через Redfish
-    uniconn bmc "redfish://admin:pass@bmc" power status
+    # Управление BMC через IPMI
+    uniconn bmc "ipmi://admin:pass@bmc" power status
 
     # Список доступных транспортов
     uniconn transports
@@ -88,7 +88,6 @@ def main():
             "telnet": ("Telnet protocol", "telnetlib3"),
             "serial": ("Serial/UART ports", "pyserial-asyncio"),
             "ipmi": ("IPMI BMC management", "pyghmi"),
-            "redfish": ("Redfish REST API", "aiohttp"),
         }
 
         available = TransportLoader.list_available()
@@ -115,7 +114,7 @@ def main():
         Examples:
             uniconn run "ssh://user:pass@host" "uptime"
             uniconn run "local://" "echo hello"
-            uniconn run "redfish://admin:pass@bmc" "power status"
+            uniconn run "ipmi://admin:pass@bmc" "power status"
 
         """
 
@@ -273,7 +272,7 @@ def main():
 
     @app.command()
     def bmc(
-        uri: str = typer.Argument(..., help="BMC URI (redfish://admin:pass@bmc or ipmi://admin:pass@bmc)"),
+        uri: str = typer.Argument(..., help="BMC URI (ipmi://admin:pass@bmc)"),
         operation: str = typer.Argument(
             ...,
             help="Operation",
@@ -296,7 +295,7 @@ def main():
             info            - System information
 
         Examples:
-            uniconn bmc "redfish://admin:pass@idrac.local" power status
+            uniconn bmc "ipmi://admin:pass@bmc.local" power status
             uniconn bmc "ipmi://admin:pass@bmc.local" power on
 
         """
@@ -421,36 +420,42 @@ def main():
                 else:
                     pool = ScreenPool(uri, logger=logger)
 
-                async with pool:
-                    started = []
-                    for cmd in commands:
-                        for _ in range(instances):
-                            session = await pool.start(cmd)
-                            started.append((session, cmd))
+                # НЕ используем `async with pool`: __aexit__ вызывает
+                # cleanup() → stop_all() и убил бы только что запущенные
+                # сессии. Вместо этого в конце — disconnect(): отключение
+                # от SSH с сохранением detached screen-сессий на хосте.
+                started = []
+                for cmd in commands:
+                    for _ in range(instances):
+                        session = await pool.start(cmd)
+                        started.append((session, cmd))
 
-                    table = Table(
-                        title=f"Started {len(started)} screen session(s)",
-                        box=box.ROUNDED,
-                        show_header=True,
-                        header_style="bold cyan"
-                    )
-                    table.add_column("Session ID", style="cyan")
-                    table.add_column("Command", style="green")
+                table = Table(
+                    title=f"Started {len(started)} screen session(s)",
+                    box=box.ROUNDED,
+                    show_header=True,
+                    header_style="bold cyan"
+                )
+                table.add_column("Session ID", style="cyan")
+                table.add_column("Command", style="green")
 
-                    for session, cmd in started:
-                        table.add_row(session.session_id, cmd)
+                for session, cmd in started:
+                    table.add_row(session.session_id, cmd)
 
-                    console.print(table)
-                    console.print(
-                        "\n[dim]Sessions are detached and keep running after disconnect.[/dim]"
-                    )
+                console.print(table)
+                console.print(
+                    "\n[dim]Sessions are detached and keep running after disconnect.[/dim]"
+                )
 
-                    if logs:
-                        console.print("[dim]Streaming logs (Ctrl+C to stop)...[/dim]")
-                        async for event in pool.poll_logs():
-                            console.print(
-                                f"[cyan]{event.session_id}[/cyan] {event.line.rstrip()}"
-                            )
+                if logs:
+                    console.print("[dim]Streaming logs (Ctrl+C to stop)...[/dim]")
+                    async for event in pool.poll_logs():
+                        console.print(
+                            f"[cyan]{event.session_id}[/cyan] {event.line.rstrip()}"
+                        )
+
+                # Отключаемся от SSH, сессии продолжают работать на хосте
+                await pool.disconnect()
 
             except Exception as e:
                 console.print(Panel(

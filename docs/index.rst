@@ -2,7 +2,7 @@ uniconn documentation
 =====================
 
 **uniconn** — универсальная Python-библиотека для выполнения команд на удалённых
-хостах через различные транспорты: SSH, Telnet, Serial, IPMI, Redfish и локальное
+хостах через различные транспорты: SSH, Telnet, Serial, IPMI и локальное
 выполнение.
 
 .. image:: https://img.shields.io/badge/python-3.11+-blue.svg
@@ -16,7 +16,7 @@ uniconn documentation
 Features
 --------
 
-- 🚀 **6 транспортов**: SSH, Telnet, Serial, Local, IPMI, Redfish
+- 🚀 **5 транспортов**: SSH, Telnet, Serial, Local, IPMI
 - ⚡ **Async-first**: asyncio с синхронной обёрткой
 - 🔌 **Плагины**: динамическая загрузка через entry-points
 - 🔒 **Безопасность**: маскирование секретов, known_hosts

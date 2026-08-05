@@ -124,18 +124,43 @@ class TestGetLogger:
         assert len(logger.handlers) > 0
 
     def test_get_logger_secret_masking(self):
-        """Логгер имеет SecretMaskingFilter."""
+        """Фильтр SecretMaskingFilter висит на handlers логгера."""
         logger = get_logger("test_mask", mask_secrets=True)
+        assert logger.handlers
         assert any(
-            isinstance(f, SecretMaskingFilter) for f in logger.filters
+            isinstance(f, SecretMaskingFilter)
+            for f in logger.handlers[0].filters
         )
+
+    def test_get_logger_child_masking(self):
+        """Маскирование работает и для дочерних логгеров (через propagation).
+
+        Регрессия: фильтр на logger не наследуется дочерними логгерами,
+        поэтому фильтр должен висеть на handlers.
+        """
+        import io
+
+        # Свой handler до вызова get_logger: фильтр должен быть добавлен на него
+        parent = logging.getLogger("test_parent_mask")
+        parent.handlers.clear()
+        stream = io.StringIO()
+        parent.addHandler(logging.StreamHandler(stream))
+
+        get_logger("test_parent_mask", mask_secrets=True)
+        child = logging.getLogger("test_parent_mask.child")
+        child.info("password=supersecret123")
+
+        assert "supersecret123" not in stream.getvalue()
+        assert "password=***" in stream.getvalue()
+        parent.handlers.clear()
 
     def test_get_logger_no_masking(self):
         """Логгер без маскирования."""
         logger = get_logger("test_no_mask", mask_secrets=False)
-        assert not any(
-            isinstance(f, SecretMaskingFilter) for f in logger.filters
-        )
+        for handler in logger.handlers:
+            assert not any(
+                isinstance(f, SecretMaskingFilter) for f in handler.filters
+            )
 
     def test_get_logger_reuse(self):
         """Повторный вызов возвращает тот же логгер."""
