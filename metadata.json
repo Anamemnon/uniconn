@@ -1,0 +1,5 @@
+{
+  "name": "uniconn — Universal Remote Command Execution Library",
+  "description": "Async-first Python library and CLI for executing commands across SSH (with stateful PTY ShellSession and SFTP), Telnet, Serial/UART, IPMI BMC, and Local transports.",
+  "requestFramePermissions": []
+}

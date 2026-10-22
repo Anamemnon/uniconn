@@ -1,0 +1,10 @@
+{
+  "name": "uniconn",
+  "version": "0.2.0",
+  "private": true,
+  "scripts": {
+    "dev": "uv run python main.py --serve",
+    "build": "uv run pytest -m \"not integration\"",
+    "lint": "uv run pyright src/uniconn/_shell.py"
+  }
+}
