@@ -123,7 +123,7 @@
       <p class="subtitle">Универсальная async-first Python-библиотека для выполнения команд (SSH, PTY ShellSession, SFTP, Telnet, Serial, IPMI, Local)</p>
     </div>
     <div style="font-family: var(--mono); font-size: 0.85rem; color: var(--green);">
-      ● 405 unit tests passing
+      ● 410 unit tests passing (0 warnings)
     </div>
   </header>
 
@@ -149,21 +149,30 @@
       <input type="text" id="cmd-input" value="cd /tmp && pwd" placeholder="Введите команду..." />
       <button onclick="runShellCmd()">ShellSession.execute()</button>
       <button class="secondary" onclick="runLocalCmd()">Connection('local://').run()</button>
-      <button class="secondary" onclick="runPytest()">Запустить pytest (405 тестов)</button>
+      <button class="secondary" onclick="runPytest()">Запустить pytest (410 тестов)</button>
     </div>
     <pre id="output-box">Готово к выполнению. Нажмите кнопку выше для проверки API uniconn.</pre>
   </div>
 
   <div class="card">
-    <h2>Пример API: uniconn v0.6.0</h2>
-    <pre>from uniconn import Connection, allowlist_hook, audit_log_hook, metrics_collector_hook
+    <h2>Пример API: uniconn v0.6.0 + structlog</h2>
+    <pre>from uniconn import (
+    Connection,
+    allowlist_hook,
+    configure_logging,
+    log_context,
+    metrics_collector_hook,
+    structured_log_hook,
+)
+
+configure_logging(level="INFO", fmt="json")  # JSONL для Grafana Loki / ClickHouse / InfluxDB
 
 async with Connection.from_uri("ssh://prod-web") as conn:  # ~/.ssh/config + ProxyCommand
     conn.add_hook("before_run", allowlist_hook(["ls", "pwd", "uptime"]))
-    conn.add_hook("after_run", audit_log_hook("/var/log/uniconn_audit.jsonl"))
+    conn.add_hook("after_run", structured_log_hook(tags={"env": "prod", "dc": "eu-1"}))
     metrics = metrics_collector_hook().attach(conn)
 
-    async with conn.temp_dir() as tmp:
+    async with log_context(release="2026.10"), conn.temp_dir() as tmp:
         res = await conn.run(["ls", "-la", tmp])
         if res:                          # bool(res) == res.ok
             print(res.text, metrics.to_dict())</pre>

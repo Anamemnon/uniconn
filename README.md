@@ -12,14 +12,15 @@
 - ⚡ **Async-first архитектура**: Построена на `asyncio` с синхронной обёрткой
 - 🔌 **Плагинная система**: Транспорты загружаются динамически через entry-points
 - 🔒 **Безопасность**: `SecretStr` для паролей и `passphrase`, безопасный `sudo` через `stdin`, режим `sensitive=True`, автоэкранирование списков аргументов (`shlex.join`)
-- 🪝 **Lifecycle Hooks и `dry_run`**: Перехватчики `before_run`, `after_run`, `on_error` для аудита/метрик и безопасного прогона
-- 📂 **Контекстные менеджеры `cd()` и `env()`**: Удобная работа с директориями и переменными окружения без PTY
+- 🪝 **Lifecycle Hooks и `uniconn.hooks`**: Перехватчики `before_run`, `after_run`, `on_error` и готовые пресеты (`audit_log_hook`, `structured_log_hook`, `allowlist_hook`, `blocklist_hook`, `metrics_collector_hook`) + режим `dry_run`
+- 📈 **Структурированные логи (`structlog`)**: JSONL и консольный вывод (`configure_logging`), сквозной контекст (`log_context` / `contextvars`) и готовые метрики для **Grafana Loki, ClickHouse, InfluxDB**
+- 📂 **Контекстные менеджеры `cd()`, `env()`, `temp_dir()`**: Удобная работа с директориями, переменными окружения и временными папками
 - 🔄 **Повторные попытки**: Встроенный retry с экспоненциальным backoff и автореконнектом
-- 📊 **Пул соединений**: Параллельное выполнение на множестве хостов (`ConnectionPool` и `SSHSessionPool`)
-- 📁 **Файловые операции и SFTP**: `read_file`/`write_file` в памяти, `upload`/`download`, `chmod`, `stat`, `listdir`
-- 💻 **Stateful PTY Shell**: Интерактивные сессии с сохранением `cd`/`export` поверх SSH
+- 📊 **Пул соединений**: Параллельное выполнение на множестве хостов (`ConnectionPool` и `SSHSessionPool` с `check_health()`)
+- 📁 **Файловые операции и SFTP**: `read_file`/`write_file`, `exists`, `mkdir`, `upload`/`download`, `chmod`, `stat`, `listdir`
+- 💻 **Stateful PTY Shell**: Интерактивные сессии `ShellSession` с сохранением `cd`/`export` для SSH, Local и Telnet
 - 🖥️ **ScreenPool**: Долгоживущие команды в detached GNU screen сессиях
-- 🛠️ **CLI инструмент**: Удобная командная строка для быстрых операций
+- 🛠️ **CLI инструмент**: Командная строка с поддержкой инвентаря (`--inventory`, `--group`), `upload`/`download`, `--sudo` и `--log-format json`
 
 ## Установка
 
@@ -169,11 +170,28 @@ async with conn.cd("/srv/myapp"), conn.env(APP_ENV="production"):
         await conn.run(["uv", "run", "alembic", "upgrade", "head"])
 ```
 
-##### Lifecycle Hooks (`before_run`, `after_run`, `on_error`) и `dry_run`
+##### Lifecycle Hooks (`before_run`, `after_run`, `on_error`) и пресеты `uniconn.hooks`
 
 ```python
-conn.add_hook("before_run", lambda cmd, host, kw: print(f"[AUDIT] {host}: {cmd}"))
-conn.add_hook("after_run", lambda res: print(f"[AUDIT] exit={res.exit_code} ({res.duration:.2f}s)"))
+from uniconn.hooks import (
+    allowlist_hook,
+    audit_log_hook,
+    blocklist_hook,
+    metrics_collector_hook,
+    structured_log_hook,
+)
+
+# Белый и чёрный списки команд (выбрасывают PermissionError до выполнения)
+conn.add_hook("before_run", allowlist_hook(["uptime", "df", "ls", "systemctl status"]))
+conn.add_hook("before_run", blocklist_hook())
+
+# Запись JSONL-аудита и отправка структурированных метрик в structlog
+conn.add_hook("after_run", audit_log_hook("/var/log/uniconn_audit.jsonl"))
+conn.add_hook("after_run", structured_log_hook(tags={"env": "prod", "dc": "eu-1"}))
+
+# Сбор агрегированной статистики по хостам
+metrics = metrics_collector_hook().attach(conn)
+# После выполнения команд: metrics.to_dict() -> total_runs, avg_duration, by_host
 ```
 
 ##### `run_commands(commands, stop_on_error=True, **kwargs) -> List[Result]`
@@ -389,6 +407,7 @@ result.ok            # True если exit_code == 0 (bool)
 
 # Методы
 result.json()              # Распарсить stdout как JSON
+result.to_dict()           # Сериализовать в dict (с маскированием при sensitive=True)
 result.raise_for_status()  # Выбросить ExecutionError если exit_code != 0
 ```
 
@@ -421,9 +440,10 @@ with Connection.from_uri("ssh://user@host").to_sync() as conn:
 ```python
 from uniconn import SSHSessionPool
 
-# До 6 параллельных каналов на одно SSH-подключение
-async with SSHSessionPool("ssh://user@host", max_sessions_per_conn=6) as pool:
+# До 6 параллельных каналов на одно SSH-подключение с автопроверкой живости
+async with SSHSessionPool("ssh://user@host", max_sessions_per_conn=6, health_check=True) as pool:
     results = await pool.map(["lshw", "dmidecode", "nvme list", "sensors"])
+    alive_conns = await pool.check_health()
 ```
 
 ### ScreenPool
@@ -549,28 +569,28 @@ pip install uniconn[cli]
 
 ### Команды
 
-#### Выполнение команды
+#### Выполнение команды и передача файлов
 
 ```bash
-# SSH
-uniconn run "ssh://user:pass@host" "uptime"
+# SSH (с sudo и JSON-форматом результата)
+uniconn run "ssh://user:pass@host" "systemctl status nginx" --sudo --format json
 
-# С таймаутом и подробным выводом
-uniconn run "ssh://user:pass@host" "apt update" -t 120 -v
+# Со структурированными JSON-логами в stderr (для пайплайнов и коллекторов)
+uniconn --log-level DEBUG --log-format json run "ssh://user@host" "uptime"
+
+# Загрузка и скачивание файлов (SFTP / Local)
+uniconn upload "ssh://user@host" ./app.conf /etc/app/app.conf
+uniconn download "ssh://user@host" /var/log/syslog ./syslog.log
 ```
 
-#### Параллельное выполнение
+#### Параллельное выполнение и инвентарь
 
 ```bash
 # На нескольких хостах
 uniconn run-multi "ssh://host1" "ssh://host2" -c "uptime"
 
-# С ограничением параллелизма
-uniconn run-multi "ssh://host1" "ssh://host2" "ssh://host3" \
-    -c "apt update" -j 2
-
-# JSON вывод
-uniconn run-multi "ssh://host1" "ssh://host2" -c "whoami" -f json
+# По группе хостов из YAML/JSON инвентаря с sudo и JSON-выводом
+uniconn run-multi --inventory inventory.yaml --group web -c "nginx -t" --sudo -f json
 ```
 
 #### BMC управление
@@ -644,21 +664,31 @@ except ConnectionError as e:
     print(f"Connection failed: {e}")
 ```
 
-## Логирование
+## Структурированное логирование (`structlog`) и наблюдаемость
+
+`uniconn` использует `structlog` с поддержкой `contextvars` и автоматическим маскированием секретов (`SecretStr`, паролей в URI, `sudo_password` и вывода `sensitive=True`). Логи в формате `json` содержат типизированные метрики (`duration_ms`, `exit_code`, `ok`, `host`, `transport`, `stdout_bytes`), готовые для **Grafana Loki**, **ClickHouse** и **InfluxDB**.
 
 ```python
-import logging
-from uniconn import Connection, get_logger
+from uniconn import (
+    Connection,
+    configure_logging,
+    get_struct_logger,
+    log_context,
+    structured_log_hook,
+)
 
-# Настройка логирования
-logging.basicConfig(level=logging.DEBUG)
+# 1. Включаем JSONL-формат (в stderr и/или файл)
+configure_logging(level="INFO", fmt="json", log_file="uniconn_telemetry.jsonl")
+log = get_struct_logger("deploy")
 
-# С кастомным логгером
-logger = get_logger("myapp", level=logging.DEBUG)
-conn = Connection.from_uri("ssh://user@host", logger=logger)
+async with Connection.from_uri("ssh://admin@node-01") as conn:
+    # 2. Подключаем хук телеметрии для ClickHouse / InfluxDB / Grafana
+    conn.add_hook("after_run", structured_log_hook(tags={"env": "prod", "cluster": "eu-1"}))
 
-# Логгер маскирует секреты автоматически
-logger.info("Connecting with password: secret")  # -> "password: ***"
+    # 3. Привязываем сквозной контекст (автоматически добавляется во все логи внутри блока)
+    async with log_context(release_id="v2026.10"):
+        log.info("deploy.started")
+        await conn.run(["systemctl", "restart", "app"], sudo=True)
 ```
 
 ## Расширяемость

@@ -5,9 +5,10 @@ Connection
 ----------
 
 .. autoclass:: uniconn.Connection
-   :members: from_uri, from_config, from_dict, from_file
-   :members: run, run_commands, stream, open_shell, close, is_alive
-   :members: upload, download, chmod, stat, listdir
+   :members: from_uri, from_config, from_dict, from_file, from_inventory
+   :members: run, run_bytes, run_commands, stream, open_shell, close, is_alive
+   :members: cd, env, temp_dir, add_hook
+   :members: read_file, write_file, exists, mkdir, upload, download, chmod, stat, listdir
    :members: to_sync, copy, with_overrides
    :special-members: __aenter__, __aexit__
 
@@ -29,13 +30,20 @@ ConnectionPool
 --------------
 
 .. autoclass:: uniconn.ConnectionPool
-   :members: map, map_safe, map_with_callback
+   :members: from_file, map, map_safe, map_with_callback, upload, download, apply
+
+SSHSessionPool
+--------------
+
+.. autoclass:: uniconn.SSHSessionPool
+   :members: run, map, check_health, close
 
 SyncConnection
 --------------
 
 .. autoclass:: uniconn.SyncConnection
-   :members: run, run_commands, stream, open_shell, close, is_alive
+   :members: run, run_bytes, run_commands, stream, open_shell, close, is_alive
+   :members: cd, env, temp_dir, add_hook, read_file, write_file, exists, mkdir
    :special-members: __enter__, __exit__
 
 SyncShellSession
@@ -49,7 +57,18 @@ Result
 ------
 
 .. autoclass:: uniconn.Result
-   :members: ok, raise_for_status
+   :members: ok, text, lines, json, to_dict, raise_for_status
+
+Hooks
+-----
+
+.. autofunction:: uniconn.audit_log_hook
+.. autofunction:: uniconn.structured_log_hook
+.. autofunction:: uniconn.allowlist_hook
+.. autofunction:: uniconn.blocklist_hook
+.. autoclass:: uniconn.MetricsCollector
+   :members:
+.. autofunction:: uniconn.metrics_collector_hook
 
 Exceptions
 ----------
@@ -62,9 +81,16 @@ Exceptions
 .. autoexception:: uniconn.TransportNotFoundError
 .. autoexception:: uniconn.BMCCapabilityError
 
-Logging
--------
+Logging (structlog & stdlib)
+----------------------------
 
+.. autofunction:: uniconn.configure_logging
+.. autofunction:: uniconn.get_struct_logger
+.. autofunction:: uniconn.log_context
+.. autofunction:: uniconn.bind_log_context
+.. autofunction:: uniconn.unbind_log_context
+.. autofunction:: uniconn.clear_log_context
+.. autofunction:: uniconn.get_log_context
 .. autofunction:: uniconn.get_logger
 .. autofunction:: uniconn.setup_file_logging
 .. autoclass:: uniconn.SecretMaskingFilter

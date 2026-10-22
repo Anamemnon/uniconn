@@ -38,7 +38,7 @@ except ImportError:
     HAVE_CLI_DEPS = False
 
 from . import Connection, ConnectionPool, __version__
-from ._logging import get_logger
+from ._logging import configure_logging, get_logger
 from .plugins._loader import TransportLoader
 
 
@@ -65,9 +65,26 @@ def main():
     console = Console()
 
     @app.callback()
-    def callback():
+    def callback(
+        log_level: str | None = typer.Option(
+            None,
+            "--log-level",
+            help="Log level (DEBUG, INFO, WARNING, ERROR)",
+        ),
+        log_format: str = typer.Option(
+            "console",
+            "--log-format",
+            help="Structured log format: console or json",
+        ),
+    ):
         """Uniconn - Universal library for remote command execution."""
-        pass
+        if log_level is not None or log_format != "console":
+            fmt_val = "json" if log_format.lower() == "json" else "console"
+            configure_logging(
+                level=log_level or "INFO",
+                fmt=fmt_val,
+                stream=sys.stderr,
+            )
 
     @app.command()
     def version():

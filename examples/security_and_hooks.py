@@ -67,6 +67,24 @@ async def main() -> None:
             await conn.run(["touch", str(dry_target)], dry_run=True)
             print("Файл создан при dry_run=True? ->", dry_target.exists())
 
+            # 5. Готовые пресеты uniconn.hooks (v0.6.0)
+            from uniconn.hooks import (
+                allowlist_hook,
+                audit_log_hook,
+                blocklist_hook,
+                metrics_collector_hook,
+            )
+
+            audit_jsonl = Path(tmpdir) / "audit.jsonl"
+            conn.add_hook("before_run", allowlist_hook(["echo", "python3"]))
+            conn.add_hook("before_run", blocklist_hook())
+            conn.add_hook("after_run", audit_log_hook(audit_jsonl))
+            metrics = metrics_collector_hook().attach(conn)
+
+            await conn.run(["echo", "audited command"])
+            print("Собранные метрики (MetricsCollector):", metrics.to_dict())
+            print("Запись в audit.jsonl:", audit_jsonl.read_text(encoding="utf-8").strip())
+
     print("\nЖурнал аудита (Lifecycle Hooks):")
     for entry in audit_log:
         print(" ", entry)

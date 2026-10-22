@@ -162,6 +162,8 @@ class SyncConnection:
     def _run_coro(self, coro) -> Any:
         """Запустить корутину синхронно в выделенном потоке."""
         if self._closed:
+            with contextlib.suppress(Exception):
+                coro.close()
             raise RuntimeError("SyncConnection уже закрыт")
 
         loop = self._get_loop()

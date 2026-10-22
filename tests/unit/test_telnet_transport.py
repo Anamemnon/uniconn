@@ -46,7 +46,10 @@ def mock_telnetlib(mocker):
     # Создаём моки reader/writer
     reader = mocker.AsyncMock()
     writer = mocker.AsyncMock()
+    writer.write = MagicMock()
     writer.drain = mocker.AsyncMock()
+    writer.close = MagicMock()
+    writer.wait_closed = mocker.AsyncMock()
 
     telnetlib3_mock.open_connection = mocker.AsyncMock(
         return_value=(reader, writer)

@@ -304,3 +304,197 @@ class TestSetupFileLogging:
             content = log_path.read_text()
             assert "Debug message" not in content
             assert "Warning message" in content
+
+    def test_structured_file_logging_jsonl(self):
+        """setup_file_logging(structured=True) пишет валидный JSONL."""
+        import json
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "structured.jsonl"
+            logger = setup_file_logging(
+                log_path,
+                level=logging.INFO,
+                logger_name="test_struct_file",
+                structured=True,
+            )
+            logger.info("Server connected")
+            _close_logger_handlers(logger)
+
+            lines = [
+                line for line in log_path.read_text().splitlines() if line.strip()
+            ]
+            assert len(lines) == 1
+            data = json.loads(lines[0])
+            assert data["event"] == "Server connected"
+            assert data["level"] == "info"
+            assert "timestamp" in data
+
+
+class TestStructuredLogging:
+    """Тесты структурированного логирования на базе structlog."""
+
+    def teardown_method(self):
+        """Очищать контекст после каждого теста."""
+        from uniconn import clear_log_context
+
+        clear_log_context()
+
+    def test_configure_logging_json_and_contextvars(self):
+        """configure_logging(fmt='json') выводит JSON с полями contextvars."""
+        import io
+        import json
+
+        from uniconn import (
+            bind_log_context,
+            configure_logging,
+            get_log_context,
+            get_struct_logger,
+            log_context,
+            unbind_log_context,
+        )
+
+        buf = io.StringIO()
+        configure_logging(
+            level="DEBUG",
+            fmt="json",
+            stream=buf,
+            logger_name="uniconn_test_json",
+        )
+        bind_log_context(datacenter="eu-central-1", service="inventory")
+        assert get_log_context()["datacenter"] == "eu-central-1"
+
+        slog = get_struct_logger("uniconn_test_json")
+        with log_context(host="node-01", transport="ssh"):
+            slog.info("host.checked", latency_ms=12.4, ok=True)
+
+        # После выхода из log_context поле host удалено, а datacenter остался
+        assert "host" not in get_log_context()
+        unbind_log_context("datacenter")
+        assert "datacenter" not in get_log_context()
+
+        raw_lines = [line for line in buf.getvalue().splitlines() if line.strip()]
+        assert len(raw_lines) == 1
+        entry = json.loads(raw_lines[0])
+        assert entry["event"] == "host.checked"
+        assert entry["datacenter"] == "eu-central-1"
+        assert entry["service"] == "inventory"
+        assert entry["host"] == "node-01"
+        assert entry["transport"] == "ssh"
+        assert entry["latency_ms"] == 12.4
+        assert entry["ok"] is True
+        assert entry["level"] == "info"
+        assert "timestamp" in entry
+
+    def test_redact_secrets_in_structlog(self):
+        """Пароли, SecretStr и sensitive-поля маскируются в JSON-логах."""
+        import io
+        import json
+        from pydantic import SecretStr
+        from uniconn import configure_logging, get_struct_logger
+
+        buf = io.StringIO()
+        configure_logging(
+            level="DEBUG",
+            fmt="json",
+            stream=buf,
+            logger_name="uniconn_test_redact",
+        )
+        slog = get_struct_logger("uniconn_test_redact")
+        slog.info(
+            "auth.attempt",
+            password="plain_password_123",
+            sudo_password=SecretStr("sudo_secret_456"),
+            uri="ssh://admin:url_secret_789@10.0.0.1:22",
+            command="echo secret_token",
+            stdout="secret_token",
+            sensitive=True,
+        )
+
+        output = buf.getvalue().strip()
+        assert "plain_password_123" not in output
+        assert "sudo_secret_456" not in output
+        assert "url_secret_789" not in output
+        assert "secret_token" not in output
+
+        entry = json.loads(output)
+        assert entry["password"] == "***REDACTED***"
+        assert entry["sudo_password"] == "***REDACTED***"
+        assert entry["command"] == "***REDACTED***"
+        assert entry["stdout"] == "***REDACTED***"
+        assert "://***:***@" in entry["uri"]
+
+    @pytest.mark.asyncio
+    async def test_connection_run_emits_structured_json_events(self):
+        """Connection.run() генерирует структурированные события command.start и command.finish."""
+        import io
+        import json
+        from uniconn import Connection, configure_logging, log_context
+
+        buf = io.StringIO()
+        logger = configure_logging(
+            level="DEBUG",
+            fmt="json",
+            stream=buf,
+            logger_name="uniconn_conn_json",
+        )
+
+        async with Connection.from_uri("local://", logger=logger) as conn:
+            async with log_context(cluster="prod-clickhouse"):
+                res = await conn.run(["echo", "hello_structlog"])
+                assert res.ok
+
+        records = [
+            json.loads(line)
+            for line in buf.getvalue().splitlines()
+            if line.strip()
+        ]
+        events = {r["event"]: r for r in records}
+        assert "command.start" in events
+        assert "command.finish" in events
+
+        finish = events["command.finish"]
+        assert finish["transport"] == "local"
+        assert finish["cluster"] == "prod-clickhouse"
+        assert finish["command"] == "echo hello_structlog"
+        assert finish["exit_code"] == 0
+        assert finish["ok"] is True
+        assert isinstance(finish["duration_ms"], float)
+
+    @pytest.mark.asyncio
+    async def test_structured_log_hook_for_telemetry(self):
+        """structured_log_hook формирует событие command.executed с метриками для БД/Grafana."""
+        import io
+        import json
+        from uniconn import Connection, configure_logging, structured_log_hook
+
+        buf = io.StringIO()
+        logger = configure_logging(
+            level="INFO",
+            fmt="json",
+            stream=buf,
+            logger_name="uniconn_telemetry_test",
+        )
+
+        async with Connection.from_uri("local://") as conn:
+            conn.add_hook(
+                "after_run",
+                structured_log_hook(
+                    logger=logger,
+                    include_output=True,
+                    tags={"env": "staging", "db_sink": "clickhouse"},
+                ),
+            )
+            await conn.run("echo metrics_payload")
+
+        lines = [line for line in buf.getvalue().splitlines() if line.strip()]
+        assert len(lines) == 1
+        payload = json.loads(lines[0])
+        assert payload["event"] == "command.executed"
+        assert payload["env"] == "staging"
+        assert payload["db_sink"] == "clickhouse"
+        assert payload["exit_code"] == 0
+        assert payload["ok"] is True
+        assert "duration_ms" in payload
+        assert payload["stdout_bytes"] > 0
+        assert "metrics_payload" in payload["stdout"]
+

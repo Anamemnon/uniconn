@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shlex
 from collections.abc import Callable, Sequence
@@ -29,6 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Self
 
+from ._logging import get_struct_logger, log_event
 from .result import Result
 
 DEFAULT_BLOCKED_PATTERNS: tuple[str, ...] = (
@@ -249,3 +251,60 @@ class MetricsCollector:
 def metrics_collector_hook() -> MetricsCollector:
     """Создать новый экземпляр ``MetricsCollector`` для сбора метрик выполнения."""
     return MetricsCollector()
+
+
+def structured_log_hook(
+    logger: Any = None,
+    *,
+    level: int = logging.INFO,
+    include_output: bool = False,
+    tags: dict[str, Any] | None = None,
+) -> Callable[[Result], None]:
+    """Создать хук ``after_run`` для отправки структурированных метрик в ``structlog``.
+
+    Формирует событие ``command.executed`` с полями ``host``, ``command``,
+    ``exit_code``, ``ok``, ``duration_ms``, ``stdout_bytes``, ``stderr_bytes`` и
+    произвольными ``tags``, оптимизированными для сохранения в ClickHouse,
+    InfluxDB или Grafana Loki.
+
+    Args:
+        logger: Экземпляр ``structlog`` или ``logging.Logger`` (по умолчанию
+            ``get_struct_logger("uniconn.telemetry")``)
+        level: Уровень логирования (по умолчанию ``logging.INFO``)
+        include_output: Включать ли ``stdout`` и ``stderr`` в событие
+        tags: Дополнительные теги/метки (например, ``{"env": "prod", "cluster": "eu"}``)
+
+    Returns:
+        Функция обратного вызова для ``conn.add_hook("after_run", ...)``
+
+    """
+    target_logger = logger if logger is not None else get_struct_logger("uniconn.telemetry")
+    extra_tags = dict(tags) if tags else {}
+
+    def _on_after_run(result: Result) -> None:
+        fields: dict[str, Any] = {
+            **extra_tags,
+            "host": result.host,
+            "command": "***REDACTED***" if result.sensitive else result.command,
+            "exit_code": result.exit_code,
+            "ok": result.ok,
+            "duration": round(result.duration, 6),
+            "duration_ms": round(result.duration * 1000, 3),
+            "stdout_bytes": len(result.stdout.encode("utf-8")),
+            "stderr_bytes": len(result.stderr.encode("utf-8")),
+            "sensitive": result.sensitive,
+        }
+        if include_output:
+            fields["stdout"] = "***REDACTED***" if result.sensitive else result.stdout
+            fields["stderr"] = "***REDACTED***" if result.sensitive else result.stderr
+
+        log_event(
+            target_logger,
+            level,
+            "command.executed",
+            f"command.executed on {result.host} (exit_code={result.exit_code})",
+            **fields,
+        )
+
+    return _on_after_run
+

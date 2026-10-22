@@ -14,8 +14,8 @@
 - **Pools**: `ConnectionPool`, `SSHSessionPool`
 - **Interactive PTY Shell**: `ShellSession`, `SyncShellSession`
 - **Background GNU Screen**: `ScreenPool`, `ScreenSession`, `ScreenResult`, `LogConfig`
-- **Hooks (`uniconn.hooks`)**: `audit_log_hook`, `allowlist_hook`, `blocklist_hook`, `MetricsCollector`, `metrics_collector_hook`
-- **Logging**: `get_logger`, `setup_file_logging`, `SecretMaskingFilter`
+- **Hooks (`uniconn.hooks`)**: `audit_log_hook`, `allowlist_hook`, `blocklist_hook`, `MetricsCollector`, `metrics_collector_hook`, `structured_log_hook`
+- **Logging (`structlog` + `stdlib`)**: `configure_logging`, `get_struct_logger`, `log_context`, `bind_log_context`, `unbind_log_context`, `clear_log_context`, `get_log_context`, `get_logger`, `setup_file_logging`, `SecretMaskingFilter`
 - **Exceptions**: `UniconnError`, `ConnectionError`, `AuthenticationError`, `ExecutionError`, `TimeoutError`, `TransportNotFoundError`, `BMCCapabilityError`, `ScreenError`, `ScreenNotFoundError`, `ScreenSessionExistsError`, `ScreenPoolFullError`
 
 ## URI Schemes

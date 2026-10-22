@@ -40,7 +40,18 @@ from shlex import quote
 
 from ._config import ConnectionConfig
 from ._connection import Connection
-from ._logging import SecretMaskingFilter, get_logger, setup_file_logging
+from ._logging import (
+    SecretMaskingFilter,
+    bind_log_context,
+    clear_log_context,
+    configure_logging,
+    get_log_context,
+    get_logger,
+    get_struct_logger,
+    log_context,
+    setup_file_logging,
+    unbind_log_context,
+)
 from ._pool import ConnectionPool
 from ._session_pool import SSHSessionPool
 from ._shell import ShellSession
@@ -65,6 +76,7 @@ from .hooks import (
     audit_log_hook,
     blocklist_hook,
     metrics_collector_hook,
+    structured_log_hook,
 )
 from .result import Result
 
@@ -89,6 +101,7 @@ __all__ = [
     "blocklist_hook",
     "MetricsCollector",
     "metrics_collector_hook",
+    "structured_log_hook",
     # Screen-сессии (background)
     "ScreenPool",
     "ScreenSession",
@@ -106,8 +119,15 @@ __all__ = [
     "ScreenNotFoundError",
     "ScreenSessionExistsError",
     "ScreenPoolFullError",
-    # Логирование
+    # Логирование (stdlib + structlog)
     "get_logger",
     "setup_file_logging",
     "SecretMaskingFilter",
+    "configure_logging",
+    "get_struct_logger",
+    "log_context",
+    "bind_log_context",
+    "unbind_log_context",
+    "clear_log_context",
+    "get_log_context",
 ]

@@ -22,6 +22,7 @@ from tenacity import (
 )
 
 from ._config import ConnectionConfig
+from ._logging import log_context, log_event
 from ._shell import ShellSession
 from .exceptions import ConnectionError, TimeoutError
 from .plugins._loader import TransportLoader
@@ -631,67 +632,130 @@ class Connection:
 
         await self._invoke_hooks("before_run", cmd_str, self._config.host, kwargs)
 
-        if effective_dry_run:
-            self._logger.info(
-                f"[DRY-RUN] Skipping command: {log_cmd} on {self._config.uri_safe}"
-            )
-            dry_result = Result(
-                exit_code=0,
-                stdout="",
-                stderr="",
-                duration=0.0,
-                command=cmd_str,
-                host=self._config.host,
-                sensitive=sensitive,
-            )
-            await self._invoke_hooks("after_run", dry_result)
-            return dry_result
-
-        try:
-            if not self._transport.is_connected:
-                await self._transport.connect()
-
-            timeout = timeout or self._config.timeout
-            self._logger.debug(
-                f"Running command: {log_cmd} on {self._config.uri_safe}"
-            )
-
-            result: Result | None = None
-            async for attempt in AsyncRetrying(
-                stop=stop_after_attempt(self._retry_attempts),
-                wait=wait_exponential_jitter(initial=1, max=10),
-                retry=retry_if_exception_type(
-                    (ConnectionError, TimeoutError, builtins.TimeoutError)
-                ),
-                reraise=True,
-            ):
-                with attempt:
-                    try:
-                        result = await self._transport.run(
-                            exec_cmd, timeout=timeout, **kwargs
-                        )
-                    except (ConnectionError, TimeoutError, builtins.TimeoutError):
-                        await self._transport.disconnect()
-                        await self._transport.connect()
-                        raise
-
-            assert result is not None
-            if isinstance(result, Result) and (sensitive or result.command != cmd_str):
-                result = dataclasses.replace(
-                    result,
+        with log_context(
+            host=self._config.host,
+            transport=self.transport_name,
+            uri=self._config.uri_safe,
+        ):
+            if effective_dry_run:
+                log_event(
+                    self._logger,
+                    logging.INFO,
+                    "command.dry_run",
+                    f"[DRY-RUN] Skipping command: {log_cmd} on {self._config.uri_safe}",
                     command=cmd_str,
+                    dry_run=True,
+                    sensitive=sensitive,
+                )
+                dry_result = Result(
+                    exit_code=0,
+                    stdout="",
+                    stderr="",
+                    duration=0.0,
+                    command=cmd_str,
+                    host=self._config.host,
+                    sensitive=sensitive,
+                )
+                await self._invoke_hooks("after_run", dry_result)
+                return dry_result
+
+            try:
+                if not self._transport.is_connected:
+                    await self._transport.connect()
+
+                timeout = timeout or self._config.timeout
+                log_event(
+                    self._logger,
+                    logging.DEBUG,
+                    "command.start",
+                    f"Running command: {log_cmd} on {self._config.uri_safe}",
+                    command=cmd_str,
+                    sudo=sudo,
+                    timeout=timeout,
                     sensitive=sensitive,
                 )
 
-            if raise_on_error:
-                result.raise_for_status()
+                result: Result | None = None
+                async for attempt in AsyncRetrying(
+                    stop=stop_after_attempt(self._retry_attempts),
+                    wait=wait_exponential_jitter(initial=1, max=10),
+                    retry=retry_if_exception_type(
+                        (ConnectionError, TimeoutError, builtins.TimeoutError)
+                    ),
+                    reraise=True,
+                ):
+                    with attempt:
+                        try:
+                            result = await self._transport.run(
+                                exec_cmd, timeout=timeout, **kwargs
+                            )
+                        except (
+                            ConnectionError,
+                            TimeoutError,
+                            builtins.TimeoutError,
+                        ) as retry_exc:
+                            attempt_num = attempt.retry_state.attempt_number
+                            log_event(
+                                self._logger,
+                                logging.WARNING,
+                                "command.retry",
+                                f"Retry attempt {attempt_num}/{self._retry_attempts} "
+                                f"for {log_cmd} on {self._config.uri_safe}",
+                                command=cmd_str,
+                                attempt=attempt_num,
+                                max_attempts=self._retry_attempts,
+                                error_type=type(retry_exc).__name__,
+                                error=str(retry_exc),
+                                sensitive=sensitive,
+                            )
+                            await self._transport.disconnect()
+                            await self._transport.connect()
+                            raise
 
-        except BaseException as exc:
-            await self._invoke_hooks("on_error", exc, cmd_str, self._config.host)
-            raise
+                assert result is not None
+                if isinstance(result, Result) and (
+                    sensitive or result.command != cmd_str
+                ):
+                    result = dataclasses.replace(
+                        result,
+                        command=cmd_str,
+                        sensitive=sensitive,
+                    )
 
-        await self._invoke_hooks("after_run", result)
-        return result
+                if isinstance(result, Result):
+                    log_event(
+                        self._logger,
+                        logging.DEBUG,
+                        "command.finish",
+                        f"Finished command: {log_cmd} on {self._config.uri_safe} "
+                        f"(exit_code={result.exit_code})",
+                        command=cmd_str,
+                        exit_code=result.exit_code,
+                        ok=result.ok,
+                        duration_ms=round(result.duration * 1000, 3),
+                        sensitive=sensitive,
+                    )
+
+                if raise_on_error:
+                    result.raise_for_status()
+
+            except BaseException as exc:
+                log_event(
+                    self._logger,
+                    logging.DEBUG,
+                    "command.error",
+                    f"Command error: {log_cmd} on {self._config.uri_safe} "
+                    f"({type(exc).__name__})",
+                    command=cmd_str,
+                    error_type=type(exc).__name__,
+                    error="***REDACTED***" if sensitive else str(exc),
+                    sensitive=sensitive,
+                )
+                await self._invoke_hooks("on_error", exc, cmd_str, self._config.host)
+                raise
+
+            await self._invoke_hooks("after_run", result)
+            return result
 
     async def run_bytes(
         self,
@@ -779,9 +843,15 @@ class Connection:
             result = await self.run(command, **kwargs)
             results.append(result)
             if stop_on_error and not result.ok:
-                self._logger.warning(
+                log_event(
+                    self._logger,
+                    logging.WARNING,
+                    "command.batch_stopped",
                     f"run_commands: остановка на команде {command!r} "
-                    f"(exit_code={result.exit_code})"
+                    f"(exit_code={result.exit_code})",
+                    host=self._config.host,
+                    command=_format_command(command),
+                    exit_code=result.exit_code,
                 )
                 break
         return results

@@ -31,6 +31,7 @@ def mock_serial_asyncio(mocker):
 
     reader = mocker.AsyncMock()
     writer = mocker.AsyncMock()
+    writer.write = MagicMock()
     writer.drain = mocker.AsyncMock()
     writer.close = MagicMock()
     writer.wait_closed = mocker.AsyncMock()
