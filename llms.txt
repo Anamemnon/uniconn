@@ -1,0 +1,127 @@
+# uniconn — LLM & AI Agent API Reference (v0.6.0)
+
+> Universal async-first Python library (Python 3.11+) and CLI for executing commands and managing files across SSH, Telnet, Serial/UART, IPMI BMC, and Local transports.
+
+## Quick Facts & Commands
+- Package manager: `uv`
+- Install all dependencies: `uv sync`
+- Run unit tests: `uv run pytest -m "not integration"`
+- Lint & typecheck: `uv run ruff check src/` and `uv run pyright`
+- Preview dashboard server: `python3 main.py --serve` (listens on `0.0.0.0:3000`)
+
+## Public Exports (`from uniconn import ...`)
+- **Core**: `Connection`, `SyncConnection`, `ConnectionConfig`, `Result`, `quote`
+- **Pools**: `ConnectionPool`, `SSHSessionPool`
+- **Interactive PTY Shell**: `ShellSession`, `SyncShellSession`
+- **Background GNU Screen**: `ScreenPool`, `ScreenSession`, `ScreenResult`, `LogConfig`
+- **Hooks (`uniconn.hooks`)**: `audit_log_hook`, `allowlist_hook`, `blocklist_hook`, `MetricsCollector`, `metrics_collector_hook`
+- **Logging**: `get_logger`, `setup_file_logging`, `SecretMaskingFilter`
+- **Exceptions**: `UniconnError`, `ConnectionError`, `AuthenticationError`, `ExecutionError`, `TimeoutError`, `TransportNotFoundError`, `BMCCapabilityError`, `ScreenError`, `ScreenNotFoundError`, `ScreenSessionExistsError`, `ScreenPoolFullError`
+
+## URI Schemes
+- `ssh://[user[:password]@]host[:22][?key_file=...&known_hosts=strict&keepalive=30&ssh_config=true&use_agent=true&proxy=jump1,jump2&proxy_command=...]`
+- `local://[?timeout=30]`
+- `telnet://[user[:password]@]host[:23][?term_type=vt100]`
+- `serial:///dev/ttyUSB0[?baudrate=115200&parity=N&stopbits=1]`
+- `ipmi://admin:password@bmc-host[:623]`
+
+## Core API Signatures
+
+### `Connection` (Async) & `SyncConnection` (`conn.to_sync()`)
+```python
+# Factories
+conn = Connection.from_uri(uri: str, retry_attempts: int = 3, logger=None, dry_run: bool = False)
+conn = Connection.from_config(config: ConnectionConfig, ...)
+conn = Connection.from_dict(data: dict, ...)
+conns = Connection.from_file(path: str | Path, *, host: str | None = None, group: str | None = None)
+conn = Connection.from_inventory(path: str | Path, host: str)
+
+# Cloning
+conn2 = conn.copy(host=..., port=..., username=..., password=..., timeout=..., dry_run=...)
+conn2 = conn.with_overrides(**overrides)
+
+# Execution
+res: Result = await conn.run(
+    command: str | Sequence[str],
+    timeout: float | None = None,
+    raise_on_error: bool = False,
+    input: str | bytes | None = None,
+    sudo: bool = False,
+    sudo_user: str | None = None,
+    sudo_password: str | SecretStr | None = None,
+    sensitive: bool = False,
+    dry_run: bool | None = None,
+    **kwargs,  # cwd, env
+)
+raw: bytes = await conn.run_bytes(command, timeout=None, raise_on_error=False, input=None, sudo=False, **kwargs)
+results: list[Result] = await conn.run_commands(commands: Sequence[str | Sequence[str]], stop_on_error: bool = True, **kwargs)
+async for line in conn.stream(command, timeout=None, **kwargs): ...
+alive: bool = await conn.is_alive(timeout=None)
+
+# Context Managers (work with both `async with` and `with` for cd/env)
+async with conn.cd("/var/www"), conn.env(APP_ENV="prod"):
+    await conn.run(["./deploy.sh"])
+
+async with conn.temp_dir(prefix="uniconn_") as tmp_path:
+    await conn.write_file(f"{tmp_path}/data.txt", "hello")
+
+# Lifecycle Hooks
+conn.add_hook("before_run", callback)  # callback(command_str, host, kwargs)
+conn.add_hook("after_run", callback)   # callback(result: Result)
+conn.add_hook("on_error", callback)    # callback(exc, command_str, host)
+
+# File Operations (In-memory & SFTP/Local)
+content: str | bytes = await conn.read_file(remote_path, encoding="utf-8")  # encoding=None -> bytes
+await conn.write_file(remote_path, content: str | bytes, mode: int | None = None, encoding="utf-8")
+exists: bool = await conn.exists(remote_path)
+await conn.mkdir(remote_path, parents=True, exist_ok=True, mode=None)
+await conn.upload(local_path, remote_path, recurse=False)
+await conn.download(remote_path, local_path, recurse=False)
+await conn.chmod(remote_path, 0o755)
+info: dict = await conn.stat(remote_path)
+names: list[str] = await conn.listdir(remote_path=".")
+
+# Stateful PTY Shell (SSH, Local, Telnet)
+async with await conn.open_shell(term_type="xterm", term_size=(80, 24)) as shell:
+    await shell.execute("cd /var/log")
+    r = await shell.execute("pwd")  # r.text == "/var/log"
+    await shell.resize(120, 40)
+```
+
+### `Result`
+- Properties: `exit_code: int`, `stdout: str`, `stderr: str`, `duration: float`, `command: str`, `host: str | None`, `ok: bool`, `text: str` (`stdout.strip()`), `lines: list[str]`, `sensitive: bool`
+- Truthiness: `bool(result)` is `result.ok` (`exit_code == 0`)
+- Methods: `result.json() -> Any`, `result.raise_for_status() -> Self`, `result.to_dict() -> dict`
+
+### `ConnectionPool` (Multi-host parallel execution)
+```python
+pool = ConnectionPool(uris_or_conns, max_concurrent=10, retry_attempts=3)
+pool = ConnectionPool.from_file("inventory.yaml", group="web", max_concurrent=10)
+
+async with pool:  # Keeps connections open across multiple pool operations
+    results: list[Result] = await pool.map("uptime", sudo=True)
+    safe_map: dict[str, Result | Exception] = await pool.map_safe("uptime")
+    await pool.upload("./app.conf", "/etc/app/app.conf")
+    paths: dict[str, str] = await pool.download("/var/log/syslog", "./logs/{host}.log")
+    custom = await pool.apply(lambda c: c.run("hostname"))
+```
+
+### `SSHSessionPool` (Single-host SSH channel multiplexing)
+```python
+async with SSHSessionPool("ssh://user@host", max_sessions_per_conn=6, max_connections=6, health_check=True) as pool:
+    res = await pool.run("uptime")
+    results = await pool.map(["lshw", "dmidecode", "nvme list"])
+    healthy_count = await pool.check_health()
+```
+
+### Built-in Hooks (`uniconn.hooks`)
+```python
+from uniconn.hooks import audit_log_hook, allowlist_hook, blocklist_hook, metrics_collector_hook
+
+conn.add_hook("before_run", allowlist_hook(["ls", "cat", "uptime", "systemctl status"]))
+conn.add_hook("before_run", blocklist_hook(["rm -rf /", "mkfs", "shutdown"]))
+conn.add_hook("after_run", audit_log_hook("/var/log/uniconn_audit.jsonl"))
+
+metrics = metrics_collector_hook()
+metrics.attach(conn)  # registers after_run and on_error
+```

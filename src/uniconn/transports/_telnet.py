@@ -37,6 +37,36 @@ except ImportError:
     telnetlib3 = None  # type: ignore
 
 
+class _TelnetShellProcess:
+    """Адаптер Telnet reader/writer для работы с ``ShellSession``."""
+
+    def __init__(
+        self,
+        reader: Any,
+        writer: Any,
+        term_size: tuple[int, int] = (80, 24),
+    ) -> None:
+        self._reader = reader
+        self._writer = writer
+        self.stdin = writer
+        self.stdout = reader
+        self.term_size = term_size
+        self.returncode: int | None = None
+        self.terminated = False
+        self.closed = False
+
+    def change_terminal_size(self, cols: int, rows: int) -> None:
+        self.term_size = (cols, rows)
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = 0
+
+    def close(self) -> None:
+        self.closed = True
+        self.returncode = 0
+
+
 class TelnetTransport(BaseTransport):
     """Telnet транспорт для выполнения команд через Telnet протокол."""
 
@@ -49,6 +79,7 @@ class TelnetTransport(BaseTransport):
         super().__init__(config)
         self._reader: Any = None
         self._writer: Any = None
+        self._shell_procs: list[_TelnetShellProcess] = []
         self._shell_prompt: str = "$ "
         self._login_prompt: str = "login: "
         self._password_prompt: str = "Password: "
@@ -155,7 +186,11 @@ class TelnetTransport(BaseTransport):
             ) from e
 
     async def disconnect(self) -> None:
-        """Закрыть Telnet подключение."""
+        """Закрыть Telnet подключение и активные shell-сессии."""
+        while self._shell_procs:
+            proc = self._shell_procs.pop()
+            proc.terminate()
+            proc.close()
         if self._writer:
             self._writer.close()
             with contextlib.suppress(Exception):
@@ -163,6 +198,26 @@ class TelnetTransport(BaseTransport):
         self._connected = False
         self._reader = None
         self._writer = None
+
+    async def open_shell(
+        self,
+        term_type: str = "xterm",
+        term_size: tuple[int, int] = (80, 24),
+        **kwargs: Any,
+    ) -> _TelnetShellProcess:
+        """Открыть stateful shell-сессию поверх активного Telnet-потока."""
+        if not self._connected or not self._reader or not self._writer:
+            raise ConnectionError(
+                "Telnet transport is not connected. Call connect() first",
+                host=self.config.host,
+            )
+        proc = _TelnetShellProcess(
+            self._reader,
+            self._writer,
+            term_size=term_size,
+        )
+        self._shell_procs.append(proc)
+        return proc
 
     async def run(
         self,

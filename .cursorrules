@@ -1,0 +1,9 @@
+# Cursor & AI Agent Rules for uniconn
+
+- Read `AGENTS.md` and `llms.txt` first for module structure and public API signatures.
+- Python 3.11+ async-first codebase managed via `uv`.
+- Line length limit: 100 characters (`ruff check src/`).
+- Type checking: `pyright` in standard mode (`0 errors` required across `src/uniconn`).
+- Maintain strict parity between `Connection` (`src/uniconn/_connection.py`) and `SyncConnection` (`src/uniconn/_sync.py`).
+- All public symbols must be exported in `src/uniconn/__init__.py` (`__all__`).
+- Run `uv run pytest -m "not integration"`, `uv run ruff check src/`, and `uv run pyright` after code changes.

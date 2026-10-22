@@ -51,6 +51,20 @@ class Result:
         """
         return json_module.loads(self.stdout)
 
+    def to_dict(self) -> dict[str, Any]:
+        """Преобразовать результат в сериализуемый словарь (с учётом ``sensitive``)."""
+        return {
+            "host": self.host,
+            "command": "***REDACTED***" if self.sensitive else self.command,
+            "exit_code": self.exit_code,
+            "ok": self.ok,
+            "stdout": "***REDACTED***" if self.sensitive else self.stdout,
+            "stderr": "***REDACTED***" if self.sensitive else self.stderr,
+            "duration": round(self.duration, 6),
+            "timestamp": self.timestamp.isoformat(),
+            "sensitive": self.sensitive,
+        }
+
     def raise_for_status(self) -> None:
         """Raise ExecutionError if exit_code != 0."""
         from .exceptions import ExecutionError

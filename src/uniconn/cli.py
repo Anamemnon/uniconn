@@ -117,6 +117,10 @@ def main():
         uri: str = typer.Argument(..., help="Connection URI (ssh://user:pass@host)"),
         command: str = typer.Argument(..., help="Command to execute"),
         timeout: float = typer.Option(30.0, "--timeout", "-t", help="Timeout in seconds"),
+        sudo: bool = typer.Option(False, "--sudo", "-s", help="Execute with sudo"),
+        output_format: str = typer.Option(
+            "panel", "--format", "-f", help="Output format: panel, json, plain"
+        ),
         verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
         raise_on_error: bool = typer.Option(False, "--raise", "-e", help="Exit on error"),
     ):
@@ -124,12 +128,14 @@ def main():
 
         Examples:
             uniconn run "ssh://user:pass@host" "uptime"
-            uniconn run "local://" "echo hello"
-            uniconn run "ipmi://admin:pass@bmc" "power status"
+            uniconn run "local://" "echo hello" --format json
+            uniconn run "ssh://user@host" "systemctl restart nginx" --sudo
 
         """
 
         async def _execute():
+            import json as json_mod
+
             logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
 
             try:
@@ -137,10 +143,26 @@ def main():
                     result = await conn.run(
                         command,
                         timeout=timeout,
-                        raise_on_error=raise_on_error
+                        sudo=sudo,
+                        raise_on_error=raise_on_error,
                     )
 
-                    # Print result
+                    if output_format == "json":
+                        console.print(json_mod.dumps(result.to_dict(), indent=2))
+                        if not result.ok:
+                            sys.exit(result.exit_code)
+                        return
+
+                    if output_format == "plain":
+                        if result.stdout:
+                            console.print(result.stdout.rstrip())
+                        if result.stderr:
+                            console.print(result.stderr.rstrip(), style="red")
+                        if not result.ok:
+                            sys.exit(result.exit_code)
+                        return
+
+                    # Print result (panel)
                     if result.ok:
                         console.print(Panel(
                             f"[green]OK[/green] Command executed successfully\n"
@@ -188,8 +210,15 @@ def main():
 
     @app.command("run-multi")
     def run_multi(
-        uris: list[str] = typer.Argument(..., help="Connection URIs"),  # noqa: B008
+        uris: list[str] | None = typer.Argument(None, help="Connection URIs"),  # noqa: B008
         command: str = typer.Option(..., "--command", "-c", help="Command to execute"),
+        inventory: str | None = typer.Option(
+            None, "--inventory", "-i", help="Inventory file (.yaml/.json)"
+        ),
+        group: str | None = typer.Option(
+            None, "--group", "-g", help="Host group name in inventory"
+        ),
+        sudo: bool = typer.Option(False, "--sudo", "-s", help="Execute with sudo"),
         max_concurrent: int = typer.Option(
             10, "--max-concurrent", "-j", help="Max concurrent connections"
         ),
@@ -199,29 +228,52 @@ def main():
             "table", "--format", "-f", help="Output format: table, json, plain"
         ),
     ):
-        """Execute command on multiple hosts in parallel.
+        """Execute command on multiple hosts in parallel (from URIs or inventory).
 
         Examples:
             uniconn run-multi "ssh://host1" "ssh://host2" -c "uptime"
-            uniconn run-multi "ssh://user@host1" "ssh://user@host2" -c "whoami" -j 5
+            uniconn run-multi --inventory hosts.yaml --group web -c "uptime"
 
         """
+        host_uris = list(uris or [])
+        if not host_uris and not inventory:
+            console.print("[red]ERROR:[/red] specify at least one URI or --inventory/-i")
+            raise typer.Exit(code=1)
 
         async def _execute():
             logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
-            pool = ConnectionPool(uris, max_concurrent=max_concurrent, logger=logger)
+            if inventory:
+                pool = ConnectionPool.from_file(
+                    inventory,
+                    group=group,
+                    max_concurrent=max_concurrent,
+                    logger=logger,
+                )
+            else:
+                pool = ConnectionPool(
+                    host_uris,
+                    max_concurrent=max_concurrent,
+                    logger=logger,
+                )
 
-            console.print(f"[dim]Executing on {len(uris)} hosts...[/dim]\n")
+            target_labels = [pool._target_key(t) for t in pool._uris]
+            if output_format != "json":
+                console.print(f"[dim]Executing on {len(target_labels)} hosts...[/dim]\n")
 
             try:
-                results = await pool.map(command, timeout=timeout, raise_on_error=False)
+                results = await pool.map(
+                    command,
+                    timeout=timeout,
+                    sudo=sudo,
+                    raise_on_error=False,
+                )
 
                 if output_format == "json":
                     import json
                     output = []
-                    for uri, result in zip(uris, results, strict=False):
+                    for label, result in zip(target_labels, results, strict=False):
                         output.append({
-                            "host": uri,
+                            "host": label,
                             "exit_code": result.exit_code,
                             "stdout": result.stdout,
                             "stderr": result.stderr,
@@ -230,9 +282,9 @@ def main():
                     console.print(json.dumps(output, indent=2))
 
                 elif output_format == "plain":
-                    for uri, result in zip(uris, results, strict=False):
+                    for label, result in zip(target_labels, results, strict=False):
                         status = "OK" if result.ok else "FAIL"
-                        console.print(f"[{status}] {uri}: {result.stdout.strip()}")
+                        console.print(f"[{status}] {label}: {result.stdout.strip()}")
 
                 else:  # table
                     table = Table(
@@ -246,7 +298,7 @@ def main():
                     table.add_column("Time", style="dim")
                     table.add_column("Output", style="green")
 
-                    for uri, result in zip(uris, results, strict=False):
+                    for label, result in zip(target_labels, results, strict=False):
                         if result.ok:
                             status = "[green]OK[/green]"
                             output = result.stdout.strip()[:50]
@@ -254,12 +306,15 @@ def main():
                                 output += "..."
                         else:
                             status = "[red]FAIL[/red]"
-                            output = result.stderr.strip()[:50] or f"Exit code: {result.exit_code}"
+                            output = (
+                                result.stderr.strip()[:50]
+                                or f"Exit code: {result.exit_code}"
+                            )
                             if len(result.stderr.strip()) > 50:
                                 output += "..."
 
                         table.add_row(
-                            uri,
+                            label,
                             status,
                             f"{result.duration:.2f}s",
                             output
@@ -270,16 +325,184 @@ def main():
                 # Return exit code based on results
                 failed = sum(1 for r in results if not r.ok)
                 if failed > 0:
-                    console.print(f"\n[red]Failed: {failed}/{len(uris)}[/red]")
+                    if output_format != "json":
+                        console.print(f"\n[red]Failed: {failed}/{len(target_labels)}[/red]")
                     sys.exit(1)
-                else:
-                    console.print(f"\n[green]All {len(uris)} hosts successful[/green]")
+                elif output_format != "json":
+                    console.print(
+                        f"\n[green]All {len(target_labels)} hosts successful[/green]"
+                    )
 
             except Exception as e:
                 console.print(Panel(
                     f"[red]ERROR:[/red] {e}",
                     title="Exception",
                     border_style="red"
+                ))
+                sys.exit(1)
+
+        asyncio.run(_execute())
+
+    @app.command()
+    def upload(
+        local_path: str = typer.Argument(..., help="Local file or directory path"),
+        remote_path: str = typer.Argument(..., help="Remote destination path"),
+        uris: list[str] | None = typer.Argument(None, help="Target connection URIs"),  # noqa: B008
+        inventory: str | None = typer.Option(
+            None, "--inventory", "-i", help="Inventory file (.yaml/.json)"
+        ),
+        group: str | None = typer.Option(
+            None, "--group", "-g", help="Host group name in inventory"
+        ),
+        recurse: bool = typer.Option(
+            False, "--recurse", "-r", help="Upload directory recursively"
+        ),
+        max_concurrent: int = typer.Option(
+            10, "--max-concurrent", "-j", help="Max concurrent connections"
+        ),
+        output_format: str = typer.Option(
+            "table", "--format", "-f", help="Output format: table, json"
+        ),
+        verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+    ):
+        """Upload file or directory to one or more remote hosts via SFTP.
+
+        Examples:
+            uniconn upload ./app.conf /etc/app/app.conf "ssh://user@host"
+            uniconn upload ./dist /var/www/app -i hosts.yaml -g web --recurse
+
+        """
+        host_uris = list(uris or [])
+        if not host_uris and not inventory:
+            console.print("[red]ERROR:[/red] specify at least one URI or --inventory/-i")
+            raise typer.Exit(code=1)
+
+        async def _execute():
+            import json as json_mod
+
+            logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
+            try:
+                if inventory:
+                    pool = ConnectionPool.from_file(
+                        inventory,
+                        group=group,
+                        max_concurrent=max_concurrent,
+                        logger=logger,
+                    )
+                else:
+                    pool = ConnectionPool(
+                        host_uris,
+                        max_concurrent=max_concurrent,
+                        logger=logger,
+                    )
+                target_labels = [pool._target_key(t) for t in pool._uris]
+                await pool.upload(local_path, remote_path, recurse=recurse)
+
+                if output_format == "json":
+                    console.print(
+                        json_mod.dumps(
+                            {
+                                "action": "upload",
+                                "local_path": local_path,
+                                "remote_path": remote_path,
+                                "hosts": target_labels,
+                                "ok": True,
+                            },
+                            indent=2,
+                        )
+                    )
+                else:
+                    console.print(
+                        f"[green]OK[/green] Uploaded [cyan]{local_path}[/cyan] -> "
+                        f"[cyan]{remote_path}[/cyan] on {len(target_labels)} host(s)"
+                    )
+            except Exception as e:
+                console.print(Panel(
+                    f"[red]ERROR:[/red] {e}",
+                    title="Upload Error",
+                    border_style="red",
+                ))
+                sys.exit(1)
+
+        asyncio.run(_execute())
+
+    @app.command()
+    def download(
+        remote_path: str = typer.Argument(..., help="Remote file or directory path"),
+        local_path: str = typer.Argument(..., help="Local destination path or pattern"),
+        uris: list[str] | None = typer.Argument(None, help="Target connection URIs"),  # noqa: B008
+        inventory: str | None = typer.Option(
+            None, "--inventory", "-i", help="Inventory file (.yaml/.json)"
+        ),
+        group: str | None = typer.Option(
+            None, "--group", "-g", help="Host group name in inventory"
+        ),
+        recurse: bool = typer.Option(
+            False, "--recurse", "-r", help="Download directory recursively"
+        ),
+        max_concurrent: int = typer.Option(
+            10, "--max-concurrent", "-j", help="Max concurrent connections"
+        ),
+        output_format: str = typer.Option(
+            "table", "--format", "-f", help="Output format: table, json"
+        ),
+        verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+    ):
+        """Download file or directory from one or more remote hosts via SFTP.
+
+        Examples:
+            uniconn download /var/log/syslog ./syslog.log "ssh://user@host"
+            uniconn download /var/log/syslog "./logs/{host}.log" -i hosts.yaml -g web
+
+        """
+        host_uris = list(uris or [])
+        if not host_uris and not inventory:
+            console.print("[red]ERROR:[/red] specify at least one URI or --inventory/-i")
+            raise typer.Exit(code=1)
+
+        async def _execute():
+            import json as json_mod
+
+            logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
+            try:
+                if inventory:
+                    pool = ConnectionPool.from_file(
+                        inventory,
+                        group=group,
+                        max_concurrent=max_concurrent,
+                        logger=logger,
+                    )
+                else:
+                    pool = ConnectionPool(
+                        host_uris,
+                        max_concurrent=max_concurrent,
+                        logger=logger,
+                    )
+                saved = await pool.download(remote_path, local_path, recurse=recurse)
+
+                if output_format == "json":
+                    console.print(
+                        json_mod.dumps(
+                            {
+                                "action": "download",
+                                "remote_path": remote_path,
+                                "saved": saved,
+                                "ok": True,
+                            },
+                            indent=2,
+                        )
+                    )
+                else:
+                    for host_key, dest in saved.items():
+                        console.print(
+                            f"[green]OK[/green] {host_key}: [cyan]{remote_path}[/cyan] -> "
+                            f"[cyan]{dest}[/cyan]"
+                        )
+            except Exception as e:
+                console.print(Panel(
+                    f"[red]ERROR:[/red] {e}",
+                    title="Download Error",
+                    border_style="red",
                 ))
                 sys.exit(1)
 
@@ -294,6 +517,9 @@ def main():
             case_sensitive=False,
         ),
         timeout: float = typer.Option(30.0, "--timeout", "-t", help="Timeout in seconds"),
+        output_format: str = typer.Option(
+            "panel", "--format", "-f", help="Output format: panel, json"
+        ),
         verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
     ):
         """BMC (Baseboard Management Controller) management.
@@ -311,16 +537,22 @@ def main():
 
         Examples:
             uniconn bmc "ipmi://admin:pass@bmc.local" power status
-            uniconn bmc "ipmi://admin:pass@bmc.local" power on
+            uniconn bmc "ipmi://admin:pass@bmc.local" power status --format json
 
         """
 
         async def _execute():
+            import json as json_mod
+
             logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
 
             try:
                 async with Connection.from_uri(uri, logger=logger) as conn:
                     result = await conn.run(operation, timeout=timeout)
+
+                    if output_format == "json":
+                        console.print(json_mod.dumps(result.to_dict(), indent=2))
+                        return
 
                     console.print(Panel(
                         f"[green]OK[/green] Operation completed\n"
@@ -557,18 +789,23 @@ def main():
     def screen_status(
         uri: str = typer.Argument(..., help="Connection URI (ssh://user:pass@host)"),
         pool_id: str | None = typer.Option(None, "--pool-id", "-p", help="Filter by pool ID"),
+        output_format: str = typer.Option(
+            "table", "--format", "-f", help="Output format: table, json"
+        ),
         verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
     ):
         """Show status of background screen sessions on the host.
 
         Examples:
             uniconn screen-status "ssh://user@host"
-            uniconn screen-status "ssh://user@host" --pool-id abc123
+            uniconn screen-status "ssh://user@host" --pool-id abc123 --format json
 
         """
         prefix = f"uniconn_{pool_id}" if pool_id else "uniconn_"
 
         async def _execute():
+            import json as json_mod
+
             logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
 
             try:
@@ -587,6 +824,18 @@ def main():
                     if "(" in line and ")" in line:
                         status = line[line.find("(") + 1:line.rfind(")")]
                     sessions.append((name, pid, status))
+
+                if output_format == "json":
+                    console.print(
+                        json_mod.dumps(
+                            [
+                                {"session_id": name, "pid": pid, "status": status}
+                                for name, pid, status in sessions
+                            ],
+                            indent=2,
+                        )
+                    )
+                    return
 
                 if not sessions:
                     console.print(f"[yellow]No screen sessions matching '{prefix}'[/yellow]")

@@ -59,6 +59,13 @@ from .exceptions import (
     TransportNotFoundError,
     UniconnError,
 )
+from .hooks import (
+    MetricsCollector,
+    allowlist_hook,
+    audit_log_hook,
+    blocklist_hook,
+    metrics_collector_hook,
+)
 from .result import Result
 
 try:
@@ -76,6 +83,12 @@ __all__ = [
     "ConnectionConfig",
     "Result",
     "quote",
+    # Готовые хуки аудита, безопасности и метрик (v0.6.0)
+    "audit_log_hook",
+    "allowlist_hook",
+    "blocklist_hook",
+    "MetricsCollector",
+    "metrics_collector_hook",
     # Screen-сессии (background)
     "ScreenPool",
     "ScreenSession",

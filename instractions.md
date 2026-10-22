@@ -1,6 +1,6 @@
 # Требования к универсальной Python-библиотеке для выполнения команд на удалённых хостах
 
-> **Статус**: v0.4.0 | **379 unit-тестов** | 28 файлов тестов | 5 транспортов | CLI | Плагинная система
+> **Статус**: v0.6.0 | **405 unit-тестов** | 30 файлов тестов | 5 транспортов | CLI | Плагинная система | PEP 561 (`py.typed`)
 >
 > Обозначения: ✅ реализовано | ⚠️ частично | ❌ не реализовано
 
@@ -8,21 +8,22 @@
 
 | Область | Статус | Детали |
 |---------|--------|--------|
-| Транспорты | ✅ 5/5 | SSH, Telnet, Serial, Local, IPMI |
-| SSH мультиплексинг | ✅ SSHSessionPool | До N каналов на соединение, авто-создание новых |
+| Транспорты | ✅ 5/5 | SSH (включая `~/.ssh/config`, Jump-хосты и `ProxyCommand`), Telnet, Serial, Local, IPMI |
+| SSH мультиплексинг | ✅ SSHSessionPool | До N каналов на соединение, авто-создание новых, `health_check` и `check_health()` |
 | Screen-сессии | ✅ ScreenPool | Долгоживущие команды в GNU screen, LogPipeline, cleanup |
-| PTY Shell | ✅ ShellSession | Stateful интерактивные сессии (`open_shell`, `execute`, `SyncShellSession`) |
-| API | ✅ async + sync | `Connection` + `SyncConnection` (`cd`, `env`, `run_bytes`, `read_file`, `write_file`) |
-| Фабрики | ✅ 4 метода | `from_uri`, `from_config`, `from_dict`, `from_file` |
+| PTY Shell | ✅ ShellSession | Stateful интерактивные сессии для SSH, Local и Telnet (`open_shell`, `execute`, `SyncShellSession`) |
+| API | ✅ async + sync | `Connection` + `SyncConnection` (`cd`, `env`, `temp_dir`, `run_bytes`, `read_file`, `write_file`, `exists`, `mkdir`) |
+| Фабрики | ✅ 5 методов | `from_uri`, `from_config`, `from_dict`, `from_file` (с `host=` и `group=`), `from_inventory` |
 | Клонирование | ✅ 2 метода | `copy()`, `with_overrides()` |
-| Пул | ✅ `ConnectionPool` | `map`, `map_safe`, `map_with_callback` |
-| Health check | ✅ `is_alive()` / `ping()` | Для всех транспортов + SSH keepalive |
-| Retry & Hooks | ✅ tenacity + hooks | Exponential backoff + jitter, `before_run`/`after_run`/`on_error`, `dry_run` |
-| Security | ✅ SecretStr + sudo | `passphrase`, `sudo` через `stdin`, `sensitive=True`, `shlex.join`/`quote` |
-| CLI | ✅ typer + rich | run, run-multi, bmc, shell, transports, screen-* |
-| Тесты | ✅ 379 unit | Все green, 0 failed |
+| Пул | ✅ `ConnectionPool` | `async with pool:`, `from_file`, `map`, `map_safe`, `map_with_callback`, `upload`, `download`, `apply` |
+| Health check | ✅ `is_alive()` / `ping()` | Для всех транспортов + SSH keepalive + `SSHSessionPool.check_health()` |
+| Retry & Hooks | ✅ tenacity + `uniconn.hooks` | Exponential backoff + jitter, `before_run`/`after_run`/`on_error`, `audit_log_hook`, `allowlist_hook`, `blocklist_hook`, `metrics_collector_hook`, `dry_run` |
+| Security | ✅ SecretStr + sudo | `passphrase`, `sudo` через `stdin`, `sensitive=True`, `shlex.join`/`quote`, `allowlist_hook`/`blocklist_hook` |
+| CLI | ✅ typer + rich | `run`, `run-multi` (`--inventory`/`--group`), `upload`, `download`, `bmc`, `shell`, `transports`, `screen-*`, `version` |
+| Тесты | ✅ 405 unit | Все green, 0 failed |
 | Linting | ✅ ruff | 100 char line (0 errors) |
-| Types | ✅ pyright | Standard mode (0 errors) |
+| Types | ✅ pyright | Standard mode (0 errors) + `py.typed` (PEP 561) |
+| AI Agent Docs | ✅ Настроено | `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `llms.txt`, `src/uniconn/py.typed` |
 | CI/CD | ❌ | GitHub Actions не настроены (осознанно исключено) |
 
 ---
@@ -33,13 +34,13 @@
 Ядро библиотеки: транспорты, run/stream, retry, pool, security, CLI.
 
 ### P1 — Should have (реализовано)
-PTY shell, file transfer (SFTP/SCP + `read_file`/`write_file`), docs, examples, `run_commands`, `ScreenPool`.
+PTY shell (SSH, Local, Telnet), file transfer (SFTP/SCP + `read_file`/`write_file`/`exists`/`mkdir`/`temp_dir`), docs, examples, `run_commands`, `ScreenPool`.
 
-### P2 — Nice to have (реализовано в v0.3.0–v0.4.0)
-Lifecycle hooks (`before_run`, `after_run`, `on_error`) + `dry_run`, SSH keepalive/heartbeat, `~/.ssh/config`, SSH-агент, сертификаты OpenSSH, `passphrase`, безопасный `sudo`, контекстные менеджеры `cd()` и `env()`.
+### P2 — Nice to have (реализовано в v0.3.0–v0.6.0)
+Lifecycle hooks (`before_run`, `after_run`, `on_error`) + готовые пресеты `uniconn.hooks` + `dry_run`, SSH keepalive/heartbeat, `~/.ssh/config`, `ProxyCommand` (`proxy_command`), SSH-агент, сертификаты OpenSSH, `passphrase`, безопасный `sudo`, контекстные менеджеры `cd()`, `env()`, `temp_dir()`.
 
-### P3 — Future (реализовано в v0.3.0–v0.4.0)
-Shell escaping (`shlex.join`, `quote`), `stdin` (`input=`), `run_bytes()`, `sensitive=True`, предупреждения для незашифрованных транспортов.
+### P3 — Future (реализовано в v0.3.0–v0.6.0)
+Shell escaping (`shlex.join`, `quote`), `stdin` (`input=`), `run_bytes()`, `sensitive=True`, предупреждения для незашифрованных транспортов, групповой инвентарь и файловые операции в `ConnectionPool` и CLI.
 
 ---
 
@@ -320,7 +321,7 @@ exit code по команде, поэтому `execute()` оборачивает
 ### 24. Прокси и SSH Config
 - ✅ Jump / Bastion хосты (`options={"proxy": "ssh://jump"}`)
 - ✅ Интеграция с `~/.ssh/config` (`options={"ssh_config": True}` или путь к файлу)
-- ❌ SOCKS5/HTTP прокси (`proxy_command`)
+- ✅ SOCKS5/HTTP прокси (`proxy_command` в `options` и директива `ProxyCommand` из `~/.ssh/config` с подстановкой `%h`, `%p`, `%r`)
 
 ---
 

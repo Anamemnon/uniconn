@@ -69,6 +69,10 @@ class SSHTransport(BaseTransport):
         self._conn: Any = None
         # Промежуточные proxy/jump подключения (в порядке построения цепочки)
         self._tunnel_conns: list[Any] = []
+        # Дочерние процессы ProxyCommand для закрытия при disconnect()
+        self._proxy_procs: list[Any] = []
+        self._ssh_config_proxy_command: str | None = None
+        self._active_proxy_command: str | None = None
         # Активные PTY shell-процессы для корректного закрытия при disconnect()
         self._shell_procs: list[Any] = []
         self._known_hosts = self.config.options.get("known_hosts", "no")
@@ -76,6 +80,21 @@ class SSHTransport(BaseTransport):
     @property
     def name(self) -> str:
         return "ssh"
+
+    @staticmethod
+    def expand_proxy_command(
+        template: str,
+        host: str | None,
+        port: int | None,
+        username: str | None,
+    ) -> str:
+        """Подставить токены OpenSSH (``%h``, ``%p``, ``%r``, ``%%``) в строку ProxyCommand."""
+        sentinel = "\x00PERCENT\x00"
+        expanded = template.replace("%%", sentinel)
+        expanded = expanded.replace("%h", str(host or ""))
+        expanded = expanded.replace("%p", str(port or 22))
+        expanded = expanded.replace("%r", str(username or ""))
+        return expanded.replace(sentinel, "%")
 
     def _resolve_known_hosts(self) -> Any:
         """Определить политику проверки known_hosts.
@@ -142,8 +161,8 @@ class SSHTransport(BaseTransport):
         """Распарсить директивы OpenSSH config для заданного хоста/алиаса.
 
         Поддерживает ``Host`` (с масками ``*`` и ``?``), ``HostName``, ``User``,
-        ``Port``, ``IdentityFile`` и ``ProxyJump`` (по правилу first-match-wins,
-        принятому в OpenSSH).
+        ``Port``, ``IdentityFile``, ``ProxyJump`` и ``ProxyCommand`` (по правилу
+        first-match-wins, принятому в OpenSSH).
         """
         import fnmatch
 
@@ -205,12 +224,15 @@ class SSHTransport(BaseTransport):
                 matched_directives["identityfile"] = str(Path(val).expanduser())
             elif key_lower == "proxyjump" and "proxyjump" not in matched_directives:
                 matched_directives["proxyjump"] = val
+            elif key_lower == "proxycommand" and "proxycommand" not in matched_directives:
+                matched_directives["proxycommand"] = val
 
         return matched_directives
 
     def _apply_extra_connect_options(self, connect_kwargs: dict[str, Any]) -> None:
         """Применить расширенные SSH-опции (keepalive, ssh_config, agent, client_cert)."""
         opts = self.config.options
+        self._ssh_config_proxy_command = None
 
         # Keepalive / Heartbeat (§22)
         keepalive = opts.get("keepalive_interval", opts.get("keepalive"))
@@ -221,7 +243,7 @@ class SSHTransport(BaseTransport):
         if keepalive_max is not None:
             connect_kwargs["keepalive_count_max"] = int(keepalive_max)
 
-        # ~/.ssh/config (§24 & v0.5.0)
+        # ~/.ssh/config (§24 & v0.5.0–v0.6.0)
         ssh_cfg = self._resolve_ssh_config()
         if ssh_cfg is not None:
             connect_kwargs["config"] = ssh_cfg
@@ -229,6 +251,8 @@ class SSHTransport(BaseTransport):
                 parsed_cfg = self.parse_openssh_config(cfg_file, self.config.host)
                 if not parsed_cfg:
                     continue
+                if "hostname" in parsed_cfg:
+                    connect_kwargs["host"] = parsed_cfg["hostname"]
                 if self.config.username is None and "user" in parsed_cfg:
                     connect_kwargs["username"] = parsed_cfg["user"]
                 if self.config.key_file is None and "identityfile" in parsed_cfg:
@@ -238,6 +262,11 @@ class SSHTransport(BaseTransport):
                     and "port" in parsed_cfg
                 ):
                     connect_kwargs["port"] = parsed_cfg["port"]
+                if (
+                    "proxycommand" in parsed_cfg
+                    and self._ssh_config_proxy_command is None
+                ):
+                    self._ssh_config_proxy_command = str(parsed_cfg["proxycommand"])
 
         # SSH-агент (§23)
         if "agent_path" in opts and opts["agent_path"] is not None:
@@ -266,6 +295,17 @@ class SSHTransport(BaseTransport):
                 if isinstance(raw_pp, SecretStr)
                 else str(raw_pp)
             )
+
+    async def _start_proxy_command(self, expanded_command: str) -> Any:
+        """Запустить процесс ProxyCommand (например, ``nc -X 5 -x proxy:1080 %h %p``)."""
+        proc = await asyncio.create_subprocess_shell(
+            expanded_command,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        self._proxy_procs.append(proc)
+        return proc
 
     async def _create_proxy_conn(
         self,
@@ -309,17 +349,28 @@ class SSHTransport(BaseTransport):
         return await asyncssh.connect(**proxy_kwargs)
 
     async def _close_tunnel_conns(self) -> None:
-        """Закрыть промежуточные proxy-подключения в обратном порядке."""
+        """Закрыть промежуточные proxy-подключения и процессы ProxyCommand."""
         while self._tunnel_conns:
             conn = self._tunnel_conns.pop()
             conn.close()
             await conn.wait_closed()
+        while self._proxy_procs:
+            proc = self._proxy_procs.pop()
+            with contextlib.suppress(Exception):
+                proc.terminate()
+            with contextlib.suppress(Exception):
+                wait_fn = getattr(proc, "wait", None)
+                if callable(wait_fn):
+                    res = wait_fn()
+                    if inspect.isawaitable(res):
+                        await res
+        self._active_proxy_command = None
 
     async def connect(self) -> None:
         """Установить SSH подключение.
 
-        Поддерживает proxy/jump hosts, keepalive, ssh_config, ssh-agent,
-        client_cert и passphrase для зашифрованных приватных ключей.
+        Поддерживает proxy/jump hosts, ``proxy_command`` (SOCKS5/HTTP прокси),
+        keepalive, ssh_config, ssh-agent, client_cert и passphrase.
         """
         assert asyncssh is not None
         try:
@@ -355,6 +406,23 @@ class SSHTransport(BaseTransport):
                     self._tunnel_conns.append(proxy_conn)
 
                 connect_kwargs["tunnel"] = self._tunnel_conns[-1]
+
+            # Обработка ProxyCommand / SOCKS5 / HTTP прокси (§24)
+            raw_proxy_cmd = (
+                self.config.options.get("proxy_command")
+                or self._ssh_config_proxy_command
+            )
+            if raw_proxy_cmd and str(raw_proxy_cmd).lower() != "none":
+                expanded_cmd = self.expand_proxy_command(
+                    str(raw_proxy_cmd),
+                    host=connect_kwargs.get("host"),
+                    port=connect_kwargs.get("port", 22),
+                    username=connect_kwargs.get("username"),
+                )
+                self._active_proxy_command = expanded_cmd
+                proxy_proc = await self._start_proxy_command(expanded_cmd)
+                if "tunnel" not in connect_kwargs:
+                    connect_kwargs["tunnel"] = proxy_proc
 
             self._conn = await asyncssh.connect(**connect_kwargs)
             self._connected = True

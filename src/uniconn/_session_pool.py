@@ -36,16 +36,56 @@ class SSHSessionPool:
         max_connections: int = 6,
         retry_attempts: int = 3,
         logger: logging.Logger | None = None,
+        health_check: bool = False,
     ):
         self._uri = uri
         self._max_sessions = max_sessions_per_conn
         self._max_connections = max_connections
         self._retry_attempts = retry_attempts
         self._logger = logger or logging.getLogger(__name__)
+        self._health_check = health_check
 
         self._connections: list[Connection] = []
         self._semaphores: list[asyncio.Semaphore] = []
         self._lock = asyncio.Lock()
+
+    async def _run_on_conn(
+        self,
+        conn: Connection,
+        command: str,
+        **kwargs,
+    ) -> Result:
+        """Выполнить команду на соединении с опциональной проверкой живости."""
+        is_connected = getattr(getattr(conn, "_transport", None), "is_connected", True)
+        if self._health_check and is_connected and not await conn.is_alive():
+            self._logger.debug(
+                f"Unhealthy connection detected in SSHSessionPool for {self._uri}; reconnecting"
+            )
+            await conn.close()
+        return await conn.run(command, **kwargs)
+
+    async def check_health(self, timeout: float | None = None) -> int:
+        """Проверить живость всех соединений пула и удалить оборванные.
+
+        Args:
+            timeout: Таймаут пинга в секундах
+
+        Returns:
+            Количество здоровых (живых) соединений, оставшихся в пуле
+
+        """
+        async with self._lock:
+            healthy_conns: list[Connection] = []
+            healthy_sems: list[asyncio.Semaphore] = []
+            for conn, sem in zip(self._connections, self._semaphores, strict=True):
+                if await conn.is_alive(timeout=timeout):
+                    healthy_conns.append(conn)
+                    healthy_sems.append(sem)
+                else:
+                    await conn.close()
+            self._connections = healthy_conns
+            self._semaphores = healthy_sems
+            return len(self._connections)
 
     async def _execute(self, command: str, **kwargs) -> Result:
         """Выполнить команду через один из доступных слотов."""
@@ -53,7 +93,7 @@ class SSHSessionPool:
         for conn, sem in zip(self._connections, self._semaphores, strict=True):
             if getattr(sem, "_value", 0) > 0:
                 async with sem:
-                    return await conn.run(command, **kwargs)
+                    return await self._run_on_conn(conn, command, **kwargs)
 
         # 2. Все слоты заняты — пробуем получить слот под локом
         conn_to_use: Connection | None = None
@@ -88,14 +128,14 @@ class SSHSessionPool:
             # Выполняем команду без удержания lock,
             # чтобы другие задачи могли параллельно создавать соединения
             try:
-                return await conn_to_use.run(command, **kwargs)
+                return await self._run_on_conn(conn_to_use, command, **kwargs)
             finally:
                 sem_to_use.release()
 
         # 3. Лимит соединений исчерпан — ждём на первом доступном
         for conn, sem in zip(self._connections, self._semaphores, strict=True):
             async with sem:
-                return await conn.run(command, **kwargs)
+                return await self._run_on_conn(conn, command, **kwargs)
 
         # Fallback — никогда не должен сюда дойти
         raise RuntimeError("No available SSH connection")

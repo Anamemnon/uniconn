@@ -265,20 +265,66 @@ class TestTransportsOpenShell:
     @pytest.mark.parametrize(
         "transport_cls,transport_name",
         [
-            (LocalTransport, "local"),
-            (TelnetTransport, "telnet"),
             (SerialTransport, "serial"),
             (IPMITransport, "ipmi"),
         ],
     )
-    async def test_non_ssh_transports_raise_not_implemented(
+    async def test_unsupported_transports_raise_not_implemented(
         self, transport_cls, transport_name
     ):
-        """Local, Telnet, Serial и IPMI бросают NotImplementedError при open_shell()."""
+        """Serial и IPMI бросают NotImplementedError при open_shell()."""
         config = ConnectionConfig(transport=transport_name, host="localhost")
         transport = transport_cls(config)
         with pytest.raises(NotImplementedError, match="open_shell not supported"):
             await transport.open_shell()
+
+    @pytest.mark.asyncio
+    async def test_local_and_telnet_open_shell_not_connected_raises(self):
+        """LocalTransport и TelnetTransport без connect() бросают ConnectionError."""
+        local_transport = LocalTransport(
+            ConnectionConfig(transport="local", host="localhost")
+        )
+        with pytest.raises(ConnectionError, match="not connected"):
+            await local_transport.open_shell()
+
+        telnet_transport = TelnetTransport(
+            ConnectionConfig(transport="telnet", host="localhost")
+        )
+        with pytest.raises(ConnectionError, match="not connected"):
+            await telnet_transport.open_shell()
+
+    @pytest.mark.asyncio
+    async def test_local_open_shell_stateful_session(self, tmp_path):
+        """Connection('local://').open_shell() создаёт рабочую stateful сессию."""
+        async with Connection.from_uri("local://") as conn:
+            async with await conn.open_shell() as shell:
+                await shell.execute(f"cd {tmp_path}")
+                pwd_res = await shell.execute("pwd")
+                assert pwd_res.text == str(tmp_path)
+
+                await shell.execute("export LOCAL_SHELL_VAR=hello_v060")
+                env_res = await shell.execute("echo $LOCAL_SHELL_VAR")
+                assert env_res.text == "hello_v060"
+
+                await shell.resize(132, 43)
+
+    @pytest.mark.asyncio
+    async def test_telnet_open_shell_adapter(self):
+        """TelnetTransport.open_shell() возвращает адаптер поверх reader/writer."""
+        config = ConnectionConfig(transport="telnet", host="10.0.0.5")
+        transport = TelnetTransport(config)
+        transport._connected = True
+        transport._reader = MagicMock()
+        transport._writer = MagicMock()
+
+        proc = await transport.open_shell(term_size=(100, 30))
+        assert proc.term_size == (100, 30)
+        proc.change_terminal_size(120, 40)
+        assert proc.term_size == (120, 40)
+
+        await transport.disconnect()
+        assert proc.terminated
+        assert proc.closed
 
     @pytest.mark.asyncio
     async def test_ssh_open_shell_not_connected_raises(self):

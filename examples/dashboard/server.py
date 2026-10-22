@@ -120,7 +120,7 @@ def _run_demo_status() -> dict:
     uname_out = subprocess.getoutput("uname -srm").strip()
     py_out = f"Python {sys.version.split()[0]}"
     return {
-        "version": "0.5.0",
+        "version": "0.6.0",
         "transports": ["ipmi", "local", "serial", "ssh", "telnet"],
         "local_uname": uname_out,
         "python_version": py_out,

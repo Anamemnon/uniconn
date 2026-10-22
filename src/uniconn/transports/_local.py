@@ -1,18 +1,87 @@
 # src/uniconn/transports/_local.py
+from __future__ import annotations
+
 import asyncio
+import contextlib
 import os
 import sys
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 from ..exceptions import ConnectionError, ExecutionError
 from ..result import Result
 from ._base import BaseTransport
 
 
+class _LocalShellStdin:
+    """Адаптер текстовой записи поверх байтового StreamWriter для LocalTransport."""
+
+    def __init__(self, writer: asyncio.StreamWriter) -> None:
+        self._writer = writer
+
+    def write(self, text: str | bytes) -> None:
+        data = text.encode("utf-8") if isinstance(text, str) else bytes(text)
+        self._writer.write(data)
+
+    async def drain(self) -> None:
+        await self._writer.drain()
+
+
+class _LocalShellStdout:
+    """Адаптер текстового чтения поверх байтового StreamReader для LocalTransport."""
+
+    def __init__(self, reader: asyncio.StreamReader) -> None:
+        self._reader = reader
+
+    async def read(self, n: int = 4096) -> str:
+        chunk = await self._reader.read(n)
+        return chunk.decode("utf-8", errors="replace") if chunk else ""
+
+
+class _LocalShellProcess:
+    """Адаптер локального shell-процесса для совместимости с ``ShellSession``."""
+
+    def __init__(
+        self,
+        proc: asyncio.subprocess.Process,
+        term_size: tuple[int, int] = (80, 24),
+    ) -> None:
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        self._proc = proc
+        self.stdin = _LocalShellStdin(proc.stdin)
+        self.stdout = _LocalShellStdout(proc.stdout)
+        self.term_size = term_size
+        self.terminated = False
+        self.closed = False
+
+    @property
+    def returncode(self) -> int | None:
+        return self._proc.returncode
+
+    def change_terminal_size(self, cols: int, rows: int) -> None:
+        self.term_size = (cols, rows)
+
+    def terminate(self) -> None:
+        self.terminated = True
+        with contextlib.suppress(ProcessLookupError, OSError):
+            self._proc.terminate()
+
+    def close(self) -> None:
+        self.closed = True
+        if self._proc.stdin is not None:
+            with contextlib.suppress(Exception):
+                self._proc.stdin.close()
+
+
 class LocalTransport(BaseTransport):
     """Выполнение команд локально через subprocess."""
+
+    def __init__(self, config: Any) -> None:
+        super().__init__(config)
+        self._shell_procs: list[_LocalShellProcess] = []
 
     @property
     def name(self) -> str:
@@ -22,6 +91,12 @@ class LocalTransport(BaseTransport):
         self._connected = True
 
     async def disconnect(self) -> None:
+        while self._shell_procs:
+            proc = self._shell_procs.pop()
+            with contextlib.suppress(Exception):
+                proc.terminate()
+            with contextlib.suppress(Exception):
+                proc.close()
         self._connected = False
 
     async def ping(self, timeout: float | None = None) -> bool:
@@ -174,6 +249,37 @@ class LocalTransport(BaseTransport):
                 f"Local mkdir failed for {remote_path}: {e}",
                 host="localhost",
             ) from e
+
+    async def open_shell(
+        self,
+        term_type: str = "xterm",
+        term_size: tuple[int, int] = (80, 24),
+        **kwargs: Any,
+    ) -> _LocalShellProcess:
+        """Открыть интерактивную stateful shell-сессию локально (``/bin/sh``)."""
+        if not self._connected:
+            raise ConnectionError(
+                "Local transport is not connected. Call connect() first",
+                host="localhost",
+            )
+
+        shell_bin = kwargs.pop("shell", "/bin/sh")
+        env = {
+            **os.environ,
+            "TERM": term_type,
+            "COLUMNS": str(term_size[0]),
+            "LINES": str(term_size[1]),
+        }
+        proc = await asyncio.create_subprocess_exec(
+            shell_bin,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=env,
+        )
+        wrapped = _LocalShellProcess(proc, term_size=term_size)
+        self._shell_procs.append(wrapped)
+        return wrapped
 
     async def stream(
         self,

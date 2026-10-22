@@ -119,11 +119,11 @@
 <body>
   <header>
     <div>
-      <h1>uniconn <span class="version" id="ver">v0.5.0</span></h1>
+      <h1>uniconn <span class="version" id="ver">v0.6.0</span></h1>
       <p class="subtitle">Универсальная async-first Python-библиотека для выполнения команд (SSH, PTY ShellSession, SFTP, Telnet, Serial, IPMI, Local)</p>
     </div>
     <div style="font-family: var(--mono); font-size: 0.85rem; color: var(--green);">
-      ● 389 unit tests passing
+      ● 405 unit tests passing
     </div>
   </header>
 
@@ -136,10 +136,10 @@
     <div class="card">
       <h2>Stateful PTY Shell (ShellSession §16)</h2>
       <div class="kv"><span>Протокол маркера</span><span>__UNICONN_{uuid}__$?</span></div>
+      <div class="kv"><span>Транспорты open_shell()</span><span>ssh, local, telnet</span></div>
       <div class="kv"><span>cd /var/log → pwd</span><span id="sh-cwd">/var/log</span></div>
       <div class="kv"><span>export DEPLOY_ENV → echo</span><span id="sh-env">production</span></div>
       <div class="kv"><span>resize(cols, rows)</span><span id="sh-size">120x40</span></div>
-      <div class="kv"><span>Sync wrapper</span><span>SyncShellSession</span></div>
     </div>
   </div>
 
@@ -149,24 +149,24 @@
       <input type="text" id="cmd-input" value="cd /tmp && pwd" placeholder="Введите команду..." />
       <button onclick="runShellCmd()">ShellSession.execute()</button>
       <button class="secondary" onclick="runLocalCmd()">Connection('local://').run()</button>
-      <button class="secondary" onclick="runPytest()">Запустить pytest (389 тестов)</button>
+      <button class="secondary" onclick="runPytest()">Запустить pytest (405 тестов)</button>
     </div>
     <pre id="output-box">Готово к выполнению. Нажмите кнопку выше для проверки API uniconn.</pre>
   </div>
 
   <div class="card">
-    <h2>Пример API: uniconn v0.5.0</h2>
-    <pre>async with Connection.from_uri("ssh://prod-web") as conn:  # Читает ~/.ssh/config
+    <h2>Пример API: uniconn v0.6.0</h2>
+    <pre>from uniconn import Connection, allowlist_hook, audit_log_hook, metrics_collector_hook
+
+async with Connection.from_uri("ssh://prod-web") as conn:  # ~/.ssh/config + ProxyCommand
+    conn.add_hook("before_run", allowlist_hook(["ls", "pwd", "uptime"]))
+    conn.add_hook("after_run", audit_log_hook("/var/log/uniconn_audit.jsonl"))
+    metrics = metrics_collector_hook().attach(conn)
+
     async with conn.temp_dir() as tmp:
         res = await conn.run(["ls", "-la", tmp])
         if res:                          # bool(res) == res.ok
-            print(res.text)              # stdout без крайних переводов строк
-            print(res.lines)             # список строк stdout
-
-    async with await conn.open_shell(term_type="xterm", term_size=(100, 30)) as shell:
-        await shell.execute(["cd /var/log", "export DEPLOY_ENV=production"])
-        pwd = await shell.execute("pwd")
-        print(pwd.text)                  # /var/log</pre>
+            print(res.text, metrics.to_dict())</pre>
   </div>
 
   <script>
