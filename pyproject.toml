@@ -18,13 +18,20 @@ classifiers = [
     "Topic :: System :: Networking",
 ]
 
-# Core dependencies (minimal)
+# Dependencies (includes all built-in transports and CLI out of the box)
 dependencies = [
     "pydantic>=2.0",           # Config validation, SecretStr
     "tenacity>=8.0",           # Retry logic (async support)
+    "asyncssh>=2.13",          # SSH transport & SFTP
+    "telnetlib3>=2.0",         # Telnet transport
+    "pyserial-asyncio>=0.6",   # Serial/UART transport
+    "pyghmi>=1.5",             # BMC/IPMI transport
+    "typer>=0.9",              # CLI interface
+    "rich>=13.0",              # CLI formatting
+    "pyyaml>=6.0",             # YAML support for from_file() and ScreenPool
 ]
 
-# Optional dependencies (extras)
+# Optional dependencies (extras kept for backward compatibility)
 [project.optional-dependencies]
 ssh = ["asyncssh>=2.13"]
 telnet = ["telnetlib3>=2.0"]
@@ -43,7 +50,6 @@ dev = [
     "mkdocs>=1.5",
     "mkdocstrings[python]>=0.23",
     "testcontainers>=3.7",     # Docker containers for integration tests
-    "pyyaml>=6.0",             # YAML support for from_file()
 ]
 
 # Entry points for plugin architecture
@@ -62,7 +68,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [dependency-groups]
-dev = ["uniconn[dev,cli]"]
+dev = ["uniconn[dev]"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -23,32 +23,12 @@
 
 ## Установка
 
-### Базовая установка
+Установка со всеми встроенными транспортами (SSH, Telnet, Serial/UART, BMC/IPMI, Local) и CLI-инструментом:
 
 ```bash
 pip install uniconn
-```
-
-### С дополнительными транспортами
-
-```bash
-# SSH поддержка
-pip install uniconn[ssh]
-
-# Telnet
-pip install uniconn[telnet]
-
-# Serial/UART
-pip install uniconn[serial]
-
-# BMC (IPMI)
-pip install uniconn[bmc]
-
-# CLI интерфейс
-pip install uniconn[cli]
-
-# Всё вместе
-pip install uniconn[ssh,telnet,serial,bmc,cli]
+# или через uv:
+uv add uniconn
 ```
 
 ### Разработка

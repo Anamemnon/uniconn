@@ -30,7 +30,7 @@ Quick Start
 
 Установка::
 
-    pip install uniconn[ssh]
+    pip install uniconn
 
 Базовое использование::
 

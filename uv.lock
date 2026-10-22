@@ -1751,8 +1751,15 @@ name = "uniconn"
 version = "0.4.0"
 source = { editable = "." }
 dependencies = [
+    { name = "asyncssh" },
     { name = "pydantic" },
+    { name = "pyghmi" },
+    { name = "pyserial-asyncio" },
+    { name = "pyyaml" },
+    { name = "rich" },
+    { name = "telnetlib3" },
     { name = "tenacity" },
+    { name = "typer" },
 ]
 
 [package.optional-dependencies]
@@ -1771,7 +1778,6 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "pytest-mock" },
-    { name = "pyyaml" },
     { name = "ruff" },
     { name = "sphinx", version = "9.0.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "sphinx", version = "9.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.12.*'" },
@@ -1791,36 +1797,42 @@ telnet = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "uniconn", extra = ["cli", "dev"] },
+    { name = "uniconn", extra = ["dev"] },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "asyncssh", specifier = ">=2.13" },
     { name = "asyncssh", marker = "extra == 'ssh'", specifier = ">=2.13" },
     { name = "mkdocs", marker = "extra == 'dev'", specifier = ">=1.5" },
     { name = "mkdocstrings", extras = ["python"], marker = "extra == 'dev'", specifier = ">=0.23" },
     { name = "pydantic", specifier = ">=2.0" },
+    { name = "pyghmi", specifier = ">=1.5" },
     { name = "pyghmi", marker = "extra == 'bmc'", specifier = ">=1.5" },
     { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1" },
+    { name = "pyserial-asyncio", specifier = ">=0.6" },
     { name = "pyserial-asyncio", marker = "extra == 'serial'", specifier = ">=0.6" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.21" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.1" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.12" },
-    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rich", specifier = ">=13.0" },
     { name = "rich", marker = "extra == 'cli'", specifier = ">=13.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1" },
     { name = "sphinx", marker = "extra == 'dev'", specifier = ">=7.0" },
     { name = "sphinx-rtd-theme", marker = "extra == 'dev'", specifier = ">=1.3" },
+    { name = "telnetlib3", specifier = ">=2.0" },
     { name = "telnetlib3", marker = "extra == 'telnet'", specifier = ">=2.0" },
     { name = "tenacity", specifier = ">=8.0" },
     { name = "testcontainers", marker = "extra == 'dev'", specifier = ">=3.7" },
+    { name = "typer", specifier = ">=0.9" },
     { name = "typer", marker = "extra == 'cli'", specifier = ">=0.9" },
 ]
 provides-extras = ["ssh", "telnet", "serial", "bmc", "cli", "dev"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "uniconn", extras = ["dev", "cli"] }]
+dev = [{ name = "uniconn", extras = ["dev"] }]
 
 [[package]]
 name = "urllib3"
