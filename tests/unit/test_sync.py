@@ -159,3 +159,30 @@ class TestSyncClose:
             assert result.ok
         transport.connect.assert_awaited_once()
         transport.disconnect.assert_awaited_once()
+
+
+class TestSyncShellSession:
+    """Тесты SyncShellSession: execute, resize, close и контекстный менеджер."""
+
+    def test_sync_open_shell_execute_and_close(self):
+        """SyncConnection.open_shell() позволяет выполнять stateful команды синхронно."""
+        from test_shell import FakeShellProcess
+
+        proc = FakeShellProcess()
+        transport = _make_transport()
+        transport.open_shell = AsyncMock(return_value=proc)
+
+        sync = _make_sync(transport)
+        with sync as conn, conn.open_shell(term_size=(100, 30)) as shell:
+            assert shell.is_alive
+            shell.execute("cd /etc")
+            res = shell.execute("pwd")
+            assert res.ok
+            assert res.stdout == "/etc"
+
+            shell.resize(132, 43)
+            assert proc.term_size == (132, 43)
+
+        assert not shell.is_alive
+        assert proc.terminated
+

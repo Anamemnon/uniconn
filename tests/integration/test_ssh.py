@@ -44,3 +44,20 @@ async def test_ssh_command_failure(ssh_container):
         
         with pytest.raises(ExecutionError):
             await conn.run("exit 1", raise_on_error=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.integration
+async def test_ssh_interactive_shell(ssh_container):
+    """Интеграционный тест stateful PTY shell против реального SSH-сервера."""
+    async with Connection.from_uri(ssh_container) as conn:
+        async with await conn.open_shell() as shell:
+            await shell.execute("cd /tmp")
+            pwd_res = await shell.execute("pwd")
+            assert pwd_res.ok
+            assert "/tmp" in pwd_res.stdout
+
+            await shell.execute("export UNICONN_TEST_VAR=42")
+            var_res = await shell.execute("echo $UNICONN_TEST_VAR")
+            assert var_res.ok
+            assert "42" in var_res.stdout

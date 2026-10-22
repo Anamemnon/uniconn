@@ -15,6 +15,7 @@
 - 🔄 **Повторные попытки**: Встроенный retry с экспоненциальным backoff
 - 📊 **Пул соединений**: Параллельное выполнение на множестве хостов
 - 📁 **SFTP**: Загрузка/скачивание файлов и директорий через SSH
+- 💻 **Stateful PTY Shell**: Интерактивные сессии с сохранением `cd`/`export` поверх SSH
 - 🖥️ **ScreenPool**: Долгоживущие команды в detached GNU screen сессиях
 - 🛠️ **CLI инструмент**: Удобная командная строка для быстрых операций
 
@@ -190,6 +191,27 @@ if await conn.is_alive():
 
 Закрыть подключение.
 
+##### `open_shell(term_type="xterm", term_size=(80, 24), **kwargs) -> ShellSession`
+
+Открыть интерактивную stateful PTY shell-сессию (для SSH). Между вызовами
+`execute()` сохраняются рабочая директория (`cd`), переменные окружения
+(`export`) и состояние оболочки; сессия работает поверх того же SSH-подключения
+параллельно с `run()` без переподключения.
+
+**Пример:**
+```python
+async with await conn.open_shell() as shell:
+    await shell.execute("cd /var/log")
+    res = await shell.execute("pwd")
+    print(res.stdout)  # /var/log
+
+    await shell.execute("export MY_VAR=42")
+    res = await shell.execute("echo $MY_VAR")
+    print(res.stdout)  # 42
+
+    await shell.resize(120, 40)
+```
+
 #### Файловые операции (SFTP, только SSH)
 
 ```python
@@ -350,6 +372,7 @@ with Connection.from_uri("ssh://user@host").to_sync() as conn:
 - `run(command, timeout=None, raise_on_error=False, **kwargs) -> Result`
 - `run_commands(commands, stop_on_error=True, **kwargs) -> List[Result]`
 - `stream(command, timeout=None, **kwargs) -> Iterator[str]` — инкрементальный стриминг
+- `open_shell(term_type="xterm", term_size=(80, 24), **kwargs) -> SyncShellSession` — синхронная stateful PTY-сессия
 - `is_alive(timeout=None) -> bool`
 - `close() -> None`
 

@@ -6,9 +6,16 @@ Connection
 
 .. autoclass:: uniconn.Connection
    :members: from_uri, from_config, from_dict, from_file
-   :members: run, stream, close, is_alive
+   :members: run, run_commands, stream, open_shell, close, is_alive
    :members: upload, download, chmod, stat, listdir
    :members: to_sync, copy, with_overrides
+   :special-members: __aenter__, __aexit__
+
+ShellSession
+------------
+
+.. autoclass:: uniconn.ShellSession
+   :members: execute, send, receive, resize, close, is_alive
    :special-members: __aenter__, __aexit__
 
 ConnectionConfig
@@ -28,7 +35,14 @@ SyncConnection
 --------------
 
 .. autoclass:: uniconn.SyncConnection
-   :members: run, stream, close, is_alive
+   :members: run, run_commands, stream, open_shell, close, is_alive
+   :special-members: __enter__, __exit__
+
+SyncShellSession
+----------------
+
+.. autoclass:: uniconn.SyncShellSession
+   :members: execute, send, receive, resize, close, is_alive
    :special-members: __enter__, __exit__
 
 Result

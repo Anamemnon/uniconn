@@ -332,7 +332,7 @@ def main():
         uri: str = typer.Argument(..., help="Connection URI"),
         prompt: str = typer.Option("> ", "--prompt", "-p", help="Shell prompt"),
     ):
-        """Interactive shell for remote host.
+        """Interactive stateful PTY shell for remote host.
 
         Examples:
             uniconn shell "ssh://user:pass@host"
@@ -343,7 +343,7 @@ def main():
             console.print(f"[dim]Connecting to {uri}...[/dim]\n")
 
             try:
-                async with Connection.from_uri(uri) as conn:
+                async with Connection.from_uri(uri) as conn, await conn.open_shell() as session:
                     console.print("[green]Connected[/green]")
                     console.print("[dim]Type 'exit' or 'quit' to quit[/dim]\n")
 
@@ -357,7 +357,7 @@ def main():
                             if not cmd.strip():
                                 continue
 
-                            result = await conn.run(cmd, raise_on_error=False)
+                            result = await session.execute(cmd)
 
                             if result.stdout:
                                 console.print(result.stdout)

@@ -144,3 +144,27 @@ class BaseTransport(ABC):
         raise NotImplementedError(
             f"listdir not supported for {self.name} transport"
         )
+
+    async def open_shell(
+        self,
+        term_type: str = "xterm",
+        term_size: tuple[int, int] = (80, 24),
+        **kwargs,
+    ):
+        """Открыть интерактивную PTY shell-сессию.
+
+        Базовая реализация вызывает NotImplementedError.
+        Переопределяется в транспортах с поддержкой PTY (SSH).
+
+        Args:
+            term_type: Тип терминала (например, "xterm", "vt100")
+            term_size: Размер терминала (cols, rows)
+            **kwargs: Дополнительные параметры
+
+        Raises:
+            NotImplementedError: Если транспорт не поддерживает интерактивный shell
+        """
+        raise NotImplementedError(
+            f"open_shell not supported for {self.name} transport"
+        )
+

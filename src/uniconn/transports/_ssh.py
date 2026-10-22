@@ -29,6 +29,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import inspect
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -58,6 +60,8 @@ class SSHTransport(BaseTransport):
         self._conn: asyncssh.SSHClientConnection | None = None
         # Промежуточные proxy/jump подключения (в порядке построения цепочки)
         self._tunnel_conns: list[asyncssh.SSHClientConnection] = []
+        # Активные PTY shell-процессы для корректного закрытия при disconnect()
+        self._shell_procs: list[Any] = []
         self._known_hosts = self.config.options.get("known_hosts", "no")
 
     @property
@@ -200,7 +204,15 @@ class SSHTransport(BaseTransport):
             ) from e
 
     async def disconnect(self) -> None:
-        """Закрыть SSH подключение и все промежуточные proxy-подключения."""
+        """Закрыть SSH подключение, активные shell-процессы и proxy-подключения."""
+        while self._shell_procs:
+            proc = self._shell_procs.pop()
+            with contextlib.suppress(Exception):
+                proc.terminate()
+            with contextlib.suppress(Exception):
+                close_fn = getattr(proc, "close", None)
+                if callable(close_fn):
+                    close_fn()
         if self._conn:
             self._conn.close()
             await self._conn.wait_closed()
@@ -504,3 +516,52 @@ class SSHTransport(BaseTransport):
                 f"SFTP listdir failed: {remote_path}: {e}",
                 host=self.config.host
             ) from e
+
+    async def open_shell(
+        self,
+        term_type: str = "xterm",
+        term_size: tuple[int, int] = (80, 24),
+        **kwargs,
+    ) -> Any:
+        """Открыть интерактивный login shell с PTY на текущем SSH-соединении.
+
+        Args:
+            term_type: Тип терминала (по умолчанию "xterm")
+            term_size: Размер терминала (cols, rows), по умолчанию (80, 24)
+            **kwargs: Дополнительные параметры для ``create_process``
+
+        Returns:
+            Живой объект ``asyncssh.SSHClientProcess``
+
+        Raises:
+            ConnectionError: Если нет активного подключения
+
+        """
+        if not self._connected or not self._conn:
+            raise ConnectionError(
+                "SSH transport is not connected. Call connect() first",
+                host=self.config.host,
+            )
+
+        try:
+            res = self._conn.create_process(
+                term_type=term_type,
+                term_size=term_size,
+                encoding="utf-8",
+                **kwargs,
+            )
+            if inspect.isawaitable(res):
+                proc = await res
+            elif hasattr(res, "__aenter__"):
+                proc = await res.__aenter__()
+            else:
+                proc = res
+        except Exception as e:
+            raise ConnectionError(
+                f"Failed to open SSH shell: {e}",
+                host=self.config.host,
+            ) from e
+
+        self._shell_procs.append(proc)
+        return proc
+

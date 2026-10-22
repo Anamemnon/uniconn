@@ -129,6 +129,13 @@ class TestBaseTransportNotImplemented:
         with pytest.raises(NotImplementedError, match="listdir not supported"):
             await transport.listdir("/a")
 
+    @pytest.mark.asyncio
+    async def test_open_shell_not_implemented(self, config):
+        """Open_shell → NotImplementedError."""
+        transport = DummyTransport(config)
+        with pytest.raises(NotImplementedError, match="open_shell not supported"):
+            await transport.open_shell()
+
 
 class TestBaseTransportContextManager:
     """Async context manager вызывает connect/disconnect."""

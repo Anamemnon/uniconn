@@ -14,6 +14,7 @@ from tenacity import (
 )
 
 from ._config import ConnectionConfig
+from ._shell import ShellSession
 from .exceptions import ConnectionError, TimeoutError
 from .plugins._loader import TransportLoader
 from .result import Result
@@ -521,6 +522,53 @@ class Connection:
             >>> print(files)
         """
         return await self._transport.listdir(remote_path)
+
+    async def open_shell(
+        self,
+        term_type: str = "xterm",
+        term_size: tuple[int, int] = (80, 24),
+        **kwargs,
+    ) -> ShellSession:
+        """Открыть интерактивную stateful PTY shell-сессию.
+
+        Работает поверх текущего SSH-подключения (автоматически вызывает
+        ``connect()``, если соединение ещё не установлено) и позволяет
+        выполнять команды с сохранением состояния (``cd``, ``export`` и т.д.),
+        не разрывая соединение и параллельно с обычными вызовами ``run()``.
+
+        Args:
+            term_type: Тип терминала (по умолчанию "xterm")
+            term_size: Размер терминала (cols, rows), по умолчанию (80, 24)
+            **kwargs: Дополнительные параметры для транспорта
+
+        Returns:
+            Инициализированный экземпляр ``ShellSession``
+
+        Raises:
+            NotImplementedError: Если транспорт не поддерживает PTY shell
+
+        Пример:
+            >>> async with Connection.from_uri("ssh://user@host") as conn:
+            ...     async with await conn.open_shell() as shell:
+            ...         await shell.execute("cd /var/log")
+            ...         res = await shell.execute("pwd")
+            ...         print(res.stdout)  # /var/log
+        """
+        if not self._transport.is_connected:
+            await self._transport.connect()
+
+        proc = await self._transport.open_shell(
+            term_type=term_type,
+            term_size=term_size,
+            **kwargs,
+        )
+        session = ShellSession(
+            proc=proc,
+            host=self._config.host,
+            default_timeout=self._config.timeout,
+        )
+        await session.initialize()
+        return session
 
     async def __aenter__(self) -> Self:
         await self._transport.connect()

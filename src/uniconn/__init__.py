@@ -42,7 +42,8 @@ from ._connection import Connection
 from ._logging import SecretMaskingFilter, get_logger, setup_file_logging
 from ._pool import ConnectionPool
 from ._session_pool import SSHSessionPool
-from ._sync import SyncConnection
+from ._shell import ShellSession
+from ._sync import SyncConnection, SyncShellSession
 from .background import LogConfig, ScreenPool, ScreenResult, ScreenSession
 from .exceptions import (
     AuthenticationError,
@@ -67,6 +68,8 @@ __all__ = [
     # Основные классы
     "Connection",
     "SyncConnection",
+    "ShellSession",
+    "SyncShellSession",
     "ConnectionPool",
     "SSHSessionPool",
     "ConnectionConfig",

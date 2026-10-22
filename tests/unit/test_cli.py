@@ -220,3 +220,60 @@ class TestCLIBMC:
 
         assert result.exit_code == 0
         assert "Power State" in result.stdout
+
+
+class TestCLIShell:
+    """Тесты интерактивной команды shell через ShellSession."""
+
+    def test_cli_shell_uses_shell_session_execute(self, monkeypatch):
+        """Команда `uniconn shell` открывает ShellSession и вызывает execute()."""
+        import typer
+        from typer.testing import CliRunner
+        from unittest.mock import MagicMock
+        from uniconn import cli
+        from uniconn.result import Result
+
+        captured = {}
+        monkeypatch.setattr(
+            typer.Typer,
+            "__call__",
+            lambda self, *a, **kw: captured.setdefault("app", self),
+        )
+        cli.main()
+        app = captured["app"]
+
+        session = MagicMock()
+        session.execute = AsyncMock(
+            side_effect=[
+                Result(exit_code=0, stdout="", stderr="", duration=0.05, command="cd /tmp"),
+                Result(exit_code=0, stdout="/tmp", stderr="", duration=0.05, command="pwd"),
+            ]
+        )
+        session_cm = MagicMock()
+        session_cm.__aenter__ = AsyncMock(return_value=session)
+        session_cm.__aexit__ = AsyncMock(return_value=False)
+
+        conn = MagicMock()
+        conn.open_shell = AsyncMock(return_value=session_cm)
+        conn_cm = MagicMock()
+        conn_cm.__aenter__ = AsyncMock(return_value=conn)
+        conn_cm.__aexit__ = AsyncMock(return_value=False)
+
+        conn_cls = MagicMock()
+        conn_cls.from_uri.return_value = conn_cm
+
+        runner = CliRunner()
+        with patch("uniconn.cli.Connection", conn_cls):
+            res = runner.invoke(
+                app,
+                ["shell", "ssh://user@host"],
+                input="cd /tmp\npwd\nexit\n",
+            )
+
+        assert res.exit_code == 0, res.output
+        conn.open_shell.assert_awaited_once()
+        assert session.execute.await_count == 2
+        assert session.execute.await_args_list[0].args[0] == "cd /tmp"
+        assert session.execute.await_args_list[1].args[0] == "pwd"
+        assert "/tmp" in res.output
+

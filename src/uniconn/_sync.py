@@ -13,10 +13,67 @@ from collections.abc import Iterator
 from typing import Any, Self
 
 from ._connection import Connection
+from ._shell import ShellSession
 from .result import Result
 
 # Маркер завершения потока в очереди стриминга
 _STREAM_DONE = object()
+
+
+class SyncShellSession:
+    """Синхронная обёртка над async ShellSession.
+
+    Делегирует все операции в выделенный event loop родительского
+    ``SyncConnection`` через ``run_coroutine_threadsafe``.
+
+    Пример использования:
+        with Connection.from_uri("ssh://user@host").to_sync() as conn:
+            with conn.open_shell() as shell:
+                shell.execute("cd /tmp")
+                res = shell.execute("pwd")
+                print(res.stdout)
+    """
+
+    def __init__(self, async_session: ShellSession, sync_conn: "SyncConnection"):
+        self._async_session = async_session
+        self._sync_conn = sync_conn
+
+    @property
+    def is_alive(self) -> bool:
+        """Проверить, что процесс оболочки активен."""
+        return self._async_session.is_alive
+
+    def execute(self, command: str, timeout: float | None = None) -> Result:
+        """Выполнить команду в stateful shell-сессии (синхронно)."""
+        return self._sync_conn._run_coro(
+            self._async_session.execute(command, timeout=timeout)
+        )
+
+    def send(self, text: str) -> None:
+        """Отправить текст в stdin оболочки (синхронно)."""
+        self._sync_conn._run_coro(self._async_session.send(text))
+
+    def receive(self, timeout: float | None = None) -> str:
+        """Прочитать доступный вывод из stdout оболочки (синхронно)."""
+        return self._sync_conn._run_coro(
+            self._async_session.receive(timeout=timeout)
+        )
+
+    def resize(self, cols: int, rows: int) -> None:
+        """Изменить размер окна терминала PTY (синхронно)."""
+        self._sync_conn._run_coro(self._async_session.resize(cols, rows))
+
+    def close(self) -> None:
+        """Закрыть shell-сессию (синхронно)."""
+        if self._sync_conn._closed:
+            return
+        self._sync_conn._run_coro(self._async_session.close())
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
 
 
 class SyncConnection:
@@ -188,6 +245,31 @@ class SyncConnection:
         """Проверить живость подключения (синхронно)."""
         return self._run_coro(self._async_conn.is_alive(timeout=timeout))
 
+    def open_shell(
+        self,
+        term_type: str = "xterm",
+        term_size: tuple[int, int] = (80, 24),
+        **kwargs,
+    ) -> SyncShellSession:
+        """Открыть интерактивную stateful PTY shell-сессию (синхронно).
+
+        Args:
+            term_type: Тип терминала (по умолчанию "xterm")
+            term_size: Размер терминала (cols, rows), по умолчанию (80, 24)
+            **kwargs: Дополнительные параметры для транспорта
+
+        Returns:
+            Экземпляр ``SyncShellSession``
+        """
+        async_session = self._run_coro(
+            self._async_conn.open_shell(
+                term_type=term_type,
+                term_size=term_size,
+                **kwargs,
+            )
+        )
+        return SyncShellSession(async_session, self)
+
     def close(self) -> None:
         """Закрыть подключение и освободить ресурсы."""
         if self._closed:
@@ -226,3 +308,4 @@ class SyncConnection:
         # close() сам закрывает async-подключение (disconnect транспорта),
         # останавливает loop и его поток — отдельный disconnect не нужен
         self.close()
+
