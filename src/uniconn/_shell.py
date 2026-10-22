@@ -327,6 +327,12 @@ class ShellSession:
                 close_fn = getattr(self._proc, "close", None)
                 if callable(close_fn):
                     close_fn()
+            with contextlib.suppress(Exception):
+                wait_closed_fn = getattr(self._proc, "wait_closed", None)
+                if callable(wait_closed_fn):
+                    res = wait_closed_fn()
+                    if inspect.isawaitable(res):
+                        await res
 
     async def __aenter__(self) -> Self:
         """Войти в контекстный менеджер сессии."""

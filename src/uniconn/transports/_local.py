@@ -74,6 +74,15 @@ class _LocalShellProcess:
         if self._proc.stdin is not None:
             with contextlib.suppress(Exception):
                 self._proc.stdin.close()
+        transport = getattr(self._proc, "_transport", None)
+        if transport is not None:
+            with contextlib.suppress(Exception):
+                transport.close()
+
+    async def wait_closed(self) -> None:
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(self._proc.wait(), timeout=1.0)
+        self.close()
 
 
 class LocalTransport(BaseTransport):
@@ -96,7 +105,7 @@ class LocalTransport(BaseTransport):
             with contextlib.suppress(Exception):
                 proc.terminate()
             with contextlib.suppress(Exception):
-                proc.close()
+                await proc.wait_closed()
         self._connected = False
 
     async def ping(self, timeout: float | None = None) -> bool:

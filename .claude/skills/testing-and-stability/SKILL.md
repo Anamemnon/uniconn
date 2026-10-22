@@ -14,6 +14,13 @@ description: Обязательные правила запуска тестов
    uv run pytest -m "not integration"
    ```
 2. **Каждая новая фича или багфикс требует новых тестов**:
+   - Размещайте новые тесты в соответствующем тематическом пакете внутри `tests/unit/`:
+     - `tests/unit/core/` — `Connection`, `SyncConnection`, `Result`, `ShellSession`, URI/конфиги, `structlog`-логирование и хуки.
+     - `tests/unit/transports/` — `SSHTransport`, `TelnetTransport`, `SerialTransport`, `LocalTransport`, `IPMITransport`, SFTP.
+     - `tests/unit/pools/` — `ConnectionPool`, `SSHSessionPool`.
+     - `tests/unit/screen/` — `ScreenPool`, `ScreenSession`, `LogPipeline`, cleanup.
+     - `tests/unit/cli/` — команды CLI (`typer` + `rich`).
+     - `tests/unit/releases/` — сквозные тесты функциональности конкретных релизов (`test_v0*_features.py`).
    - При добавлении метода/контекстного менеджера в `Connection` необходимо добавить unit-тесты как для асинхронного `Connection`, так и для синхронного `SyncConnection`.
    - Покрывайте не только «счастливый путь» (happy path), но и граничные случаи: ошибки сети/таймауты, `dry_run=True`, `sensitive=True` (проверка отсутствия утечки секретов в `repr`, `to_dict()` и логах).
 3. **Нулевая терпимость к `RuntimeWarning` (утечкам корутин)**:

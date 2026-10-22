@@ -26,7 +26,11 @@ def _get_env() -> dict[str, str]:
     home_bin = os.path.expanduser("~/.local/bin")
     env["PATH"] = f"{LOCAL_BIN}:{home_bin}:{env.get('PATH', '')}"
     env["UV_PYTHON_INSTALL_DIR"] = LOCAL_UV_PYTHON
-    env["PYTHONPATH"] = f"{os.path.join(ROOT_DIR, 'src')}:{os.path.join(ROOT_DIR, 'tests', 'unit')}"
+    env["PYTHONPATH"] = (
+        f"{os.path.join(ROOT_DIR, 'src')}:"
+        f"{os.path.join(ROOT_DIR, 'tests', 'unit')}:"
+        f"{os.path.join(ROOT_DIR, 'tests', 'unit', 'core')}"
+    )
     return env
 
 

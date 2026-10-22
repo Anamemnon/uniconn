@@ -1,6 +1,8 @@
 # Требования к универсальной Python-библиотеке для выполнения команд на удалённых хостах
 
-> **Статус**: v0.6.0 | **410 unit-тестов** | 30 файлов тестов | 5 транспортов | CLI | Плагинная система | PEP 561 (`py.typed`)
+> **Статус**: v0.6.0 | **410 unit-тестов** | 30 файлов тестов (6 пакетов в `tests/unit/`) | 5 транспортов | CLI | Плагинная система | PEP 561 (`py.typed`)
+>
+> **Для ИИ-агентов**: этот файл является справочной матрицей реализованных фич. **Не загружайте его в контекст при каждом запросе** — обращайтесь к нему только по требованию (on-demand), когда нужно быстро проверить статус конкретной функциональности или обновить чек-лист после релиза.
 >
 > Обозначения: ✅ реализовано | ⚠️ частично | ❌ не реализовано
 
@@ -115,7 +117,8 @@
 
 ### 13. CLI интерфейс
 - ✅ `typer` + `rich`: `run`, `run-multi` (`--inventory`, `--group`), `upload`, `download`, `bmc`, `shell`, `transports`, `screen-run`, `screen-logs`, `screen-status`, `screen-kill`, `version`
-- ✅ Форматы вывода: `table`/`panel`, `json`, `plain`
+- ✅ Глобальные флаги логирования: `--log-level` и `--log-format (console | json)`
+- ✅ Форматы вывода команд: `table`/`panel`, `json`, `plain`
 
 ### 14. Клонирование подключений
 - ✅ `copy(host=..., timeout=...)` — immutable clone с override
@@ -167,7 +170,7 @@
 
 ### 20. Middleware / цепочки обработчиков
 - ✅ Hooks / callbacks (`before_run`, `after_run`, `on_error`, метод `add_hook`)
-- ✅ Готовые пресеты в `uniconn.hooks`: `audit_log_hook`, `allowlist_hook`, `blocklist_hook`, `MetricsCollector` / `metrics_collector_hook`
+- ✅ Готовые пресеты в `uniconn.hooks`: `audit_log_hook`, `structured_log_hook` (JSONL-телеметрия `command.executed` для ClickHouse / InfluxDB / Grafana Loki), `allowlist_hook`, `blocklist_hook`, `MetricsCollector` / `metrics_collector_hook`
 - ✅ Режим `dry_run=True` (на уровне `Connection` и отдельного вызова `run()`)
 
 ### 22. Автореконнект и Heartbeat
@@ -216,6 +219,8 @@
 | `SSHSessionPool` | Мультиплексинг SSH-каналов + `check_health()` |
 | `ShellSession` (PTY) | Маркерный протокол `__UNICONN_{uuid}__{exit_code}` для SSH, Local и Telnet |
 | `shlex.join` для `Sequence[str]` | Безопасное экранирование списков аргументов в `Connection` и `ShellSession` |
+| Структурированные логи (`structlog` + `contextvars`) | Единый пайплайн `ProcessorFormatter` для `structlog` и `stdlib logging`, JSONL/Console, авто-редакция секретов (`redact_event_dict`) и телеметрия для Grafana Loki / ClickHouse / InfluxDB |
+| Модульная группировка `tests/unit/` | 30 тестовых модулей сгруппированы по доменам: `core/`, `transports/`, `pools/`, `screen/`, `cli/`, `releases/` |
 
 ---
 
