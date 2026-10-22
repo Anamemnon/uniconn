@@ -1,8 +1,10 @@
 # src/uniconn/result.py
 """Модель результата выполнения команды."""
 
+import json as json_module
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 
 @dataclass(frozen=True)
@@ -22,6 +24,32 @@ class Result:
     def ok(self) -> bool:
         """True если exit_code == 0."""
         return self.exit_code == 0
+
+    def __bool__(self) -> bool:
+        """Позволяет использовать Result в условных выражениях (``if await conn.run(...):``)."""
+        return self.ok
+
+    @property
+    def text(self) -> str:
+        """Очищенный от краевых пробелов и переводов строк ``stdout`` (``stdout.strip()``)."""
+        return self.stdout.strip()
+
+    @property
+    def lines(self) -> list[str]:
+        """Список строк вывода ``stdout`` (без завершающих переводов строк)."""
+        stripped = self.stdout.strip()
+        if not stripped:
+            return []
+        return stripped.splitlines()
+
+    def json(self) -> Any:
+        """Распарсить ``stdout`` как JSON и вернуть Python-объект.
+
+        Raises:
+            ValueError: Если ``stdout`` не является валидным JSON.
+
+        """
+        return json_module.loads(self.stdout)
 
     def raise_for_status(self) -> None:
         """Raise ExecutionError if exit_code != 0."""
@@ -50,3 +78,4 @@ class Result:
     def __str__(self) -> str:
         """Вернуть краткое строковое представление результата."""
         return f"Result(exit_code={self.exit_code}, duration={self.duration:.2f}s)"
+

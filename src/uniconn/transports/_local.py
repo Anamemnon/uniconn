@@ -152,6 +152,29 @@ class LocalTransport(BaseTransport):
                 host="localhost",
             ) from e
 
+    async def exists(self, remote_path: str) -> bool:
+        """Проверить существование локального файла или директории."""
+        return Path(remote_path).exists()
+
+    async def mkdir(
+        self,
+        remote_path: str,
+        parents: bool = True,
+        exist_ok: bool = True,
+        mode: int | None = None,
+    ) -> None:
+        """Создать локальную директорию и опционально применить chmod."""
+        try:
+            path = Path(remote_path)
+            path.mkdir(parents=parents, exist_ok=exist_ok)
+            if mode is not None and sys.platform != "win32":
+                os.chmod(path, mode)
+        except OSError as e:
+            raise ConnectionError(
+                f"Local mkdir failed for {remote_path}: {e}",
+                host="localhost",
+            ) from e
+
     async def stream(
         self,
         command: str,
@@ -170,3 +193,4 @@ class LocalTransport(BaseTransport):
                 yield line.decode().rstrip()
 
         await proc.wait()
+

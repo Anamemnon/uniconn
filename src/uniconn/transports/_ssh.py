@@ -106,10 +106,20 @@ class SSHTransport(BaseTransport):
         )
 
     def _resolve_ssh_config(self) -> list[str] | None:
-        """Определить список файлов конфигурации OpenSSH (опция ``ssh_config``)."""
-        opt = self.config.options.get("ssh_config")
-        if opt is None or opt is False or str(opt).lower() in ("false", "no", "none", "0", ""):
+        """Определить список файлов конфигурации OpenSSH (``ssh_config``)."""
+        opt = (
+            self.config.ssh_config
+            if self.config.ssh_config is not None
+            else self.config.options.get("ssh_config")
+        )
+        if opt is False or (
+            opt is not None and str(opt).lower() in ("false", "no", "none", "0", "")
+        ):
             return None
+
+        if opt is None:
+            default_cfg = Path.home() / ".ssh" / "config"
+            return [str(default_cfg)] if default_cfg.exists() else None
 
         if opt is True or str(opt).lower() in ("true", "yes", "1", "default"):
             default_cfg = Path.home() / ".ssh" / "config"
@@ -124,6 +134,80 @@ class SSHTransport(BaseTransport):
             host=self.config.host,
         )
 
+    @staticmethod
+    def parse_openssh_config(
+        config_path: str | Path,
+        host: str | None,
+    ) -> dict[str, Any]:
+        """Распарсить директивы OpenSSH config для заданного хоста/алиаса.
+
+        Поддерживает ``Host`` (с масками ``*`` и ``?``), ``HostName``, ``User``,
+        ``Port``, ``IdentityFile`` и ``ProxyJump`` (по правилу first-match-wins,
+        принятому в OpenSSH).
+        """
+        import fnmatch
+
+        if not host:
+            return {}
+        path = Path(config_path).expanduser()
+        if not path.is_file():
+            return {}
+
+        matched_directives: dict[str, Any] = {}
+        current_matches = False
+
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return {}
+
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line and (
+                " " not in line or line.index("=") < line.index(" ")
+            ):
+                key, val = line.split("=", 1)
+            else:
+                parts = line.split(None, 1)
+                if len(parts) < 2:
+                    continue
+                key, val = parts[0], parts[1]
+
+            key_lower = key.strip().lower()
+            val = val.strip().strip('"')
+
+            if key_lower == "host":
+                patterns = val.split()
+                pos_match = False
+                neg_match = False
+                for pat in patterns:
+                    if pat.startswith("!"):
+                        if fnmatch.fnmatchcase(host, pat[1:]):
+                            neg_match = True
+                    elif fnmatch.fnmatchcase(host, pat):
+                        pos_match = True
+                current_matches = pos_match and not neg_match
+                continue
+
+            if not current_matches:
+                continue
+
+            if key_lower == "hostname" and "hostname" not in matched_directives:
+                matched_directives["hostname"] = val
+            elif key_lower == "user" and "user" not in matched_directives:
+                matched_directives["user"] = val
+            elif key_lower == "port" and "port" not in matched_directives:
+                with contextlib.suppress(ValueError):
+                    matched_directives["port"] = int(val)
+            elif key_lower == "identityfile" and "identityfile" not in matched_directives:
+                matched_directives["identityfile"] = str(Path(val).expanduser())
+            elif key_lower == "proxyjump" and "proxyjump" not in matched_directives:
+                matched_directives["proxyjump"] = val
+
+        return matched_directives
+
     def _apply_extra_connect_options(self, connect_kwargs: dict[str, Any]) -> None:
         """Применить расширенные SSH-опции (keepalive, ssh_config, agent, client_cert)."""
         opts = self.config.options
@@ -137,10 +221,23 @@ class SSHTransport(BaseTransport):
         if keepalive_max is not None:
             connect_kwargs["keepalive_count_max"] = int(keepalive_max)
 
-        # ~/.ssh/config (§24)
+        # ~/.ssh/config (§24 & v0.5.0)
         ssh_cfg = self._resolve_ssh_config()
         if ssh_cfg is not None:
             connect_kwargs["config"] = ssh_cfg
+            for cfg_file in ssh_cfg:
+                parsed_cfg = self.parse_openssh_config(cfg_file, self.config.host)
+                if not parsed_cfg:
+                    continue
+                if self.config.username is None and "user" in parsed_cfg:
+                    connect_kwargs["username"] = parsed_cfg["user"]
+                if self.config.key_file is None and "identityfile" in parsed_cfg:
+                    connect_kwargs["client_keys"] = [parsed_cfg["identityfile"]]
+                if (
+                    self.config.port in (None, 22)
+                    and "port" in parsed_cfg
+                ):
+                    connect_kwargs["port"] = parsed_cfg["port"]
 
         # SSH-агент (§23)
         if "agent_path" in opts and opts["agent_path"] is not None:
@@ -704,6 +801,44 @@ class SSHTransport(BaseTransport):
         except asyncssh.Error as e:
             raise ConnectionError(
                 f"SFTP write_file failed: {remote_path}: {e}",
+                host=self.config.host,
+            ) from e
+
+    async def exists(self, remote_path: str) -> bool:
+        """Проверить существование файла или директории через SFTP stat."""
+        assert asyncssh is not None
+        if not self._connected or not self._conn:
+            raise ConnectionError("Not connected", host=self.config.host)
+
+        try:
+            await self.stat(remote_path)
+            return True
+        except ConnectionError:
+            return False
+
+    async def mkdir(
+        self,
+        remote_path: str,
+        parents: bool = True,
+        exist_ok: bool = True,
+        mode: int | None = None,
+    ) -> None:
+        """Создать директорию на удалённом хосте через SFTP."""
+        assert asyncssh is not None
+        if not self._connected or not self._conn:
+            raise ConnectionError("Not connected", host=self.config.host)
+
+        try:
+            async with self._conn.start_sftp_client() as sftp:
+                if parents and hasattr(sftp, "makedirs"):
+                    await sftp.makedirs(remote_path, exist_ok=exist_ok)
+                else:
+                    await sftp.mkdir(remote_path)
+                if mode is not None:
+                    await sftp.chmod(remote_path, mode)
+        except asyncssh.Error as e:
+            raise ConnectionError(
+                f"SFTP mkdir failed: {remote_path}: {e}",
                 host=self.config.host,
             ) from e
 

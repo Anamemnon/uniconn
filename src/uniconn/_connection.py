@@ -7,6 +7,8 @@ import inspect
 import json
 import logging
 import shlex
+import shutil
+import tempfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self
@@ -86,6 +88,121 @@ class _EnvContext:
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self.__exit__(exc_type, exc_val, exc_tb)
+
+
+class _TempDirContext:
+    """Асинхронный контекстный менеджер временной директории на хосте."""
+
+    def __init__(
+        self,
+        conn: Connection,
+        prefix: str = "uniconn_",
+        suffix: str = "",
+        dir: str | Path | None = None,
+    ) -> None:
+        self._conn = conn
+        self._prefix = prefix
+        self._suffix = suffix
+        self._dir = str(dir) if dir is not None else None
+        self._path: str | None = None
+
+    async def __aenter__(self) -> str:
+        self._path = await self._conn._create_temp_dir(
+            prefix=self._prefix,
+            suffix=self._suffix,
+            dir=self._dir,
+        )
+        return self._path
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        if self._path:
+            await self._conn._remove_temp_dir(self._path)
+            self._path = None
+
+
+def _parse_inventory_data(
+    raw_data: Any,
+    host: str | None = None,
+    group: str | None = None,
+) -> list[dict[str, Any]]:
+    """Нормализовать данные инвентаря (список или словарь с hosts/groups/defaults)."""
+    entries: list[dict[str, Any]] = []
+    group_map: dict[str, list[str]] = {}
+
+    if isinstance(raw_data, list):
+        for item in raw_data:
+            if isinstance(item, str):
+                entries.append({"uri": item})
+            elif isinstance(item, dict):
+                entries.append(dict(item))
+    elif isinstance(raw_data, dict):
+        if "hosts" in raw_data and isinstance(raw_data["hosts"], (dict, list)):
+            defaults = (
+                dict(raw_data.get("defaults", {}))
+                if isinstance(raw_data.get("defaults"), dict)
+                else {}
+            )
+            raw_groups = raw_data.get("groups")
+            if isinstance(raw_groups, dict):
+                for g_name, g_members in raw_groups.items():
+                    if isinstance(g_members, list):
+                        group_map[str(g_name)] = [str(m) for m in g_members]
+
+            hosts_sec = raw_data["hosts"]
+            if isinstance(hosts_sec, dict):
+                for alias, h_val in hosts_sec.items():
+                    if isinstance(h_val, str):
+                        merged = {**defaults, "name": str(alias), "uri": h_val}
+                    elif isinstance(h_val, dict):
+                        merged = {**defaults, **h_val}
+                        merged.setdefault("name", str(alias))
+                        merged.setdefault("host", str(alias))
+                    else:
+                        continue
+                    entries.append(merged)
+            elif isinstance(hosts_sec, list):
+                for item in hosts_sec:
+                    if isinstance(item, str):
+                        entries.append({**defaults, "uri": item})
+                    elif isinstance(item, dict):
+                        entries.append({**defaults, **item})
+        elif "transport" in raw_data or "uri" in raw_data:
+            entries.append(dict(raw_data))
+        else:
+            for alias, h_val in raw_data.items():
+                if isinstance(h_val, str):
+                    entries.append({"name": str(alias), "uri": h_val})
+                elif isinstance(h_val, dict):
+                    merged = dict(h_val)
+                    merged.setdefault("name", str(alias))
+                    merged.setdefault("host", str(alias))
+                    entries.append(merged)
+
+    if group is not None:
+        explicit_members = set(group_map.get(group, []))
+        filtered_by_group: list[dict[str, Any]] = []
+        for entry in entries:
+            entry_groups = entry.get("groups") or []
+            if isinstance(entry_groups, str):
+                entry_groups = [entry_groups]
+            entry_name = entry.get("name") or entry.get("host")
+            if group in entry_groups or (entry_name and str(entry_name) in explicit_members):
+                filtered_by_group.append(entry)
+        if not filtered_by_group:
+            raise KeyError(f"Group {group!r} not found in inventory")
+        entries = filtered_by_group
+
+    if host is not None:
+        filtered_by_host = [
+            entry
+            for entry in entries
+            if entry.get("name") == host or entry.get("host") == host
+        ]
+        if not filtered_by_host:
+            raise KeyError(f"Host {host!r} not found in inventory")
+        entries = filtered_by_host
+
+    return entries
 
 
 class Connection:
@@ -182,33 +299,19 @@ class Connection:
         logger: logging.Logger | None = None,
         dry_run: bool = False,
     ) -> Self:
-        """Создать подключение из словаря.
-
-        Args:
-            data: Словарь с параметрами подключения.
-                Поддерживаемые ключи: transport, host, port, username,
-                password, key_file, passphrase, timeout, options, dry_run.
-            retry_attempts: Количество попыток при ошибке
-            logger: Кастомный логгер
-            dry_run: Режим без реального выполнения команд
-
-        Returns:
-            Connection
-
-        Пример:
-            >>> Connection.from_dict({
-            ...     "transport": "ssh",
-            ...     "host": "example.com",
-            ...     "username": "admin",
-            ...     "timeout": 60,
-            ... })
-
-        """
+        """Создать подключение из словаря."""
         retry = data.get("retry_attempts", retry_attempts)
         effective_dry_run = bool(data.get("dry_run", dry_run))
+        if "uri" in data and "transport" not in data:
+            return cls.from_uri(
+                str(data["uri"]),
+                retry_attempts=retry,
+                logger=logger,
+                dry_run=effective_dry_run,
+            )
         config = ConnectionConfig(**{
             k: v for k, v in data.items()
-            if k not in ("retry_attempts", "logger", "dry_run")
+            if k not in ("retry_attempts", "logger", "dry_run", "name", "groups")
         })
         transport_class = TransportLoader.get(config.transport)
         transport = transport_class(config)
@@ -219,63 +322,54 @@ class Connection:
         cls,
         path: str | Path,
         retry_attempts: int = 3,
-        logger: logging.Logger | None = None
+        logger: logging.Logger | None = None,
+        *,
+        host: str | None = None,
+        group: str | None = None,
     ) -> list[Self]:
-        """Создать подключения из JSON или YAML файла.
-
-        Файл должен содержать список объектов конфигурации:
-        ```json
-        [
-            {"transport": "ssh", "host": "node1"},
-            {"transport": "ssh", "host": "node2", "username": "admin"}
-        ]
-        ```
-
-        YAML формат:
-        ```yaml
-        - transport: ssh
-          host: node1
-        - transport: ssh
-          host: node2
-          username: admin
-        ```
-
-        Args:
-            path: Путь к файлу (.json, .yaml, .yml)
-            retry_attempts: Количество попыток при ошибке
-            logger: Кастомный логгер
-
-        Returns:
-            Список Connection объектов
-
-        """
+        """Создать подключения из JSON/YAML файла (включая инвентарь с хостами и группами)."""
         filepath = Path(path)
         content = filepath.read_text(encoding="utf-8")
 
         if filepath.suffix in (".yaml", ".yml"):
             try:
                 import yaml
-                data_list = yaml.safe_load(content)
+                raw_data = yaml.safe_load(content)
             except ImportError:
                 raise ImportError(
                     "PyYAML not installed. "
                     "Run: pip install pyyaml"
                 ) from None
         elif filepath.suffix == ".json":
-            data_list = json.loads(content)
+            raw_data = json.loads(content)
         else:
             raise ValueError(
                 f"Unsupported file format: {filepath.suffix}. "
                 "Use .json, .yaml or .yml"
             )
 
-        if not isinstance(data_list, list):
-            data_list = [data_list]
-
+        entries = _parse_inventory_data(raw_data, host=host, group=group)
         return [
             cls.from_dict(data, retry_attempts, logger)
-            for data in data_list
+            for data in entries
         ]
+
+    @classmethod
+    def from_inventory(
+        cls,
+        path: str | Path,
+        host: str,
+        retry_attempts: int = 3,
+        logger: logging.Logger | None = None,
+    ) -> Self:
+        """Создать одиночное подключение по имени хоста из инвентарного файла (YAML/JSON)."""
+        conns = cls.from_file(
+            path,
+            retry_attempts=retry_attempts,
+            logger=logger,
+            host=host,
+        )
+        return conns[0]
 
     # ─── Клонирование и модификация ────────────────────────────────
 
@@ -287,38 +381,14 @@ class Connection:
         password: str | SecretStr | None = None,
         key_file: str | None = None,
         passphrase: str | SecretStr | None = None,
+        ssh_config: str | bool | None = None,
         timeout: float | None = None,
         options: dict | None = None,
         retry_attempts: int | None = None,
         logger: logging.Logger | None = None,
         dry_run: bool | None = None,
     ) -> Self:
-        """Создать копию подключения с возможностью изменения параметров.
-
-        Все не указанные параметры наследуются из оригинала.
-        Если пароль не указан, берётся из оригинала.
-
-        Args:
-            host: Новый хост
-            port: Новый порт
-            username: Новый пользователь
-            password: Новый пароль
-            key_file: Новый путь к ключу
-            passphrase: Новая парольная фраза для ключа
-            timeout: Новый таймаут
-            options: Новые опции
-            retry_attempts: Новое количество попыток
-            logger: Новый логгер
-            dry_run: Новый режим dry_run
-
-        Returns:
-            Новый Connection с изменёнными параметрами
-
-        Пример:
-            >>> conn = Connection.from_uri("ssh://admin@prod")
-            >>> dev = conn.copy(host="dev", username="developer")
-
-        """
+        """Создать копию подключения с возможностью изменения параметров."""
         new_config = ConnectionConfig(
             transport=self._config.transport,
             host=host if host is not None else self._config.host,
@@ -335,6 +405,7 @@ class Connection:
                 else passphrase if passphrase is not None
                 else self._config.passphrase
             ),
+            ssh_config=ssh_config if ssh_config is not None else self._config.ssh_config,
             timeout=timeout if timeout is not None else self._config.timeout,
             options=options if options is not None else self._config.options,
         )
@@ -352,29 +423,7 @@ class Connection:
         )
 
     def with_overrides(self, **overrides) -> Self:
-        """Создать копию подключения с переопределёнными параметрами.
-
-        Удобный метод для пакетного изменения множества параметров
-        через словарь.
-
-        Args:
-            **overrides: Параметры для переопределения.
-                Поддерживаются: host, port, username, password,
-                key_file, passphrase, timeout, options, retry_attempts,
-                logger, dry_run.
-
-        Returns:
-            Новый Connection с переопределёнными параметрами
-
-        Пример:
-            >>> prod = Connection.from_uri("ssh://admin@prod:22")
-            >>> staging = prod.with_overrides(
-            ...     host="staging",
-            ...     timeout=60,
-            ...     options={"compress": True}
-            ... )
-
-        """
+        """Создать копию подключения с переопределёнными параметрами."""
         return self.copy(
             host=overrides.get("host"),
             port=overrides.get("port"),
@@ -382,6 +431,7 @@ class Connection:
             password=overrides.get("password"),
             key_file=overrides.get("key_file"),
             passphrase=overrides.get("passphrase"),
+            ssh_config=overrides.get("ssh_config"),
             timeout=overrides.get("timeout"),
             options=overrides.get("options"),
             retry_attempts=overrides.get("retry_attempts"),
@@ -900,6 +950,98 @@ class Connection:
 
         data = content.encode(encoding) if isinstance(content, str) else bytes(content)
         await self._transport.write_file(effective_path, data, mode=mode)
+
+    async def exists(self, remote_path: str | Path) -> bool:
+        """Проверить существование файла или директории на хосте.
+
+        Если активен контекст ``conn.cd()``, относительный путь разрешается
+        относительно текущей рабочей директории.
+        """
+        if not self._transport.is_connected:
+            await self._transport.connect()
+
+        effective_path = str(remote_path)
+        if self.current_cwd and not Path(effective_path).is_absolute():
+            effective_path = str(Path(self.current_cwd) / effective_path)
+
+        return await self._transport.exists(effective_path)
+
+    async def mkdir(
+        self,
+        remote_path: str | Path,
+        parents: bool = True,
+        exist_ok: bool = True,
+        mode: int | None = None,
+    ) -> None:
+        """Создать директорию на хосте.
+
+        Если активен контекст ``conn.cd()``, относительный путь разрешается
+        относительно текущей рабочей директории.
+        """
+        if self._dry_run:
+            self._logger.info(
+                f"[DRY-RUN] Skipping mkdir {str(remote_path)!r} on {self._config.uri_safe}"
+            )
+            return
+
+        if not self._transport.is_connected:
+            await self._transport.connect()
+
+        effective_path = str(remote_path)
+        if self.current_cwd and not Path(effective_path).is_absolute():
+            effective_path = str(Path(self.current_cwd) / effective_path)
+
+        await self._transport.mkdir(
+            effective_path,
+            parents=parents,
+            exist_ok=exist_ok,
+            mode=mode,
+        )
+
+    def temp_dir(
+        self,
+        prefix: str = "uniconn_",
+        suffix: str = "",
+        dir: str | Path | None = None,
+    ) -> _TempDirContext:
+        r"""Асинхронный контекстный менеджер временной директории на хосте.
+
+        Создаёт уникальную временную директорию при входе в блок ``async with``
+        и автоматически удаляет её вместе со всем содержимым при выходе.
+
+        Пример:
+            >>> async with conn.temp_dir(prefix="build_") as tmp:
+            ...     await conn.write_file(f"{tmp}/script.sh", "#!/bin/sh\necho ok")
+            ...     res = await conn.run(["sh", f"{tmp}/script.sh"])
+        """
+        return _TempDirContext(self, prefix=prefix, suffix=suffix, dir=dir)
+
+    async def _create_temp_dir(
+        self,
+        prefix: str = "uniconn_",
+        suffix: str = "",
+        dir: str | None = None,
+    ) -> str:
+        """Создать временную директорию на хосте и вернуть путь к ней."""
+        base_dir = dir or "/tmp"
+        if self._dry_run:
+            return f"{base_dir.rstrip('/')}/{prefix}dryrun{suffix}"
+
+        if self.transport_name == "local":
+            return tempfile.mkdtemp(suffix=suffix, prefix=prefix, dir=dir)
+
+        template = f"{base_dir.rstrip('/')}/{prefix}XXXXXX{suffix}"
+        res = await self.run(["mktemp", "-d", template], raise_on_error=True)
+        return res.text
+
+    async def _remove_temp_dir(self, path: str) -> None:
+        """Удалить временную директорию на хосте."""
+        if self._dry_run or not path:
+            return
+        if self.transport_name == "local":
+            shutil.rmtree(path, ignore_errors=True)
+            return
+        await self.run(["rm", "-rf", path])
 
     async def chmod(
         self,

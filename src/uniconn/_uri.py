@@ -82,6 +82,12 @@ class URIParser:
         passphrase = (
             SecretStr(str(raw_passphrase)) if raw_passphrase is not None else None
         )
+        ssh_config: str | bool | None = None
+        if "ssh_config" in options:
+            raw_ssh_cfg = options["ssh_config"]
+            ssh_config = (
+                raw_ssh_cfg if isinstance(raw_ssh_cfg, bool) else str(raw_ssh_cfg)
+            )
 
         return ConnectionConfig(
             transport=transport,
@@ -92,6 +98,7 @@ class URIParser:
             password=SecretStr(unquote(parsed.password)) if parsed.password else None,
             key_file=key_file,
             passphrase=passphrase,
+            ssh_config=ssh_config,
             options=options
         )
 

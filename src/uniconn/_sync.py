@@ -84,6 +84,32 @@ class SyncShellSession:
         self.close()
 
 
+class _SyncTempDirContext:
+    """Синхронный контекстный менеджер временной директории поверх ``SyncConnection``."""
+
+    def __init__(
+        self,
+        sync_conn: "SyncConnection",
+        prefix: str = "uniconn_",
+        suffix: str = "",
+        dir: str | Path | None = None,
+    ) -> None:
+        self._sync_conn = sync_conn
+        self._async_ctx = sync_conn._async_conn.temp_dir(
+            prefix=prefix,
+            suffix=suffix,
+            dir=dir,
+        )
+
+    def __enter__(self) -> str:
+        return self._sync_conn._run_coro(self._async_ctx.__aenter__())
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self._sync_conn._run_coro(
+            self._async_ctx.__aexit__(exc_type, exc_val, exc_tb)
+        )
+
+
 class SyncConnection:
     """Синхронная обёртка над async Connection.
 
@@ -251,6 +277,41 @@ class SyncConnection:
                 mode=mode,
                 encoding=encoding,
             )
+        )
+
+    def exists(self, remote_path: str | Path) -> bool:
+        """Проверить существование файла или директории на хосте (синхронно)."""
+        return self._run_coro(self._async_conn.exists(remote_path))
+
+    def mkdir(
+        self,
+        remote_path: str | Path,
+        parents: bool = True,
+        exist_ok: bool = True,
+        mode: int | None = None,
+    ) -> None:
+        """Создать директорию на хосте (синхронно)."""
+        self._run_coro(
+            self._async_conn.mkdir(
+                remote_path,
+                parents=parents,
+                exist_ok=exist_ok,
+                mode=mode,
+            )
+        )
+
+    def temp_dir(
+        self,
+        prefix: str = "uniconn_",
+        suffix: str = "",
+        dir: str | Path | None = None,
+    ) -> _SyncTempDirContext:
+        """Синхронный контекстный менеджер временной директории на хосте."""
+        return _SyncTempDirContext(
+            self,
+            prefix=prefix,
+            suffix=suffix,
+            dir=dir,
         )
 
     def run_commands(

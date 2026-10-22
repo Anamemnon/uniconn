@@ -16,6 +16,7 @@ class ConnectionConfig(BaseModel):
     password: SecretStr | None = None
     key_file: str | None = None
     passphrase: SecretStr | None = None
+    ssh_config: str | bool | None = None
     timeout: float = 30.0
     options: dict[str, Any] = Field(default_factory=dict)
 

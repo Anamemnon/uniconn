@@ -305,33 +305,38 @@ config = ConnectionConfig(
 
 ### ConnectionPool
 
-Пул подключений для параллельного выполнения команд.
+Пул подключений для параллельного выполнения команд и групповых операций. Поддерживает как одноразовые вызовы, так и удержание открытых соединений через `async with`:
 
 ```python
 from uniconn import ConnectionPool
 
 hosts = ["ssh://host1", "ssh://host2", "ssh://host3"]
-pool = ConnectionPool(
-    uris=hosts,
-    max_concurrent=10,  # Максимум параллельных подключений
-    retry_attempts=3,   # Попыток переподключения
-)
+
+# Или из инвентарного YAML/JSON файла (с фильтрацией по группе):
+# pool = ConnectionPool.from_file("inventory.yaml", group="production")
+
+async with ConnectionPool(hosts, max_concurrent=10, retry_attempts=3) as pool:
+    # Соединения открываются один раз и переиспользуются
+    await pool.map("apt-get update", sudo=True)
+    await pool.upload("./app.conf", "/etc/app/app.conf")
+    saved = await pool.download("/var/log/syslog", "/tmp/logs/{host}.log")
+    custom = await pool.apply(lambda conn: conn.run("hostname"))
 ```
 
 #### Методы
 
-##### `map(command, timeout=None, raise_on_error=False) -> List[Result]`
+##### `map(command, timeout=None, raise_on_error=False, **kwargs) -> List[Result]`
 
-Выполнить команду на всех хостах пула.
+Выполнить команду на всех хостах пула (пробрасывает `sudo`, `sensitive`, `dry_run`, `cwd`, `env`).
 
 **Пример:**
 ```python
 results = await pool.map("uptime", timeout=30)
 for result in results:
-    print(result.stdout)
+    print(result.text)
 ```
 
-##### `map_safe(command, timeout=None) -> Dict[str, Result | Exception]`
+##### `map_safe(command, timeout=None, **kwargs) -> Dict[str, Result | Exception]`
 
 Безопасное выполнение с возвратом исключений вместо выброса.
 
@@ -342,20 +347,20 @@ for uri, result in results.items():
     if isinstance(result, Exception):
         print(f"{uri}: Ошибка - {result}")
     else:
-        print(f"{uri}: {result.stdout}")
+        print(f"{uri}: {result.text}")
 ```
 
-##### `map_with_callback(command, callback, timeout=None) -> None`
+##### `map_with_callback(command, callback, timeout=None, **kwargs) -> None`
 
 Выполнение с callback по мере готовности результатов.
 
-**Пример:**
-```python
-def on_result(uri: str, result: Result):
-    print(f"{uri}: {result.stdout}")
+##### `upload(local_path, remote_path, recurse=False, **kwargs) -> None` и `download(remote_path, local_path, recurse=False, **kwargs) -> Dict[str, str]`
 
-await pool.map_with_callback("uptime", on_result)
-```
+Параллельная загрузка и скачивание файлов со всех хостов пула.
+
+##### `apply(func: Callable[[Connection], Awaitable[T]]) -> List[T]`
+
+Параллельный запуск произвольной асинхронной функции `func(conn)` на всех хостах пула.
 
 ### Result
 
@@ -366,10 +371,16 @@ from uniconn import Result
 
 result: Result = await conn.run("uptime")
 
+# Использование в условиях (делегирует в result.ok)
+if result:
+    print(result.text)
+
 # Свойства
 result.exit_code     # Код возврата (int)
 result.stdout        # Стандартный вывод (str)
 result.stderr        # Ошибки (str)
+result.text          # Очищенный stdout.strip() (str)
+result.lines         # Список строк stdout.strip().splitlines() (list[str])
 result.duration      # Время выполнения в секундах (float)
 result.command       # Выполненная команда (str)
 result.timestamp     # Время выполнения (datetime)
@@ -377,6 +388,7 @@ result.host          # Хост (str | None)
 result.ok            # True если exit_code == 0 (bool)
 
 # Методы
+result.json()              # Распарсить stdout как JSON
 result.raise_for_status()  # Выбросить ExecutionError если exit_code != 0
 ```
 

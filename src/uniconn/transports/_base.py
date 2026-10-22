@@ -181,6 +181,32 @@ class BaseTransport(ABC):
             f"write_file not supported for {self.name} transport"
         )
 
+    async def exists(self, remote_path: str) -> bool:
+        """Проверить существование файла или директории на хосте."""
+        import shlex
+
+        res = await self.run(f"test -e {shlex.quote(remote_path)}")
+        return res.ok
+
+    async def mkdir(
+        self,
+        remote_path: str,
+        parents: bool = True,
+        exist_ok: bool = True,
+        mode: int | None = None,
+    ) -> None:
+        """Создать директорию на хосте."""
+        import shlex
+
+        flags = "-p " if (parents or exist_ok) else ""
+        res = await self.run(f"mkdir {flags}{shlex.quote(remote_path)}")
+        res.raise_for_status()
+        if mode is not None:
+            chmod_res = await self.run(
+                f"chmod {oct(mode)[2:]} {shlex.quote(remote_path)}"
+            )
+            chmod_res.raise_for_status()
+
     async def open_shell(
         self,
         term_type: str = "xterm",
@@ -204,3 +230,4 @@ class BaseTransport(ABC):
         raise NotImplementedError(
             f"open_shell not supported for {self.name} transport"
         )
+
