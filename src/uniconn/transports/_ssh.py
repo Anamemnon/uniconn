@@ -43,7 +43,9 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from ..exceptions import AuthenticationError, ConnectionError
+from pydantic import SecretStr
+
+from ..exceptions import AuthenticationError, ConnectionError, ExecutionError
 from ..result import Result
 from ._base import BaseTransport
 
@@ -159,6 +161,15 @@ class SSHTransport(BaseTransport):
                 )
             connect_kwargs["client_certs"] = [str(cert_path)]
 
+        # Парольная фраза для зашифрованного приватного ключа (v0.4.0)
+        if "passphrase" in opts and opts["passphrase"] is not None:
+            raw_pp = opts["passphrase"]
+            connect_kwargs["passphrase"] = (
+                raw_pp.get_secret_value()
+                if isinstance(raw_pp, SecretStr)
+                else str(raw_pp)
+            )
+
     async def _create_proxy_conn(
         self,
         proxy_host: str,
@@ -195,6 +206,9 @@ class SSHTransport(BaseTransport):
         if self.config.key_file:
             proxy_kwargs["client_keys"] = [self.config.key_file]
 
+        if self.config.passphrase:
+            proxy_kwargs["passphrase"] = self.config.passphrase.get_secret_value()
+
         return await asyncssh.connect(**proxy_kwargs)
 
     async def _close_tunnel_conns(self) -> None:
@@ -207,7 +221,8 @@ class SSHTransport(BaseTransport):
     async def connect(self) -> None:
         """Установить SSH подключение.
 
-        Поддерживает proxy/jump hosts, keepalive, ssh_config, ssh-agent и client_cert.
+        Поддерживает proxy/jump hosts, keepalive, ssh_config, ssh-agent,
+        client_cert и passphrase для зашифрованных приватных ключей.
         """
         assert asyncssh is not None
         try:
@@ -224,6 +239,9 @@ class SSHTransport(BaseTransport):
 
             if self.config.key_file:
                 connect_kwargs["client_keys"] = [self.config.key_file]
+
+            if self.config.passphrase:
+                connect_kwargs["passphrase"] = self.config.passphrase.get_secret_value()
 
             self._apply_extra_connect_options(connect_kwargs)
 
@@ -381,6 +399,70 @@ class SSHTransport(BaseTransport):
             command=command,
             host=self.config.host
         )
+
+    async def run_bytes(
+        self,
+        command: str,
+        timeout: float | None = None,
+        **kwargs,
+    ) -> bytes:
+        """Выполнить команду через SSH и вернуть сырой байтовый stdout."""
+        if not self._connected or not self._conn:
+            raise ConnectionError(
+                "SSH transport is not connected. Call connect() first",
+                host=self.config.host,
+            )
+
+        raise_on_error = kwargs.pop("raise_on_error", False)
+        env = kwargs.get("env")
+        cwd = kwargs.get("cwd")
+        input_data = kwargs.get("input")
+        effective_cmd = self._wrap_cwd(command, cwd)
+
+        async with self._conn.create_process(
+            effective_cmd, env=env, encoding=None
+        ) as proc:
+            try:
+                if input_data is not None:
+                    bytes_in = (
+                        input_data.encode("utf-8")
+                        if isinstance(input_data, str)
+                        else bytes(input_data)
+                    )
+                    proc.stdin.write(bytes_in)
+                    eof_fn = getattr(proc.stdin, "write_eof", None)
+                    if callable(eof_fn):
+                        eof_fn()
+
+                stdout, stderr = await asyncio.wait_for(
+                    asyncio.gather(
+                        proc.stdout.read(),
+                        proc.stderr.read(),
+                    ),
+                    timeout=timeout,
+                )
+                await proc.wait()
+            except TimeoutError:
+                proc.terminate()
+                raise
+
+        raw_stdout = (
+            stdout.encode("utf-8") if isinstance(stdout, str) else bytes(stdout or b"")
+        )
+        raw_stderr = (
+            stderr.encode("utf-8") if isinstance(stderr, str) else bytes(stderr or b"")
+        )
+        exit_code = proc.returncode or 0
+        if raise_on_error and exit_code != 0:
+            raise ExecutionError(
+                f"Command failed with exit code {exit_code}",
+                command=command,
+                exit_code=exit_code,
+                stdout=raw_stdout.decode("utf-8", errors="replace"),
+                stderr=raw_stderr.decode("utf-8", errors="replace"),
+                host=self.config.host,
+            )
+        return raw_stdout
 
     async def stream(
         self,
@@ -581,6 +663,48 @@ class SSHTransport(BaseTransport):
             raise ConnectionError(
                 f"SFTP listdir failed: {remote_path}: {e}",
                 host=self.config.host
+            ) from e
+
+    async def read_file(self, remote_path: str) -> bytes:
+        """Прочитать содержимое удалённого файла в память через SFTP."""
+        assert asyncssh is not None
+        if not self._connected or not self._conn:
+            raise ConnectionError("Not connected", host=self.config.host)
+
+        try:
+            async with (
+                self._conn.start_sftp_client() as sftp,
+                sftp.open(remote_path, "rb") as f,
+            ):
+                data = await f.read()
+            return data.encode("utf-8") if isinstance(data, str) else bytes(data)
+        except asyncssh.Error as e:
+            raise ConnectionError(
+                f"SFTP read_file failed: {remote_path}: {e}",
+                host=self.config.host,
+            ) from e
+
+    async def write_file(
+        self,
+        remote_path: str,
+        data: bytes,
+        mode: int | None = None,
+    ) -> None:
+        """Записать байты в удалённый файл через SFTP (с опциональным ``chmod``)."""
+        assert asyncssh is not None
+        if not self._connected or not self._conn:
+            raise ConnectionError("Not connected", host=self.config.host)
+
+        try:
+            async with self._conn.start_sftp_client() as sftp:
+                async with sftp.open(remote_path, "wb") as f:
+                    await f.write(data)
+                if mode is not None:
+                    await sftp.chmod(remote_path, mode)
+        except asyncssh.Error as e:
+            raise ConnectionError(
+                f"SFTP write_file failed: {remote_path}: {e}",
+                host=self.config.host,
             ) from e
 
     async def open_shell(

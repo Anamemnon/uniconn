@@ -77,6 +77,11 @@ class URIParser:
 
         # Парсим query параметры
         options = cls._parse_options(parsed.query)
+        key_file = str(options.pop("key_file")) if "key_file" in options else None
+        raw_passphrase = options.pop("passphrase", None)
+        passphrase = (
+            SecretStr(str(raw_passphrase)) if raw_passphrase is not None else None
+        )
 
         return ConnectionConfig(
             transport=transport,
@@ -85,6 +90,8 @@ class URIParser:
             # Креденшелы могут быть percent-encoded (спецсимволы @ : /)
             username=unquote(parsed.username) if parsed.username else None,
             password=SecretStr(unquote(parsed.password)) if parsed.password else None,
+            key_file=key_file,
+            passphrase=passphrase,
             options=options
         )
 

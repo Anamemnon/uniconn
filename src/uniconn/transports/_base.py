@@ -149,6 +149,38 @@ class BaseTransport(ABC):
             f"listdir not supported for {self.name} transport"
         )
 
+    async def run_bytes(
+        self,
+        command: str,
+        timeout: float | None = None,
+        **kwargs,
+    ) -> bytes:
+        """Выполнить команду и вернуть сырой байтовый вывод (stdout).
+
+        Базовая реализация делегирует в ``run()`` и кодирует ``stdout`` в UTF-8.
+        Переопределяется в ``LocalTransport`` и ``SSHTransport`` для чтения
+        сырых байтов без промежуточного декодирования.
+        """
+        result = await self.run(command, timeout=timeout, **kwargs)
+        return result.stdout.encode("utf-8")
+
+    async def read_file(self, remote_path: str) -> bytes:
+        """Прочитать содержимое файла в память (в виде ``bytes``)."""
+        raise NotImplementedError(
+            f"read_file not supported for {self.name} transport"
+        )
+
+    async def write_file(
+        self,
+        remote_path: str,
+        data: bytes,
+        mode: int | None = None,
+    ) -> None:
+        """Записать байты из памяти в файл (с опциональной установкой прав ``mode``)."""
+        raise NotImplementedError(
+            f"write_file not supported for {self.name} transport"
+        )
+
     async def open_shell(
         self,
         term_type: str = "xterm",

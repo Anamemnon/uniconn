@@ -10,6 +10,8 @@ class SecretMaskingFilter(logging.Filter):
     """Фильтр для маскирования чувствительных данных в логах."""
 
     PATTERNS = [
+        (re.compile(r'sudo_password[=:]\S+', re.IGNORECASE), 'sudo_password=***'),
+        (re.compile(r'passphrase[=:]\S+', re.IGNORECASE), 'passphrase=***'),
         (re.compile(r'password[=:]\S+', re.IGNORECASE), 'password=***'),
         (re.compile(r'pass[=:]\S+', re.IGNORECASE), 'pass=***'),
         (re.compile(r'secret[=:]\S+', re.IGNORECASE), 'secret=***'),

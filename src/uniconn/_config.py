@@ -15,6 +15,7 @@ class ConnectionConfig(BaseModel):
     username: str | None = None
     password: SecretStr | None = None
     key_file: str | None = None
+    passphrase: SecretStr | None = None
     timeout: float = 30.0
     options: dict[str, Any] = Field(default_factory=dict)
 

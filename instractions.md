@@ -1,6 +1,6 @@
 # Требования к универсальной Python-библиотеке для выполнения команд на удалённых хостах
 
-> **Статус**: v0.3.0 | **367 unit-тестов** | 27 файлов тестов | 5 транспортов | CLI | Плагинная система
+> **Статус**: v0.4.0 | **379 unit-тестов** | 28 файлов тестов | 5 транспортов | CLI | Плагинная система
 >
 > Обозначения: ✅ реализовано | ⚠️ частично | ❌ не реализовано
 
@@ -12,15 +12,15 @@
 | SSH мультиплексинг | ✅ SSHSessionPool | До N каналов на соединение, авто-создание новых |
 | Screen-сессии | ✅ ScreenPool | Долгоживущие команды в GNU screen, LogPipeline, cleanup |
 | PTY Shell | ✅ ShellSession | Stateful интерактивные сессии (`open_shell`, `execute`, `SyncShellSession`) |
-| API | ✅ async + sync | `Connection` + `SyncConnection` |
+| API | ✅ async + sync | `Connection` + `SyncConnection` (`cd`, `env`, `run_bytes`, `read_file`, `write_file`) |
 | Фабрики | ✅ 4 метода | `from_uri`, `from_config`, `from_dict`, `from_file` |
 | Клонирование | ✅ 2 метода | `copy()`, `with_overrides()` |
 | Пул | ✅ `ConnectionPool` | `map`, `map_safe`, `map_with_callback` |
 | Health check | ✅ `is_alive()` / `ping()` | Для всех транспортов + SSH keepalive |
-| Retry | ✅ tenacity | Exponential backoff + jitter + auto-reconnect |
-| Security | ✅ SecretStr + masking | known_hosts, `shlex.join` / `quote` |
+| Retry & Hooks | ✅ tenacity + hooks | Exponential backoff + jitter, `before_run`/`after_run`/`on_error`, `dry_run` |
+| Security | ✅ SecretStr + sudo | `passphrase`, `sudo` через `stdin`, `sensitive=True`, `shlex.join`/`quote` |
 | CLI | ✅ typer + rich | run, run-multi, bmc, shell, transports, screen-* |
-| Тесты | ✅ 367 unit | Все green, 0 failed |
+| Тесты | ✅ 379 unit | Все green, 0 failed |
 | Linting | ✅ ruff | 100 char line (0 errors) |
 | Types | ✅ pyright | Standard mode (0 errors) |
 | CI/CD | ❌ | GitHub Actions не настроены (осознанно исключено) |
@@ -33,13 +33,13 @@
 Ядро библиотеки: транспорты, run/stream, retry, pool, security, CLI.
 
 ### P1 — Should have (реализовано)
-PTY shell, file transfer (SFTP/SCP), docs, examples, `run_commands`, `ScreenPool`.
+PTY shell, file transfer (SFTP/SCP + `read_file`/`write_file`), docs, examples, `run_commands`, `ScreenPool`.
 
-### P2 — Nice to have (частично реализовано в v0.3.0)
-SSH keepalive/heartbeat, `~/.ssh/config`, SSH-агент, сертификаты OpenSSH, middleware (запланировано на v0.4.0).
+### P2 — Nice to have (реализовано в v0.3.0–v0.4.0)
+Lifecycle hooks (`before_run`, `after_run`, `on_error`) + `dry_run`, SSH keepalive/heartbeat, `~/.ssh/config`, SSH-агент, сертификаты OpenSSH, `passphrase`, безопасный `sudo`, контекстные менеджеры `cd()` и `env()`.
 
-### P3 — Future (частично реализовано в v0.3.0)
-Shell escaping (`shlex.join`, `quote`), `stdin` (`input=`), предупреждения для незашифрованных транспортов.
+### P3 — Future (реализовано в v0.3.0–v0.4.0)
+Shell escaping (`shlex.join`, `quote`), `stdin` (`input=`), `run_bytes()`, `sensitive=True`, предупреждения для незашифрованных транспортов.
 
 ---
 
@@ -78,14 +78,17 @@ Shell escaping (`shlex.join`, `quote`), `stdin` (`input=`), предупрежд
 
 ### 6. Аутентификация
 - ✅ По паролю (Pydantic SecretStr)
-- ✅ По ключу (`key_file` — RSA, ECDSA, Ed25519)
+- ✅ По ключу (`key_file` — RSA, ECDSA, Ed25519) + поддержка зашифрованных ключей (`passphrase: SecretStr`)
 - ✅ SSH-агент (`use_agent`, `agent_path`) и сертификаты OpenSSH (`client_cert`)
+- ✅ Повышение привилегий `sudo=True` (`sudo_user`, `sudo_password` через закрытый `stdin`)
 - ⚠️ Telnet/Serial — базовый login/password
 
 ### 7. Выполнение команд
 - ✅ `run(command, **kwargs)` → `Result(exit_code, stdout, stderr)`
 - ✅ Поддержка `command: str | Sequence[str]` (автоэкранирование через `shlex.join`)
 - ✅ Передача данных в стандартный ввод `input: str | bytes | None` (`stdin`)
+- ✅ Режим `sensitive=True` (маскировка вывода в `repr(Result)`, `ExecutionError` и логах)
+- ✅ Контекстные менеджеры `conn.cd(path)` и `conn.env(**vars)`
 - ✅ `stream(command)` → `AsyncIterator[str]`
 - ✅ `raise_on_error=True` → ExecutionError
 - ✅ Env vars (`env=`), рабочая директория (`cwd=` в Local и SSH)
@@ -301,15 +304,18 @@ exit code по команде, поэтому `execute()` оборачивает
 ## P2 — Nice to have
 
 ### 20. Middleware / цепочки обработчиков
-- ❌ Hooks / callbacks (`before_run`, `after_run`, `on_error`) для логирования, метрик и трассировки (кандидат на v0.4.0)
+- ✅ Hooks / callbacks (`before_run`, `after_run`, `on_error`, метод `add_hook`) для аудита, логирования, метрик и трассировки
+- ✅ Режим `dry_run=True` (на уровне `Connection` и отдельного вызова `run()`)
 
 ### 22. Автореконнект и Heartbeat
 - ✅ Auto-reconnect с backoff при ошибках `run()` (через `tenacity` + `disconnect()`/`connect()`)
 - ✅ SSH Heartbeat / Keepalive для долгоживущих соединений (`options={"keepalive": 30, "keepalive_count_max": 3}`)
 
-### 23. Продвинутая аутентификация
+### 23. Продвинутая аутентификация и привилегии
 - ✅ Управление SSH-агентом (`options={"use_agent": True, "agent_path": "..."}`)
 - ✅ Сертификаты OpenSSH (`options={"client_cert": "/path/to/id-cert.pub"}`)
+- ✅ Парольная фраза для приватных ключей (`passphrase: SecretStr`)
+- ✅ Безопасный `sudo=True` (`sudo_user`, `sudo_password` через `stdin`)
 
 ### 24. Прокси и SSH Config
 - ✅ Jump / Bastion хосты (`options={"proxy": "ssh://jump"}`)
@@ -321,15 +327,16 @@ exit code по команде, поэтому `execute()` оборачивает
 ## P3 — Future
 
 ### 26. Shell escaping
-- ✅ List-based command args (`command: str | Sequence[str]`) с автоэкранированием через `shlex.join` во всех методах (`run`, `run_commands`, `stream`, `ShellSession.execute`)
+- ✅ List-based command args (`command: str | Sequence[str]`) с автоэкранированием через `shlex.join` во всех методах (`run`, `run_bytes`, `run_commands`, `stream`, `ShellSession.execute`)
 - ✅ Экспорт `uniconn.quote` (`shlex.quote`) для безопасной подстановки в строковые команды
 
 ### 29. Warnings для незашифрованных транспортов
 - ✅ Предупреждение (`logger.warning`) при подключении через Telnet/Serial
 
-### 30. Стандартный ввод (`stdin`) и байтовый режим
-- ✅ Поддержка `input: str | bytes | None = None` (`stdin`) в `run()` для SSH и Local транспортов
-- ❌ `run_bytes()` → raw bytes вместо str
+### 30. Стандартный ввод (`stdin`), файловые операции в памяти и байтовый режим
+- ✅ Поддержка `input: str | bytes | None = None` (`stdin`) в `run()` и `run_bytes()` для SSH и Local транспортов
+- ✅ `run_bytes()` → сырые `bytes` вместо `str` (без потерь при чтении бинарных потоков)
+- ✅ `read_file()` и `write_file()` → чтение и запись файлов напрямую из памяти (SSH SFTP и Local)
 
 ---
 

@@ -16,6 +16,7 @@ class Result:
     command: str
     timestamp: datetime = field(default_factory=datetime.now)
     host: str | None = None
+    sensitive: bool = False
 
     @property
     def ok(self) -> bool:
@@ -28,11 +29,23 @@ class Result:
         if not self.ok:
             raise ExecutionError(
                 f"Command failed with exit code {self.exit_code}",
-                command=self.command,
+                command="***REDACTED***" if self.sensitive else self.command,
                 exit_code=self.exit_code,
-                stdout=self.stdout,
-                stderr=self.stderr
+                stdout="***REDACTED***" if self.sensitive else self.stdout,
+                stderr="***REDACTED***" if self.sensitive else self.stderr,
             )
+
+    def __repr__(self) -> str:
+        """Вернуть отладочное представление результата (с маскировкой при sensitive=True)."""
+        stdout_repr = "'***REDACTED***'" if self.sensitive else repr(self.stdout)
+        stderr_repr = "'***REDACTED***'" if self.sensitive else repr(self.stderr)
+        cmd_repr = "'***REDACTED***'" if self.sensitive else repr(self.command)
+        return (
+            f"Result(exit_code={self.exit_code!r}, stdout={stdout_repr}, "
+            f"stderr={stderr_repr}, duration={self.duration!r}, "
+            f"command={cmd_repr}, timestamp={self.timestamp!r}, "
+            f"host={self.host!r}, sensitive={self.sensitive!r})"
+        )
 
     def __str__(self) -> str:
         """Вернуть краткое строковое представление результата."""

@@ -4,7 +4,9 @@ import os
 import sys
 import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 
+from ..exceptions import ConnectionError, ExecutionError
 from ..result import Result
 from ._base import BaseTransport
 
@@ -26,21 +28,20 @@ class LocalTransport(BaseTransport):
         """Для локального транспорта всегда True (нет сетевого подключения)."""
         return self._connected
 
-    async def run(
+    async def _exec_raw(
         self,
         command: str,
         timeout: float | None = None,
-        **kwargs
-    ) -> Result:
+        **kwargs,
+    ) -> tuple[int, bytes, bytes, float]:
+        """Запустить процесс и вернуть сырые байты (exit_code, stdout, stderr, duration)."""
         start_time = time.monotonic()
 
-        # Подготовка окружения
         env = kwargs.get("env")
         final_env: dict[str, str] | None = None
         if env:
             final_env = {**os.environ, **env}
 
-        # Подготовка stdin (input)
         input_data = kwargs.get("input")
         stdin_bytes: bytes | None = None
         if isinstance(input_data, str):
@@ -48,7 +49,6 @@ class LocalTransport(BaseTransport):
         elif isinstance(input_data, bytes):
             stdin_bytes = input_data
 
-        # На Windows env передаётся только через subprocess с shell=True
         creation_flags = 0
         if sys.platform == "win32":
             import subprocess
@@ -74,7 +74,7 @@ class LocalTransport(BaseTransport):
             )
             stdout, stderr = await asyncio.wait_for(
                 comm_coro,
-                timeout=timeout
+                timeout=timeout,
             )
         except TimeoutError:
             proc.kill()
@@ -82,15 +82,75 @@ class LocalTransport(BaseTransport):
             raise
 
         duration = time.monotonic() - start_time
+        return (proc.returncode or 0, stdout or b"", stderr or b"", duration)
 
+    async def run(
+        self,
+        command: str,
+        timeout: float | None = None,
+        **kwargs
+    ) -> Result:
+        exit_code, stdout, stderr, duration = await self._exec_raw(
+            command, timeout=timeout, **kwargs
+        )
         return Result(
-            exit_code=proc.returncode or 0,
+            exit_code=exit_code,
             stdout=stdout.decode("utf-8", errors="replace") if stdout else "",
             stderr=stderr.decode("utf-8", errors="replace") if stderr else "",
             duration=duration,
             command=command,
             host="localhost"
         )
+
+    async def run_bytes(
+        self,
+        command: str,
+        timeout: float | None = None,
+        **kwargs,
+    ) -> bytes:
+        """Выполнить команду локально и вернуть сырой байтовый stdout."""
+        raise_on_error = kwargs.pop("raise_on_error", False)
+        exit_code, stdout, stderr, _ = await self._exec_raw(
+            command, timeout=timeout, **kwargs
+        )
+        if raise_on_error and exit_code != 0:
+            raise ExecutionError(
+                f"Command failed with exit code {exit_code}",
+                command=command,
+                exit_code=exit_code,
+                stdout=stdout.decode("utf-8", errors="replace"),
+                stderr=stderr.decode("utf-8", errors="replace"),
+            )
+        return stdout
+
+    async def read_file(self, remote_path: str) -> bytes:
+        """Прочитать локальный файл в память (bytes)."""
+        try:
+            return Path(remote_path).read_bytes()
+        except OSError as e:
+            raise ConnectionError(
+                f"Local read_file failed for {remote_path}: {e}",
+                host="localhost",
+            ) from e
+
+    async def write_file(
+        self,
+        remote_path: str,
+        data: bytes,
+        mode: int | None = None,
+    ) -> None:
+        """Записать байты в локальный файл и опционально применить chmod."""
+        try:
+            path = Path(remote_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            if mode is not None and sys.platform != "win32":
+                os.chmod(path, mode)
+        except OSError as e:
+            raise ConnectionError(
+                f"Local write_file failed for {remote_path}: {e}",
+                host="localhost",
+            ) from e
 
     async def stream(
         self,

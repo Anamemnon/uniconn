@@ -11,10 +11,12 @@
 - 🚀 **Множественные транспорты**: SSH, Telnet, Serial/UART, IPMI, локальное выполнение
 - ⚡ **Async-first архитектура**: Построена на `asyncio` с синхронной обёрткой
 - 🔌 **Плагинная система**: Транспорты загружаются динамически через entry-points
-- 🔒 **Безопасность**: Маскирование секретов в логах, Pydantic SecretStr для паролей
-- 🔄 **Повторные попытки**: Встроенный retry с экспоненциальным backoff
-- 📊 **Пул соединений**: Параллельное выполнение на множестве хостов
-- 📁 **SFTP**: Загрузка/скачивание файлов и директорий через SSH
+- 🔒 **Безопасность**: `SecretStr` для паролей и `passphrase`, безопасный `sudo` через `stdin`, режим `sensitive=True`, автоэкранирование списков аргументов (`shlex.join`)
+- 🪝 **Lifecycle Hooks и `dry_run`**: Перехватчики `before_run`, `after_run`, `on_error` для аудита/метрик и безопасного прогона
+- 📂 **Контекстные менеджеры `cd()` и `env()`**: Удобная работа с директориями и переменными окружения без PTY
+- 🔄 **Повторные попытки**: Встроенный retry с экспоненциальным backoff и автореконнектом
+- 📊 **Пул соединений**: Параллельное выполнение на множестве хостов (`ConnectionPool` и `SSHSessionPool`)
+- 📁 **Файловые операции и SFTP**: `read_file`/`write_file` в памяти, `upload`/`download`, `chmod`, `stat`, `listdir`
 - 💻 **Stateful PTY Shell**: Интерактивные сессии с сохранением `cd`/`export` поверх SSH
 - 🖥️ **ScreenPool**: Долгоживущие команды в detached GNU screen сессиях
 - 🛠️ **CLI инструмент**: Удобная командная строка для быстрых операций
@@ -137,23 +139,61 @@ conn = Connection.from_config(config)
 
 #### Методы
 
-##### `run(command, timeout=None, raise_on_error=False, **kwargs) -> Result`
+##### `run(command, timeout=None, raise_on_error=False, input=None, sudo=False, sudo_user=None, sudo_password=None, sensitive=False, dry_run=None, **kwargs) -> Result`
 
-Выполнить команду на удалённом хосте.
+Выполнить команду на удалённом хосте (строкой или списком аргументов с автоэкранированием через `shlex.join`).
 
 **Параметры:**
-- `command` (str): Команда для выполнения
-- `timeout` (float, optional): Таймаут в секундах
-- `raise_on_error` (bool): Выбросить исключение при ненулевом exit code
-- `**kwargs`: Дополнительные аргументы для транспорта
+- `command` (`str | Sequence[str]`): Команда для выполнения (строка или список аргументов)
+- `timeout` (`float`, optional): Таймаут в секундах
+- `raise_on_error` (`bool`): Выбросить `ExecutionError` при ненулевом exit code
+- `input` (`str | bytes`, optional): Данные для передачи в `stdin` процесса
+- `sudo` (`bool`): Выполнить команду через `sudo` (пароль передаётся через закрытый `stdin`)
+- `sudo_user` (`str`, optional): Пользователь для `sudo -u <user>`
+- `sudo_password` (`str | SecretStr`, optional): Пароль для `sudo` (по умолчанию берётся из `config.password`)
+- `sensitive` (`bool`): Скрыть вывод в логах, `repr(Result)` и `ExecutionError` (`***REDACTED***`)
+- `dry_run` (`bool`, optional): Пропустить реальное выполнение команды
+- `**kwargs`: Дополнительные аргументы для транспорта (`cwd`, `env`)
 
 **Возвращает:**
 - `Result`: Объект результата выполнения
 
 **Пример:**
 ```python
-result = await conn.run("ls -la", timeout=30, raise_on_error=True)
-print(result.stdout)
+# Строковая команда или безопасный список аргументов
+result = await conn.run(["ls", "-la", "/var/log"], timeout=30, raise_on_error=True)
+
+# Безопасное повышение привилегий через sudo и передача stdin
+await conn.run(["systemctl", "restart", "nginx"], sudo=True)
+
+# Скрытие чувствительного вывода в логах и исключениях
+token_res = await conn.run("cat /etc/app/token", sudo=True, sensitive=True)
+```
+
+##### `run_bytes(command, timeout=None, raise_on_error=False, input=None, sudo=False, **kwargs) -> bytes`
+
+Выполнить команду и получить сырой бинарный вывод (`bytes`) без декодирования в UTF-8.
+
+```python
+archive_bytes = await conn.run_bytes(["tar", "-czf", "-", "/etc/nginx"], sudo=True)
+```
+
+##### Контекстные менеджеры `cd(path)` и `env(**vars)`
+
+Позволяют задать рабочую директорию и переменные окружения для группы команд (поддерживают вложенность и работают как с `async with`, так и с `with`):
+
+```python
+async with conn.cd("/srv/myapp"), conn.env(APP_ENV="production"):
+    await conn.run(["git", "pull"])
+    async with conn.cd("migrations"):
+        await conn.run(["uv", "run", "alembic", "upgrade", "head"])
+```
+
+##### Lifecycle Hooks (`before_run`, `after_run`, `on_error`) и `dry_run`
+
+```python
+conn.add_hook("before_run", lambda cmd, host, kw: print(f"[AUDIT] {host}: {cmd}"))
+conn.add_hook("after_run", lambda res: print(f"[AUDIT] exit={res.exit_code} ({res.duration:.2f}s)"))
 ```
 
 ##### `run_commands(commands, stop_on_error=True, **kwargs) -> List[Result]`
@@ -212,17 +252,22 @@ async with await conn.open_shell() as shell:
     await shell.resize(120, 40)
 ```
 
-#### Файловые операции (SFTP, только SSH)
+#### Файловые операции (SFTP и работа в памяти)
 
 ```python
-# Загрузка файла/директории на хост
+# Чтение и запись файлов напрямую из памяти (работает для SSH SFTP и Local)
+await conn.write_file("/etc/myapp/config.yaml", "port: 8080\n", mode=0o600)
+text = await conn.read_file("/etc/myapp/config.yaml")
+raw_bytes = await conn.read_file("/etc/myapp/config.yaml", encoding=None)
+
+# Загрузка файла/директории на хост (SFTP)
 await conn.upload("/local/file.txt", "/remote/file.txt")
 await conn.upload("/local/dir", "/remote/dir", recurse=True)
 
-# Скачивание файла/директории с хоста
+# Скачивание файла/директории с хоста (SFTP)
 await conn.download("/remote/file.txt", "/local/file.txt")
 
-# Права доступа, информация о файле, список директории
+# Права доступа, информация о файле, список директории (SFTP)
 await conn.chmod("/remote/script.sh", 0o755)
 info = await conn.stat("/remote/file.txt")   # size, mtime, is_dir, ...
 files = await conn.listdir("/var/log")

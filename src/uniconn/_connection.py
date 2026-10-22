@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import builtins
+import dataclasses
+import inspect
 import json
 import logging
 import shlex
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import SecretStr
 from tenacity import (
@@ -29,12 +31,61 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+HookEvent = Literal["before_run", "after_run", "on_error"]
+HookCallback = Callable[..., Any]
+
 
 def _format_command(command: str | Sequence[str]) -> str:
     """Преобразовать команду (строку или список аргументов) в shell-строку."""
     if isinstance(command, str):
         return command
     return shlex.join(command)
+
+
+class _CwdContext:
+    """Универсальный (sync + async) контекстный менеджер смены рабочей директории."""
+
+    def __init__(self, stack: list[str], new_cwd: str) -> None:
+        self._stack = stack
+        self._new_cwd = new_cwd
+
+    def __enter__(self) -> None:
+        if self._stack and not Path(self._new_cwd).is_absolute():
+            resolved = str(Path(self._stack[-1]) / self._new_cwd)
+        else:
+            resolved = self._new_cwd
+        self._stack.append(resolved)
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        if self._stack:
+            self._stack.pop()
+
+    async def __aenter__(self) -> None:
+        self.__enter__()
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.__exit__(exc_type, exc_val, exc_tb)
+
+
+class _EnvContext:
+    """Универсальный (sync + async) контекстный менеджер переменных окружения."""
+
+    def __init__(self, stack: list[dict[str, str]], env_vars: dict[str, str]) -> None:
+        self._stack = stack
+        self._env_vars = env_vars
+
+    def __enter__(self) -> None:
+        self._stack.append(self._env_vars)
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        if self._stack:
+            self._stack.pop()
+
+    async def __aenter__(self) -> None:
+        self.__enter__()
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.__exit__(exc_type, exc_val, exc_tb)
 
 
 class Connection:
@@ -51,12 +102,24 @@ class Connection:
         transport: BaseTransport,
         config: ConnectionConfig,
         retry_attempts: int = 3,
-        logger: logging.Logger | None = None
+        logger: logging.Logger | None = None,
+        dry_run: bool = False,
+        before_run: Sequence[HookCallback] | None = None,
+        after_run: Sequence[HookCallback] | None = None,
+        on_error: Sequence[HookCallback] | None = None,
     ):
         self._transport = transport
         self._config = config
         self._retry_attempts = retry_attempts
         self._logger = logger or logging.getLogger(__name__)
+        self._dry_run = dry_run
+        self._cwd_stack: list[str] = []
+        self._env_stack: list[dict[str, str]] = []
+        self._hooks: dict[HookEvent, list[HookCallback]] = {
+            "before_run": list(before_run or []),
+            "after_run": list(after_run or []),
+            "on_error": list(on_error or []),
+        }
 
     # ─── Фабричные методы ──────────────────────────────────────────
 
@@ -65,41 +128,69 @@ class Connection:
         cls,
         uri: str,
         retry_attempts: int = 3,
-        logger: logging.Logger | None = None
+        logger: logging.Logger | None = None,
+        dry_run: bool = False,
+        before_run: Sequence[HookCallback] | None = None,
+        after_run: Sequence[HookCallback] | None = None,
+        on_error: Sequence[HookCallback] | None = None,
     ) -> Self:
         """Создать подключение из URI строки."""
         config = ConnectionConfig.from_uri(uri)
         transport_class = TransportLoader.get(config.transport)
         transport = transport_class(config)
-        return cls(transport, config, retry_attempts, logger)
+        return cls(
+            transport,
+            config,
+            retry_attempts,
+            logger,
+            dry_run=dry_run,
+            before_run=before_run,
+            after_run=after_run,
+            on_error=on_error,
+        )
 
     @classmethod
     def from_config(
         cls,
         config: ConnectionConfig,
         retry_attempts: int = 3,
-        logger: logging.Logger | None = None
+        logger: logging.Logger | None = None,
+        dry_run: bool = False,
+        before_run: Sequence[HookCallback] | None = None,
+        after_run: Sequence[HookCallback] | None = None,
+        on_error: Sequence[HookCallback] | None = None,
     ) -> Self:
         """Создать подключение из конфигурации."""
         transport_class = TransportLoader.get(config.transport)
         transport = transport_class(config)
-        return cls(transport, config, retry_attempts, logger)
+        return cls(
+            transport,
+            config,
+            retry_attempts,
+            logger,
+            dry_run=dry_run,
+            before_run=before_run,
+            after_run=after_run,
+            on_error=on_error,
+        )
 
     @classmethod
     def from_dict(
         cls,
         data: dict,
         retry_attempts: int = 3,
-        logger: logging.Logger | None = None
+        logger: logging.Logger | None = None,
+        dry_run: bool = False,
     ) -> Self:
         """Создать подключение из словаря.
 
         Args:
             data: Словарь с параметрами подключения.
                 Поддерживаемые ключи: transport, host, port, username,
-                password, key_file, timeout, options.
+                password, key_file, passphrase, timeout, options, dry_run.
             retry_attempts: Количество попыток при ошибке
             logger: Кастомный логгер
+            dry_run: Режим без реального выполнения команд
 
         Returns:
             Connection
@@ -113,15 +204,15 @@ class Connection:
             ... })
 
         """
-        # Извлекаем retry_attempts из данных если есть
         retry = data.get("retry_attempts", retry_attempts)
+        effective_dry_run = bool(data.get("dry_run", dry_run))
         config = ConnectionConfig(**{
             k: v for k, v in data.items()
-            if k not in ("retry_attempts", "logger")
+            if k not in ("retry_attempts", "logger", "dry_run")
         })
         transport_class = TransportLoader.get(config.transport)
         transport = transport_class(config)
-        return cls(transport, config, retry, logger)
+        return cls(transport, config, retry, logger, dry_run=effective_dry_run)
 
     @classmethod
     def from_file(
@@ -195,10 +286,12 @@ class Connection:
         username: str | None = None,
         password: str | SecretStr | None = None,
         key_file: str | None = None,
+        passphrase: str | SecretStr | None = None,
         timeout: float | None = None,
         options: dict | None = None,
         retry_attempts: int | None = None,
-        logger: logging.Logger | None = None
+        logger: logging.Logger | None = None,
+        dry_run: bool | None = None,
     ) -> Self:
         """Создать копию подключения с возможностью изменения параметров.
 
@@ -211,10 +304,12 @@ class Connection:
             username: Новый пользователь
             password: Новый пароль
             key_file: Новый путь к ключу
+            passphrase: Новая парольная фраза для ключа
             timeout: Новый таймаут
             options: Новые опции
             retry_attempts: Новое количество попыток
             logger: Новый логгер
+            dry_run: Новый режим dry_run
 
         Returns:
             Новый Connection с изменёнными параметрами
@@ -235,6 +330,11 @@ class Connection:
                 else self._config.password
             ),
             key_file=key_file if key_file is not None else self._config.key_file,
+            passphrase=(
+                SecretStr(passphrase) if isinstance(passphrase, str)
+                else passphrase if passphrase is not None
+                else self._config.passphrase
+            ),
             timeout=timeout if timeout is not None else self._config.timeout,
             options=options if options is not None else self._config.options,
         )
@@ -245,6 +345,10 @@ class Connection:
             new_config,
             retry_attempts or self._retry_attempts,
             logger or self._logger,
+            dry_run=self._dry_run if dry_run is None else dry_run,
+            before_run=self._hooks["before_run"],
+            after_run=self._hooks["after_run"],
+            on_error=self._hooks["on_error"],
         )
 
     def with_overrides(self, **overrides) -> Self:
@@ -256,7 +360,8 @@ class Connection:
         Args:
             **overrides: Параметры для переопределения.
                 Поддерживаются: host, port, username, password,
-                key_file, timeout, options, retry_attempts, logger.
+                key_file, passphrase, timeout, options, retry_attempts,
+                logger, dry_run.
 
         Returns:
             Новый Connection с переопределёнными параметрами
@@ -276,11 +381,145 @@ class Connection:
             username=overrides.get("username"),
             password=overrides.get("password"),
             key_file=overrides.get("key_file"),
+            passphrase=overrides.get("passphrase"),
             timeout=overrides.get("timeout"),
             options=overrides.get("options"),
             retry_attempts=overrides.get("retry_attempts"),
             logger=overrides.get("logger"),
+            dry_run=overrides.get("dry_run"),
         )
+
+    # ─── Контекстные менеджеры cd / env и Hooks (v0.4.0) ───────────
+
+    def cd(self, path: str | Path) -> _CwdContext:
+        """Контекстный менеджер для временной смены рабочей директории.
+
+        Поддерживает как ``async with conn.cd(...)``, так и ``with conn.cd(...)``,
+        а также вложенные вызовы с относительными путями.
+
+        Пример:
+            >>> async with conn.cd("/var"):
+            ...     async with conn.cd("log"):
+            ...         res = await conn.run("pwd")  # /var/log
+
+        """
+        return _CwdContext(self._cwd_stack, str(path))
+
+    def env(self, mapping: dict[str, str] | None = None, **env_vars: str) -> _EnvContext:
+        """Контекстный менеджер для временной установки переменных окружения.
+
+        Поддерживает ``async with conn.env(FOO="1")`` и ``with conn.env({"FOO": "1"})``.
+
+        Пример:
+            >>> async with conn.env(APP_ENV="prod", DEBUG="0"):
+            ...     await conn.run("env")
+
+        """
+        merged: dict[str, str] = {}
+        if mapping:
+            merged.update({str(k): str(v) for k, v in mapping.items()})
+        if env_vars:
+            merged.update({str(k): str(v) for k, v in env_vars.items()})
+        return _EnvContext(self._env_stack, merged)
+
+    @property
+    def current_cwd(self) -> str | None:
+        """Текущая рабочая директория из активного стека ``conn.cd()``."""
+        return self._cwd_stack[-1] if self._cwd_stack else None
+
+    @property
+    def current_env(self) -> dict[str, str]:
+        """Текущий объединённый словарь переменных окружения из стека ``conn.env()``."""
+        merged: dict[str, str] = {}
+        for frame in self._env_stack:
+            merged.update(frame)
+        return merged
+
+    def add_hook(self, event: HookEvent, callback: HookCallback) -> Self:
+        """Зарегистрировать lifecycle-хук (``before_run``, ``after_run``, ``on_error``).
+
+        Поддерживает как синхронные, так и асинхронные функции обратного вызова.
+
+        Args:
+            event: Событие (``"before_run"``, ``"after_run"`` или ``"on_error"``)
+            callback: Функция-обработчик
+
+        Returns:
+            Self (для цепочки вызовов)
+
+        """
+        if event not in self._hooks:
+            raise ValueError(
+                f"Unknown hook event: {event!r}. "
+                "Expected 'before_run', 'after_run', or 'on_error'"
+            )
+        self._hooks[event].append(callback)
+        return self
+
+    async def _invoke_hooks(self, event: HookEvent, *args: Any) -> None:
+        """Вызвать зарегистрированные хуки для указанного события."""
+        for cb in self._hooks.get(event, ()):
+            res = cb(*args)
+            if inspect.isawaitable(res):
+                await res
+
+    def _apply_context_kwargs(self, kwargs: dict[str, Any]) -> None:
+        """Применить активные контексты ``cd()`` и ``env()`` к аргументам вызова."""
+        active_cwd = self.current_cwd
+        if active_cwd is not None:
+            explicit_cwd = kwargs.get("cwd")
+            if explicit_cwd is None:
+                kwargs["cwd"] = active_cwd
+            elif not Path(str(explicit_cwd)).is_absolute():
+                kwargs["cwd"] = str(Path(active_cwd) / str(explicit_cwd))
+
+        active_env = self.current_env
+        if active_env:
+            explicit_env = kwargs.get("env")
+            if explicit_env:
+                kwargs["env"] = {**active_env, **explicit_env}
+            else:
+                kwargs["env"] = active_env
+
+    def _prepare_sudo(
+        self,
+        cmd_str: str,
+        sudo: bool,
+        sudo_user: str | None,
+        sudo_password: str | SecretStr | None,
+        input_data: str | bytes | None,
+    ) -> tuple[str, str | bytes | None]:
+        """Обернуть команду в ``sudo`` и подготовить безопасную передачу пароля через stdin."""
+        if not sudo:
+            return cmd_str, input_data
+
+        raw_pwd: Any = sudo_password
+        if raw_pwd is None:
+            raw_pwd = self._config.options.get("sudo_password")
+        if raw_pwd is None and self._config.password is not None:
+            raw_pwd = self._config.password
+
+        pwd_str: str | None = None
+        if isinstance(raw_pwd, SecretStr):
+            pwd_str = raw_pwd.get_secret_value()
+        elif raw_pwd is not None:
+            pwd_str = str(raw_pwd)
+
+        user_flag = f"-u {shlex.quote(sudo_user)} " if sudo_user else ""
+        quoted_cmd = shlex.quote(cmd_str)
+
+        if pwd_str:
+            sudo_cmd = f"sudo -S -p '' {user_flag}-- sh -c {quoted_cmd}"
+            if input_data is None:
+                new_input: str | bytes | None = f"{pwd_str}\n"
+            elif isinstance(input_data, bytes):
+                new_input = f"{pwd_str}\n".encode() + input_data
+            else:
+                new_input = f"{pwd_str}\n{input_data}"
+            return sudo_cmd, new_input
+
+        sudo_cmd = f"sudo -n {user_flag}-- sh -c {quoted_cmd}"
+        return sudo_cmd, input_data
 
     async def run(
         self,
@@ -288,6 +527,11 @@ class Connection:
         timeout: float | None = None,
         raise_on_error: bool = False,
         input: str | bytes | None = None,
+        sudo: bool = False,
+        sudo_user: str | None = None,
+        sudo_password: str | SecretStr | None = None,
+        sensitive: bool = False,
+        dry_run: bool | None = None,
         **kwargs
     ) -> Result:
         """Выполнить команду на удалённом хосте.
@@ -304,6 +548,11 @@ class Connection:
             timeout: Таймаут в секундах
             raise_on_error: Raise ExecutionError если exit_code != 0
             input: Данные для передачи в stdin процесса (``str`` или ``bytes``)
+            sudo: Выполнить команду с повышением привилегий через ``sudo``
+            sudo_user: Целевой пользователь для ``sudo -u <user>``
+            sudo_password: Пароль для ``sudo`` (передаётся через закрытый stdin)
+            sensitive: Скрыть вывод команды в логах, ``repr(Result)`` и ``ExecutionError``
+            dry_run: Не выполнять команду реально (переопределяет ``conn.dry_run``)
             **kwargs: Дополнительные аргументы для транспорта (например, ``cwd``, ``env``)
 
         Returns:
@@ -315,46 +564,139 @@ class Connection:
 
         """
         cmd_str = _format_command(command)
-        if input is not None:
-            kwargs["input"] = input
+        self._apply_context_kwargs(kwargs)
+
+        exec_cmd, effective_input = self._prepare_sudo(
+            cmd_str,
+            sudo=sudo,
+            sudo_user=sudo_user,
+            sudo_password=sudo_password,
+            input_data=input,
+        )
+        if effective_input is not None:
+            kwargs["input"] = effective_input
+
+        effective_dry_run = self._dry_run if dry_run is None else dry_run
+        log_cmd = "***SENSITIVE***" if sensitive else repr(cmd_str)
+
+        await self._invoke_hooks("before_run", cmd_str, self._config.host, kwargs)
+
+        if effective_dry_run:
+            self._logger.info(
+                f"[DRY-RUN] Skipping command: {log_cmd} on {self._config.uri_safe}"
+            )
+            dry_result = Result(
+                exit_code=0,
+                stdout="",
+                stderr="",
+                duration=0.0,
+                command=cmd_str,
+                host=self._config.host,
+                sensitive=sensitive,
+            )
+            await self._invoke_hooks("after_run", dry_result)
+            return dry_result
+
+        try:
+            if not self._transport.is_connected:
+                await self._transport.connect()
+
+            timeout = timeout or self._config.timeout
+            self._logger.debug(
+                f"Running command: {log_cmd} on {self._config.uri_safe}"
+            )
+
+            result: Result | None = None
+            async for attempt in AsyncRetrying(
+                stop=stop_after_attempt(self._retry_attempts),
+                wait=wait_exponential_jitter(initial=1, max=10),
+                retry=retry_if_exception_type(
+                    (ConnectionError, TimeoutError, builtins.TimeoutError)
+                ),
+                reraise=True,
+            ):
+                with attempt:
+                    try:
+                        result = await self._transport.run(
+                            exec_cmd, timeout=timeout, **kwargs
+                        )
+                    except (ConnectionError, TimeoutError, builtins.TimeoutError):
+                        await self._transport.disconnect()
+                        await self._transport.connect()
+                        raise
+
+            assert result is not None
+            if isinstance(result, Result) and (sensitive or result.command != cmd_str):
+                result = dataclasses.replace(
+                    result,
+                    command=cmd_str,
+                    sensitive=sensitive,
+                )
+
+            if raise_on_error:
+                result.raise_for_status()
+
+        except BaseException as exc:
+            await self._invoke_hooks("on_error", exc, cmd_str, self._config.host)
+            raise
+
+        await self._invoke_hooks("after_run", result)
+        return result
+
+    async def run_bytes(
+        self,
+        command: str | Sequence[str],
+        timeout: float | None = None,
+        raise_on_error: bool = False,
+        input: str | bytes | None = None,
+        sudo: bool = False,
+        sudo_user: str | None = None,
+        sudo_password: str | SecretStr | None = None,
+        **kwargs,
+    ) -> bytes:
+        """Выполнить команду и вернуть сырой байтовый вывод (``bytes``).
+
+        Поддерживает ``Sequence[str]``, контексты ``cd()``/``env()``, ``sudo`` и ``input``.
+
+        Args:
+            command: Команда (строка или список аргументов)
+            timeout: Таймаут в секундах
+            raise_on_error: Выбросить ``ExecutionError`` при ненулевом коде возврата
+            input: Данные для передачи в stdin
+            sudo: Выполнить команду через ``sudo``
+            sudo_user: Пользователь для ``sudo -u``
+            sudo_password: Пароль для ``sudo``
+            **kwargs: Дополнительные аргументы транспорта
+
+        Returns:
+            Сырые байты из ``stdout``
+
+        """
+        cmd_str = _format_command(command)
+        self._apply_context_kwargs(kwargs)
+        exec_cmd, effective_input = self._prepare_sudo(
+            cmd_str,
+            sudo=sudo,
+            sudo_user=sudo_user,
+            sudo_password=sudo_password,
+            input_data=input,
+        )
+        if effective_input is not None:
+            kwargs["input"] = effective_input
+
+        if self._dry_run:
+            return b""
 
         if not self._transport.is_connected:
             await self._transport.connect()
 
-        timeout = timeout or self._config.timeout
-        self._logger.debug(
-            f"Running command: {cmd_str!r} on {self._config.uri_safe}"
+        effective_timeout = timeout or self._config.timeout
+        return await self._transport.run_bytes(
+            exec_cmd,
+            timeout=effective_timeout,
+            raise_on_error=raise_on_error,
+            **kwargs,
         )
-
-        result: Result | None = None
-        # Динамический retry с использованием self._retry_attempts.
-        # builtins.TimeoutError — таймауты транспортов из asyncio.wait_for
-        # (SSH и Local пробрасывают именно его).
-        async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(self._retry_attempts),
-            wait=wait_exponential_jitter(initial=1, max=10),
-            retry=retry_if_exception_type(
-                (ConnectionError, TimeoutError, builtins.TimeoutError)
-            ),
-            reraise=True,
-        ):
-            with attempt:
-                try:
-                    result = await self._transport.run(
-                        cmd_str, timeout=timeout, **kwargs
-                    )
-                except (ConnectionError, TimeoutError, builtins.TimeoutError):
-                    # Соединение могло умереть (в т.ч. после таймаута) —
-                    # переподключаемся перед следующей попыткой
-                    await self._transport.disconnect()
-                    await self._transport.connect()
-                    raise
-
-        assert result is not None
-        if raise_on_error:
-            result.raise_for_status()
-
-        return result
 
     async def run_commands(
         self,
@@ -369,7 +711,7 @@ class Connection:
             stop_on_error: Прервать выполнение при первой команде
                 с ненулевым exit_code (по умолчанию True)
             **kwargs: Дополнительные аргументы для ``run()``
-                (timeout, raise_on_error и т.д.)
+                (timeout, raise_on_error, sudo, sensitive и т.д.)
 
         Returns:
             Список Result в порядке выполнения команд.
@@ -402,6 +744,7 @@ class Connection:
     ):
         """Потоковое получение вывода команды."""
         cmd_str = _format_command(command)
+        self._apply_context_kwargs(kwargs)
         if not self._transport.is_connected:
             await self._transport.connect()
 
@@ -489,6 +832,74 @@ class Connection:
         await self._transport.download(
             remote_path, local_path, recurse=recurse, **kwargs
         )
+
+    async def read_file(
+        self,
+        remote_path: str,
+        encoding: str | None = "utf-8",
+    ) -> str | bytes:
+        """Прочитать содержимое файла с хоста напрямую в память.
+
+        Поддерживается для ``SSHTransport`` (через SFTP) и ``LocalTransport``.
+        Если активен контекст ``conn.cd()``, относительный ``remote_path``
+        разрешается относительно текущей директории.
+
+        Args:
+            remote_path: Путь к файлу на хосте
+            encoding: Кодировка для возврата ``str`` (по умолчанию ``"utf-8"``).
+                Если передать ``encoding=None``, вернёт сырые ``bytes``.
+
+        Returns:
+            Содержимое файла (``str`` или ``bytes``)
+
+        """
+        if not self._transport.is_connected:
+            await self._transport.connect()
+
+        effective_path = remote_path
+        if self.current_cwd and not Path(remote_path).is_absolute():
+            effective_path = str(Path(self.current_cwd) / remote_path)
+
+        raw = await self._transport.read_file(effective_path)
+        if encoding is None:
+            return raw
+        return raw.decode(encoding)
+
+    async def write_file(
+        self,
+        remote_path: str,
+        content: str | bytes,
+        mode: int | None = None,
+        encoding: str = "utf-8",
+    ) -> None:
+        """Записать строку или байты из памяти в файл на хосте.
+
+        Поддерживается для ``SSHTransport`` (через SFTP) и ``LocalTransport``.
+        Если активен контекст ``conn.cd()``, относительный ``remote_path``
+        разрешается относительно текущей директории.
+
+        Args:
+            remote_path: Путь к создаваемому/перезаписываемому файлу
+            content: Содержимое (``str`` или ``bytes``)
+            mode: Опциональные права доступа (например, ``0o600`` или ``0o755``)
+            encoding: Кодировка при передаче ``str`` (по умолчанию ``"utf-8"``)
+
+        """
+        if self._dry_run:
+            self._logger.info(
+                f"[DRY-RUN] Skipping write_file to {remote_path!r} on {self._config.uri_safe}"
+            )
+            return
+
+        if not self._transport.is_connected:
+            await self._transport.connect()
+
+        effective_path = remote_path
+        if self.current_cwd and not Path(remote_path).is_absolute():
+            effective_path = str(Path(self.current_cwd) / remote_path)
+
+        data = content.encode(encoding) if isinstance(content, str) else bytes(content)
+        await self._transport.write_file(effective_path, data, mode=mode)
 
     async def chmod(
         self,
@@ -619,3 +1030,8 @@ class Connection:
     @property
     def transport_name(self) -> str:
         return self._transport.name
+
+    @property
+    def dry_run(self) -> bool:
+        """Включён ли режим dry_run для данного подключения."""
+        return self._dry_run

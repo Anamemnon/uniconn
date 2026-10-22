@@ -11,9 +11,12 @@ import asyncio
 import contextlib
 import threading
 from collections.abc import Iterator, Sequence
+from pathlib import Path
 from typing import Any, Self
 
-from ._connection import Connection
+from pydantic import SecretStr
+
+from ._connection import Connection, HookCallback, HookEvent, _CwdContext, _EnvContext
 from ._shell import ShellSession
 from .result import Result
 
@@ -139,12 +142,30 @@ class SyncConnection:
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         return future.result()
 
+    def cd(self, path: str | Path) -> _CwdContext:
+        """Контекстный менеджер смены рабочей директории (синхронный)."""
+        return self._async_conn.cd(path)
+
+    def env(self, mapping: dict[str, str] | None = None, **env_vars: str) -> _EnvContext:
+        """Контекстный менеджер переменных окружения (синхронный)."""
+        return self._async_conn.env(mapping, **env_vars)
+
+    def add_hook(self, event: HookEvent, callback: HookCallback) -> Self:
+        """Зарегистрировать lifecycle-хук (``before_run``, ``after_run``, ``on_error``)."""
+        self._async_conn.add_hook(event, callback)
+        return self
+
     def run(
         self,
         command: str | Sequence[str],
         timeout: float | None = None,
         raise_on_error: bool = False,
         input: str | bytes | None = None,
+        sudo: bool = False,
+        sudo_user: str | None = None,
+        sudo_password: str | SecretStr | None = None,
+        sensitive: bool = False,
+        dry_run: bool | None = None,
         **kwargs
     ) -> Result:
         """Выполнить команду синхронно.
@@ -154,6 +175,11 @@ class SyncConnection:
             timeout: Таймаут в секундах
             raise_on_error: Выбросить исключение при ненулевом exit code
             input: Данные для передачи в stdin процесса (``str`` или ``bytes``)
+            sudo: Выполнить команду через ``sudo``
+            sudo_user: Пользователь для ``sudo -u``
+            sudo_password: Пароль для ``sudo``
+            sensitive: Скрыть вывод в логах, ``repr(Result)`` и ``ExecutionError``
+            dry_run: Режим без реального выполнения команды
             **kwargs: Дополнительные аргументы для транспорта
 
         Returns:
@@ -166,7 +192,64 @@ class SyncConnection:
                 timeout=timeout,
                 raise_on_error=raise_on_error,
                 input=input,
+                sudo=sudo,
+                sudo_user=sudo_user,
+                sudo_password=sudo_password,
+                sensitive=sensitive,
+                dry_run=dry_run,
                 **kwargs
+            )
+        )
+
+    def run_bytes(
+        self,
+        command: str | Sequence[str],
+        timeout: float | None = None,
+        raise_on_error: bool = False,
+        input: str | bytes | None = None,
+        sudo: bool = False,
+        sudo_user: str | None = None,
+        sudo_password: str | SecretStr | None = None,
+        **kwargs,
+    ) -> bytes:
+        """Выполнить команду синхронно и вернуть сырой байтовый вывод."""
+        return self._run_coro(
+            self._async_conn.run_bytes(
+                command,
+                timeout=timeout,
+                raise_on_error=raise_on_error,
+                input=input,
+                sudo=sudo,
+                sudo_user=sudo_user,
+                sudo_password=sudo_password,
+                **kwargs,
+            )
+        )
+
+    def read_file(
+        self,
+        remote_path: str,
+        encoding: str | None = "utf-8",
+    ) -> str | bytes:
+        """Прочитать содержимое файла в память (синхронно)."""
+        return self._run_coro(
+            self._async_conn.read_file(remote_path, encoding=encoding)
+        )
+
+    def write_file(
+        self,
+        remote_path: str,
+        content: str | bytes,
+        mode: int | None = None,
+        encoding: str = "utf-8",
+    ) -> None:
+        """Записать строку или байты из памяти в файл (синхронно)."""
+        self._run_coro(
+            self._async_conn.write_file(
+                remote_path,
+                content,
+                mode=mode,
+                encoding=encoding,
             )
         )
 
