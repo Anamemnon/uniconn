@@ -8,8 +8,9 @@
 """
 
 import asyncio
+import contextlib
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from typing import Any, Self
 
 from ._connection import Connection
@@ -43,7 +44,11 @@ class SyncShellSession:
         """Проверить, что процесс оболочки активен."""
         return self._async_session.is_alive
 
-    def execute(self, command: str, timeout: float | None = None) -> Result:
+    def execute(
+        self,
+        command: str | Sequence[str],
+        timeout: float | None = None,
+    ) -> Result:
         """Выполнить команду в stateful shell-сессии (синхронно)."""
         return self._sync_conn._run_coro(
             self._async_session.execute(command, timeout=timeout)
@@ -136,17 +141,19 @@ class SyncConnection:
 
     def run(
         self,
-        command: str,
+        command: str | Sequence[str],
         timeout: float | None = None,
         raise_on_error: bool = False,
+        input: str | bytes | None = None,
         **kwargs
     ) -> Result:
         """Выполнить команду синхронно.
 
         Args:
-            command: Команда для выполнения
+            command: Команда (строка или последовательность аргументов)
             timeout: Таймаут в секундах
             raise_on_error: Выбросить исключение при ненулевом exit code
+            input: Данные для передачи в stdin процесса (``str`` или ``bytes``)
             **kwargs: Дополнительные аргументы для транспорта
 
         Returns:
@@ -158,13 +165,14 @@ class SyncConnection:
                 command,
                 timeout=timeout,
                 raise_on_error=raise_on_error,
+                input=input,
                 **kwargs
             )
         )
 
     def run_commands(
         self,
-        commands: list[str],
+        commands: Sequence[str | Sequence[str]],
         stop_on_error: bool = True,
         **kwargs
     ) -> list[Result]:
@@ -189,7 +197,7 @@ class SyncConnection:
 
     def stream(
         self,
-        command: str,
+        command: str | Sequence[str],
         timeout: float | None = None,
         **kwargs
     ) -> Iterator[str]:
@@ -260,6 +268,7 @@ class SyncConnection:
 
         Returns:
             Экземпляр ``SyncShellSession``
+
         """
         async_session = self._run_coro(
             self._async_conn.open_shell(
@@ -277,10 +286,8 @@ class SyncConnection:
 
         # Закрываем async подключение
         if self._async_conn:
-            try:
+            with contextlib.suppress(Exception):
                 self._run_coro(self._async_conn.close())
-            except Exception:
-                pass  # Игнорируем ошибки при закрытии
 
         self._closed = True
 

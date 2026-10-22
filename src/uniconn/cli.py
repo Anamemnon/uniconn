@@ -20,16 +20,21 @@
 
 import asyncio
 import sys
+from typing import Any
 
 try:
     import typer
     from rich import box
     from rich.console import Console
     from rich.panel import Panel
-    from rich.syntax import Syntax
     from rich.table import Table
     HAVE_CLI_DEPS = True
 except ImportError:
+    typer: Any = None
+    box: Any = None
+    Console: Any = None
+    Panel: Any = None
+    Table: Any = None
     HAVE_CLI_DEPS = False
 
 from . import Connection, ConnectionPool, __version__
@@ -67,7 +72,9 @@ def main():
     @app.command()
     def version():
         """Show uniconn version."""
-        console.print(f"[bold blue]uniconn[/bold blue] version [green]{__version__}[/green]")
+        console.print(
+            f"[bold blue]uniconn[/bold blue] version [green]{__version__}[/green]"
+        )
 
     @app.command()
     def transports():
@@ -94,7 +101,11 @@ def main():
 
         for name, (desc, deps) in transport_info.items():
             status = "OK" if name in available else "--"
-            name_col = f"[green]{status}[/green] {name}" if name in available else f"[dim]{status} {name}[/dim]"
+            name_col = (
+                f"[green]{status}[/green] {name}"
+                if name in available
+                else f"[dim]{status} {name}[/dim]"
+            )
             table.add_row(name_col, desc, deps)
 
         console.print(table)
@@ -177,12 +188,16 @@ def main():
 
     @app.command("run-multi")
     def run_multi(
-        uris: list[str] = typer.Argument(..., help="Connection URIs"),
+        uris: list[str] = typer.Argument(..., help="Connection URIs"),  # noqa: B008
         command: str = typer.Option(..., "--command", "-c", help="Command to execute"),
-        max_concurrent: int = typer.Option(10, "--max-concurrent", "-j", help="Max concurrent connections"),
+        max_concurrent: int = typer.Option(
+            10, "--max-concurrent", "-j", help="Max concurrent connections"
+        ),
         timeout: float = typer.Option(30.0, "--timeout", "-t", help="Timeout in seconds"),
         verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
-        output_format: str = typer.Option("table", "--format", "-f", help="Output format: table, json, plain"),
+        output_format: str = typer.Option(
+            "table", "--format", "-f", help="Output format: table, json, plain"
+        ),
     ):
         """Execute command on multiple hosts in parallel.
 
@@ -343,7 +358,10 @@ def main():
             console.print(f"[dim]Connecting to {uri}...[/dim]\n")
 
             try:
-                async with Connection.from_uri(uri) as conn, await conn.open_shell() as session:
+                async with (
+                    Connection.from_uri(uri) as conn,
+                    await conn.open_shell() as session,
+                ):
                     console.print("[green]Connected[/green]")
                     console.print("[dim]Type 'exit' or 'quit' to quit[/dim]\n")
 
@@ -418,6 +436,7 @@ def main():
                 if config is not None:
                     pool = ScreenPool.from_file(config)
                 else:
+                    assert uri is not None
                     pool = ScreenPool(uri, logger=logger)
 
                 # НЕ используем `async with pool`: __aexit__ вызывает

@@ -110,7 +110,7 @@ class ScreenSession:
 
     @staticmethod
     def _parse_screen_ls(output: str) -> dict[str, int]:
-        """Разобрать вывод ``screen -ls`` в отображение {имя сессии: PID}.
+        r"""Разобрать вывод ``screen -ls`` в отображение {имя сессии: PID}.
 
         Формат строк: ``\\t{PID}.{name}\\t(Detached)``. Сравнение по имени
         целиком, чтобы ``uniconn_x_1`` не совпадал с ``uniconn_x_12``.

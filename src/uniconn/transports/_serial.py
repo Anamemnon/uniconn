@@ -136,6 +136,7 @@ class SerialTransport(BaseTransport):
                 "в открытом виде."
             )
 
+            assert serial_asyncio is not None
             self._reader, self._writer = await serial_asyncio.open_serial_connection(
                 url=self._device,
                 **kwargs

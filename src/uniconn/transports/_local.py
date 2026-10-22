@@ -40,24 +40,40 @@ class LocalTransport(BaseTransport):
         if env:
             final_env = {**os.environ, **env}
 
+        # Подготовка stdin (input)
+        input_data = kwargs.get("input")
+        stdin_bytes: bytes | None = None
+        if isinstance(input_data, str):
+            stdin_bytes = input_data.encode("utf-8")
+        elif isinstance(input_data, bytes):
+            stdin_bytes = input_data
+
         # На Windows env передаётся только через subprocess с shell=True
         creation_flags = 0
         if sys.platform == "win32":
             import subprocess
             creation_flags = subprocess.CREATE_NO_WINDOW
 
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=final_env,
-            cwd=kwargs.get("cwd"),
-            creationflags=creation_flags if sys.platform == "win32" else 0,
-        )
+        proc_kwargs: dict = {
+            "stdout": asyncio.subprocess.PIPE,
+            "stderr": asyncio.subprocess.PIPE,
+            "env": final_env,
+            "cwd": kwargs.get("cwd"),
+            "creationflags": creation_flags if sys.platform == "win32" else 0,
+        }
+        if stdin_bytes is not None:
+            proc_kwargs["stdin"] = asyncio.subprocess.PIPE
+
+        proc = await asyncio.create_subprocess_shell(command, **proc_kwargs)
 
         try:
+            comm_coro = (
+                proc.communicate(stdin_bytes)
+                if stdin_bytes is not None
+                else proc.communicate()
+            )
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(),
+                comm_coro,
                 timeout=timeout
             )
         except TimeoutError:
@@ -89,7 +105,8 @@ class LocalTransport(BaseTransport):
             **kwargs
         )
 
-        async for line in proc.stdout:
-            yield line.decode().rstrip()
+        if proc.stdout is not None:
+            async for line in proc.stdout:
+                yield line.decode().rstrip()
 
         await proc.wait()

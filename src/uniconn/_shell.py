@@ -17,8 +17,10 @@ import builtins
 import contextlib
 import inspect
 import re
+import shlex
 import time
 import uuid
+from collections.abc import Sequence
 from typing import Any, Self
 
 from .exceptions import ConnectionError, TimeoutError
@@ -196,7 +198,7 @@ class ShellSession:
 
     async def execute(
         self,
-        command: str,
+        command: str | Sequence[str],
         timeout: float | None = None,
     ) -> Result:
         """Выполнить команду в stateful shell-сессии и дождаться её завершения.
@@ -206,7 +208,7 @@ class ShellSession:
         Поскольку PTY объединяет потоки вывода, ``Result.stderr`` всегда пуст.
 
         Args:
-            command: Команда для выполнения
+            command: Команда (строка или последовательность аргументов для ``shlex.join``)
             timeout: Таймаут в секундах (по умолчанию ``default_timeout``)
 
         Returns:
@@ -217,11 +219,12 @@ class ShellSession:
             TimeoutError: При превышении таймаута (отправляет Ctrl-C в stdin)
 
         """
+        cmd_str = command if isinstance(command, str) else shlex.join(command)
         async with self._lock:
             if not self.is_alive:
                 raise ConnectionError(
                     "Shell session is closed or terminated",
-                    command=command,
+                    command=cmd_str,
                     host=self._host,
                 )
 
@@ -229,7 +232,7 @@ class ShellSession:
                 timeout if timeout is not None else self._default_timeout
             )
             start_time = time.monotonic()
-            wrapped_cmd = f'{command}; echo "\\n__UNICONN_{self._uuid}__$?"\n'
+            wrapped_cmd = f'{cmd_str}; echo "\\n__UNICONN_{self._uuid}__$?"\n'
 
             await self.send(wrapped_cmd)
 
@@ -246,7 +249,7 @@ class ShellSession:
                         self._closed = True
                         raise ConnectionError(
                             "Shell process terminated during command execution",
-                            command=command,
+                            command=cmd_str,
                             host=self._host,
                         )
 
@@ -255,7 +258,7 @@ class ShellSession:
                         self._closed = True
                         raise ConnectionError(
                             "Shell process closed stdout unexpectedly (EOF)",
-                            command=command,
+                            command=cmd_str,
                             host=self._host,
                         )
                     self._buffer += chunk
@@ -272,19 +275,19 @@ class ShellSession:
                 self._buffer = ""
                 raise TimeoutError(
                     f"Shell command timed out after {effective_timeout}s",
-                    command=command,
+                    command=cmd_str,
                     host=self._host,
                 ) from None
 
             duration = time.monotonic() - start_time
-            stdout = self._clean_output(raw_output, command, wrapped_cmd)
+            stdout = self._clean_output(raw_output, cmd_str, wrapped_cmd)
 
             return Result(
                 exit_code=exit_code,
                 stdout=stdout,
                 stderr="",
                 duration=duration,
-                command=command,
+                command=cmd_str,
                 host=self._host,
             )
 

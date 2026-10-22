@@ -13,9 +13,11 @@
 """
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import AsyncIterator
+from typing import Any
 
 from ..exceptions import (
     AuthenticationError,
@@ -45,8 +47,8 @@ class TelnetTransport(BaseTransport):
                 "Run: pip install uniconn[telnet]"
             )
         super().__init__(config)
-        self._reader: asyncio.StreamReader | None = None
-        self._writer: asyncio.StreamWriter | None = None
+        self._reader: Any = None
+        self._writer: Any = None
         self._shell_prompt: str = "$ "
         self._login_prompt: str = "login: "
         self._password_prompt: str = "Password: "
@@ -64,9 +66,10 @@ class TelnetTransport(BaseTransport):
             AuthenticationError: При ошибке аутентификации
 
         """
+        assert telnetlib3 is not None
+        port = self.config.port or 23
         try:
             host = self.config.host
-            port = self.config.port or 23
             timeout = self.config.timeout
 
             logging.getLogger("uniconn").warning(
@@ -155,10 +158,8 @@ class TelnetTransport(BaseTransport):
         """Закрыть Telnet подключение."""
         if self._writer:
             self._writer.close()
-            try:
+            with contextlib.suppress(Exception):
                 await self._writer.wait_closed()
-            except Exception:
-                pass  # Игнорируем ошибки при закрытии
         self._connected = False
         self._reader = None
         self._writer = None
@@ -210,9 +211,11 @@ class TelnetTransport(BaseTransport):
                     output_lines.append(decoded)
 
                     # Проверяем на приглашение оболочки (конец вывода)
-                    if any(prompt in decoded for prompt in ['$ ', '# ', '> ']):
-                        if len(output_lines) > 1:  # Пропускаем первую строку с самой командой
-                            break
+                    if (
+                        any(prompt in decoded for prompt in ['$ ', '# ', '> '])
+                        and len(output_lines) > 1
+                    ):
+                        break
 
                 except TimeoutError:
                     # Таймаут чтения — команда не завершилась вовремя.

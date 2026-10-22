@@ -66,6 +66,8 @@ class URIParser:
     @classmethod
     def _parse_network(cls, parsed, transport: str) -> "ConnectionConfig":
         """Парсинг сетевых транспортов (ssh, telnet, ipmi)."""
+        from pydantic import SecretStr
+
         from ._config import ConnectionConfig
 
         # Порт (с дефолтом для транспорта)
@@ -82,7 +84,7 @@ class URIParser:
             port=port,
             # Креденшелы могут быть percent-encoded (спецсимволы @ : /)
             username=unquote(parsed.username) if parsed.username else None,
-            password=unquote(parsed.password) if parsed.password else None,
+            password=SecretStr(unquote(parsed.password)) if parsed.password else None,
             options=options
         )
 

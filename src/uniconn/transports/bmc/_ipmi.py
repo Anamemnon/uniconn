@@ -54,6 +54,7 @@ class IPMITransport(BaseTransport):
 
         Returns:
             True если BMC отвечает
+
         """
         if not self._connected:
             return False
@@ -75,6 +76,7 @@ class IPMITransport(BaseTransport):
         loop = asyncio.get_event_loop()
 
         def _execute():
+            assert ipmi_cmd is not None
             cmd = ipmi_cmd.Command(
                 bmc=self.config.host,
                 userid=self.config.username,

@@ -48,7 +48,8 @@ class BaseTransport(ABC):
         **kwargs
     ) -> AsyncIterator[str]:
         """Потоковое выполнение с yield строк вывода."""
-        pass
+        raise NotImplementedError
+        yield ""  # pragma: no cover
 
     async def __aenter__(self) -> Self:
         await self.connect()
@@ -72,6 +73,7 @@ class BaseTransport(ABC):
 
         Returns:
             True если подключение живо
+
         """
         if not self._connected:
             return False
@@ -94,6 +96,7 @@ class BaseTransport(ABC):
 
         Raises:
             NotImplementedError: Если транспорт не поддерживает файловые операции
+
         """
         raise NotImplementedError(
             f"Upload not supported for {self.name} transport"
@@ -112,6 +115,7 @@ class BaseTransport(ABC):
 
         Raises:
             NotImplementedError: Если транспорт не поддерживает файловые операции
+
         """
         raise NotImplementedError(
             f"Download not supported for {self.name} transport"
@@ -163,8 +167,8 @@ class BaseTransport(ABC):
 
         Raises:
             NotImplementedError: Если транспорт не поддерживает интерактивный shell
+
         """
         raise NotImplementedError(
             f"open_shell not supported for {self.name} transport"
         )
-

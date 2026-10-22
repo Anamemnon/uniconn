@@ -1,6 +1,6 @@
 [project]
 name = "uniconn"
-version = "0.2.0"
+version = "0.3.0"
 description = "Universal library for remote command execution"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -84,4 +84,7 @@ reportOptionalMemberAccess = "warning"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "D", "UP", "B", "C4", "SIM"]
+ignore = ["D203", "D213"]

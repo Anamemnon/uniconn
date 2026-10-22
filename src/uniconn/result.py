@@ -1,4 +1,6 @@
 # src/uniconn/result.py
+"""Модель результата выполнения команды."""
+
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -33,4 +35,5 @@ class Result:
             )
 
     def __str__(self) -> str:
+        """Вернуть краткое строковое представление результата."""
         return f"Result(exit_code={self.exit_code}, duration={self.duration:.2f}s)"

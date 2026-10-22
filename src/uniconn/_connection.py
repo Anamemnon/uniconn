@@ -1,9 +1,13 @@
 # src/uniconn/_connection.py
+from __future__ import annotations
+
 import builtins
 import json
 import logging
+import shlex
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 from pydantic import SecretStr
 from tenacity import (
@@ -20,7 +24,17 @@ from .plugins._loader import TransportLoader
 from .result import Result
 from .transports._base import BaseTransport
 
+if TYPE_CHECKING:
+    from ._sync import SyncConnection
+
 logger = logging.getLogger(__name__)
+
+
+def _format_command(command: str | Sequence[str]) -> str:
+    """Преобразовать команду (строку или список аргументов) в shell-строку."""
+    if isinstance(command, str):
+        return command
+    return shlex.join(command)
 
 
 class Connection:
@@ -270,9 +284,10 @@ class Connection:
 
     async def run(
         self,
-        command: str,
+        command: str | Sequence[str],
         timeout: float | None = None,
         raise_on_error: bool = False,
+        input: str | bytes | None = None,
         **kwargs
     ) -> Result:
         """Выполнить команду на удалённом хосте.
@@ -285,10 +300,11 @@ class Connection:
         (disconnect + connect), т.к. соединение могло умереть.
 
         Args:
-            command: Команда для выполнения
+            command: Команда (строка или последовательность аргументов для ``shlex.join``)
             timeout: Таймаут в секундах
             raise_on_error: Raise ExecutionError если exit_code != 0
-            **kwargs: Дополнительные аргументы для транспорта
+            input: Данные для передачи в stdin процесса (``str`` или ``bytes``)
+            **kwargs: Дополнительные аргументы для транспорта (например, ``cwd``, ``env``)
 
         Returns:
             Result объект с stdout, stderr, exit_code
@@ -298,14 +314,19 @@ class Connection:
             TimeoutError: При таймауте после всех retry попыток
 
         """
+        cmd_str = _format_command(command)
+        if input is not None:
+            kwargs["input"] = input
+
         if not self._transport.is_connected:
             await self._transport.connect()
 
         timeout = timeout or self._config.timeout
         self._logger.debug(
-            f"Running command: {command!r} on {self._config.uri_safe}"
+            f"Running command: {cmd_str!r} on {self._config.uri_safe}"
         )
 
+        result: Result | None = None
         # Динамический retry с использованием self._retry_attempts.
         # builtins.TimeoutError — таймауты транспортов из asyncio.wait_for
         # (SSH и Local пробрасывают именно его).
@@ -320,7 +341,7 @@ class Connection:
             with attempt:
                 try:
                     result = await self._transport.run(
-                        command, timeout=timeout, **kwargs
+                        cmd_str, timeout=timeout, **kwargs
                     )
                 except (ConnectionError, TimeoutError, builtins.TimeoutError):
                     # Соединение могло умереть (в т.ч. после таймаута) —
@@ -329,6 +350,7 @@ class Connection:
                     await self._transport.connect()
                     raise
 
+        assert result is not None
         if raise_on_error:
             result.raise_for_status()
 
@@ -336,14 +358,14 @@ class Connection:
 
     async def run_commands(
         self,
-        commands: list[str],
+        commands: Sequence[str | Sequence[str]],
         stop_on_error: bool = True,
         **kwargs
     ) -> list[Result]:
         """Последовательно выполнить список команд на удалённом хосте.
 
         Args:
-            commands: Список команд для выполнения
+            commands: Список команд (строк или списков аргументов) для выполнения
             stop_on_error: Прервать выполнение при первой команде
                 с ненулевым exit_code (по умолчанию True)
             **kwargs: Дополнительные аргументы для ``run()``
@@ -374,16 +396,17 @@ class Connection:
 
     async def stream(
         self,
-        command: str,
+        command: str | Sequence[str],
         timeout: float | None = None,
         **kwargs
     ):
         """Потоковое получение вывода команды."""
+        cmd_str = _format_command(command)
         if not self._transport.is_connected:
             await self._transport.connect()
 
         timeout = timeout or self._config.timeout
-        async for line in self._transport.stream(command, timeout=timeout, **kwargs):
+        async for line in self._transport.stream(cmd_str, timeout=timeout, **kwargs):
             yield line
 
     async def close(self) -> None:
@@ -410,6 +433,7 @@ class Connection:
             ...         print("Host is alive")
             ...     else:
             ...         print("Host is unreachable")
+
         """
         return await self._transport.ping(timeout=timeout)
 
@@ -434,6 +458,7 @@ class Connection:
         Пример:
             >>> await conn.upload("/local/file.txt", "/remote/file.txt")
             >>> await conn.upload("/local/dir", "/remote/dir", recurse=True)
+
         """
         await self._transport.upload(
             local_path, remote_path, recurse=recurse, **kwargs
@@ -459,6 +484,7 @@ class Connection:
         Пример:
             >>> await conn.download("/remote/file.txt", "/local/file.txt")
             >>> await conn.download("/remote/dir", "/local/dir", recurse=True)
+
         """
         await self._transport.download(
             remote_path, local_path, recurse=recurse, **kwargs
@@ -479,6 +505,7 @@ class Connection:
 
         Пример:
             >>> await conn.chmod("/var/www/app.py", 0o755)
+
         """
         await self._transport.chmod(remote_path, mode)
 
@@ -500,6 +527,7 @@ class Connection:
         Пример:
             >>> info = await conn.stat("/var/log/syslog")
             >>> print(info["size"], info["permissions"])
+
         """
         return await self._transport.stat(remote_path)
 
@@ -520,6 +548,7 @@ class Connection:
         Пример:
             >>> files = await conn.listdir("/var/log")
             >>> print(files)
+
         """
         return await self._transport.listdir(remote_path)
 
@@ -553,6 +582,7 @@ class Connection:
             ...         await shell.execute("cd /var/log")
             ...         res = await shell.execute("pwd")
             ...         print(res.stdout)  # /var/log
+
         """
         if not self._transport.is_connected:
             await self._transport.connect()
@@ -577,7 +607,7 @@ class Connection:
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         await self._transport.disconnect()
 
-    def to_sync(self) -> "SyncConnection":  # noqa: F821
+    def to_sync(self) -> SyncConnection:
         """Конвертировать в синхронную версию."""
         from ._sync import SyncConnection
         return SyncConnection(self)

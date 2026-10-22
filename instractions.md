@@ -1,6 +1,6 @@
 # Требования к универсальной Python-библиотеке для выполнения команд на удалённых хостах
 
-> **Статус**: v0.2.0 | **333 unit-теста** | 25 файлов тестов | 5 транспортов | CLI | Плагинная система
+> **Статус**: v0.3.0 | **367 unit-тестов** | 27 файлов тестов | 5 транспортов | CLI | Плагинная система
 >
 > Обозначения: ✅ реализовано | ⚠️ частично | ❌ не реализовано
 
@@ -11,17 +11,18 @@
 | Транспорты | ✅ 5/5 | SSH, Telnet, Serial, Local, IPMI |
 | SSH мультиплексинг | ✅ SSHSessionPool | До N каналов на соединение, авто-создание новых |
 | Screen-сессии | ✅ ScreenPool | Долгоживущие команды в GNU screen, LogPipeline, cleanup |
+| PTY Shell | ✅ ShellSession | Stateful интерактивные сессии (`open_shell`, `execute`, `SyncShellSession`) |
 | API | ✅ async + sync | `Connection` + `SyncConnection` |
 | Фабрики | ✅ 4 метода | `from_uri`, `from_config`, `from_dict`, `from_file` |
 | Клонирование | ✅ 2 метода | `copy()`, `with_overrides()` |
 | Пул | ✅ `ConnectionPool` | `map`, `map_safe`, `map_with_callback` |
-| Health check | ✅ `is_alive()` / `ping()` | Для всех транспортов |
-| Retry | ✅ tenacity | Exponential backoff + jitter |
-| Security | ✅ SecretStr + masking | known_hosts (опционально) |
+| Health check | ✅ `is_alive()` / `ping()` | Для всех транспортов + SSH keepalive |
+| Retry | ✅ tenacity | Exponential backoff + jitter + auto-reconnect |
+| Security | ✅ SecretStr + masking | known_hosts, `shlex.join` / `quote` |
 | CLI | ✅ typer + rich | run, run-multi, bmc, shell, transports, screen-* |
-| Тесты | ✅ 333 unit | Все green, 0 failed |
-| Linting | ✅ ruff | 100 char line |
-| Types | ✅ pyright | Standard mode |
+| Тесты | ✅ 367 unit | Все green, 0 failed |
+| Linting | ✅ ruff | 100 char line (0 errors) |
+| Types | ✅ pyright | Standard mode (0 errors) |
 | CI/CD | ❌ | GitHub Actions не настроены (осознанно исключено) |
 
 ---
@@ -31,14 +32,14 @@
 ### P0 — Must have (реализовано)
 Ядро библиотеки: транспорты, run/stream, retry, pool, security, CLI.
 
-### P1 — Should have (частично / в работе)
-PTY shell, file transfer (SFTP/SCP), docs, examples.
+### P1 — Should have (реализовано)
+PTY shell, file transfer (SFTP/SCP), docs, examples, `run_commands`, `ScreenPool`.
 
-### P2 — Nice to have (не реализовано)
-Middleware, Prometheus metrics, MFA/OTP, heartbeat, auto-reconnect.
+### P2 — Nice to have (частично реализовано в v0.3.0)
+SSH keepalive/heartbeat, `~/.ssh/config`, SSH-агент, сертификаты OpenSSH, middleware (запланировано на v0.4.0).
 
-### P3 — Future (низкий приоритет)
-Shell escaping, keyring integration, deprecation warnings, SSH agent.
+### P3 — Future (частично реализовано в v0.3.0)
+Shell escaping (`shlex.join`, `quote`), `stdin` (`input=`), предупреждения для незашифрованных транспортов.
 
 ---
 
@@ -78,14 +79,16 @@ Shell escaping, keyring integration, deprecation warnings, SSH agent.
 ### 6. Аутентификация
 - ✅ По паролю (Pydantic SecretStr)
 - ✅ По ключу (`key_file` — RSA, ECDSA, Ed25519)
+- ✅ SSH-агент (`use_agent`, `agent_path`) и сертификаты OpenSSH (`client_cert`)
 - ⚠️ Telnet/Serial — базовый login/password
-- ❌ SSH-агент, сертификаты, keyboard-interactive, MFA/OTP
 
 ### 7. Выполнение команд
 - ✅ `run(command, **kwargs)` → `Result(exit_code, stdout, stderr)`
+- ✅ Поддержка `command: str | Sequence[str]` (автоэкранирование через `shlex.join`)
+- ✅ Передача данных в стандартный ввод `input: str | bytes | None` (`stdin`)
 - ✅ `stream(command)` → `AsyncIterator[str]`
 - ✅ `raise_on_error=True` → ExecutionError
-- ✅ Env vars (`env=`), cwd (`cwd=`)
+- ✅ Env vars (`env=`), рабочая директория (`cwd=` в Local и SSH)
 - ✅ Таймауты с прерыванием (SIGTERM/kill)
 
 ### 8. Повторные попытки
@@ -298,47 +301,34 @@ exit code по команде, поэтому `execute()` оборачивает
 ## P2 — Nice to have
 
 ### 20. Middleware / цепочки обработчиков
-- ❌ Chain для logging/metrics/tracing
+- ❌ Hooks / callbacks (`before_run`, `after_run`, `on_error`) для логирования, метрик и трассировки (кандидат на v0.4.0)
 
-### 21. Мониторинг
-- ❌ Prometheus metrics
-- ❌ Response time histogram, error rate
-
-### 22. Автореконнект
-- ❌ Auto-reconnect с backoff
-- ❌ Heartbeat для долгоживущих соединений
+### 22. Автореконнект и Heartbeat
+- ✅ Auto-reconnect с backoff при ошибках `run()` (через `tenacity` + `disconnect()`/`connect()`)
+- ✅ SSH Heartbeat / Keepalive для долгоживущих соединений (`options={"keepalive": 30, "keepalive_count_max": 3}`)
 
 ### 23. Продвинутая аутентификация
-- ❌ SSH agent forwarding
-- ❌ Сертификаты OpenSSH
-- ❌ MFA/OTP
-- ❌ Keyboard-interactive
+- ✅ Управление SSH-агентом (`options={"use_agent": True, "agent_path": "..."}`)
+- ✅ Сертификаты OpenSSH (`options={"client_cert": "/path/to/id-cert.pub"}`)
 
-### 24. Прокси
-- ❌ SOCKS5/HTTP прокси
-- ❌ `~/.ssh/config` integration
-
-### 25. SSH multiplexing
-- ❌ Shared connections (ControlMaster)
+### 24. Прокси и SSH Config
+- ✅ Jump / Bastion хосты (`options={"proxy": "ssh://jump"}`)
+- ✅ Интеграция с `~/.ssh/config` (`options={"ssh_config": True}` или путь к файлу)
+- ❌ SOCKS5/HTTP прокси (`proxy_command`)
 
 ---
 
 ## P3 — Future
 
 ### 26. Shell escaping
-- ❌ Автоматическое экранирование аргументов
-- ❌ List-based command args (предпочтительно)
-
-### 27. Keyring integration
-- ❌ Хранение паролей в OS keyring
-
-### 28. Deprecation warnings
-- ❌ SemVer deprecation cycle
+- ✅ List-based command args (`command: str | Sequence[str]`) с автоэкранированием через `shlex.join` во всех методах (`run`, `run_commands`, `stream`, `ShellSession.execute`)
+- ✅ Экспорт `uniconn.quote` (`shlex.quote`) для безопасной подстановки в строковые команды
 
 ### 29. Warnings для незашифрованных транспортов
 - ✅ Предупреждение (`logger.warning`) при подключении через Telnet/Serial
 
-### 30. Байтовый режим вывода
+### 30. Стандартный ввод (`stdin`) и байтовый режим
+- ✅ Поддержка `input: str | bytes | None = None` (`stdin`) в `run()` для SSH и Local транспортов
 - ❌ `run_bytes()` → raw bytes вместо str
 
 ---
@@ -349,12 +339,14 @@ exit code по команде, поэтому `execute()` оборачивает
 |---------|----------|
 | `AsyncRetrying` вместо `@retry` | Динамический `retry_attempts` из экземпляра, не захардкожен |
 | Постоянный event loop в daemon-потоке (`SyncConnection`) | `run_coroutine_threadsafe`, инкрементальный `stream()` через `asyncio.Queue`, `close()` без зависаний |
-| `pyright standard` вместо `mypy strict` | Меньше шума от optional dependencies, warnings для missing imports |
+| `pyright standard` вместо `mypy strict` | Меньше шума от optional dependencies, 0 ошибок типизации по всему `src/` |
 | `dependency-groups.dev` | Замена deprecated `tool.uv.dev-dependencies` |
 | `type(self)` в `copy()` | Корректная работа с наследниками Connection |
 | `SecretStr` конвертация в `copy()` | Принимает str и SecretStr, автоматически оборачивает |
 | Lazy connect | Подключение при первом `run()` или явно через `async with` |
 | `SSHSessionPool` | Мультиплексинг SSH-каналов: ленивое создание соединений при переполнении |
+| `ShellSession` (PTY) | Маркерный протокол `__UNICONN_{uuid}__{exit_code}` для сохранения состояния (`cd`, `export`) |
+| `shlex.join` для `Sequence[str]` | Единообразное безопасное экранирование списков аргументов в `Connection` и `ShellSession` |
 
 ---
 
@@ -368,6 +360,11 @@ exit code по команде, поэтому `execute()` оборачивает
 | `typing_extensions` | Не нужен на Python 3.11+ (`Self` в `typing`) |
 | Redfish-транспорт | Удалён из проекта (вместе с зависимостью `aiohttp`) |
 | CI/CD (GitHub Actions, PyPI) | Осознанно не реализуется |
+| Мониторинг (`prometheus_client`) | Избыточная зависимость в ядре библиотеки; решается через кастомный логгер/хуки |
+| MFA / OTP / Keyboard-interactive | Противоречит автоматизированному (non-interactive) сценарию и `BatchMode` |
+| OpenSSH `ControlMaster` (§25) | Специфичен для CLI `ssh`; в `uniconn` уже реализован нативный `SSHSessionPool` (§10a) |
+| OS Keyring integration (§27) | Серверные и контейнерные окружения не имеют системного GUI keyring |
+| SemVer deprecation cycle (§28) | Процессное правило поддержки после `v1.0.0`, не функциональная фича |
 
 ---
 

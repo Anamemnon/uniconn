@@ -1,4 +1,5 @@
 # src/uniconn/exceptions.py
+"""Иерархия исключений библиотеки uniconn."""
 
 
 class UniconnError(Exception):
@@ -14,6 +15,7 @@ class UniconnError(Exception):
         stderr: str | None = None,
         host: str | None = None
     ):
+        """Инициализировать исключение с контекстом выполнения команды."""
         super().__init__(message)
         self.command = command
         self.exit_code = exit_code
@@ -22,6 +24,7 @@ class UniconnError(Exception):
         self.host = host
 
     def __str__(self) -> str:
+        """Вернуть строковое представление ошибки с командой и хостом."""
         parts = [super().__str__()]
         if self.command:
             parts.append(f"command={self.command!r}")

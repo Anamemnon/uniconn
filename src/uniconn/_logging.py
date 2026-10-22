@@ -61,7 +61,7 @@ DETAILED_FORMAT = (
 
 def _create_handler(
     handler: logging.Handler,
-    level: int,
+    level: int | str,
     fmt: str,
     mask_secrets: bool,
 ) -> logging.Handler:
@@ -75,7 +75,7 @@ def _create_handler(
 
 def setup_file_logging(
     log_file: str | Path,
-    level: int = logging.DEBUG,
+    level: int | str = logging.DEBUG,
     fmt: str = DEFAULT_FORMAT,
     mask_secrets: bool = True,
     rotation: Literal["size", "time"] = "size",
@@ -135,6 +135,7 @@ def setup_file_logging(
             logger = setup_file_logging(
                 "uniconn.log", also_console=True
             )
+
     """
     logger = logging.getLogger(logger_name)
     logger.setLevel(logging.DEBUG)  # Логируем всё, фильтрация на handler
@@ -174,7 +175,7 @@ def setup_file_logging(
 
 def get_logger(
     name: str = "uniconn",
-    level: int = logging.INFO,
+    level: int | str = logging.INFO,
     mask_secrets: bool = True
 ) -> logging.Logger:
     """Получить logger с маскированием секретов.
@@ -192,6 +193,7 @@ def get_logger(
 
     Returns:
         Настроенный Logger
+
     """
     logger = logging.getLogger(name)
     logger.setLevel(level)

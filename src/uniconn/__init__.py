@@ -36,6 +36,7 @@
 """
 
 from importlib.metadata import PackageNotFoundError, version
+from shlex import quote
 
 from ._config import ConnectionConfig
 from ._connection import Connection
@@ -74,6 +75,7 @@ __all__ = [
     "SSHSessionPool",
     "ConnectionConfig",
     "Result",
+    "quote",
     # Screen-сессии (background)
     "ScreenPool",
     "ScreenSession",

@@ -2,25 +2,29 @@
 """SSH транспорт на базе asyncssh.
 
 Поддерживает:
-    - Аутентификацию по паролю и ключу
+    - Аутентификацию по паролю, ключу, SSH-агенту и сертификату OpenSSH
     - Проверку known_hosts (отключена по умолчанию для обратной совместимости)
+    - Чтение ~/.ssh/config
+    - Keepalive / heartbeat для долгоживущих соединений
     - Proxy/jump hosts через цепочку подключений
-    - Таймауты подключения и выполнения
-    - Потоковый вывод команд
+    - Таймауты подключения и выполнения, поддержку cwd и input (stdin)
+    - Потоковый вывод команд, SFTP и интерактивный PTY shell
 
 Пример URI:
     ssh://user:pass@host:22
-    ssh://user@host?known_hosts=strict
-    ssh://user@host?known_hosts=/path/to/file
+    ssh://user@host?known_hosts=strict&keepalive=30
+    ssh://user@host?ssh_config=true&use_agent=true
     ssh://user@host?proxy=jump1.example.com,jump2.example.com
 
 Опции (query параметры):
     known_hosts: "strict" | "default" | путь к файлу | "no" (по умолчанию "no")
-        - "strict" — ~/.ssh/known_hosts, если файл существует (иначе без проверки)
-        - "default" — ~/.ssh/known_hosts, если файл существует (иначе без проверки)
-        - "/path/to/file" — конкретный файл known_hosts (ошибка, если файла нет)
-        - "no" — отключить проверку (небезопасно, но по умолчанию для совместимости)
     proxy: comma-separated список jump хостов (user@host)
+    keepalive / keepalive_interval: интервал отправки keepalive-пакетов (сек)
+    keepalive_count_max: максимальное число неотвеченных keepalive
+    ssh_config: true | "default" | путь к файлу OpenSSH config
+    use_agent: bool — использовать ли системный SSH-агент
+    agent_path: явный путь к сокету SSH-агента
+    client_cert: путь к клиентскому сертификату OpenSSH
 
 Зависимости:
     asyncssh >= 2.13
@@ -31,6 +35,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import os
+import shlex
+import stat as stat_module
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -57,9 +64,9 @@ class SSHTransport(BaseTransport):
                 "Run: pip install uniconn[ssh]"
             )
         super().__init__(config)
-        self._conn: asyncssh.SSHClientConnection | None = None
+        self._conn: Any = None
         # Промежуточные proxy/jump подключения (в порядке построения цепочки)
-        self._tunnel_conns: list[asyncssh.SSHClientConnection] = []
+        self._tunnel_conns: list[Any] = []
         # Активные PTY shell-процессы для корректного закрытия при disconnect()
         self._shell_procs: list[Any] = []
         self._known_hosts = self.config.options.get("known_hosts", "no")
@@ -79,18 +86,14 @@ class SSHTransport(BaseTransport):
         mode = str(self._known_hosts).lower()
 
         if mode in ("no", "false", "none", ""):
-            # Отключено (текущее поведение по умолчанию)
             return None
 
         if mode in ("strict", "default"):
-            # ~/.ssh/known_hosts; если файла нет — разрешаем подключение
-            # (asyncssh не поддерживает автодобавление новых хостов)
             known_hosts_path = Path.home() / ".ssh" / "known_hosts"
             if known_hosts_path.exists():
                 return str(known_hosts_path)
             return None
 
-        # Считаем, что это путь к файлу (регистр исходного значения сохраняем)
         path = Path(str(self._known_hosts)).expanduser()
         if path.exists():
             return str(path)
@@ -100,11 +103,67 @@ class SSHTransport(BaseTransport):
             host=self.config.host
         )
 
+    def _resolve_ssh_config(self) -> list[str] | None:
+        """Определить список файлов конфигурации OpenSSH (опция ``ssh_config``)."""
+        opt = self.config.options.get("ssh_config")
+        if opt is None or opt is False or str(opt).lower() in ("false", "no", "none", "0", ""):
+            return None
+
+        if opt is True or str(opt).lower() in ("true", "yes", "1", "default"):
+            default_cfg = Path.home() / ".ssh" / "config"
+            return [str(default_cfg)] if default_cfg.exists() else []
+
+        cfg_path = Path(str(opt)).expanduser()
+        if cfg_path.exists():
+            return [str(cfg_path)]
+
+        raise ConnectionError(
+            f"ssh_config file not found: {cfg_path}",
+            host=self.config.host,
+        )
+
+    def _apply_extra_connect_options(self, connect_kwargs: dict[str, Any]) -> None:
+        """Применить расширенные SSH-опции (keepalive, ssh_config, agent, client_cert)."""
+        opts = self.config.options
+
+        # Keepalive / Heartbeat (§22)
+        keepalive = opts.get("keepalive_interval", opts.get("keepalive"))
+        if keepalive is not None:
+            connect_kwargs["keepalive_interval"] = float(keepalive)
+
+        keepalive_max = opts.get("keepalive_count_max")
+        if keepalive_max is not None:
+            connect_kwargs["keepalive_count_max"] = int(keepalive_max)
+
+        # ~/.ssh/config (§24)
+        ssh_cfg = self._resolve_ssh_config()
+        if ssh_cfg is not None:
+            connect_kwargs["config"] = ssh_cfg
+
+        # SSH-агент (§23)
+        if "agent_path" in opts and opts["agent_path"] is not None:
+            connect_kwargs["agent_path"] = str(opts["agent_path"])
+        elif "use_agent" in opts:
+            use_agent = opts["use_agent"]
+            if use_agent is False or str(use_agent).lower() in ("false", "no", "0"):
+                connect_kwargs["agent_path"] = None
+
+        # Сертификаты OpenSSH (§23)
+        client_cert = opts.get("client_cert")
+        if client_cert:
+            cert_path = Path(str(client_cert)).expanduser()
+            if not cert_path.exists():
+                raise ConnectionError(
+                    f"client_cert file not found: {cert_path}",
+                    host=self.config.host,
+                )
+            connect_kwargs["client_certs"] = [str(cert_path)]
+
     async def _create_proxy_conn(
         self,
         proxy_host: str,
-        tunnel: asyncssh.SSHClientConnection | None = None,
-    ) -> asyncssh.SSHClientConnection:
+        tunnel: Any = None,
+    ) -> Any:
         """Создать подключение к jump/proxy хосту.
 
         Args:
@@ -113,7 +172,7 @@ class SSHTransport(BaseTransport):
                 устанавливается это подключение (multi-hop)
 
         """
-        # Парсим user@host
+        assert asyncssh is not None
         user: str | None = None
         host = proxy_host
         if "@" in proxy_host:
@@ -148,8 +207,9 @@ class SSHTransport(BaseTransport):
     async def connect(self) -> None:
         """Установить SSH подключение.
 
-        Поддерживает proxy/jump hosts через опцию 'proxy' в config.options.
+        Поддерживает proxy/jump hosts, keepalive, ssh_config, ssh-agent и client_cert.
         """
+        assert asyncssh is not None
         try:
             connect_kwargs: dict[str, Any] = {
                 "host": self.config.host,
@@ -165,6 +225,8 @@ class SSHTransport(BaseTransport):
             if self.config.key_file:
                 connect_kwargs["client_keys"] = [self.config.key_file]
 
+            self._apply_extra_connect_options(connect_kwargs)
+
             # Обработка proxy/jump hosts
             proxy_option = self.config.options.get("proxy")
             if proxy_option:
@@ -172,8 +234,6 @@ class SSHTransport(BaseTransport):
                     h.strip() for h in str(proxy_option).split(",") if h.strip()
                 ]
 
-                # Строим цепочку: каждый следующий hop подключается
-                # через предыдущий (tunnel=), последний hop — туннель к цели
                 for proxy_host in proxy_hosts:
                     tunnel = self._tunnel_conns[-1] if self._tunnel_conns else None
                     proxy_conn = await self._create_proxy_conn(proxy_host, tunnel)
@@ -196,6 +256,9 @@ class SSHTransport(BaseTransport):
                 f"SSH connection failed: {e}",
                 host=self.config.host
             ) from e
+        except ConnectionError:
+            await self._close_tunnel_conns()
+            raise
         except Exception as e:
             await self._close_tunnel_conns()
             raise ConnectionError(
@@ -217,7 +280,6 @@ class SSHTransport(BaseTransport):
             self._conn.close()
             await self._conn.wait_closed()
             self._conn = None
-        # Промежуточные hop'ы закрываем после основного подключения
         await self._close_tunnel_conns()
         self._connected = False
 
@@ -232,6 +294,7 @@ class SSHTransport(BaseTransport):
 
         Returns:
             True если SSH сессия активна
+
         """
         if not self._connected or not self._conn:
             return False
@@ -244,6 +307,13 @@ class SSHTransport(BaseTransport):
         except Exception:
             return False
 
+    @staticmethod
+    def _wrap_cwd(command: str, cwd: str | Path | None) -> str:
+        """Обернуть команду в ``cd <cwd> && <command>``, если указан ``cwd``."""
+        if cwd is None:
+            return command
+        return f"cd {shlex.quote(str(cwd))} && {command}"
+
     async def run(
         self,
         command: str,
@@ -255,7 +325,7 @@ class SSHTransport(BaseTransport):
         Args:
             command: Команда для выполнения
             timeout: Таймаут в секундах
-            **kwargs: Дополнительные аргументы (env, cwd, etc.)
+            **kwargs: Дополнительные аргументы (``env``, ``cwd``, ``input``)
 
         Returns:
             Result объект с результатом
@@ -272,8 +342,23 @@ class SSHTransport(BaseTransport):
         start_time = time.monotonic()
 
         env = kwargs.get("env")
-        async with self._conn.create_process(command, env=env) as proc:
+        cwd = kwargs.get("cwd")
+        input_data = kwargs.get("input")
+        effective_cmd = self._wrap_cwd(command, cwd)
+
+        async with self._conn.create_process(effective_cmd, env=env) as proc:
             try:
+                if input_data is not None:
+                    text_in = (
+                        input_data.decode("utf-8", errors="replace")
+                        if isinstance(input_data, bytes)
+                        else str(input_data)
+                    )
+                    proc.stdin.write(text_in)
+                    eof_fn = getattr(proc.stdin, "write_eof", None)
+                    if callable(eof_fn):
+                        eof_fn()
+
                 stdout, stderr = await asyncio.wait_for(
                     asyncio.gather(
                         proc.stdout.read(),
@@ -318,7 +403,9 @@ class SSHTransport(BaseTransport):
                 host=self.config.host
             )
         env = kwargs.get("env")
-        async with self._conn.create_process(command, env=env) as proc:
+        cwd = kwargs.get("cwd")
+        effective_cmd = self._wrap_cwd(command, cwd)
+        async with self._conn.create_process(effective_cmd, env=env) as proc:
             async for line in proc.stdout:
                 yield line.rstrip()
 
@@ -340,15 +427,11 @@ class SSHTransport(BaseTransport):
         Raises:
             ConnectionError: Если нет подключения или ошибка SFTP
 
-        Пример:
-            >>> await transport.upload("/local/file.txt", "/remote/file.txt")
-            >>> await transport.upload("/local/dir", "/remote/dir", recurse=True)
         """
+        assert asyncssh is not None
         if not self._connected or not self._conn:
             raise ConnectionError("Not connected", host=self.config.host)
 
-        # Автоопределение рекурсии если local_path — директория
-        import os
         if recurse is False and os.path.isdir(local_path):
             recurse = True
 
@@ -382,10 +465,8 @@ class SSHTransport(BaseTransport):
         Raises:
             ConnectionError: Если нет подключения или ошибка SFTP
 
-        Пример:
-            >>> await transport.download("/remote/file.txt", "/local/file.txt")
-            >>> await transport.download("/remote/dir", "/local/dir", recurse=True)
         """
+        assert asyncssh is not None
         if not self._connected or not self._conn:
             raise ConnectionError("Not connected", host=self.config.host)
 
@@ -416,10 +497,8 @@ class SSHTransport(BaseTransport):
         Raises:
             ConnectionError: Если нет подключения или ошибка SFTP
 
-        Пример:
-            >>> await transport.chmod("/var/www/app.py", 0o755)
-            >>> await transport.chmod("/etc/config.ini", 0o600)
         """
+        assert asyncssh is not None
         if not self._connected or not self._conn:
             raise ConnectionError("Not connected", host=self.config.host)
 
@@ -438,13 +517,6 @@ class SSHTransport(BaseTransport):
     ) -> dict:
         """Получить информацию о файле через SFTP stat.
 
-        Возвращает словарь с атрибутами файла:
-        - ``size`` — размер в байтах
-        - ``uid`` / ``gid`` — идентификаторы владельца/группы
-        - ``permissions`` — права доступа (октальные)
-        - ``atime`` / ``mtime`` — время доступа/модификации (timestamp)
-        - ``is_file`` / ``is_dir`` / ``is_symlink`` — тип
-
         Args:
             remote_path: Путь к файлу на удалённом хосте
 
@@ -454,10 +526,8 @@ class SSHTransport(BaseTransport):
         Raises:
             ConnectionError: Если нет подключения или ошибка SFTP
 
-        Пример:
-            >>> info = await transport.stat("/var/log/syslog")
-            >>> print(info["size"], info["permissions"])
         """
+        assert asyncssh is not None
         if not self._connected or not self._conn:
             raise ConnectionError("Not connected", host=self.config.host)
 
@@ -465,7 +535,6 @@ class SSHTransport(BaseTransport):
             async with self._conn.start_sftp_client() as sftp:
                 attrs = await sftp.stat(remote_path)
 
-            import stat as stat_module
             perms = attrs.permissions
             return {
                 "size": attrs.size,
@@ -499,11 +568,8 @@ class SSHTransport(BaseTransport):
         Raises:
             ConnectionError: Если нет подключения или ошибка SFTP
 
-        Пример:
-            >>> files = await transport.listdir("/var/log")
-            >>> print(files)
-            ['syslog', 'auth.log', 'kern.log']
         """
+        assert asyncssh is not None
         if not self._connected or not self._conn:
             raise ConnectionError("Not connected", host=self.config.host)
 
@@ -564,4 +630,3 @@ class SSHTransport(BaseTransport):
 
         self._shell_procs.append(proc)
         return proc
-

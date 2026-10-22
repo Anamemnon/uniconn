@@ -1,5 +1,5 @@
 # src/uniconn/_config.py
-from typing import Any, Self
+from typing import Any, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, computed_field
 
@@ -30,4 +30,4 @@ class ConnectionConfig(BaseModel):
     def from_uri(cls, uri: str) -> Self:
         """Парсинг URI в конфигурацию."""
         from ._uri import URIParser
-        return URIParser.parse(uri)
+        return cast(Self, URIParser.parse(uri))
