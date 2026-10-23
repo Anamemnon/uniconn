@@ -498,3 +498,80 @@ class TestStructuredLogging:
         assert payload["stdout_bytes"] > 0
         assert "metrics_payload" in payload["stdout"]
 
+    def test_log_event_respects_mask_secrets_flag(self):
+        """log_event() маскирует секреты при mask_secrets=True и сохраняет при mask_secrets=False."""
+        import io
+        import json
+        from uniconn import configure_logging
+        from uniconn._logging import log_event
+
+        # 1. mask_secrets = False
+        buf_nomask = io.StringIO()
+        logger_nomask = configure_logging(
+            level="INFO",
+            fmt="json",
+            stream=buf_nomask,
+            mask_secrets=False,
+            logger_name="test_nomask_event",
+        )
+        log_event(
+            logger_nomask,
+            logging.INFO,
+            "cmd.run",
+            command="echo password=plainPass123 and token=openToken456",
+        )
+        nomask_line = buf_nomask.getvalue().strip()
+        nomask_data = json.loads(nomask_line)
+        assert "password=plainPass123" in nomask_data["command"]
+        assert "token=openToken456" in nomask_data["command"]
+
+        # 2. mask_secrets = True
+        buf_mask = io.StringIO()
+        logger_mask = configure_logging(
+            level="INFO",
+            fmt="json",
+            stream=buf_mask,
+            mask_secrets=True,
+            logger_name="test_mask_event",
+        )
+        log_event(
+            logger_mask,
+            logging.INFO,
+            "cmd.run",
+            command="echo password=plainPass123 and token=openToken456",
+        )
+        mask_line = buf_mask.getvalue().strip()
+        mask_data = json.loads(mask_line)
+        assert "password=***" in mask_data["command"]
+        assert "token=***" in mask_data["command"]
+        assert "plainPass123" not in mask_data["command"]
+        assert "openToken456" not in mask_data["command"]
+
+    @pytest.mark.asyncio
+    async def test_sensitive_mode_redacted_when_mask_secrets_false(self):
+        """sensitive=True скрывает команду в structlog JSON даже при mask_secrets=False."""
+        import io
+        import json
+        from uniconn import Connection, configure_logging
+
+        buf = io.StringIO()
+        logger = configure_logging(
+            level="DEBUG",
+            fmt="json",
+            stream=buf,
+            mask_secrets=False,
+            logger_name="test_sensitive_nomask",
+        )
+
+        async with Connection.from_uri("local://", logger=logger) as conn:
+            await conn.run("echo sensitive_super_secret_payload", sensitive=True)
+
+        lines = [line for line in buf.getvalue().splitlines() if line.strip()]
+        assert len(lines) >= 2
+        for line in lines:
+            entry = json.loads(line)
+            assert "sensitive_super_secret_payload" not in entry.get("command", "")
+            if "command" in entry:
+                assert entry["command"] == "***REDACTED***"
+
+

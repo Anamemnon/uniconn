@@ -120,7 +120,7 @@ from uniconn.hooks import audit_log_hook, allowlist_hook, blocklist_hook, metric
 
 conn.add_hook("before_run", allowlist_hook(["ls", "cat", "uptime", "systemctl status"]))
 conn.add_hook("before_run", blocklist_hook(["rm -rf /", "mkfs", "shutdown"]))
-conn.add_hook("after_run", audit_log_hook("/var/log/uniconn_audit.jsonl"))
+conn.add_hook("after_run", audit_log_hook("/var/log/uniconn_audit.jsonl", include_output=True, mask_secrets=True))
 
 metrics = metrics_collector_hook()
 metrics.attach(conn)  # registers after_run and on_error

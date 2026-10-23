@@ -30,7 +30,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Self
 
-from ._logging import get_struct_logger, log_event
+from ._logging import SecretMaskingFilter, get_struct_logger, log_event
 from .result import Result
 
 DEFAULT_BLOCKED_PATTERNS: tuple[str, ...] = (
@@ -46,15 +46,19 @@ def audit_log_hook(
     path: str | Path,
     *,
     include_output: bool = False,
+    mask_secrets: bool = False,
 ) -> Callable[[Result], None]:
     """Создать хук ``after_run`` для записи JSONL-лога аудита выполненных команд.
 
     При ``result.sensitive == True`` команда и потоки вывода маскируются
     строкой ``"***REDACTED***"``.
+    При ``mask_secrets == True`` обнаруженные токены, пароли и секреты в тексте
+    команды и вывода заменяются на безопасные маски.
 
     Args:
         path: Путь к JSONL-файлу аудита
         include_output: Включать ли ``stdout`` и ``stderr`` в запись
+        mask_secrets: Маскировать ли токены и пароли регулярными выражениями
 
     Returns:
         Функция обратного вызова для ``conn.add_hook("after_run", ...)``
@@ -62,20 +66,38 @@ def audit_log_hook(
     """
     log_path = Path(path)
 
+    def _mask_text(text: str) -> str:
+        if not mask_secrets or not text:
+            return text
+        return SecretMaskingFilter._mask_string(text)
+
     def _on_after_run(result: Result) -> None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        command_str = (
+            "***REDACTED***"
+            if result.sensitive
+            else _mask_text(result.command)
+        )
         entry: dict[str, Any] = {
             "timestamp": datetime.now(UTC).isoformat(),
             "host": result.host,
-            "command": "***REDACTED***" if result.sensitive else result.command,
+            "command": command_str,
             "exit_code": result.exit_code,
             "ok": result.ok,
             "duration": round(result.duration, 6),
             "sensitive": result.sensitive,
         }
         if include_output:
-            entry["stdout"] = "***REDACTED***" if result.sensitive else result.stdout
-            entry["stderr"] = "***REDACTED***" if result.sensitive else result.stderr
+            entry["stdout"] = (
+                "***REDACTED***"
+                if result.sensitive
+                else _mask_text(result.stdout)
+            )
+            entry["stderr"] = (
+                "***REDACTED***"
+                if result.sensitive
+                else _mask_text(result.stderr)
+            )
 
         with log_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")

@@ -643,7 +643,7 @@ class Connection:
                     logging.INFO,
                     "command.dry_run",
                     f"[DRY-RUN] Skipping command: {log_cmd} on {self._config.uri_safe}",
-                    command=cmd_str,
+                    command="***REDACTED***" if sensitive else cmd_str,
                     dry_run=True,
                     sensitive=sensitive,
                 )
@@ -669,7 +669,7 @@ class Connection:
                     logging.DEBUG,
                     "command.start",
                     f"Running command: {log_cmd} on {self._config.uri_safe}",
-                    command=cmd_str,
+                    command="***REDACTED***" if sensitive else cmd_str,
                     sudo=sudo,
                     timeout=timeout,
                     sensitive=sensitive,
@@ -701,7 +701,7 @@ class Connection:
                                 "command.retry",
                                 f"Retry attempt {attempt_num}/{self._retry_attempts} "
                                 f"for {log_cmd} on {self._config.uri_safe}",
-                                command=cmd_str,
+                                command="***REDACTED***" if sensitive else cmd_str,
                                 attempt=attempt_num,
                                 max_attempts=self._retry_attempts,
                                 error_type=type(retry_exc).__name__,
@@ -729,7 +729,7 @@ class Connection:
                         "command.finish",
                         f"Finished command: {log_cmd} on {self._config.uri_safe} "
                         f"(exit_code={result.exit_code})",
-                        command=cmd_str,
+                        command="***REDACTED***" if sensitive else cmd_str,
                         exit_code=result.exit_code,
                         ok=result.ok,
                         duration_ms=round(result.duration * 1000, 3),
@@ -746,7 +746,7 @@ class Connection:
                     "command.error",
                     f"Command error: {log_cmd} on {self._config.uri_safe} "
                     f"({type(exc).__name__})",
-                    command=cmd_str,
+                    command="***REDACTED***" if sensitive else cmd_str,
                     error_type=type(exc).__name__,
                     error="***REDACTED***" if sensitive else str(exc),
                     sensitive=sensitive,

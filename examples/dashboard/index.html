@@ -3,221 +3,1690 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>uniconn — Universal Remote Command Execution Library</title>
-  <meta name="description" content="Async-first Python library and CLI for executing commands across SSH, Telnet, Serial/UART, IPMI BMC, and Local transports." />
-  <meta property="og:title" content="uniconn — Universal Remote Command Execution Library" />
-  <meta property="og:description" content="Async-first Python library and CLI for executing commands across SSH, Telnet, Serial/UART, IPMI BMC, and Local transports." />
+  <title>uniconn — Universal Remote Command Execution &amp; Telemetry Console</title>
+  <meta name="description" content="Async-first Python library and CLI for executing commands across SSH, Telnet, Serial/UART, IPMI BMC, and Local transports with structlog telemetry." />
+  <meta property="og:title" content="uniconn — Universal Remote Command Execution &amp; Telemetry Console" />
+  <meta property="og:description" content="Async-first Python library and CLI for executing commands across SSH, Telnet, Serial/UART, IPMI BMC, and Local transports with structlog telemetry." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
     :root {
-      --bg: #0b0f17;
-      --panel: #111827;
-      --border: #1f2937;
-      --text: #e5e7eb;
-      --muted: #9ca3af;
+      --bg: #0b0f19;
+      --surface: #111827;
+      --surface-alt: #0f172a;
+      --code-bg: #070a12;
+      --border: #1e293b;
+      --border-focus: #38bdf8;
+      --text: #f1f5f9;
+      --text-secondary: #cbd5e1;
+      --muted: #94a3b8;
       --accent: #38bdf8;
-      --green: #34d399;
-      --mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, monospace;
-      --sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      --accent-hover: #0ea5e9;
+      --success: #22c55e;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+      --sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
     body {
-      background: var(--bg);
+      background-color: var(--bg);
       color: var(--text);
       font-family: var(--sans);
-      line-height: 1.5;
-      padding: 2rem;
-      max-width: 1200px;
-      margin: 0 auto;
+      font-size: 15px;
+      line-height: 1.55;
+      letter-spacing: 0.005em;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
     }
-    header {
+
+    /* ─── Top Bar Contract (3 Zones) ───────────────────────── */
+    header.topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 2rem;
+      padding: 0.9rem 2rem;
+      border-bottom: 1px solid var(--border);
+      background: rgba(11, 15, 25, 0.92);
+      backdrop-filter: blur(8px);
+      position: sticky;
+      top: 0;
+      z-index: 30;
+    }
+
+    .brand-wordmark {
+      font-family: var(--mono);
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: var(--text);
+      text-decoration: none;
+      white-space: nowrap;
+      flex-shrink: 0;
+      letter-spacing: -0.02em;
+    }
+
+    nav.topnav {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+      overflow-x: auto;
+    }
+
+    nav.topnav button.nav-link {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      font-family: var(--sans);
+      font-size: 0.88rem;
+      font-weight: 500;
+      padding: 0.35rem 0;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+      border-bottom: 2px solid transparent;
+      transition: color 150ms ease, border-color 150ms ease;
+    }
+
+    nav.topnav button.nav-link:hover {
+      color: var(--text);
+    }
+
+    nav.topnav button.nav-link.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+
+    .topbar-cta {
+      flex-shrink: 0;
+    }
+
+    /* ─── Main Container & Typography ──────────────────────── */
+    main.workspace {
+      width: 100%;
+      max-width: 1360px;
+      margin: 0 auto;
+      padding: 1.75rem 2rem 3rem;
+      flex: 1;
+    }
+
+    .hero-banner {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 1.25rem;
+      padding-bottom: 1.5rem;
+      margin-bottom: 1.75rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .hero-title {
+      font-size: clamp(1.45rem, 2.2vw, 1.9rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--text);
+      text-wrap: balance;
+    }
+
+    .hero-meta {
+      margin-top: 0.4rem;
+      font-size: 0.84rem;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-variant-numeric: tabular-nums;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: center;
+    }
+
+    .hero-meta .sep {
+      color: #475569;
+    }
+
+    /* ─── Buttons & Controls ───────────────────────────────── */
+    button.btn {
+      background: var(--accent);
+      color: #030712;
+      border: 1px solid transparent;
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      font-family: var(--sans);
+      font-size: 0.84rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+      transition: opacity 150ms ease, transform 150ms ease;
+    }
+
+    button.btn:hover {
+      opacity: 0.92;
+    }
+
+    button.btn.secondary {
+      background: var(--surface);
+      color: var(--text-secondary);
+      border-color: var(--border);
+    }
+
+    button.btn.secondary:hover {
+      border-color: #334155;
+      color: var(--text);
+    }
+
+    button.btn.ghost {
+      background: transparent;
+      color: var(--muted);
+      border-color: var(--border);
+      padding: 0.35rem 0.7rem;
+      font-size: 0.78rem;
+      font-family: var(--mono);
+    }
+
+    button.btn.ghost:hover {
+      color: var(--text);
+      border-color: var(--accent);
+    }
+
+    .segmented {
+      display: inline-flex;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.2rem;
+      gap: 0.2rem;
+    }
+
+    .segmented button {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      font-family: var(--sans);
+      font-size: 0.8rem;
+      font-weight: 500;
+      padding: 0.35rem 0.75rem;
+      border-radius: 4px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .segmented button.active {
+      background: var(--surface);
+      color: var(--text);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    }
+
+    /* ─── Layout Sections & Panels (Single-Elevation) ──────── */
+    .tab-panel {
+      display: none;
+    }
+
+    .tab-panel.active {
+      display: block;
+    }
+
+    .kpi-strip {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .kpi-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1rem 1.25rem;
+    }
+
+    .kpi-label {
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-bottom: 0.35rem;
+    }
+
+    .kpi-value {
+      font-family: var(--mono);
+      font-size: 1.35rem;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      color: var(--text);
+    }
+
+    .kpi-sub {
+      font-size: 0.76rem;
+      color: var(--muted);
+      margin-top: 0.25rem;
+      font-family: var(--mono);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .split-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+      margin-bottom: 1.5rem;
+      align-items: stretch;
+    }
+
+    .split-grid-asym {
+      display: grid;
+      grid-template-columns: 5fr 7fr;
+      gap: 1.5rem;
+      margin-bottom: 1.5rem;
+      align-items: start;
+    }
+
+    @media (max-width: 980px) {
+      .split-grid,
+      .split-grid-asym {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1.35rem;
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .panel-title {
+      font-size: 0.98rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .panel-subtitle {
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    /* ─── Forms & Inputs ───────────────────────────────────── */
+    .form-row {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 0.85rem;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .field-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+      flex: 1;
+      min-width: 160px;
+    }
+
+    .field-group label {
+      font-size: 0.78rem;
+      color: var(--muted);
+      font-weight: 500;
+    }
+
+    input[type="text"],
+    input[type="number"],
+    input[type="password"],
+    select,
+    textarea {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.52rem 0.75rem;
+      border-radius: 5px;
+      font-family: var(--mono);
+      font-size: 0.83rem;
+      width: 100%;
+      transition: border-color 150ms ease;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      outline: none;
+      border-color: var(--border-focus);
+    }
+
+    textarea {
+      min-height: 150px;
+      resize: vertical;
+      line-height: 1.45;
+    }
+
+    .checkbox-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+      gap: 0.6rem;
+      margin: 0.85rem 0;
+      padding: 0.85rem;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+    }
+
+    .checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.82rem;
+      color: var(--text-secondary);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .checkbox-label input[type="checkbox"] {
+      accent-color: var(--accent);
+      width: 15px;
+      height: 15px;
+    }
+
+    /* ─── Code & Terminal Blocks ───────────────────────────── */
+    pre.code-view {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 1rem;
+      font-family: var(--mono);
+      font-size: 0.81rem;
+      line-height: 1.5;
+      color: #e2e8f0;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 400px;
+      overflow-y: auto;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .preset-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem;
+      margin-bottom: 0.85rem;
+      align-items: center;
+    }
+
+    .preset-bar span.preset-caption {
+      font-size: 0.76rem;
+      color: var(--muted);
+      margin-right: 0.25rem;
+    }
+
+    /* ─── Data Tables & Lists ──────────────────────────────── */
+    table.data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.83rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    table.data-table th,
+    table.data-table td {
+      padding: 0.55rem 0.75rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+
+    table.data-table th {
+      color: var(--muted);
+      font-weight: 500;
+      font-size: 0.76rem;
+    }
+
+    table.data-table td.num,
+    table.data-table th.num {
+      text-align: right;
+      font-family: var(--mono);
+    }
+
+    table.data-table td.mono {
+      font-family: var(--mono);
+    }
+
+    .status-text {
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      font-weight: 600;
+    }
+
+    .status-ok { color: var(--success); }
+    .status-warn { color: var(--warning); }
+    .status-err { color: var(--danger); }
+
+    /* ─── Fleet Node Matrix ────────────────────────────────── */
+    .fleet-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1rem;
+      margin-top: 1rem;
+    }
+
+    .fleet-node {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 1rem;
+    }
+
+    .fleet-node-top {
       display: flex;
       justify-content: space-between;
       align-items: baseline;
-      border-bottom: 1px solid var(--border);
-      padding-bottom: 1rem;
-      margin-bottom: 2rem;
+      margin-bottom: 0.4rem;
     }
-    h1 { font-family: var(--mono); font-size: 1.75rem; color: #fff; }
-    .version { color: var(--accent); font-family: var(--mono); font-size: 0.95rem; }
-    .subtitle { color: var(--muted); margin-top: 0.35rem; font-size: 0.95rem; }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-      gap: 1.25rem;
-      margin-bottom: 1.5rem;
-    }
-    .card {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 1.25rem;
-    }
-    .card h2 {
-      font-size: 0.9rem;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: var(--muted);
-      margin-bottom: 0.85rem;
+
+    .fleet-node-name {
       font-family: var(--mono);
-    }
-    .kv {
-      display: flex;
-      justify-content: space-between;
-      padding: 0.45rem 0;
-      border-bottom: 1px solid rgba(255,255,255,0.05);
-      font-size: 0.9rem;
-    }
-    .kv:last-child { border-bottom: none; }
-    .kv span:last-child { font-family: var(--mono); color: var(--green); }
-    pre {
-      background: #06090f;
-      border: 1px solid var(--border);
-      border-radius: 4px;
-      padding: 0.9rem;
-      font-family: var(--mono);
-      font-size: 0.82rem;
-      overflow-x: auto;
-      color: #d1d5db;
-      white-space: pre-wrap;
-    }
-    .controls {
-      display: flex;
-      gap: 0.75rem;
-      margin-bottom: 1rem;
-      flex-wrap: wrap;
-    }
-    input[type="text"] {
-      flex: 1;
-      min-width: 240px;
-      background: #06090f;
-      border: 1px solid var(--border);
-      color: #fff;
-      padding: 0.55rem 0.8rem;
-      border-radius: 4px;
-      font-family: var(--mono);
-      font-size: 0.85rem;
-    }
-    button {
-      background: var(--accent);
-      color: #030712;
-      border: none;
-      padding: 0.55rem 1rem;
-      border-radius: 4px;
       font-weight: 600;
-      font-family: var(--mono);
-      font-size: 0.82rem;
-      cursor: pointer;
-    }
-    button.secondary {
-      background: #1f2937;
+      font-size: 0.9rem;
       color: var(--text);
-      border: 1px solid #374151;
     }
-    button:hover { opacity: 0.9; }
+
+    .fleet-node-meta {
+      font-size: 0.76rem;
+      color: var(--muted);
+      font-family: var(--mono);
+      margin-bottom: 0.65rem;
+    }
+
+    .fleet-node-out {
+      font-family: var(--mono);
+      font-size: 0.79rem;
+      color: var(--text-secondary);
+      padding-top: 0.55rem;
+      border-top: 1px solid var(--border);
+      word-break: break-word;
+    }
+
+    footer.site-footer {
+      border-top: 1px solid var(--border);
+      padding: 1.25rem 2rem;
+      text-align: center;
+      font-size: 0.8rem;
+      color: var(--muted);
+      font-family: var(--mono);
+    }
   </style>
 </head>
 <body>
-  <header>
-    <div>
-      <h1>uniconn <span class="version" id="ver">v0.6.0</span></h1>
-      <p class="subtitle">Универсальная async-first Python-библиотека для выполнения команд (SSH, PTY ShellSession, SFTP, Telnet, Serial, IPMI, Local)</p>
-    </div>
-    <div style="font-family: var(--mono); font-size: 0.85rem; color: var(--green);">
-      ● 410 unit tests passing (0 warnings)
+  <!-- 3-Zone Top Navigation Bar -->
+  <header class="topbar">
+    <a href="#shell" class="brand-wordmark" onclick="switchTab('shell'); return false;">uniconn</a>
+
+    <nav class="topnav" aria-label="Primary Workspace Navigation">
+      <button type="button" class="nav-link active" data-tab="shell" onclick="switchTab('shell')">Overview &amp; Shell</button>
+      <button type="button" class="nav-link" data-tab="hooks" onclick="switchTab('hooks')">Hooks &amp; Telemetry</button>
+      <button type="button" class="nav-link" data-tab="pool" onclick="switchTab('pool')">Fleet &amp; Inventory</button>
+      <button type="button" class="nav-link" data-tab="uri" onclick="switchTab('uri')">URI &amp; Code Builder</button>
+      <button type="button" class="nav-link" data-tab="tests" onclick="switchTab('tests')">Screen &amp; Test Suite</button>
+    </nav>
+
+    <div class="topbar-cta">
+      <button type="button" class="btn" onclick="switchTab('tests'); runTestSuite('all');">Run Unit Tests</button>
     </div>
   </header>
 
-  <div class="grid">
-    <div class="card">
-      <h2>Зарегистрированные транспорты</h2>
-      <div id="transports-list"></div>
-    </div>
+  <main class="workspace">
+    <!-- Hero Context Strip -->
+    <section class="hero-banner">
+      <div>
+        <h1 class="hero-title">Universal Async-First Command Execution &amp; Telemetry Console</h1>
+        <div class="hero-meta">
+          <span id="meta-version">uniconn v0.6.0</span>
+          <span class="sep">·</span>
+          <span id="meta-python">Python 3.12</span>
+          <span class="sep">·</span>
+          <span id="meta-uname">Linux</span>
+          <span class="sep">·</span>
+          <span id="meta-transports">ssh / local / telnet / serial / ipmi</span>
+          <span class="sep">·</span>
+          <span>structlog JSONL + ClickHouse/Loki ready</span>
+        </div>
+      </div>
+    </section>
 
-    <div class="card">
-      <h2>Stateful PTY Shell (ShellSession §16)</h2>
-      <div class="kv"><span>Протокол маркера</span><span>__UNICONN_{uuid}__$?</span></div>
-      <div class="kv"><span>Транспорты open_shell()</span><span>ssh, local, telnet</span></div>
-      <div class="kv"><span>cd /var/log → pwd</span><span id="sh-cwd">/var/log</span></div>
-      <div class="kv"><span>export DEPLOY_ENV → echo</span><span id="sh-env">production</span></div>
-      <div class="kv"><span>resize(cols, rows)</span><span id="sh-size">120x40</span></div>
-    </div>
-  </div>
+    <!-- ===================================================================== -->
+    <!-- TAB 1: OVERVIEW & SHELL                                               -->
+    <!-- ===================================================================== -->
+    <section id="tab-shell" class="tab-panel active">
+      <div class="kpi-strip">
+        <div class="kpi-box">
+          <div class="kpi-label">Registered Transports</div>
+          <div class="kpi-value" id="kpi-transports-count">5</div>
+          <div class="kpi-sub" id="kpi-transports-names">ipmi · local · serial · ssh · telnet</div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label">Active Shell Working Dir</div>
+          <div class="kpi-value" id="kpi-shell-cwd">/root</div>
+          <div class="kpi-sub">Stateful marker protocol __UNICONN_{uuid}__$?</div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label">PTY Terminal Geometry</div>
+          <div class="kpi-value" id="kpi-shell-size">120×40</div>
+          <div class="kpi-sub" id="kpi-shell-mode-label">Mode: Stateful ShellSession</div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label">Last Execution Latency</div>
+          <div class="kpi-value" id="kpi-shell-latency">0.42 ms</div>
+          <div class="kpi-sub" id="kpi-shell-exit">Exit code: 0 (OK)</div>
+        </div>
+      </div>
 
-  <div class="card" style="margin-bottom: 1.5rem;">
-    <h2>Интерактивная проверка: Stateful ShellSession &amp; LocalTransport</h2>
-    <div class="controls">
-      <input type="text" id="cmd-input" value="cd /tmp && pwd" placeholder="Введите команду..." />
-      <button onclick="runShellCmd()">ShellSession.execute()</button>
-      <button class="secondary" onclick="runLocalCmd()">Connection('local://').run()</button>
-      <button class="secondary" onclick="runPytest()">Запустить pytest (410 тестов)</button>
-    </div>
-    <pre id="output-box">Готово к выполнению. Нажмите кнопку выше для проверки API uniconn.</pre>
-  </div>
+      <div class="split-grid-asym">
+        <!-- Left: Transport Matrix & Shell State -->
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2 class="panel-title">Transport Registry &amp; Session State</h2>
+              <p class="panel-subtitle">Dynamic entry-point loader and PTY environment state</p>
+            </div>
+            <button type="button" class="btn ghost" onclick="resetShellSession()">Reset Session</button>
+          </div>
 
-  <div class="card">
-    <h2>Пример API: uniconn v0.6.0 + structlog</h2>
-    <pre>from uniconn import (
-    Connection,
-    allowlist_hook,
-    configure_logging,
-    log_context,
-    metrics_collector_hook,
-    structured_log_hook,
-)
+          <table class="data-table" style="margin-bottom: 1.25rem;">
+            <thead>
+              <tr>
+                <th>Scheme</th>
+                <th>Capabilities</th>
+                <th class="num">State</th>
+              </tr>
+            </thead>
+            <tbody id="transports-table-body">
+              <tr><td class="mono">ssh://</td><td>run, stream, SFTP, open_shell, ProxyCommand</td><td class="num status-text status-ok">READY</td></tr>
+              <tr><td class="mono">local://</td><td>run, stream, file I/O, open_shell (PTY)</td><td class="num status-text status-ok">READY</td></tr>
+              <tr><td class="mono">telnet://</td><td>run, stream, open_shell (IAC NAWS)</td><td class="num status-text status-ok">READY</td></tr>
+              <tr><td class="mono">serial://</td><td>UART run, stream, baudrate/parity</td><td class="num status-text status-ok">READY</td></tr>
+              <tr><td class="mono">ipmi://</td><td>power, sensors, SEL, SOL console</td><td class="num status-text status-ok">READY</td></tr>
+            </tbody>
+          </table>
 
-configure_logging(level="INFO", fmt="json")  # JSONL для Grafana Loki / ClickHouse / InfluxDB
+          <div class="form-row">
+            <div class="field-group">
+              <label for="shell-mode-select">Shell Execution Engine</label>
+              <select id="shell-mode-select" onchange="updateShellModeLabel()">
+                <option value="fake">Stateful ShellSession (FakeShellProcess Demo)</option>
+                <option value="local_pty">Real Local PTY (LocalTransport.open_shell)</option>
+              </select>
+            </div>
+            <div class="field-group" style="max-width: 110px;">
+              <label for="shell-cols">Cols</label>
+              <input type="number" id="shell-cols" value="120" min="40" max="300" />
+            </div>
+            <div class="field-group" style="max-width: 110px;">
+              <label for="shell-rows">Rows</label>
+              <input type="number" id="shell-rows" value="40" min="10" max="120" />
+            </div>
+          </div>
 
-async with Connection.from_uri("ssh://prod-web") as conn:  # ~/.ssh/config + ProxyCommand
-    conn.add_hook("before_run", allowlist_hook(["ls", "pwd", "uptime"]))
-    conn.add_hook("after_run", structured_log_hook(tags={"env": "prod", "dc": "eu-1"}))
-    metrics = metrics_collector_hook().attach(conn)
+          <div style="font-size: 0.8rem; color: var(--muted); font-family: var(--mono);" id="shell-env-summary">
+            Exported env vars: none
+          </div>
+        </div>
 
-    async with log_context(release="2026.10"), conn.temp_dir() as tmp:
-        res = await conn.run(["ls", "-la", tmp])
-        if res:                          # bool(res) == res.ok
-            print(res.text, metrics.to_dict())</pre>
-  </div>
+        <!-- Right: Interactive Terminal & Result Inspector -->
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2 class="panel-title">Interactive Command Runner &amp; Result Inspector</h2>
+              <p class="panel-subtitle">Use ↑ / ↓ arrows for command history or pick a preset below</p>
+            </div>
+            <div class="segmented">
+              <button type="button" class="active" id="res-view-btn-stdout" onclick="setResultView('stdout')">Output</button>
+              <button type="button" id="res-view-btn-dict" onclick="setResultView('dict')">Result.to_dict()</button>
+              <button type="button" id="res-view-btn-lines" onclick="setResultView('lines')">Result.lines</button>
+              <button type="button" id="res-view-btn-json" onclick="setResultView('json')">Result.json()</button>
+            </div>
+          </div>
+
+          <div class="preset-bar">
+            <span class="preset-caption">Presets:</span>
+            <button type="button" class="btn ghost" onclick="setShellPreset('cd /var/log && pwd')">cd /var/log &amp;&amp; pwd</button>
+            <button type="button" class="btn ghost" onclick="setShellPreset('export DEPLOY_ENV=production && echo $DEPLOY_ENV')">export DEPLOY_ENV</button>
+            <button type="button" class="btn ghost" onclick="setShellPreset('uname -srm && python3 --version')">uname &amp; python3</button>
+            <button type="button" class="btn ghost" onclick="setShellPreset('python3 -c \'import json; print(json.dumps({\"service\":\"uniconn\",\"ok\":True,\"workers\":4}))\'')">JSON Output</button>
+          </div>
+
+          <div class="form-row">
+            <input
+              type="text"
+              id="cmd-input"
+              value="cd /tmp && pwd"
+              placeholder="Enter command (press Enter to run in ShellSession, ↑/↓ for history)..."
+              onkeydown="handleTerminalKeydown(event)"
+              style="flex: 1;"
+            />
+            <button type="button" class="btn" onclick="runShellCmd()">ShellSession.execute()</button>
+            <button type="button" class="btn secondary" onclick="runLocalCmd()">Connection('local://').run()</button>
+          </div>
+
+          <pre class="code-view" id="output-box">Ready. Execute a command via ShellSession.execute() or Connection.from_uri("local://").run().</pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 2: HOOKS, SECURITY & STRUCTLOG TELEMETRY                          -->
+    <!-- ===================================================================== -->
+    <section id="tab-hooks" class="tab-panel">
+      <div class="kpi-strip">
+        <div class="kpi-box">
+          <div class="kpi-label">MetricsCollector: Total Runs</div>
+          <div class="kpi-value" id="hk-total-runs">0</div>
+          <div class="kpi-sub">Accumulated in current session</div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label">Failed Commands (exit != 0)</div>
+          <div class="kpi-value" id="hk-failed-runs">0</div>
+          <div class="kpi-sub">Tracked via after_run hook</div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label">Policy Blocks &amp; Errors</div>
+          <div class="kpi-value" id="hk-errors-count">0</div>
+          <div class="kpi-sub">Tracked via before_run / on_error</div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label">Average Execution Duration</div>
+          <div class="kpi-value" id="hk-avg-duration">0.00 ms</div>
+          <div class="kpi-sub">Ready for ClickHouse / InfluxDB</div>
+        </div>
+      </div>
+
+      <div class="split-grid">
+        <!-- Left: Policy & Context Configuration -->
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2 class="panel-title">Lifecycle Hooks, Security &amp; Context Controls</h2>
+              <p class="panel-subtitle">Configure allowlist, blocklist, secret redaction, sudo, and contextvars</p>
+            </div>
+            <button type="button" class="btn ghost" onclick="resetHooksMetrics()">Reset Metrics</button>
+          </div>
+
+          <div class="field-group" style="margin-bottom: 0.85rem;">
+            <label for="hk-scenario-select" style="font-size: 0.82rem; font-weight: 600; color: var(--muted); display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
+              <span>Preset Scenario</span>
+              <span style="font-weight: 400; font-size: 0.75rem;">Quick config presets</span>
+            </label>
+            <select id="hk-scenario-select" onchange="applyHookScenario(this.value)">
+              <option value="secrets">1. Secret Masking (Tokens &amp; Passwords)</option>
+              <option value="blocklist">2. Blocklist (rm -rf / blocked)</option>
+              <option value="allowlist">3. Allowlist Violation (Prefix security)</option>
+              <option value="sudo">4. Sudo Escalation (Privilege escalation)</option>
+              <option value="tempdir">5. temp_dir() Sandbox (Isolated cleanup)</option>
+            </select>
+          </div>
+
+          <div class="field-group" style="margin-bottom: 0.85rem;">
+            <label for="hk-cmd">Command to Execute</label>
+            <input type="text" id="hk-cmd" value="echo 'Deploying release with password=superSecret99 and token=eyJhbGciOi'" />
+          </div>
+
+          <div class="checkbox-grid">
+            <label class="checkbox-label"><input type="checkbox" id="hk-mask-secrets" checked /> mask_secrets</label>
+            <label class="checkbox-label"><input type="checkbox" id="hk-sensitive" /> sensitive (Full Redact)</label>
+            <label class="checkbox-label"><input type="checkbox" id="hk-dry-run" /> dry_run</label>
+            <label class="checkbox-label"><input type="checkbox" id="hk-sudo" /> sudo</label>
+            <label class="checkbox-label"><input type="checkbox" id="hk-temp-dir" /> async with conn.temp_dir()</label>
+            <label class="checkbox-label"><input type="checkbox" id="hk-blocklist-on" checked /> blocklist_hook()</label>
+          </div>
+
+          <div class="form-row">
+            <div class="field-group">
+              <label for="hk-allowlist">allowlist_hook prefixes (comma-separated, empty = allow all)</label>
+              <input type="text" id="hk-allowlist" placeholder="e.g. echo, ls, pwd, uname, python3" value="" />
+            </div>
+            <div class="field-group" style="max-width: 160px;">
+              <label for="hk-sudo-user">sudo_user</label>
+              <input type="text" id="hk-sudo-user" placeholder="postgres" value="" />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="field-group">
+              <label for="hk-ctx-service">log_context(service=...)</label>
+              <input type="text" id="hk-ctx-service" value="billing-worker" />
+            </div>
+            <div class="field-group">
+              <label for="hk-ctx-dc">log_context(datacenter=...)</label>
+              <input type="text" id="hk-ctx-dc" value="eu-central-1" />
+            </div>
+            <div class="field-group">
+              <label for="hk-tag-env">structured_log_hook(env=...)</label>
+              <input type="text" id="hk-tag-env" value="production" />
+            </div>
+          </div>
+
+          <div class="form-row" style="margin-top: 1rem; margin-bottom: 0;">
+            <button type="button" class="btn" onclick="runHooksSandbox()">Execute with Hooks &amp; Telemetry</button>
+            <span id="hk-status-badge" class="status-text status-ok">READY</span>
+          </div>
+        </div>
+
+        <!-- Right: Structlog JSONL / Console / Audit Viewer -->
+        <div class="panel">
+          <div class="panel-header" style="flex-direction: column; align-items: stretch; gap: 0.85rem;">
+            <div>
+              <h2 class="panel-title">Live Telemetry Stream (`structlog` &amp; Audit)</h2>
+              <p class="panel-subtitle">Inspect structured JSONL events for Grafana Loki, ClickHouse, or InfluxDB</p>
+            </div>
+            <div class="segmented" style="align-self: flex-start;">
+              <button type="button" class="active" id="log-tab-btn-json" onclick="setTelemetryView('json')">JSONL (structlog)</button>
+              <button type="button" id="log-tab-btn-console" onclick="setTelemetryView('console')">Console</button>
+              <button type="button" id="log-tab-btn-audit" onclick="setTelemetryView('audit')">audit_log_hook</button>
+            </div>
+          </div>
+
+          <pre class="code-view" id="hk-logs-box" style="min-height: 210px; margin-bottom: 1rem;">Click "Execute with Hooks &amp; Telemetry" to inspect live structlog events.</pre>
+
+          <h3 style="font-size: 0.85rem; color: var(--muted); margin-bottom: 0.5rem;">Recent Hook Executions</h3>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Command</th>
+                <th>Outcome</th>
+                <th>Flags</th>
+                <th class="num">Duration</th>
+              </tr>
+            </thead>
+            <tbody id="hk-history-body">
+              <tr><td colspan="4" style="color: var(--muted);">No commands executed in sandbox yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 3: FLEET & INVENTORY (ConnectionPool)                             -->
+    <!-- ===================================================================== -->
+    <section id="tab-pool" class="tab-panel">
+      <div class="split-grid-asym">
+        <!-- Left: YAML Inventory Editor -->
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2 class="panel-title">YAML Inventory (`ConnectionPool.from_file`)</h2>
+              <p class="panel-subtitle">Define defaults, hosts, and named host groups</p>
+            </div>
+            <button type="button" class="btn ghost" onclick="resetInventoryYaml()">Reset YAML</button>
+          </div>
+
+          <div class="field-group" style="margin-bottom: 0.85rem;">
+            <label for="pool-yaml">inventory.yaml</label>
+            <textarea id="pool-yaml" spellcheck="false"></textarea>
+          </div>
+
+          <div class="form-row">
+            <div class="field-group">
+              <label for="pool-group">Target Group</label>
+              <select id="pool-group">
+                <option value="all">all (4 hosts)</option>
+                <option value="web">web (web-eu-01, web-eu-02)</option>
+                <option value="backend">backend (api-core-01, db-primary-01)</option>
+              </select>
+            </div>
+            <div class="field-group">
+              <label for="pool-op">Pool Operation</label>
+              <select id="pool-op">
+                <option value="map_safe">pool.map_safe(cmd)</option>
+                <option value="map">pool.map(cmd)</option>
+                <option value="apply">pool.apply(custom_fn)</option>
+              </select>
+            </div>
+            <div class="field-group" style="max-width: 120px;">
+              <label for="pool-conc">Concurrency</label>
+              <input type="number" id="pool-conc" value="4" min="1" max="20" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Parallel Fleet Execution & Node Matrix -->
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2 class="panel-title">Parallel Fleet Execution Matrix</h2>
+              <p class="panel-subtitle" id="pool-summary-subtitle">Run commands concurrently across inventory groups</p>
+            </div>
+            <button type="button" class="btn" onclick="runPoolSandbox()">Execute on Fleet</button>
+          </div>
+
+          <div class="preset-bar">
+            <span class="preset-caption">Fleet Presets:</span>
+            <button type="button" class="btn ghost" onclick="setPoolPreset('identity')">Node Identity &amp; Kernel</button>
+            <button type="button" class="btn ghost" onclick="setPoolPreset('health')">Health Probe</button>
+            <button type="button" class="btn ghost" onclick="setPoolPreset('role')">Role-Aware Check</button>
+          </div>
+
+          <div class="form-row">
+            <input
+              type="text"
+              id="pool-cmd"
+              value='echo "[$UNICONN_HOST] role=$UNICONN_ROLE dc=$UNICONN_DC: $(uname -srm)"'
+            />
+          </div>
+
+          <div class="fleet-grid" id="pool-nodes-grid">
+            <div class="fleet-node">
+              <div class="fleet-node-top">
+                <span class="fleet-node-name">Ready to execute</span>
+                <span class="status-text status-ok">IDLE</span>
+              </div>
+              <div class="fleet-node-meta">Click "Execute on Fleet" to run parallel ConnectionPool tasks.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 4: URI & CODE BUILDER                                             -->
+    <!-- ===================================================================== -->
+    <section id="tab-uri" class="tab-panel">
+      <div class="split-grid">
+        <!-- Left: Interactive URI & Config Constructor -->
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2 class="panel-title">Connection URI &amp; Config Constructor</h2>
+              <p class="panel-subtitle">Build or parse URIs with percent-encoding and .with_overrides()</p>
+            </div>
+            <div class="preset-bar" style="margin-bottom: 0;">
+              <button type="button" class="btn ghost" onclick="loadUriPreset('ssh')">SSH + Jump</button>
+              <button type="button" class="btn ghost" onclick="loadUriPreset('serial')">Serial UART</button>
+              <button type="button" class="btn ghost" onclick="loadUriPreset('ipmi')">IPMI BMC</button>
+              <button type="button" class="btn ghost" onclick="loadUriPreset('telnet')">Telnet</button>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="field-group">
+              <label for="ub-transport">Transport Scheme</label>
+              <select id="ub-transport" onchange="buildUriLive()">
+                <option value="ssh">ssh:// (AsyncSSH + SFTP + PTY)</option>
+                <option value="serial">serial:// (UART / pyserial-asyncio)</option>
+                <option value="telnet">telnet:// (RFC 854 + IAC NAWS)</option>
+                <option value="ipmi">ipmi:// (BMC Power / Sensors / SOL)</option>
+                <option value="local">local:// (Subprocess + PTY)</option>
+              </select>
+            </div>
+            <div class="field-group">
+              <label for="ub-host">Host or Device Path</label>
+              <input type="text" id="ub-host" value="prod-web-01.eu.internal" oninput="buildUriLive()" />
+            </div>
+            <div class="field-group" style="max-width: 110px;">
+              <label for="ub-port">Port</label>
+              <input type="text" id="ub-port" value="22" oninput="buildUriLive()" />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="field-group">
+              <label for="ub-user">Username</label>
+              <input type="text" id="ub-user" value="deploy" oninput="buildUriLive()" />
+            </div>
+            <div class="field-group">
+              <label for="ub-pass">Password (auto-masked in uri_safe)</label>
+              <input type="password" id="ub-pass" value="s3cr3t@pass" oninput="buildUriLive()" />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="field-group">
+              <label for="ub-opt-1-key">Query Option 1</label>
+              <input type="text" id="ub-opt-1-key" value="keepalive" oninput="buildUriLive()" />
+            </div>
+            <div class="field-group">
+              <label for="ub-opt-1-val">Value 1</label>
+              <input type="text" id="ub-opt-1-val" value="30" oninput="buildUriLive()" />
+            </div>
+            <div class="field-group">
+              <label for="ub-opt-2-key">Query Option 2</label>
+              <input type="text" id="ub-opt-2-key" value="known_hosts" oninput="buildUriLive()" />
+            </div>
+            <div class="field-group">
+              <label for="ub-opt-2-val">Value 2</label>
+              <input type="text" id="ub-opt-2-val" value="strict" oninput="buildUriLive()" />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="field-group">
+              <label for="ub-cmd">Sample Command for Code Generator</label>
+              <input type="text" id="ub-cmd" value="systemctl status nginx" oninput="buildUriLive()" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Right: Validated ConnectionConfig & Code Generator -->
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2 class="panel-title">Generated Code &amp; Validated `ConnectionConfig`</h2>
+              <p class="panel-subtitle">Copy ready-to-run Async, Sync, or CLI snippets</p>
+            </div>
+            <div class="segmented">
+              <button type="button" class="active" id="snip-btn-async" onclick="setSnippetView('async_python')">Async Python</button>
+              <button type="button" id="snip-btn-sync" onclick="setSnippetView('sync_python')">Sync Python</button>
+              <button type="button" id="snip-btn-cli" onclick="setSnippetView('cli')">CLI</button>
+              <button type="button" id="snip-btn-config" onclick="setSnippetView('config')">Parsed Config</button>
+            </div>
+          </div>
+
+          <div style="margin-bottom: 0.85rem; padding: 0.65rem 0.85rem; background: var(--code-bg); border: 1px solid var(--border); border-radius: 5px; font-family: var(--mono); font-size: 0.8rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
+            <span id="ub-uri-safe-display" style="color: var(--accent); word-break: break-all;">ssh://deploy:***@prod-web-01.eu.internal:22?keepalive=30&amp;known_hosts=strict</span>
+            <button type="button" class="btn ghost" onclick="copyCurrentSnippet()">Copy Code</button>
+          </div>
+
+          <pre class="code-view" id="ub-snippet-box" style="min-height: 260px;"></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 5: BACKGROUND SCREEN & MODULAR TEST SUITE                         -->
+    <!-- ===================================================================== -->
+    <section id="tab-tests" class="tab-panel">
+      <div class="split-grid">
+        <!-- Left: Modular Test Suite & Quality Gate -->
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2 class="panel-title">Modular Unit Test Runner &amp; Quality Gate</h2>
+              <p class="panel-subtitle">Execute domain test packages (`tests/unit/*`) and linters</p>
+            </div>
+            <span id="pytest-status-badge" class="status-text status-ok">TESTS READY</span>
+          </div>
+
+          <div class="preset-bar" id="suite-preset-bar">
+            <button type="button" class="btn" data-suite="all" onclick="runTestSuite('all')">All Unit</button>
+            <button type="button" class="btn secondary" data-suite="core" onclick="runTestSuite('core')">core</button>
+            <button type="button" class="btn secondary" data-suite="transports" onclick="runTestSuite('transports')">transports</button>
+            <button type="button" class="btn secondary" data-suite="pools" onclick="runTestSuite('pools')">pools</button>
+            <button type="button" class="btn secondary" data-suite="screen" onclick="runTestSuite('screen')">screen</button>
+            <button type="button" class="btn secondary" data-suite="cli" onclick="runTestSuite('cli')">cli</button>
+            <button type="button" class="btn secondary" data-suite="releases" onclick="runTestSuite('releases')">releases</button>
+            <button type="button" class="btn ghost" data-suite="ruff" onclick="runTestSuite('ruff')">ruff check</button>
+            <button type="button" class="btn ghost" data-suite="pyright" onclick="runTestSuite('pyright')">pyright</button>
+          </div>
+
+          <pre class="code-view" id="pytest-output-box" style="min-height: 310px;">Select a test package above to run pytest with "-m not integration" and 0 RuntimeWarning enforcement.</pre>
+        </div>
+
+        <!-- Right: Background ScreenPool & LogPipeline Simulator -->
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2 class="panel-title">Background `ScreenPool` &amp; `LogPipeline` Inspector</h2>
+              <p class="panel-subtitle">Test log file path sanitization and regex event triggers</p>
+            </div>
+            <button type="button" class="btn" onclick="runScreenSandbox()">Run LogPipeline</button>
+          </div>
+
+          <div class="form-row">
+            <div class="field-group">
+              <label for="sc-name">Screen Session Name</label>
+              <input type="text" id="sc-name" value="db-backup-nightly" />
+            </div>
+            <div class="field-group">
+              <label for="sc-host">Host (tested with _sanitize_name)</label>
+              <input type="text" id="sc-host" value="prod-db-01.eu/cluster" />
+            </div>
+            <div class="field-group">
+              <label for="sc-strategy">Flush Strategy</label>
+              <select id="sc-strategy">
+                <option value="realtime">realtime</option>
+                <option value="periodic">periodic</option>
+                <option value="on_complete">on_complete</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="field-group">
+              <label for="sc-pattern">LogEvent Regex Trigger Pattern</label>
+              <input type="text" id="sc-pattern" value="(ERROR|WARN|CRITICAL|Progress:\s*\d+%)" />
+            </div>
+          </div>
+
+          <pre class="code-view" id="sc-output-box" style="min-height: 220px;">Click "Run LogPipeline" to process background task logs through LocalFileHandler and regex triggers.</pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    uniconn v0.6.0 · Async-First Remote Execution &amp; Structured Telemetry Library · Python 3.11+
+  </footer>
 
   <script>
+    // ─── State ───────────────────────────────────────────────────────
+    let commandHistory = [
+      'cd /tmp && pwd',
+      'export DEPLOY_ENV=production && echo $DEPLOY_ENV',
+      'uname -srm'
+    ];
+    let historyIndex = commandHistory.length;
+    let lastResultData = null;
+    let currentResultView = 'stdout';
+
+    let lastHooksData = null;
+    let currentTelemetryView = 'json';
+
+    let lastUriData = null;
+    let currentSnippetView = 'async_python';
+    let defaultInventoryYaml = '';
+
+    // ─── Tab Switching ───────────────────────────────────────────────
+    function switchTab(tabId) {
+      document.querySelectorAll('.tab-panel').forEach(el => {
+        el.classList.toggle('active', el.id === 'tab-' + tabId);
+      });
+      document.querySelectorAll('nav.topnav .nav-link').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tabId);
+      });
+      if (tabId === 'uri' && !lastUriData) {
+        buildUriLive();
+      }
+    }
+
+    // ─── Initial Status Load ─────────────────────────────────────────
     async function loadStatus() {
-      const res = await fetch('/api/status');
-      const data = await res.json();
-      document.getElementById('ver').textContent = 'v' + data.version;
-      document.getElementById('sh-cwd').textContent = data.shell_demo.cwd_after_cd;
-      document.getElementById('sh-env').textContent = data.shell_demo.env_after_export;
-      document.getElementById('sh-size').textContent = data.shell_demo.term_size.join('×');
-      const list = document.getElementById('transports-list');
-      list.innerHTML = data.transports.map(t =>
-        `<div class="kv"><span>${t}://</span><span>READY</span></div>`
-      ).join('') + `<div class="kv"><span>Runtime</span><span>${data.python_version}</span></div>`;
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        document.getElementById('meta-version').textContent = 'uniconn v' + data.version;
+        document.getElementById('meta-python').textContent = data.python_version;
+        document.getElementById('meta-uname').textContent = data.local_uname;
+        document.getElementById('meta-transports').textContent = data.transports.join(' / ');
+
+        document.getElementById('kpi-transports-count').textContent = String(data.transports.length);
+        document.getElementById('kpi-transports-names').textContent = data.transports.join(' · ');
+        document.getElementById('kpi-shell-cwd').textContent = data.shell_demo.cwd_after_cd;
+        document.getElementById('kpi-shell-size').textContent = data.shell_demo.term_size.join('×');
+
+        if (data.default_inventory) {
+          defaultInventoryYaml = data.default_inventory;
+          const yamlBox = document.getElementById('pool-yaml');
+          if (yamlBox && !yamlBox.value.trim()) {
+            yamlBox.value = defaultInventoryYaml;
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load status:', err);
+      }
+    }
+
+    // ─── Tab 1: Interactive Shell & Result Inspector ─────────────────
+    function updateShellModeLabel() {
+      const sel = document.getElementById('shell-mode-select');
+      const label = document.getElementById('kpi-shell-mode-label');
+      label.textContent = sel.value === 'local_pty'
+        ? 'Mode: LocalTransport.open_shell() [PTY]'
+        : 'Mode: Stateful ShellSession';
+    }
+
+    function setShellPreset(cmd) {
+      const input = document.getElementById('cmd-input');
+      input.value = cmd;
+      input.focus();
+    }
+
+    function handleTerminalKeydown(e) {
+      const input = document.getElementById('cmd-input');
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        runShellCmd();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        if (historyIndex > 0) {
+          historyIndex--;
+          input.value = commandHistory[historyIndex];
+        }
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        if (historyIndex < commandHistory.length - 1) {
+          historyIndex++;
+          input.value = commandHistory[historyIndex];
+        } else {
+          historyIndex = commandHistory.length;
+          input.value = '';
+        }
+      }
+    }
+
+    function pushHistory(cmd) {
+      if (cmd && commandHistory[commandHistory.length - 1] !== cmd) {
+        commandHistory.push(cmd);
+      }
+      historyIndex = commandHistory.length;
+    }
+
+    function setResultView(view) {
+      currentResultView = view;
+      ['stdout', 'dict', 'lines', 'json'].forEach(v => {
+        const btn = document.getElementById('res-view-btn-' + v);
+        if (btn) btn.classList.toggle('active', v === view);
+      });
+      renderResultBox();
+    }
+
+    function renderResultBox() {
+      const box = document.getElementById('output-box');
+      if (!lastResultData) return;
+      if (currentResultView === 'stdout') {
+        const header = `# ${lastResultData.mode || 'Result'} | cmd: ${lastResultData.command} | exit_code: ${lastResultData.exit_code} | ${lastResultData.duration_ms ?? (lastResultData.duration_s * 1000)} ms\n`;
+        const out = lastResultData.stdout || lastResultData.text || '(empty stdout)';
+        const err = lastResultData.stderr ? `\n[stderr]\n${lastResultData.stderr}` : '';
+        box.textContent = header + '\n' + out + err;
+      } else if (currentResultView === 'dict') {
+        box.textContent = JSON.stringify(lastResultData.to_dict || lastResultData, null, 2);
+      } else if (currentResultView === 'lines') {
+        box.textContent = JSON.stringify(lastResultData.lines || [], null, 2);
+      } else if (currentResultView === 'json') {
+        if (lastResultData.json_parsed !== null && lastResultData.json_parsed !== undefined) {
+          box.textContent = JSON.stringify(lastResultData.json_parsed, null, 2);
+        } else {
+          box.textContent = '// Result.json(): Output is not valid JSON. Try the "JSON Output" preset button above.';
+        }
+      }
     }
 
     async function runShellCmd() {
-      const cmd = document.getElementById('cmd-input').value;
+      const cmd = document.getElementById('cmd-input').value.trim();
+      if (!cmd) return;
+      pushHistory(cmd);
+      const mode = document.getElementById('shell-mode-select').value;
+      const cols = parseInt(document.getElementById('shell-cols').value || '120', 10);
+      const rows = parseInt(document.getElementById('shell-rows').value || '40', 10);
       const box = document.getElementById('output-box');
-      box.textContent = 'Выполнение в ShellSession...';
-      const res = await fetch('/api/shell?cmd=' + encodeURIComponent(cmd));
+      box.textContent = 'Executing in ShellSession...';
+
+      const res = await fetch('/api/shell', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cmd, mode, cols, rows })
+      });
       const data = await res.json();
-      box.textContent = JSON.stringify(data, null, 2);
+      lastResultData = data;
+
+      if (data.cwd) document.getElementById('kpi-shell-cwd').textContent = data.cwd;
+      if (data.term_size) document.getElementById('kpi-shell-size').textContent = data.term_size.join('×');
+      document.getElementById('kpi-shell-latency').textContent = (data.duration_ms ?? (data.duration_s * 1000)).toFixed(2) + ' ms';
+      document.getElementById('kpi-shell-exit').textContent = `Exit code: ${data.exit_code} (${data.ok ? 'OK' : 'ERROR'})`;
+
+      const envKeys = Object.entries(data.env || {});
+      document.getElementById('shell-env-summary').textContent = envKeys.length
+        ? 'Exported env vars: ' + envKeys.map(([k, v]) => `${k}=${v}`).join(', ')
+        : 'Exported env vars: none';
+
+      renderResultBox();
+    }
+
+    async function resetShellSession() {
+      const cols = parseInt(document.getElementById('shell-cols').value || '120', 10);
+      const rows = parseInt(document.getElementById('shell-rows').value || '40', 10);
+      const res = await fetch('/api/shell', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cmd: 'pwd', mode: 'fake', cols, rows, reset: true })
+      });
+      const data = await res.json();
+      lastResultData = data;
+      document.getElementById('kpi-shell-cwd').textContent = data.cwd || '/root';
+      document.getElementById('shell-env-summary').textContent = 'Exported env vars: none';
+      renderResultBox();
     }
 
     async function runLocalCmd() {
-      const cmd = document.getElementById('cmd-input').value;
+      const cmd = document.getElementById('cmd-input').value.trim();
+      if (!cmd) return;
+      pushHistory(cmd);
       const box = document.getElementById('output-box');
-      box.textContent = 'Выполнение через Connection.from_uri("local://")...';
+      box.textContent = 'Executing via Connection.from_uri("local://").run()...';
       const res = await fetch('/api/local?cmd=' + encodeURIComponent(cmd));
       const data = await res.json();
-      box.textContent = JSON.stringify(data, null, 2);
+      lastResultData = data;
+      document.getElementById('kpi-shell-latency').textContent = (data.duration_ms ?? (data.duration_s * 1000)).toFixed(2) + ' ms';
+      document.getElementById('kpi-shell-exit').textContent = `Exit code: ${data.exit_code} (${data.ok ? 'OK' : 'ERROR'})`;
+      renderResultBox();
     }
 
-    async function runPytest() {
-      const box = document.getElementById('output-box');
-      box.textContent = 'Запуск uv run pytest -m "not integration"...';
-      const res = await fetch('/api/pytest');
+    // ─── Tab 2: Hooks, Security & Telemetry Sandbox ──────────────────
+    function applyHookScenario(scenario) {
+      const cmdEl = document.getElementById('hk-cmd');
+      const maskEl = document.getElementById('hk-mask-secrets');
+      const sensEl = document.getElementById('hk-sensitive');
+      const dryEl = document.getElementById('hk-dry-run');
+      const sudoEl = document.getElementById('hk-sudo');
+      const sudoUserEl = document.getElementById('hk-sudo-user');
+      const tmpEl = document.getElementById('hk-temp-dir');
+      const blkEl = document.getElementById('hk-blocklist-on');
+      const allowEl = document.getElementById('hk-allowlist');
+
+      // Reset baseline
+      maskEl.checked = true;
+      sensEl.checked = false;
+      dryEl.checked = false;
+      sudoEl.checked = false;
+      sudoUserEl.value = '';
+      tmpEl.checked = false;
+      blkEl.checked = true;
+      allowEl.value = '';
+
+      if (scenario === 'secrets') {
+        cmdEl.value = "echo 'deploy password=superSecret99 token=eyJhbGciOiJIUzI1NiIs'";
+      } else if (scenario === 'blocklist') {
+        cmdEl.value = 'rm -rf /';
+      } else if (scenario === 'allowlist') {
+        allowEl.value = 'echo, ls, pwd, uname';
+        cmdEl.value = 'curl -s https://internal.api/secrets';
+      } else if (scenario === 'sudo') {
+        sudoEl.checked = true;
+        sudoUserEl.value = 'postgres';
+        cmdEl.value = 'pg_ctl status';
+      } else if (scenario === 'tempdir') {
+        tmpEl.checked = true;
+        cmdEl.value = 'pwd && ls -la';
+      }
+      const selectEl = document.getElementById('hk-scenario-select');
+      if (selectEl && selectEl.value !== scenario) {
+        selectEl.value = scenario;
+      }
+      runHooksSandbox();
+    }
+
+    function setTelemetryView(view) {
+      currentTelemetryView = view;
+      ['json', 'console', 'audit'].forEach(v => {
+        const btn = document.getElementById('log-tab-btn-' + v);
+        if (btn) btn.classList.toggle('active', v === view);
+      });
+      renderTelemetryLogs();
+    }
+
+    function renderTelemetryLogs() {
+      const box = document.getElementById('hk-logs-box');
+      if (!lastHooksData) return;
+
+      let headerNote = '';
+      if (lastHooksData.status === 'blocked' && lastHooksData.error) {
+        headerNote = `[SECURITY POLICY BLOCKED] ${lastHooksData.error.type}: ${lastHooksData.error.message}\n\n`;
+      } else if (lastHooksData.status === 'error' && lastHooksData.error) {
+        headerNote = `[ERROR] ${lastHooksData.error.type}: ${lastHooksData.error.message}\n\n`;
+      }
+
+      if (currentTelemetryView === 'json') {
+        const lines = lastHooksData.logs_json || [];
+        const formatted = lines.map(line => {
+          try {
+            return JSON.stringify(JSON.parse(line), null, 2);
+          } catch (_) {
+            return line;
+          }
+        }).join('\n---\n');
+        box.textContent = headerNote + (formatted || '(No structlog JSONL records emitted)');
+      } else if (currentTelemetryView === 'console') {
+        const lines = lastHooksData.logs_console || [];
+        box.textContent = headerNote + (lines.join('\n') || '(No console log lines emitted)');
+      } else if (currentTelemetryView === 'audit') {
+        const recs = lastHooksData.audit_records || [];
+        box.textContent = headerNote + (recs.length ? JSON.stringify(recs, null, 2) : '(No after_run audit record written — command was blocked before execution)');
+      }
+    }
+
+    async function runHooksSandbox() {
+      const allowRaw = document.getElementById('hk-allowlist').value;
+      const allowlist = allowRaw.split(',').map(s => s.trim()).filter(Boolean);
+
+      const payload = {
+        cmd: document.getElementById('hk-cmd').value,
+        mask_secrets: document.getElementById('hk-mask-secrets').checked,
+        sensitive: document.getElementById('hk-sensitive').checked,
+        dry_run: document.getElementById('hk-dry-run').checked,
+        sudo: document.getElementById('hk-sudo').checked,
+        sudo_user: document.getElementById('hk-sudo-user').value,
+        use_temp_dir: document.getElementById('hk-temp-dir').checked,
+        blocklist_enabled: document.getElementById('hk-blocklist-on').checked,
+        allowlist,
+        context_vars: {
+          service: document.getElementById('hk-ctx-service').value || 'app',
+          datacenter: document.getElementById('hk-ctx-dc').value || 'eu-1'
+        },
+        tags: {
+          env: document.getElementById('hk-tag-env').value || 'production'
+        }
+      };
+
+      const res = await fetch('/api/hooks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
       const data = await res.json();
-      box.textContent = data.output;
+      lastHooksData = data;
+
+      const badge = document.getElementById('hk-status-badge');
+      if (data.status === 'ok') {
+        badge.textContent = data.effective_dry_run ? 'OK (DRY-RUN)' : 'OK (EXECUTED)';
+        badge.className = 'status-text status-ok';
+      } else if (data.status === 'blocked') {
+        badge.textContent = 'BLOCKED BY HOOK';
+        badge.className = 'status-text status-err';
+      } else {
+        badge.textContent = 'ERROR';
+        badge.className = 'status-text status-warn';
+      }
+
+      updateMetricsStrip(data.metrics);
+      renderTelemetryLogs();
     }
 
+    async function resetHooksMetrics() {
+      const res = await fetch('/api/hooks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reset_metrics: true, only_reset: true })
+      });
+      const data = await res.json();
+      if (data.metrics) updateMetricsStrip(data.metrics);
+    }
+
+    function updateMetricsStrip(m) {
+      if (!m) return;
+      document.getElementById('hk-total-runs').textContent = String(m.total_runs || 0);
+      document.getElementById('hk-failed-runs').textContent = String(m.failed_runs || 0);
+      document.getElementById('hk-errors-count').textContent = String(m.errors_count || 0);
+      document.getElementById('hk-avg-duration').textContent = ((m.avg_duration || 0) * 1000).toFixed(2) + ' ms';
+
+      const tbody = document.getElementById('hk-history-body');
+      const hist = m.history || [];
+      if (!hist.length) {
+        tbody.innerHTML = '<tr><td colspan="4" style="color: var(--muted);">No commands executed in sandbox yet.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = hist.map(item => {
+        const stClass = item.status === 'ok' ? 'status-ok' : 'status-err';
+        const flags = [
+          item.dry_run ? 'dry_run' : null,
+          item.sensitive ? 'sensitive' : null
+        ].filter(Boolean).join(', ') || 'standard';
+        return `<tr>
+          <td class="mono">${escapeHtml(item.command)}</td>
+          <td><span class="status-text ${stClass}">${escapeHtml(item.status.toUpperCase())}</span></td>
+          <td class="mono">${escapeHtml(flags)}</td>
+          <td class="num">${Number(item.duration_ms || 0).toFixed(2)} ms</td>
+        </tr>`;
+      }).join('');
+    }
+
+    // ─── Tab 3: Fleet & Inventory (ConnectionPool) ───────────────────
+    function resetInventoryYaml() {
+      document.getElementById('pool-yaml').value = defaultInventoryYaml;
+    }
+
+    const POOL_PRESETS = {
+      identity: 'echo "[$UNICONN_HOST] role=$UNICONN_ROLE dc=$UNICONN_DC: $(uname -srm)"',
+      health: 'python3 -c "import os, time; print(os.environ.get(\'UNICONN_HOST\', \'node\'), \'load_ok\', \'ts=\' + str(int(time.time())))"',
+      role: 'sh -c \'if [ "$UNICONN_ROLE" = "database" ]; then echo "[$UNICONN_HOST] DB replica lag: 12ms (OK)"; else echo "[$UNICONN_HOST] HTTP 200 OK (latency 1.8ms)"; fi\''
+    };
+
+    function setPoolPreset(presetOrCmd) {
+      const cmd = POOL_PRESETS[presetOrCmd] || presetOrCmd;
+      document.getElementById('pool-cmd').value = cmd;
+      runPoolSandbox();
+    }
+
+    async function runPoolSandbox() {
+      const grid = document.getElementById('pool-nodes-grid');
+      grid.innerHTML = '<div class="fleet-node"><div class="fleet-node-name">Executing across ConnectionPool...</div></div>';
+
+      const payload = {
+        inventory_yaml: document.getElementById('pool-yaml').value,
+        group: document.getElementById('pool-group').value,
+        operation: document.getElementById('pool-op').value,
+        max_concurrent: parseInt(document.getElementById('pool-conc').value || '4', 10),
+        command: document.getElementById('pool-cmd').value
+      };
+
+      const res = await fetch('/api/pool', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+
+      if (data.status !== 'ok') {
+        grid.innerHTML = `<div class="fleet-node"><div class="fleet-node-name status-err">Inventory Error</div><div class="fleet-node-out">${escapeHtml(data.error?.message || 'Unknown error')}</div></div>`;
+        return;
+      }
+
+      document.getElementById('pool-summary-subtitle').textContent =
+        `Group "${data.group}" · ${data.ok_hosts}/${data.total_hosts} hosts OK · Total fleet wall time: ${data.total_duration_ms} ms`;
+
+      grid.innerHTML = (data.nodes || []).map(node => {
+        const stClass = node.ok ? 'status-ok' : 'status-err';
+        const stText = node.ok ? `OK (${node.duration_ms} ms)` : `EXIT ${node.exit_code}`;
+        return `<div class="fleet-node">
+          <div class="fleet-node-top">
+            <span class="fleet-node-name">${escapeHtml(node.host)}</span>
+            <span class="status-text ${stClass}">${escapeHtml(stText)}</span>
+          </div>
+          <div class="fleet-node-meta">role: ${escapeHtml(node.role)} · dc: ${escapeHtml(node.dc)} · ${escapeHtml(node.uri_safe)}</div>
+          <div class="fleet-node-out">${escapeHtml(node.stdout || node.stderr || '(no output)')}</div>
+        </div>`;
+      }).join('');
+    }
+
+    // ─── Tab 4: URI & Code Builder ───────────────────────────────────
+    function loadUriPreset(kind) {
+      const tr = document.getElementById('ub-transport');
+      const host = document.getElementById('ub-host');
+      const port = document.getElementById('ub-port');
+      const user = document.getElementById('ub-user');
+      const pass = document.getElementById('ub-pass');
+      const k1 = document.getElementById('ub-opt-1-key');
+      const v1 = document.getElementById('ub-opt-1-val');
+      const k2 = document.getElementById('ub-opt-2-key');
+      const v2 = document.getElementById('ub-opt-2-val');
+      const cmd = document.getElementById('ub-cmd');
+
+      if (kind === 'ssh') {
+        tr.value = 'ssh';
+        host.value = 'prod-web-01.eu.internal';
+        port.value = '22';
+        user.value = 'deploy';
+        pass.value = 's3cr3t@pass';
+        k1.value = 'proxy';
+        v1.value = 'bastion.eu.internal';
+        k2.value = 'keepalive';
+        v2.value = '30';
+        cmd.value = 'systemctl status nginx';
+      } else if (kind === 'serial') {
+        tr.value = 'serial';
+        host.value = '/dev/ttyUSB0';
+        port.value = '';
+        user.value = '';
+        pass.value = '';
+        k1.value = 'baudrate';
+        v1.value = '115200';
+        k2.value = 'parity';
+        v2.value = 'N';
+        cmd.value = 'AT+CSQ';
+      } else if (kind === 'ipmi') {
+        tr.value = 'ipmi';
+        host.value = 'bmc-node-04.rack2';
+        port.value = '623';
+        user.value = 'ADMIN';
+        pass.value = 'bmcSecret!';
+        k1.value = 'interface';
+        v1.value = 'lanplus';
+        k2.value = '';
+        v2.value = '';
+        cmd.value = 'chassis power status';
+      } else if (kind === 'telnet') {
+        tr.value = 'telnet';
+        host.value = 'core-switch-01.lab';
+        port.value = '23';
+        user.value = 'netadmin';
+        pass.value = 'cisco123';
+        k1.value = 'term_type';
+        v1.value = 'vt100';
+        k2.value = '';
+        v2.value = '';
+        cmd.value = 'show ip interface brief';
+      }
+      buildUriLive();
+    }
+
+    function setSnippetView(view) {
+      currentSnippetView = view;
+      const map = {
+        async_python: 'snip-btn-async',
+        sync_python: 'snip-btn-sync',
+        cli: 'snip-btn-cli',
+        config: 'snip-btn-config'
+      };
+      Object.entries(map).forEach(([k, btnId]) => {
+        const el = document.getElementById(btnId);
+        if (el) el.classList.toggle('active', k === view);
+      });
+      renderSnippetBox();
+    }
+
+    function renderSnippetBox() {
+      const box = document.getElementById('ub-snippet-box');
+      if (!lastUriData) return;
+      if (!lastUriData.valid) {
+        box.textContent = `Validation Error: ${lastUriData.error?.message || 'Invalid URI'}`;
+        return;
+      }
+      if (currentSnippetView === 'config') {
+        box.textContent = JSON.stringify(lastUriData.config, null, 2);
+      } else {
+        box.textContent = lastUriData.snippets[currentSnippetView] || '';
+      }
+    }
+
+    async function buildUriLive() {
+      const options = {};
+      const k1 = document.getElementById('ub-opt-1-key').value.trim();
+      const v1 = document.getElementById('ub-opt-1-val').value.trim();
+      const k2 = document.getElementById('ub-opt-2-key').value.trim();
+      const v2 = document.getElementById('ub-opt-2-val').value.trim();
+      if (k1 && v1) options[k1] = v1;
+      if (k2 && v2) options[k2] = v2;
+
+      const payload = {
+        mode: 'builder',
+        transport: document.getElementById('ub-transport').value,
+        host: document.getElementById('ub-host').value,
+        port: document.getElementById('ub-port').value,
+        username: document.getElementById('ub-user').value,
+        password: document.getElementById('ub-pass').value,
+        options,
+        command: document.getElementById('ub-cmd').value
+      };
+
+      const res = await fetch('/api/uri', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      lastUriData = data;
+      if (data.valid) {
+        document.getElementById('ub-uri-safe-display').textContent = data.uri_safe;
+      }
+      renderSnippetBox();
+    }
+
+    async function copyCurrentSnippet() {
+      const box = document.getElementById('ub-snippet-box');
+      if (!box.textContent) return;
+      try {
+        await navigator.clipboard.writeText(box.textContent);
+      } catch (_) {}
+    }
+
+    // ─── Tab 5: Modular Pytest Runner & ScreenPool ───────────────────
+    async function runTestSuite(suiteId) {
+      document.querySelectorAll('#suite-preset-bar button[data-suite]').forEach(btn => {
+        const isMatch = btn.getAttribute('data-suite') === suiteId;
+        const isQualityTool = ['ruff', 'pyright'].includes(btn.getAttribute('data-suite'));
+        if (isMatch) {
+          btn.className = 'btn';
+        } else {
+          btn.className = isQualityTool ? 'btn ghost' : 'btn secondary';
+        }
+      });
+
+      const box = document.getElementById('pytest-output-box');
+      const badge = document.getElementById('pytest-status-badge');
+      badge.textContent = `RUNNING ${suiteId.toUpperCase()}...`;
+      badge.className = 'status-text status-warn';
+      box.textContent = `Executing test suite "${suiteId}"...`;
+
+      const res = await fetch('/api/pytest?suite=' + encodeURIComponent(suiteId));
+      const data = await res.json();
+      if (data.ok) {
+        badge.textContent = `PASS (${data.duration_s}s) · ${data.summary}`;
+        badge.className = 'status-text status-ok';
+      } else {
+        badge.textContent = `FAIL (exit ${data.exit_code})`;
+        badge.className = 'status-text status-err';
+      }
+      box.textContent = `# Command: ${data.command}\n# Duration: ${data.duration_s}s\n\n${data.output}`;
+    }
+
+    async function runScreenSandbox() {
+      const box = document.getElementById('sc-output-box');
+      box.textContent = 'Running LocalFileHandler & regex trigger pipeline...';
+      const payload = {
+        action: 'analyze',
+        session_name: document.getElementById('sc-name').value,
+        host: document.getElementById('sc-host').value,
+        strategy: document.getElementById('sc-strategy').value,
+        pattern: document.getElementById('sc-pattern').value
+      };
+      const res = await fetch('/api/screen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      box.textContent = JSON.stringify(data.current || data, null, 2);
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
+    // Initialize on load
     loadStatus();
   </script>
 </body>

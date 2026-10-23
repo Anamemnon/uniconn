@@ -177,6 +177,46 @@ class TestBuiltinHooks:
         assert entry2["stderr"] == "***REDACTED***"
 
     @pytest.mark.asyncio
+    async def test_audit_log_hook_masks_secrets_when_enabled(self, tmp_path: Path):
+        """audit_log_hook маскирует токены и пароли при mask_secrets=True даже если sensitive=False."""
+        audit_file = tmp_path / "logs" / "audit_masked.jsonl"
+        async with Connection.from_uri("local://") as conn:
+            conn.add_hook(
+                "after_run",
+                audit_log_hook(audit_file, include_output=True, mask_secrets=True),
+            )
+            await conn.run("echo token=ghp_super_secret_123 password=my_db_pass")
+
+        lines = audit_file.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["sensitive"] is False
+        assert "token=***" in entry["command"]
+        assert "password=***" in entry["command"]
+        assert "ghp_super_secret_123" not in entry["command"]
+        assert "my_db_pass" not in entry["command"]
+        assert "token=***" in entry["stdout"]
+        assert "password=***" in entry["stdout"]
+
+    @pytest.mark.asyncio
+    async def test_audit_log_hook_does_not_mask_secrets_when_disabled(self, tmp_path: Path):
+        """audit_log_hook сохраняет токены без изменений при mask_secrets=False (обратная совместимость)."""
+        audit_file = tmp_path / "logs" / "audit_unmasked.jsonl"
+        async with Connection.from_uri("local://") as conn:
+            conn.add_hook(
+                "after_run",
+                audit_log_hook(audit_file, include_output=True, mask_secrets=False),
+            )
+            await conn.run("echo token=public_token_sample")
+
+        lines = audit_file.read_text(encoding="utf-8").strip().splitlines()
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["sensitive"] is False
+        assert "token=public_token_sample" in entry["command"]
+        assert "public_token_sample" in entry["stdout"]
+
+    @pytest.mark.asyncio
     async def test_allowlist_hook_permits_and_blocks(self):
         """allowlist_hook разрешает команды из белого списка и блокирует остальные."""
         async with Connection.from_uri("local://") as conn:

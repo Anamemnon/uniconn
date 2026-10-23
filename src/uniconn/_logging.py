@@ -93,7 +93,13 @@ class SecretMaskingFilter(logging.Filter):
         return value
 
 
-def _sanitize_value(key: str, value: Any, *, sensitive_mode: bool = False) -> Any:
+def _sanitize_value(
+    key: str,
+    value: Any,
+    *,
+    sensitive_mode: bool = False,
+    mask_patterns: bool = True,
+) -> Any:
     """Рекурсивно замаскировать секреты в значении поля структурированного лога."""
     key_lower = key.lower()
     if key_lower in SENSITIVE_KEYS or isinstance(value, SecretStr):
@@ -103,22 +109,45 @@ def _sanitize_value(key: str, value: Any, *, sensitive_mode: bool = False) -> An
         return "***REDACTED***"
 
     if isinstance(value, str):
-        return SecretMaskingFilter._mask_string(value)
+        return SecretMaskingFilter._mask_string(value) if mask_patterns else value
 
     if isinstance(value, dict):
         return {
-            str(k): _sanitize_value(str(k), v, sensitive_mode=sensitive_mode)
+            str(k): _sanitize_value(
+                str(k), v, sensitive_mode=sensitive_mode, mask_patterns=mask_patterns
+            )
             for k, v in value.items()
         }
 
     if isinstance(value, (list, tuple)):
         sanitized_items = [
-            _sanitize_value(key, item, sensitive_mode=sensitive_mode)
+            _sanitize_value(
+                key, item, sensitive_mode=sensitive_mode, mask_patterns=mask_patterns
+            )
             for item in value
         ]
         return tuple(sanitized_items) if isinstance(value, tuple) else sanitized_items
 
     return value
+
+
+def redact_sensitive_event_dict(
+    _logger: Any,
+    _method_name: str,
+    event_dict: MutableMapping[str, Any],
+) -> MutableMapping[str, Any]:
+    """Процессор ``structlog`` для скрытия полей sensitive=True и SecretStr без маскирования паттернов."""
+    is_sensitive = bool(event_dict.get("sensitive", False))
+    for key in list(event_dict.keys()):
+        if key.startswith("_"):
+            continue
+        event_dict[key] = _sanitize_value(
+            key,
+            event_dict[key],
+            sensitive_mode=is_sensitive,
+            mask_patterns=False,
+        )
+    return event_dict
 
 
 def redact_event_dict(
@@ -142,6 +171,7 @@ def redact_event_dict(
             key,
             event_dict[key],
             sensitive_mode=is_sensitive,
+            mask_patterns=True,
         )
     return event_dict
 
@@ -253,6 +283,8 @@ def _build_processor_formatter(
     ]
     if mask_secrets:
         shared_processors.append(redact_event_dict)
+    else:
+        shared_processors.append(redact_sensitive_event_dict)
 
     renderer: Any
     if fmt == "json":
@@ -314,6 +346,8 @@ def configure_logging(
     ]
     if mask_secrets:
         processors.append(redact_event_dict)
+    else:
+        processors.append(redact_sensitive_event_dict)
     processors.append(structlog.stdlib.ProcessorFormatter.wrap_for_formatter)
 
     structlog.configure(
@@ -383,10 +417,7 @@ def log_event(
     - если используется стандартный текстовый ``Formatter``, выводится читаемое
       сообщение ``message`` (или ``event``), а поля передаются в ``extra``.
     """
-    merged_fields: dict[str, Any] = {**get_log_context(), **fields}
-    redacted_fields: MutableMapping[str, Any] = dict(merged_fields)
-    redact_event_dict(logger, "log", redacted_fields)
-    clean_fields = dict(redacted_fields)
+    clean_fields: dict[str, Any] = {**get_log_context(), **fields}
 
     if isinstance(logger, logging.Logger):
         display_msg = message if message is not None else event

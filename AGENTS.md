@@ -28,12 +28,12 @@
 
 ## Структура тестов (`tests/`)
 
-Unit-тесты (`tests/unit/`, 30 модулей, 410 тестов) сгруппированы по тематическим пакетам:
+Unit-тесты (`tests/unit/`, 31 модуль, 422 теста) сгруппированы по тематическим пакетам:
 - `tests/unit/core/` — базовые абстракции (`Connection`, `SyncConnection`, `Result`, `ShellSession`, URI, конфиги, плагины, исключения, `structlog`-логирование).
 - `tests/unit/transports/` — тесты транспортов (`SSH`, `Telnet`, `Serial`, `Local`, `IPMI`, `BaseTransport`) и SFTP.
 - `tests/unit/pools/` — `ConnectionPool` и `SSHSessionPool`.
 - `tests/unit/screen/` — `ScreenPool`, `ScreenSession`, `LogPipeline`, `ScreenConfig`, cleanup.
-- `tests/unit/cli/` — CLI-команды (`typer` + `rich`) и фоновые screen-команды.
+- `tests/unit/cli/` — CLI-команды (`typer` + `rich`), фоновые screen-команды и интерактивная веб-панель (`examples/dashboard/`).
 - `tests/unit/releases/` — приёмочные наборы тестов по релизам (`v0.3.0` – `v0.6.0`).
 - `tests/integration/` — интеграционные тесты с Docker/testcontainers.
 
