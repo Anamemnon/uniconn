@@ -906,6 +906,79 @@ def _execute_pool_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
                                 }
                             )
                         return cards_tpl
+                elif operation == "gather_facts":
+                    facts_map = await pool.gather_facts()
+                    cards_facts: list[dict[str, Any]] = []
+                    for idx, (_key, hf) in enumerate(facts_map.items()):
+                        h_name, opts = node_meta[idx] if idx < len(node_meta) else (f"node-{idx}", {})
+                        ram_mb = hf.memory_total_bytes // (1024 * 1024)
+                        cards_facts.append(
+                            {
+                                "host": h_name,
+                                "role": str(opts.get("role", "node")),
+                                "dc": str(opts.get("dc", "local")),
+                                "uri_safe": conns[idx].config.uri_safe,
+                                "ok": True,
+                                "exit_code": 0,
+                                "stdout": (
+                                    f"OS={hf.os_family} ({hf.distro}) | kernel={hf.kernel} ({hf.arch}) | "
+                                    f"CPU={hf.cpu_count} | RAM={ram_mb}MB | disks={len(hf.disks)} | "
+                                    f"ifaces={len(hf.interfaces)}"
+                                ),
+                                "stderr": "",
+                                "duration_ms": 1.2,
+                            }
+                        )
+                    return cards_facts
+                elif operation == "ensure_line":
+                    with tempfile.TemporaryDirectory(prefix="uniconn_ens_") as tmp_root:
+                        target_file = Path(tmp_root) / "sysctl.conf"
+                        target_file.write_text("net.ipv4.ip_forward = 0\n", encoding="utf-8")
+                        ens_map = await pool.ensure_line(
+                            target_file,
+                            "net.ipv4.ip_forward = 1",
+                            regex=r"^net\.ipv4\.ip_forward\s*=",
+                        )
+                        cards_ens: list[dict[str, Any]] = []
+                        for idx, (_key, e_res) in enumerate(ens_map.items()):
+                            h_name, opts = node_meta[idx] if idx < len(node_meta) else (f"node-{idx}", {})
+                            cards_ens.append(
+                                {
+                                    "host": h_name,
+                                    "role": str(opts.get("role", "node")),
+                                    "dc": str(opts.get("dc", "local")),
+                                    "uri_safe": conns[idx].config.uri_safe,
+                                    "ok": e_res.ok,
+                                    "exit_code": 0 if e_res.ok else 1,
+                                    "stdout": (
+                                        f"EnsureResult: changed={e_res.changed}, "
+                                        f"state={e_res.state}, details={e_res.details}"
+                                    ),
+                                    "stderr": "",
+                                    "duration_ms": 0.5,
+                                }
+                            )
+                        return cards_ens
+                elif operation == "stream":
+                    stream_lines: list[str] = []
+                    async for s_host, s_line in pool.stream(command):
+                        stream_lines.append(f"[{s_host}] {s_line.strip()}")
+                    cards_stream: list[dict[str, Any]] = []
+                    for idx, (h_name, opts) in enumerate(node_meta):
+                        cards_stream.append(
+                            {
+                                "host": h_name,
+                                "role": str(opts.get("role", "node")),
+                                "dc": str(opts.get("dc", "local")),
+                                "uri_safe": conns[idx].config.uri_safe,
+                                "ok": True,
+                                "exit_code": 0,
+                                "stdout": "\n".join(stream_lines[:6]) or "Stream completed",
+                                "stderr": "",
+                                "duration_ms": 1.5,
+                            }
+                        )
+                    return cards_stream
                 else:
 
                     async def _mapped_node(conn_obj: Connection) -> Any:
@@ -1137,6 +1210,98 @@ def _execute_v070_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
         }
 
 
+def _execute_v080_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
+    """Песочница возможностей v0.8.0: gather_facts, ensure_*, pool.stream, SyncConnectionPool."""
+    feature = str(payload.get("feature", "gather_facts")).strip()
+    try:
+        from uniconn import Connection, ConnectionPool
+
+        if feature == "sync_pool":
+            pool = ConnectionPool(["local://?host=node-1", "local://?host=node-2"], max_concurrent=2)
+            with pool.to_sync() as sync_pool:
+                facts_map = sync_pool.gather_facts()
+                res_list = sync_pool.map("echo sync-pool-ok")
+                stream_items = list(sync_pool.stream("echo stream-line"))
+            return {
+                "status": "ok",
+                "feature": "sync_pool",
+                "hosts_count": len(facts_map),
+                "map_outputs": [r.text for r in res_list],
+                "stream_items": [[h, ln.strip()] for h, ln in stream_items],
+            }
+
+        async def _run_feature() -> dict[str, Any]:
+            if feature == "pool_stream":
+                pool = ConnectionPool(["local://?host=node-1", "local://?host=node-2"])
+                cmd = str(payload.get("command", "printf 'line1\\nline2\\n'"))
+                collected: list[dict[str, str]] = []
+                async with pool:
+                    async for host_key, line in pool.stream(cmd):
+                        collected.append({"host": host_key, "line": line.rstrip("\r\n")})
+                return {
+                    "status": "ok",
+                    "feature": "pool_stream",
+                    "lines": collected,
+                }
+
+            async with Connection.from_uri("local://") as conn:
+                if feature == "ensure_line":
+                    with tempfile.TemporaryDirectory(prefix="uniconn_v080_line_") as tmp:
+                        cfg_file = Path(tmp) / "sshd_config"
+                        cfg_file.write_text("PermitRootLogin yes\nPort 22\n", encoding="utf-8")
+                        pass1 = await conn.ensure_line(
+                            cfg_file,
+                            "PermitRootLogin no",
+                            regex=r"^PermitRootLogin\s+",
+                        )
+                        pass2 = await conn.ensure_line(
+                            cfg_file,
+                            "PermitRootLogin no",
+                            regex=r"^PermitRootLogin\s+",
+                        )
+                        content = await conn.read_file(str(cfg_file))
+                        return {
+                            "status": "ok",
+                            "feature": "ensure_line",
+                            "pass1": pass1.to_dict(),
+                            "pass2": pass2.to_dict(),
+                            "final_content": content,
+                        }
+                if feature == "ensure_package":
+                    pkg = str(payload.get("package", "nginx"))
+                    res = await conn.ensure_package(pkg, state="present", dry_run=True)
+                    return {
+                        "status": "ok",
+                        "feature": "ensure_package",
+                        "result": res.to_dict(),
+                    }
+                if feature == "ensure_service":
+                    svc = str(payload.get("service", "nginx"))
+                    res = await conn.ensure_service(svc, state="restarted", enabled=True, dry_run=True)
+                    return {
+                        "status": "ok",
+                        "feature": "ensure_service",
+                        "result": res.to_dict(),
+                    }
+                # По умолчанию: gather_facts()
+                facts = await conn.gather_facts(refresh=True)
+                return {
+                    "status": "ok",
+                    "feature": "gather_facts",
+                    "facts": facts.to_dict(),
+                }
+
+        return asyncio.run(_run_feature())
+    except Exception as exc:
+        delegated = _call_handler_in_venv("_execute_v080_sandbox", payload)
+        if delegated is not None:
+            return delegated
+        return {
+            "status": "error",
+            "error": {"type": type(exc).__name__, "message": str(exc)},
+        }
+
+
 def _execute_pytest(suite: str = "all") -> dict[str, Any]:
     """Запустить выбранный модульный пакет тестов pytest или проверку качества кода (ruff/pyright)."""
     if not os.path.exists(VENV_PYTEST):
@@ -1290,6 +1455,9 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                 return
             if parsed.path == "/api/v070":
                 self._send_json(_execute_v070_sandbox(payload))
+                return
+            if parsed.path == "/api/v080":
+                self._send_json(_execute_v080_sandbox(payload))
                 return
 
             self._send_json({"error": "Not found"}, status=404)

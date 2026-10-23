@@ -4,14 +4,18 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, Self, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar
 
 from ._config import ConnectionConfig
 from ._connection import Connection, _format_command
-from .result import Result, SyncResult
+from ._facts import HostFacts
+from .result import EnsureResult, Result, SyncResult
+
+if TYPE_CHECKING:
+    from ._sync import SyncConnectionPool
 
 logger = logging.getLogger(__name__)
 
@@ -446,5 +450,220 @@ class ConnectionPool:
                 tg.create_task(_write_single(idx, target))
 
         return results
+
+    async def gather_facts(
+        self,
+        refresh: bool = False,
+        timeout: float | None = None,
+    ) -> dict[str, HostFacts]:
+        """Параллельно собрать системные факты (``HostFacts``) со всех хостов пула.
+
+        Returns:
+            Словарь ``{target_key: HostFacts}``.
+
+        """
+        results: dict[str, HostFacts] = {}
+
+        async def _facts_single(idx: int, target: PoolTarget) -> None:
+            key = self._target_key(target)
+            async with (
+                self._semaphore,
+                self._use_conn(idx, target, with_defaults=True) as conn,
+            ):
+                results[key] = await conn.gather_facts(refresh=refresh, timeout=timeout)
+
+        async with asyncio.TaskGroup() as tg:
+            for idx, target in enumerate(self._uris):
+                tg.create_task(_facts_single(idx, target))
+
+        return results
+
+    async def ensure_package(
+        self,
+        package: str | Sequence[str],
+        state: Literal["present", "absent"] = "present",
+        manager: Literal["auto", "apt", "dnf", "yum", "apk", "pacman", "zypper"] = "auto",
+        update_cache: bool = False,
+        sudo: bool = True,
+        dry_run: bool | None = None,
+    ) -> dict[str, EnsureResult]:
+        """Параллельно проверить/установить/удалить пакет(ы) на всех хостах пула.
+
+        Returns:
+            Словарь ``{target_key: EnsureResult}``.
+
+        """
+        results: dict[str, EnsureResult] = {}
+
+        async def _pkg_single(idx: int, target: PoolTarget) -> None:
+            key = self._target_key(target)
+            async with (
+                self._semaphore,
+                self._use_conn(idx, target, with_defaults=True) as conn,
+            ):
+                results[key] = await conn.ensure_package(
+                    package=package,
+                    state=state,
+                    manager=manager,
+                    update_cache=update_cache,
+                    sudo=sudo,
+                    dry_run=dry_run,
+                )
+
+        async with asyncio.TaskGroup() as tg:
+            for idx, target in enumerate(self._uris):
+                tg.create_task(_pkg_single(idx, target))
+
+        return results
+
+    async def ensure_service(
+        self,
+        service: str,
+        state: Literal["started", "stopped", "restarted", "reloaded"] = "started",
+        enabled: bool | None = None,
+        sudo: bool = True,
+        dry_run: bool | None = None,
+    ) -> dict[str, EnsureResult]:
+        """Параллельно привести состояние системного сервиса на всех хостах пула.
+
+        Returns:
+            Словарь ``{target_key: EnsureResult}``.
+
+        """
+        results: dict[str, EnsureResult] = {}
+
+        async def _svc_single(idx: int, target: PoolTarget) -> None:
+            key = self._target_key(target)
+            async with (
+                self._semaphore,
+                self._use_conn(idx, target, with_defaults=True) as conn,
+            ):
+                results[key] = await conn.ensure_service(
+                    service=service,
+                    state=state,
+                    enabled=enabled,
+                    sudo=sudo,
+                    dry_run=dry_run,
+                )
+
+        async with asyncio.TaskGroup() as tg:
+            for idx, target in enumerate(self._uris):
+                tg.create_task(_svc_single(idx, target))
+
+        return results
+
+    async def ensure_line(
+        self,
+        remote_path: str | Path,
+        line: str,
+        state: Literal["present", "absent"] = "present",
+        regex: str | None = None,
+        create: bool = True,
+        backup: bool = False,
+        mode: int | None = None,
+        encoding: str = "utf-8",
+        dry_run: bool | None = None,
+    ) -> dict[str, EnsureResult]:
+        """Параллельно обеспечить наличие или отсутствие строки в файле на всех хостах пула.
+
+        Returns:
+            Словарь ``{target_key: EnsureResult}``.
+
+        """
+        results: dict[str, EnsureResult] = {}
+
+        async def _line_single(idx: int, target: PoolTarget) -> None:
+            key = self._target_key(target)
+            async with (
+                self._semaphore,
+                self._use_conn(idx, target, with_defaults=True) as conn,
+            ):
+                results[key] = await conn.ensure_line(
+                    remote_path=remote_path,
+                    line=line,
+                    state=state,
+                    regex=regex,
+                    create=create,
+                    backup=backup,
+                    mode=mode,
+                    encoding=encoding,
+                    dry_run=dry_run,
+                )
+
+        async with asyncio.TaskGroup() as tg:
+            for idx, target in enumerate(self._uris):
+                tg.create_task(_line_single(idx, target))
+
+        return results
+
+    async def stream(
+        self,
+        command: str | Sequence[str],
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[tuple[str, str]]:
+        """Мультиплексировать потоковый вывод команды со всех хостов пула в реальном времени.
+
+        Запускает ``conn.stream(command)`` конкурентно на всех хостах пула и
+        передаёт пары ``(host_key, line)`` через общую ``asyncio.Queue`` по мере
+        поступления строк. При досрочном выходе из ``async for`` (``break`` или
+        исключение) гарантированно отменяет и дожидается завершения фоновых задач.
+
+        Yields:
+            Кортежи ``(target_key, line)``.
+
+        """
+        if not self._uris:
+            return
+
+        done_sentinel = object()
+        queue: asyncio.Queue[tuple[str, str] | BaseException | object] = asyncio.Queue()
+
+        async def _pump_host(idx: int, target: PoolTarget) -> None:
+            key = self._target_key(target)
+            try:
+                async with (
+                    self._semaphore,
+                    self._use_conn(idx, target, with_defaults=True) as conn,
+                ):
+                    async for line in conn.stream(command, timeout=timeout, **kwargs):
+                        await queue.put((key, line))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                await queue.put(exc)
+            finally:
+                await queue.put(done_sentinel)
+
+        tasks = [
+            asyncio.create_task(_pump_host(idx, target))
+            for idx, target in enumerate(self._uris)
+        ]
+        finished_hosts = 0
+        total_hosts = len(tasks)
+
+        try:
+            while finished_hosts < total_hosts:
+                item = await queue.get()
+                if item is done_sentinel:
+                    finished_hosts += 1
+                    continue
+                if isinstance(item, BaseException):
+                    raise item
+                if isinstance(item, tuple):
+                    yield item
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+    def to_sync(self) -> SyncConnectionPool:
+        """Конвертировать пул в синхронную обёртку ``SyncConnectionPool``."""
+        from ._sync import SyncConnectionPool
+
+        return SyncConnectionPool(self)
+
 
 

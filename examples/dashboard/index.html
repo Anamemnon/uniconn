@@ -851,6 +851,9 @@
               <select id="pool-op">
                 <option value="map_safe">pool.map_safe(cmd)</option>
                 <option value="map">pool.map(cmd)</option>
+                <option value="gather_facts">pool.gather_facts() [v0.8.0]</option>
+                <option value="stream">pool.stream(cmd) [v0.8.0]</option>
+                <option value="ensure_line">pool.ensure_line(...) [v0.8.0]</option>
                 <option value="apply">pool.apply(custom_fn)</option>
                 <option value="sync_dir">pool.sync_dir(local_dir, remote_dir)</option>
                 <option value="write_template">pool.write_template(remote_path, tpl)</option>

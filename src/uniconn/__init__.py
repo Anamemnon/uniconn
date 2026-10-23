@@ -40,6 +40,7 @@ from shlex import quote
 
 from ._config import ConnectionConfig
 from ._connection import Connection, render_template
+from ._facts import DiskInfo, HostFacts, NetworkInterface
 from ._logging import (
     SecretMaskingFilter,
     bind_log_context,
@@ -55,7 +56,7 @@ from ._logging import (
 from ._pool import ConnectionPool
 from ._session_pool import SSHSessionPool
 from ._shell import ShellSession
-from ._sync import SyncConnection, SyncShellSession
+from ._sync import SyncConnection, SyncConnectionPool, SyncShellSession
 from .background import LogConfig, ScreenPool, ScreenResult, ScreenSession
 from .exceptions import (
     AuthenticationError,
@@ -78,7 +79,7 @@ from .hooks import (
     metrics_collector_hook,
     structured_log_hook,
 )
-from .result import Result, SyncResult
+from .result import EnsureResult, Result, SyncResult
 
 try:
     __version__ = version("uniconn")
@@ -91,10 +92,15 @@ __all__ = [
     "ShellSession",
     "SyncShellSession",
     "ConnectionPool",
+    "SyncConnectionPool",
     "SSHSessionPool",
     "ConnectionConfig",
     "Result",
     "SyncResult",
+    "EnsureResult",
+    "HostFacts",
+    "DiskInfo",
+    "NetworkInterface",
     "render_template",
     "quote",
     # Готовые хуки аудита, безопасности и метрик (v0.6.0)

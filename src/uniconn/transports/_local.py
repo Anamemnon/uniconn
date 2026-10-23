@@ -164,6 +164,11 @@ class LocalTransport(BaseTransport):
             proc.kill()
             await proc.wait()
             raise
+        finally:
+            transport = getattr(proc, "_transport", None)
+            if transport is not None:
+                with contextlib.suppress(Exception):
+                    transport.close()
 
         duration = time.monotonic() - start_time
         return (proc.returncode or 0, stdout or b"", stderr or b"", duration)
@@ -389,10 +394,19 @@ class LocalTransport(BaseTransport):
             stderr=asyncio.subprocess.STDOUT,
             **kwargs
         )
-
-        if proc.stdout is not None:
-            async for line in proc.stdout:
-                yield line.decode().rstrip()
-
-        await proc.wait()
+        try:
+            if proc.stdout is not None:
+                async for line in proc.stdout:
+                    yield line.decode().rstrip()
+            await proc.wait()
+        finally:
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    proc.terminate()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(proc.wait(), timeout=1.0)
+            transport = getattr(proc, "_transport", None)
+            if transport is not None:
+                with contextlib.suppress(Exception):
+                    transport.close()
 

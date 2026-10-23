@@ -1,6 +1,6 @@
-# uniconn — LLM & AI Agent API Reference (v0.7.0)
+# uniconn — LLM & AI Agent API Reference (v0.8.0)
 
-> Universal async-first Python library (Python 3.11+) and CLI for executing commands and managing files across SSH, Telnet, Serial/UART, IPMI BMC, and Local transports.
+> Universal async-first Python library (Python 3.11+) and CLI for executing commands, inspecting host facts, enforcing idempotent states, and managing files across SSH, Telnet, Serial/UART, IPMI BMC, and Local transports.
 
 ## Quick Facts & Commands
 - Package manager: `uv`
@@ -10,8 +10,8 @@
 - Preview dashboard server: `python3 main.py --serve` (listens on `0.0.0.0:3000`)
 
 ## Public Exports (`from uniconn import ...`)
-- **Core**: `Connection`, `SyncConnection`, `ConnectionConfig`, `Result`, `SyncResult`, `render_template`, `quote`
-- **Pools**: `ConnectionPool`, `SSHSessionPool`
+- **Core**: `Connection`, `SyncConnection`, `ConnectionConfig`, `Result`, `SyncResult`, `EnsureResult`, `HostFacts`, `DiskInfo`, `NetworkInterface`, `render_template`, `quote`
+- **Pools**: `ConnectionPool`, `SyncConnectionPool`, `SSHSessionPool`
 - **Interactive PTY Shell**: `ShellSession`, `SyncShellSession`
 - **Background GNU Screen**: `ScreenPool`, `ScreenSession`, `ScreenResult`, `LogConfig`
 - **Hooks (`uniconn.hooks`)**: `audit_log_hook`, `allowlist_hook`, `blocklist_hook`, `MetricsCollector`, `metrics_collector_hook`, `structured_log_hook`
@@ -57,6 +57,12 @@ raw: bytes = await conn.run_bytes(command, timeout=None, raise_on_error=False, i
 results: list[Result] = await conn.run_commands(commands: Sequence[str | Sequence[str]], stop_on_error: bool = True, **kwargs)
 async for line in conn.stream(command, timeout=None, **kwargs): ...
 alive: bool = await conn.is_alive(timeout=None)
+
+# Host Inspection & Idempotent Checks (v0.8.0)
+facts: HostFacts = await conn.gather_facts(refresh: bool = False, timeout: float | None = None)
+pkg_res: EnsureResult = await conn.ensure_package(package, state="present", manager="auto", update_cache=False, sudo=True, dry_run=None)
+svc_res: EnsureResult = await conn.ensure_service(service, state="started", enabled=None, sudo=True, dry_run=None)
+line_res: EnsureResult = await conn.ensure_line(remote_path, line, state="present", regex=None, create=True, backup=False, mode=None, dry_run=None)
 
 # Declarative Expect (SSH, Telnet, Serial/UART, Local)
 res: Result = await conn.expect(
@@ -108,11 +114,13 @@ async with await conn.open_shell(term_type="xterm", term_size=(80, 24), init_pos
     await shell.resize(120, 40)
 ```
 
-### `Result` & `SyncResult`
+### `Result`, `SyncResult`, `EnsureResult` & `HostFacts`
 - `Result`: `exit_code: int`, `stdout: str`, `stderr: str`, `duration: float`, `command: str`, `host: str | None`, `ok: bool`, `text: str` (`stdout.strip()`), `lines: list[str]`, `sensitive: bool`, `result.json() -> Any`, `result.raise_for_status() -> Self`, `result.to_dict() -> dict`
 - `SyncResult`: `uploaded: list[str]`, `skipped: list[str]`, `deleted: list[str]`, `bytes_transferred: int`, `duration: float`, `dry_run: bool`, `total_checked: int`, `sync_res.to_dict() -> dict`
+- `EnsureResult`: `target: str`, `state: str`, `changed: bool`, `ok: bool`, `details: str`, `dry_run: bool`, `ensure_res.to_dict() -> dict`
+- `HostFacts`: `os_family: str`, `distro: str`, `kernel: str`, `arch: str`, `hostname: str`, `uptime_seconds: float`, `cpu_count: int`, `memory_total_bytes: int`, `memory_available_bytes: int`, `disks: list[DiskInfo]`, `interfaces: list[NetworkInterface]`, `facts.to_dict() -> dict`
 
-### `ConnectionPool` (Multi-host parallel execution)
+### `ConnectionPool` & `SyncConnectionPool` (`pool.to_sync()`)
 ```python
 pool = ConnectionPool(uris_or_conns, max_concurrent=10, retry_attempts=3)
 pool = ConnectionPool.from_file("inventory.yaml", group="web", max_concurrent=10)
@@ -120,11 +128,20 @@ pool = ConnectionPool.from_file("inventory.yaml", group="web", max_concurrent=10
 async with pool:  # Keeps connections open across multiple pool operations
     results: list[Result] = await pool.map("uptime", sudo=True)
     safe_map: dict[str, Result | Exception] = await pool.map_safe("uptime")
+    facts_map: dict[str, HostFacts] = await pool.gather_facts()
+    line_map: dict[str, EnsureResult] = await pool.ensure_line("/etc/hosts", "10.0.0.5 db.internal")
+    async for host, line in pool.stream("journalctl -f -n 5"):
+        print(host, line)
     await pool.upload("./app.conf", "/etc/app/app.conf")
     paths: dict[str, str] = await pool.download("/var/log/syslog", "./logs/{host}.log")
     sync_map: dict[str, SyncResult] = await pool.sync_dir("./dist", "/var/www/app", delete=True, exclude=["*.pyc"])
     tpl_map: dict[str, str] = await pool.write_template("/etc/app.conf", "./app.conf.tpl", context={"port": 8080})
     custom = await pool.apply(lambda c: c.run("hostname"))
+
+with pool.to_sync() as sync_pool:
+    facts_map = sync_pool.gather_facts()
+    for host, line in sync_pool.stream("tail -n 5 /var/log/syslog"):
+        print(host, line)
 ```
 
 ### `SSHSessionPool` (Single-host SSH channel multiplexing)

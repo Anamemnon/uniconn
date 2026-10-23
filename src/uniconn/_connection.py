@@ -9,6 +9,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import string
@@ -27,11 +28,12 @@ from tenacity import (
 )
 
 from ._config import ConnectionConfig
+from ._facts import FACT_COLLECTION_SCRIPT, HostFacts, parse_facts_output
 from ._logging import log_context, log_event
 from ._shell import ShellSession
 from .exceptions import ConnectionError, TimeoutError, UniconnError
 from .plugins._loader import TransportLoader
-from .result import Result, SyncResult
+from .result import EnsureResult, Result, SyncResult
 from .transports._base import BaseTransport
 
 if TYPE_CHECKING:
@@ -320,6 +322,7 @@ class Connection:
             "after_run": list(after_run or []),
             "on_error": list(on_error or []),
         }
+        self._cached_facts: HostFacts | None = None
 
     # ─── Фабричные методы ──────────────────────────────────────────
 
@@ -1652,6 +1655,465 @@ class Connection:
         else:
             session._initialized = True
         return session
+
+    async def gather_facts(
+        self,
+        refresh: bool = False,
+        timeout: float | None = None,
+    ) -> HostFacts:
+        """Собрать системные факты о целевом хосте за один батч-запрос.
+
+        Выполняет составной POSIX-скрипт за один вызов ``run()`` и возвращает
+        типизированную модель ``HostFacts`` (ОС, ядро, CPU, память, диски, сеть).
+        По умолчанию кэширует результат в экземпляре ``Connection`` до вызова
+        с ``refresh=True``.
+
+        Args:
+            refresh: Принудительно обновить кэш фактов.
+            timeout: Таймаут выполнения батч-скрипта в секундах.
+
+        Returns:
+            Экземпляр ``HostFacts``.
+
+        """
+        if not refresh and self._cached_facts is not None:
+            return self._cached_facts
+
+        default_host = self._config.host or "localhost"
+        if self._dry_run:
+            facts = HostFacts(hostname=default_host)
+            self._cached_facts = facts
+            return facts
+
+        res = await self.run(
+            FACT_COLLECTION_SCRIPT,
+            timeout=timeout,
+            raise_on_error=False,
+        )
+        facts = parse_facts_output(res.stdout, default_host=default_host)
+        self._cached_facts = facts
+        return facts
+
+    async def _resolve_pkg_manager(
+        self,
+        manager: Literal["auto", "apt", "dnf", "yum", "apk", "pacman", "zypper"],
+    ) -> str:
+        """Определить пакетный менеджер хоста при ``manager='auto'``."""
+        if manager != "auto":
+            return manager
+
+        if self._cached_facts is not None:
+            fam = self._cached_facts.os_family.lower()
+            if fam == "debian":
+                return "apt"
+            if fam == "alpine":
+                return "apk"
+            if fam == "redhat":
+                return "dnf"
+            if fam == "arch":
+                return "pacman"
+            if fam == "suse":
+                return "zypper"
+
+        detect_cmd = (
+            "if command -v apt-get >/dev/null 2>&1; then echo apt; "
+            "elif command -v dnf >/dev/null 2>&1; then echo dnf; "
+            "elif command -v apk >/dev/null 2>&1; then echo apk; "
+            "elif command -v yum >/dev/null 2>&1; then echo yum; "
+            "elif command -v pacman >/dev/null 2>&1; then echo pacman; "
+            "elif command -v zypper >/dev/null 2>&1; then echo zypper; "
+            "else echo apt; fi"
+        )
+        res = await self.run(detect_cmd, raise_on_error=False, dry_run=False)
+        detected = res.text.splitlines()[0].strip() if res.text else "apt"
+        return detected if detected in {"apt", "dnf", "yum", "apk", "pacman", "zypper"} else "apt"
+
+    async def ensure_package(
+        self,
+        package: str | Sequence[str],
+        state: Literal["present", "absent"] = "present",
+        manager: Literal["auto", "apt", "dnf", "yum", "apk", "pacman", "zypper"] = "auto",
+        update_cache: bool = False,
+        sudo: bool = True,
+        dry_run: bool | None = None,
+    ) -> EnsureResult:
+        """Идемпотентно обеспечить наличие или отсутствие пакета(ов) на хосте.
+
+        Args:
+            package: Имя пакета или список пакетов.
+            state: Желаемое состояние (``"present"`` или ``"absent"``).
+            manager: Пакетный менеджер (``"auto"``, ``"apt"``, ``"dnf"``, ``"yum"``,
+                ``"apk"``, ``"pacman"``, ``"zypper"``).
+            update_cache: Обновить ли индекс пакетов перед установкой.
+            sudo: Использовать ли ``sudo`` при модифицирующих командах.
+            dry_run: Проверить необходимость изменений без установки/удаления.
+
+        Returns:
+            ``EnsureResult`` с флагами ``changed``, ``ok`` и описанием ``details``.
+
+        """
+        pkgs = [package] if isinstance(package, str) else [str(p) for p in package]
+        target_str = ", ".join(pkgs)
+        is_dry_run = self._dry_run if dry_run is None else dry_run
+
+        if self._dry_run:
+            return EnsureResult(
+                target=target_str,
+                state=state,
+                changed=True,
+                ok=True,
+                details=f"[DRY-RUN] Would ensure package(s) {target_str} are {state}",
+                dry_run=True,
+            )
+
+        mgr = await self._resolve_pkg_manager(manager)
+        to_modify: list[str] = []
+
+        for pkg in pkgs:
+            q_pkg = shlex.quote(pkg)
+            if mgr == "apt":
+                chk = f"dpkg-query -W -f='${{Status}}' {q_pkg} 2>/dev/null | grep -q 'install ok installed'"
+            elif mgr == "apk":
+                chk = f"apk info -e {q_pkg} >/dev/null 2>&1"
+            elif mgr in ("dnf", "yum", "zypper"):
+                chk = f"rpm -q {q_pkg} >/dev/null 2>&1"
+            else:
+                chk = f"pacman -Qi {q_pkg} >/dev/null 2>&1"
+
+            chk_res = await self.run(chk, raise_on_error=False, dry_run=False)
+            is_installed = chk_res.ok
+            if (state == "present" and not is_installed) or (state == "absent" and is_installed):
+                to_modify.append(pkg)
+
+        if not to_modify:
+            return EnsureResult(
+                target=target_str,
+                state=state,
+                changed=False,
+                ok=True,
+                details=f"Package(s) {target_str} already {state} ({mgr})",
+                dry_run=is_dry_run,
+            )
+
+        quoted_pkgs = " ".join(shlex.quote(p) for p in to_modify)
+        if state == "present":
+            if mgr == "apt":
+                prefix = "DEBIAN_FRONTEND=noninteractive apt-get update -qq && " if update_cache else ""
+                action_cmd = f"{prefix}DEBIAN_FRONTEND=noninteractive apt-get install -y -qq {quoted_pkgs}"
+            elif mgr == "apk":
+                upd = "--update-cache " if update_cache else ""
+                action_cmd = f"apk add --no-progress {upd}{quoted_pkgs}"
+            elif mgr in ("dnf", "yum"):
+                action_cmd = f"{mgr} install -y {quoted_pkgs}"
+            elif mgr == "pacman":
+                sync_flag = "-Syu" if update_cache else "-S"
+                action_cmd = f"pacman {sync_flag} --noconfirm {quoted_pkgs}"
+            else:
+                action_cmd = f"zypper --non-interactive install {quoted_pkgs}"
+        else:
+            if mgr == "apt":
+                action_cmd = f"DEBIAN_FRONTEND=noninteractive apt-get remove -y -qq {quoted_pkgs}"
+            elif mgr == "apk":
+                action_cmd = f"apk del --no-progress {quoted_pkgs}"
+            elif mgr in ("dnf", "yum"):
+                action_cmd = f"{mgr} remove -y {quoted_pkgs}"
+            elif mgr == "pacman":
+                action_cmd = f"pacman -R --noconfirm {quoted_pkgs}"
+            else:
+                action_cmd = f"zypper --non-interactive remove {quoted_pkgs}"
+
+        if is_dry_run:
+            return EnsureResult(
+                target=target_str,
+                state=state,
+                changed=True,
+                ok=True,
+                details=f"[DRY-RUN] Would run: {action_cmd}",
+                dry_run=True,
+            )
+
+        act_res = await self.run(action_cmd, sudo=sudo, raise_on_error=False)
+        return EnsureResult(
+            target=target_str,
+            state=state,
+            changed=act_res.ok,
+            ok=act_res.ok,
+            details=act_res.stderr.strip() if not act_res.ok else f"Modified {', '.join(to_modify)} via {mgr}",
+            dry_run=False,
+        )
+
+    async def ensure_service(
+        self,
+        service: str,
+        state: Literal["started", "stopped", "restarted", "reloaded"] = "started",
+        enabled: bool | None = None,
+        sudo: bool = True,
+        dry_run: bool | None = None,
+    ) -> EnsureResult:
+        """Идемпотентно управлять состоянием системного сервиса (systemd / OpenRC / SysV).
+
+        Args:
+            service: Имя сервиса (например, ``"nginx"``).
+            state: Целевое состояние (``"started"``, ``"stopped"``, ``"restarted"``, ``"reloaded"``).
+            enabled: Включить (``True``) или отключить (``False``) автозапуск.
+            sudo: Использовать ли ``sudo`` для команд управления сервисом.
+            dry_run: Проверить состояние без фактического перезапуска/остановки.
+
+        Returns:
+            ``EnsureResult`` с информацией о выполненных действиях.
+
+        """
+        is_dry_run = self._dry_run if dry_run is None else dry_run
+        if self._dry_run:
+            return EnsureResult(
+                target=service,
+                state=state,
+                changed=True,
+                ok=True,
+                details=f"[DRY-RUN] Would ensure service {service} is {state}",
+                dry_run=True,
+            )
+
+        q_svc = shlex.quote(service)
+        status_cmd = (
+            f"if command -v systemctl >/dev/null 2>&1; then systemctl is-active --quiet {q_svc}; "
+            f"elif command -v rc-service >/dev/null 2>&1; then rc-service {q_svc} status >/dev/null 2>&1; "
+            f"else service {q_svc} status >/dev/null 2>&1; fi"
+        )
+        status_res = await self.run(status_cmd, raise_on_error=False, dry_run=False)
+        is_active = status_res.ok
+
+        actions_taken: list[str] = []
+        commands_to_run: list[str] = []
+
+        if state == "started" and not is_active:
+            actions_taken.append("start")
+            commands_to_run.append(
+                f"if command -v systemctl >/dev/null 2>&1; then systemctl start {q_svc}; "
+                f"elif command -v rc-service >/dev/null 2>&1; then rc-service {q_svc} start; "
+                f"else service {q_svc} start; fi"
+            )
+        elif state == "stopped" and is_active:
+            actions_taken.append("stop")
+            commands_to_run.append(
+                f"if command -v systemctl >/dev/null 2>&1; then systemctl stop {q_svc}; "
+                f"elif command -v rc-service >/dev/null 2>&1; then rc-service {q_svc} stop; "
+                f"else service {q_svc} stop; fi"
+            )
+        elif state == "restarted":
+            actions_taken.append("restart")
+            commands_to_run.append(
+                f"if command -v systemctl >/dev/null 2>&1; then systemctl restart {q_svc}; "
+                f"elif command -v rc-service >/dev/null 2>&1; then rc-service {q_svc} restart; "
+                f"else service {q_svc} restart; fi"
+            )
+        elif state == "reloaded":
+            actions_taken.append("reload")
+            commands_to_run.append(
+                f"if command -v systemctl >/dev/null 2>&1; then systemctl reload {q_svc}; "
+                f"elif command -v rc-service >/dev/null 2>&1; then rc-service {q_svc} reload; "
+                f"else service {q_svc} reload; fi"
+            )
+
+        if enabled is not None:
+            enabled_chk = await self.run(
+                f"systemctl is-enabled --quiet {q_svc}",
+                raise_on_error=False,
+                dry_run=False,
+            )
+            is_enabled = enabled_chk.ok
+            if enabled and not is_enabled:
+                actions_taken.append("enable")
+                commands_to_run.append(f"systemctl enable {q_svc}")
+            elif not enabled and is_enabled:
+                actions_taken.append("disable")
+                commands_to_run.append(f"systemctl disable {q_svc}")
+
+        if not commands_to_run:
+            return EnsureResult(
+                target=service,
+                state=state,
+                changed=False,
+                ok=True,
+                details=f"Service {service} already in state {state}",
+                dry_run=is_dry_run,
+            )
+
+        if is_dry_run:
+            return EnsureResult(
+                target=service,
+                state=state,
+                changed=True,
+                ok=True,
+                details=f"[DRY-RUN] Would run actions on {service}: {', '.join(actions_taken)}",
+                dry_run=True,
+            )
+
+        combined_cmd = " && ".join(commands_to_run)
+        act_res = await self.run(combined_cmd, sudo=sudo, raise_on_error=False)
+        return EnsureResult(
+            target=service,
+            state=state,
+            changed=act_res.ok,
+            ok=act_res.ok,
+            details=(
+                act_res.stderr.strip()
+                if not act_res.ok
+                else f"Service {service}: {', '.join(actions_taken)}"
+            ),
+            dry_run=False,
+        )
+
+    async def ensure_line(
+        self,
+        remote_path: str | Path,
+        line: str,
+        state: Literal["present", "absent"] = "present",
+        regex: str | None = None,
+        create: bool = True,
+        backup: bool = False,
+        mode: int | None = None,
+        encoding: str = "utf-8",
+        dry_run: bool | None = None,
+    ) -> EnsureResult:
+        r"""Идемпотентно обеспечить наличие, замену или отсутствие строки в файле (аналог ``lineinfile``).
+
+        Args:
+            remote_path: Путь к целевому файлу на хосте.
+            line: Целевая строка (без завершающего ``\n``).
+            state: ``"present"`` (добавить/заменить) или ``"absent"`` (удалить).
+            regex: Опциональное регулярное выражение для поиска заменяемой/удаляемой строки.
+            create: Создавать ли файл, если он не существует (при ``state="present"``).
+            backup: Создавать ли резервную копию ``<remote_path>.bak`` перед записью.
+            mode: Права доступа к файлу при записи.
+            encoding: Кодировка файла (по умолчанию ``"utf-8"``).
+            dry_run: Проверить необходимость изменений без модификации файла.
+
+        Returns:
+            ``EnsureResult`` с флагами ``changed``, ``ok`` и описанием ``details``.
+
+        """
+        path_str = str(remote_path)
+        clean_line = line.rstrip("\r\n")
+        is_dry_run = self._dry_run if dry_run is None else dry_run
+
+        if self._dry_run:
+            return EnsureResult(
+                target=path_str,
+                state=state,
+                changed=True,
+                ok=True,
+                details=f"[DRY-RUN] Would ensure line in {path_str} is {state}",
+                dry_run=True,
+            )
+
+        file_exists = await self.exists(path_str)
+        original_text = ""
+        existing_lines: list[str] = []
+
+        if file_exists:
+            raw_content = await self.read_file(path_str, encoding=encoding)
+            original_text = raw_content if isinstance(raw_content, str) else raw_content.decode(encoding)
+            existing_lines = original_text.splitlines()
+        elif state == "absent":
+            return EnsureResult(
+                target=path_str,
+                state=state,
+                changed=False,
+                ok=True,
+                details=f"File {path_str} does not exist (already absent)",
+                dry_run=is_dry_run,
+            )
+        elif not create:
+            return EnsureResult(
+                target=path_str,
+                state=state,
+                changed=False,
+                ok=False,
+                details=f"File {path_str} does not exist and create=False",
+                dry_run=is_dry_run,
+            )
+
+        pattern = re.compile(regex) if regex is not None else None
+        new_lines: list[str] = []
+        changed = False
+        details = "No changes needed"
+
+        if state == "present":
+            if not file_exists:
+                new_lines = [clean_line]
+                changed = True
+                details = f"Created {path_str} with target line"
+            elif pattern is not None:
+                matched_any = False
+                for existing in existing_lines:
+                    if pattern.search(existing):
+                        if not matched_any:
+                            new_lines.append(clean_line)
+                            matched_any = True
+                            if existing != clean_line:
+                                changed = True
+                                details = f"Replaced matching line in {path_str}"
+                        else:
+                            changed = True
+                            details = f"Collapsed duplicate matching lines in {path_str}"
+                    else:
+                        new_lines.append(existing)
+                if not matched_any:
+                    new_lines.append(clean_line)
+                    changed = True
+                    details = f"Appended line to {path_str}"
+            else:
+                if clean_line in existing_lines:
+                    new_lines = list(existing_lines)
+                    changed = False
+                    details = f"Line already present in {path_str}"
+                else:
+                    new_lines = [*existing_lines, clean_line]
+                    changed = True
+                    details = f"Appended line to {path_str}"
+        else:
+            for existing in existing_lines:
+                matches = bool(pattern.search(existing)) if pattern is not None else (existing == clean_line)
+                if matches:
+                    changed = True
+                else:
+                    new_lines.append(existing)
+            details = f"Removed matching line(s) from {path_str}" if changed else f"Line already absent in {path_str}"
+
+        if not changed:
+            return EnsureResult(
+                target=path_str,
+                state=state,
+                changed=False,
+                ok=True,
+                details=details,
+                dry_run=is_dry_run,
+            )
+
+        if is_dry_run:
+            return EnsureResult(
+                target=path_str,
+                state=state,
+                changed=True,
+                ok=True,
+                details=f"[DRY-RUN] {details}",
+                dry_run=True,
+            )
+
+        if backup and file_exists:
+            await self.write_file(f"{path_str}.bak", original_text, encoding=encoding)
+
+        new_content = "\n".join(new_lines) + ("\n" if new_lines else "")
+        await self.write_file(path_str, new_content, mode=mode, encoding=encoding)
+        return EnsureResult(
+            target=path_str,
+            state=state,
+            changed=True,
+            ok=True,
+            details=details,
+            dry_run=False,
+        )
 
     async def __aenter__(self) -> Self:
         await self._transport.connect()

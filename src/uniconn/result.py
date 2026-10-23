@@ -124,3 +124,26 @@ class SyncResult:
             "dry_run": self.dry_run,
         }
 
+
+@dataclass(frozen=True)
+class EnsureResult:
+    """Результат идемпотентной проверки или приведения состояния (``ensure_*``)."""
+
+    target: str
+    state: str
+    changed: bool
+    ok: bool = True
+    details: str = ""
+    dry_run: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        """Преобразовать отчёт идемпотентной проверки в сериализуемый словарь."""
+        return {
+            "target": self.target,
+            "state": self.state,
+            "changed": self.changed,
+            "ok": self.ok,
+            "details": self.details,
+            "dry_run": self.dry_run,
+        }
+
