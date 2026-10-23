@@ -4,14 +4,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Self, TypeVar
+from typing import Any, Literal, Self, TypeVar
 
 from ._config import ConnectionConfig
 from ._connection import Connection, _format_command
-from .result import Result
+from .result import Result, SyncResult
 
 logger = logging.getLogger(__name__)
 
@@ -370,5 +370,81 @@ class ConnectionPool:
                 for idx, target in enumerate(self._uris)
             ]
         return [task.result() for task in tasks]
+
+    async def sync_dir(
+        self,
+        local_dir: str | Path,
+        remote_dir: str | Path,
+        delete: bool = False,
+        exclude: Sequence[str] | None = None,
+        mtime_tolerance: float = 1.0,
+        dry_run: bool | None = None,
+    ) -> dict[str, SyncResult]:
+        """Параллельно синхронизировать директорию на всех хостах пула.
+
+        Returns:
+            Словарь ``{target_key: SyncResult}``.
+
+        """
+        results: dict[str, SyncResult] = {}
+
+        async def _sync_single(idx: int, target: PoolTarget) -> None:
+            key = self._target_key(target)
+            async with (
+                self._semaphore,
+                self._use_conn(idx, target, with_defaults=True) as conn,
+            ):
+                results[key] = await conn.sync_dir(
+                    local_dir=local_dir,
+                    remote_dir=remote_dir,
+                    delete=delete,
+                    exclude=exclude,
+                    mtime_tolerance=mtime_tolerance,
+                    dry_run=dry_run,
+                )
+
+        async with asyncio.TaskGroup() as tg:
+            for idx, target in enumerate(self._uris):
+                tg.create_task(_sync_single(idx, target))
+
+        return results
+
+    async def write_template(
+        self,
+        remote_path: str | Path,
+        template_str_or_path: str | Path,
+        context: Mapping[str, Any] | None = None,
+        mode: int | None = 0o644,
+        encoding: str = "utf-8",
+        engine: Literal["auto", "string", "jinja2"] = "auto",
+    ) -> dict[str, str]:
+        """Параллельно отрендерить и записать шаблон конфигурации на всех хостах пула.
+
+        Returns:
+            Словарь ``{target_key: rendered_content}``.
+
+        """
+        results: dict[str, str] = {}
+
+        async def _write_single(idx: int, target: PoolTarget) -> None:
+            key = self._target_key(target)
+            async with (
+                self._semaphore,
+                self._use_conn(idx, target, with_defaults=True) as conn,
+            ):
+                results[key] = await conn.write_template(
+                    remote_path=remote_path,
+                    template_str_or_path=template_str_or_path,
+                    context=context,
+                    mode=mode,
+                    encoding=encoding,
+                    engine=engine,
+                )
+
+        async with asyncio.TaskGroup() as tg:
+            for idx, target in enumerate(self._uris):
+                tg.create_task(_write_single(idx, target))
+
+        return results
 
 

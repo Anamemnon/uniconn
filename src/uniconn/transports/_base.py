@@ -231,3 +231,34 @@ class BaseTransport(ABC):
             f"open_shell not supported for {self.name} transport"
         )
 
+    async def remove_file(self, remote_path: str) -> None:
+        """Удалить файл на хосте."""
+        raise NotImplementedError(
+            f"remove_file not supported for {self.name} transport"
+        )
+
+    def forward_local_port(
+        self,
+        remote_host: str = "127.0.0.1",
+        remote_port: int = 80,
+        local_host: str = "127.0.0.1",
+        local_port: int = 0,
+    ):
+        """Открыть локальный проброс порта (SSH Local Port Forwarding)."""
+        raise NotImplementedError(
+            f"forward_local_port not supported for {self.name} transport"
+        )
+
+    def forward_remote_port(
+        self,
+        remote_host: str = "127.0.0.1",
+        remote_port: int = 0,
+        local_host: str = "127.0.0.1",
+        local_port: int = 80,
+    ):
+        """Открыть удалённый проброс порта (SSH Remote Port Forwarding)."""
+        raise NotImplementedError(
+            f"forward_remote_port not supported for {self.name} transport"
+        )
+
+

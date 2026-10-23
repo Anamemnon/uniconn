@@ -957,3 +957,105 @@ class SSHTransport(BaseTransport):
 
         self._shell_procs.append(proc)
         return proc
+
+    async def remove_file(self, remote_path: str) -> None:
+        """Удалить файл на удалённом хосте через SFTP."""
+        assert asyncssh is not None
+        if not self._connected or not self._conn:
+            raise ConnectionError("Not connected", host=self.config.host)
+
+        try:
+            async with self._conn.start_sftp_client() as sftp:
+                await sftp.remove(remote_path)
+        except asyncssh.Error as e:
+            raise ConnectionError(
+                f"SFTP remove_file failed: {remote_path}: {e}",
+                host=self.config.host,
+            ) from e
+
+    @contextlib.asynccontextmanager
+    async def forward_local_port(
+        self,
+        remote_host: str = "127.0.0.1",
+        remote_port: int = 80,
+        local_host: str = "127.0.0.1",
+        local_port: int = 0,
+    ):
+        """Открыть локальный SSH-туннель (Local Port Forwarding) через asyncssh."""
+        if not self._connected or not self._conn:
+            raise ConnectionError(
+                "SSH transport is not connected. Call connect() first",
+                host=self.config.host,
+            )
+
+        try:
+            res = self._conn.forward_local_port(
+                local_host, local_port, remote_host, remote_port
+            )
+            listener: Any = await res if inspect.isawaitable(res) else res
+        except Exception as e:
+            raise ConnectionError(
+                f"Failed to forward local port {local_host}:{local_port} -> "
+                f"{remote_host}:{remote_port}: {e}",
+                host=self.config.host,
+            ) from e
+
+        get_port = getattr(listener, "get_port", None)
+        port_val: Any = get_port() if callable(get_port) else local_port
+        bound_port = int(port_val)
+        try:
+            yield bound_port
+        finally:
+            with contextlib.suppress(Exception):
+                close_fn = getattr(listener, "close", None)
+                if callable(close_fn):
+                    close_fn()
+                wait_closed = getattr(listener, "wait_closed", None)
+                if callable(wait_closed):
+                    wres = wait_closed()
+                    if inspect.isawaitable(wres):
+                        await wres
+
+    @contextlib.asynccontextmanager
+    async def forward_remote_port(
+        self,
+        remote_host: str = "127.0.0.1",
+        remote_port: int = 0,
+        local_host: str = "127.0.0.1",
+        local_port: int = 80,
+    ):
+        """Открыть обратный SSH-туннель (Remote Port Forwarding) через asyncssh."""
+        if not self._connected or not self._conn:
+            raise ConnectionError(
+                "SSH transport is not connected. Call connect() first",
+                host=self.config.host,
+            )
+
+        try:
+            res = self._conn.forward_remote_port(
+                remote_host, remote_port, local_host, local_port
+            )
+            listener: Any = await res if inspect.isawaitable(res) else res
+        except Exception as e:
+            raise ConnectionError(
+                f"Failed to forward remote port {remote_host}:{remote_port} -> "
+                f"{local_host}:{local_port}: {e}",
+                host=self.config.host,
+            ) from e
+
+        get_port = getattr(listener, "get_port", None)
+        port_val: Any = get_port() if callable(get_port) else remote_port
+        bound_port = int(port_val)
+        try:
+            yield bound_port
+        finally:
+            with contextlib.suppress(Exception):
+                close_fn = getattr(listener, "close", None)
+                if callable(close_fn):
+                    close_fn()
+                wait_closed = getattr(listener, "wait_closed", None)
+                if callable(wait_closed):
+                    wres = wait_closed()
+                    if inspect.isawaitable(wres):
+                        await wres
+

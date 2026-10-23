@@ -39,7 +39,7 @@ from importlib.metadata import PackageNotFoundError, version
 from shlex import quote
 
 from ._config import ConnectionConfig
-from ._connection import Connection
+from ._connection import Connection, render_template
 from ._logging import (
     SecretMaskingFilter,
     bind_log_context,
@@ -78,7 +78,7 @@ from .hooks import (
     metrics_collector_hook,
     structured_log_hook,
 )
-from .result import Result
+from .result import Result, SyncResult
 
 try:
     __version__ = version("uniconn")
@@ -94,6 +94,8 @@ __all__ = [
     "SSHSessionPool",
     "ConnectionConfig",
     "Result",
+    "SyncResult",
+    "render_template",
     "quote",
     # Готовые хуки аудита, безопасности и метрик (v0.6.0)
     "audit_log_hook",

@@ -1,4 +1,4 @@
-# uniconn — LLM & AI Agent API Reference (v0.6.0)
+# uniconn — LLM & AI Agent API Reference (v0.7.0)
 
 > Universal async-first Python library (Python 3.11+) and CLI for executing commands and managing files across SSH, Telnet, Serial/UART, IPMI BMC, and Local transports.
 
@@ -10,7 +10,7 @@
 - Preview dashboard server: `python3 main.py --serve` (listens on `0.0.0.0:3000`)
 
 ## Public Exports (`from uniconn import ...`)
-- **Core**: `Connection`, `SyncConnection`, `ConnectionConfig`, `Result`, `quote`
+- **Core**: `Connection`, `SyncConnection`, `ConnectionConfig`, `Result`, `SyncResult`, `render_template`, `quote`
 - **Pools**: `ConnectionPool`, `SSHSessionPool`
 - **Interactive PTY Shell**: `ShellSession`, `SyncShellSession`
 - **Background GNU Screen**: `ScreenPool`, `ScreenSession`, `ScreenResult`, `LogConfig`
@@ -58,6 +58,22 @@ results: list[Result] = await conn.run_commands(commands: Sequence[str | Sequenc
 async for line in conn.stream(command, timeout=None, **kwargs): ...
 alive: bool = await conn.is_alive(timeout=None)
 
+# Declarative Expect (SSH, Telnet, Serial/UART, Local)
+res: Result = await conn.expect(
+    command: str | Sequence[str],
+    patterns: Mapping[str, str | SecretStr] | None = None,
+    final_prompt: str | None = None,
+    timeout: float | None = None,
+    line_ending: str = "\n",
+    sensitive: bool = False,
+)
+
+# SSH Port Forwarding (Async & Sync context managers)
+async with conn.forward_local_port(remote_host="127.0.0.1", remote_port=5432, local_host="127.0.0.1", local_port=0) as bound_port:
+    ...
+async with conn.forward_remote_port(remote_host="127.0.0.1", remote_port=0, local_host="127.0.0.1", local_port=8000) as bound_port:
+    ...
+
 # Context Managers (work with both `async with` and `with` for cd/env)
 async with conn.cd("/var/www"), conn.env(APP_ENV="prod"):
     await conn.run(["./deploy.sh"])
@@ -70,9 +86,10 @@ conn.add_hook("before_run", callback)  # callback(command_str, host, kwargs)
 conn.add_hook("after_run", callback)   # callback(result: Result)
 conn.add_hook("on_error", callback)    # callback(exc, command_str, host)
 
-# File Operations (In-memory & SFTP/Local)
+# File Operations, Smart Directory Sync & Templating (SFTP & Local)
 content: str | bytes = await conn.read_file(remote_path, encoding="utf-8")  # encoding=None -> bytes
 await conn.write_file(remote_path, content: str | bytes, mode: int | None = None, encoding="utf-8")
+await conn.remove_file(remote_path)
 exists: bool = await conn.exists(remote_path)
 await conn.mkdir(remote_path, parents=True, exist_ok=True, mode=None)
 await conn.upload(local_path, remote_path, recurse=False)
@@ -80,18 +97,20 @@ await conn.download(remote_path, local_path, recurse=False)
 await conn.chmod(remote_path, 0o755)
 info: dict = await conn.stat(remote_path)
 names: list[str] = await conn.listdir(remote_path=".")
+sync_res: SyncResult = await conn.sync_dir(local_dir, remote_dir, delete=False, exclude=["*.pyc", ".git"])
+rendered: str = await conn.write_template(remote_path, template_str_or_path, context={...}, mode=0o644, engine="auto")
 
-# Stateful PTY Shell (SSH, Local, Telnet)
-async with await conn.open_shell(term_type="xterm", term_size=(80, 24)) as shell:
+# Stateful PTY Shell (SSH, Local, Telnet, Serial)
+async with await conn.open_shell(term_type="xterm", term_size=(80, 24), init_posix=None) as shell:
     await shell.execute("cd /var/log")
     r = await shell.execute("pwd")  # r.text == "/var/log"
+    r_exp = await shell.expect("fdisk /dev/sda", patterns={r"Command \(m for help\):": "q\n"})
     await shell.resize(120, 40)
 ```
 
-### `Result`
-- Properties: `exit_code: int`, `stdout: str`, `stderr: str`, `duration: float`, `command: str`, `host: str | None`, `ok: bool`, `text: str` (`stdout.strip()`), `lines: list[str]`, `sensitive: bool`
-- Truthiness: `bool(result)` is `result.ok` (`exit_code == 0`)
-- Methods: `result.json() -> Any`, `result.raise_for_status() -> Self`, `result.to_dict() -> dict`
+### `Result` & `SyncResult`
+- `Result`: `exit_code: int`, `stdout: str`, `stderr: str`, `duration: float`, `command: str`, `host: str | None`, `ok: bool`, `text: str` (`stdout.strip()`), `lines: list[str]`, `sensitive: bool`, `result.json() -> Any`, `result.raise_for_status() -> Self`, `result.to_dict() -> dict`
+- `SyncResult`: `uploaded: list[str]`, `skipped: list[str]`, `deleted: list[str]`, `bytes_transferred: int`, `duration: float`, `dry_run: bool`, `total_checked: int`, `sync_res.to_dict() -> dict`
 
 ### `ConnectionPool` (Multi-host parallel execution)
 ```python
@@ -103,6 +122,8 @@ async with pool:  # Keeps connections open across multiple pool operations
     safe_map: dict[str, Result | Exception] = await pool.map_safe("uptime")
     await pool.upload("./app.conf", "/etc/app/app.conf")
     paths: dict[str, str] = await pool.download("/var/log/syslog", "./logs/{host}.log")
+    sync_map: dict[str, SyncResult] = await pool.sync_dir("./dist", "/var/www/app", delete=True, exclude=["*.pyc"])
+    tpl_map: dict[str, str] = await pool.write_template("/etc/app.conf", "./app.conf.tpl", context={"port": 8080})
     custom = await pool.apply(lambda c: c.run("hostname"))
 ```
 

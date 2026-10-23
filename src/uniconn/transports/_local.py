@@ -259,6 +259,93 @@ class LocalTransport(BaseTransport):
                 host="localhost",
             ) from e
 
+    async def chmod(self, remote_path: str, mode: int) -> None:
+        """Изменить права доступа к локальному файлу."""
+        try:
+            if sys.platform != "win32":
+                os.chmod(remote_path, mode)
+        except OSError as e:
+            raise ConnectionError(
+                f"Local chmod failed for {remote_path}: {e}",
+                host="localhost",
+            ) from e
+
+    async def stat(self, remote_path: str) -> dict[str, Any]:
+        """Получить метаданные локального файла."""
+        import stat as stat_module
+
+        try:
+            st = os.stat(remote_path, follow_symlinks=False)
+            mode = st.st_mode
+            return {
+                "size": st.st_size,
+                "uid": st.st_uid,
+                "gid": st.st_gid,
+                "permissions": oct(mode),
+                "atime": st.st_atime,
+                "mtime": st.st_mtime,
+                "is_file": stat_module.S_ISREG(mode),
+                "is_dir": stat_module.S_ISDIR(mode),
+                "is_symlink": stat_module.S_ISLNK(mode),
+            }
+        except OSError as e:
+            raise ConnectionError(
+                f"Local stat failed for {remote_path}: {e}",
+                host="localhost",
+            ) from e
+
+    async def listdir(self, remote_path: str = ".") -> list[str]:
+        """Список файлов в локальной директории."""
+        try:
+            return os.listdir(remote_path)
+        except OSError as e:
+            raise ConnectionError(
+                f"Local listdir failed for {remote_path}: {e}",
+                host="localhost",
+            ) from e
+
+    async def remove_file(self, remote_path: str) -> None:
+        """Удалить локальный файл."""
+        try:
+            Path(remote_path).unlink()
+        except OSError as e:
+            raise ConnectionError(
+                f"Local remove_file failed for {remote_path}: {e}",
+                host="localhost",
+            ) from e
+
+    async def upload(
+        self,
+        local_path: str,
+        remote_path: str,
+        **kwargs: Any,
+    ) -> None:
+        """Скопировать локальный файл или директорию."""
+        import shutil
+
+        try:
+            src = Path(local_path)
+            dst = Path(remote_path)
+            if src.is_dir():
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+            else:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+        except OSError as e:
+            raise ConnectionError(
+                f"Local upload failed from {local_path} to {remote_path}: {e}",
+                host="localhost",
+            ) from e
+
+    async def download(
+        self,
+        remote_path: str,
+        local_path: str,
+        **kwargs: Any,
+    ) -> None:
+        """Скопировать локальный файл или директорию в назначение."""
+        await self.upload(remote_path, local_path, **kwargs)
+
     async def open_shell(
         self,
         term_type: str = "xterm",

@@ -265,14 +265,13 @@ class TestTransportsOpenShell:
     @pytest.mark.parametrize(
         "transport_cls,transport_name",
         [
-            (SerialTransport, "serial"),
             (IPMITransport, "ipmi"),
         ],
     )
     async def test_unsupported_transports_raise_not_implemented(
         self, transport_cls, transport_name
     ):
-        """Serial и IPMI бросают NotImplementedError при open_shell()."""
+        """IPMI бросает NotImplementedError при open_shell()."""
         config = ConnectionConfig(transport=transport_name, host="localhost")
         transport = transport_cls(config)
         with pytest.raises(NotImplementedError, match="open_shell not supported"):
@@ -280,7 +279,7 @@ class TestTransportsOpenShell:
 
     @pytest.mark.asyncio
     async def test_local_and_telnet_open_shell_not_connected_raises(self):
-        """LocalTransport и TelnetTransport без connect() бросают ConnectionError."""
+        """LocalTransport, TelnetTransport и SerialTransport без connect() бросают ConnectionError."""
         local_transport = LocalTransport(
             ConnectionConfig(transport="local", host="localhost")
         )
@@ -292,6 +291,12 @@ class TestTransportsOpenShell:
         )
         with pytest.raises(ConnectionError, match="not connected"):
             await telnet_transport.open_shell()
+
+        serial_transport = SerialTransport(
+            ConnectionConfig(transport="serial", host="/dev/ttyUSB0")
+        )
+        with pytest.raises(ConnectionError, match="not connected"):
+            await serial_transport.open_shell()
 
     @pytest.mark.asyncio
     async def test_local_open_shell_stateful_session(self, tmp_path):

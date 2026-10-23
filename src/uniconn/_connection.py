@@ -2,14 +2,19 @@
 from __future__ import annotations
 
 import builtins
+import contextlib
 import dataclasses
+import fnmatch
 import inspect
 import json
 import logging
+import os
 import shlex
 import shutil
+import string
 import tempfile
-from collections.abc import Callable, Sequence
+import time
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self
 
@@ -24,9 +29,9 @@ from tenacity import (
 from ._config import ConnectionConfig
 from ._logging import log_context, log_event
 from ._shell import ShellSession
-from .exceptions import ConnectionError, TimeoutError
+from .exceptions import ConnectionError, TimeoutError, UniconnError
 from .plugins._loader import TransportLoader
-from .result import Result
+from .result import Result, SyncResult
 from .transports._base import BaseTransport
 
 if TYPE_CHECKING:
@@ -43,6 +48,83 @@ def _format_command(command: str | Sequence[str]) -> str:
     if isinstance(command, str):
         return command
     return shlex.join(command)
+
+
+def render_template(
+    template_str_or_path: str | Path,
+    context: Mapping[str, Any] | None = None,
+    engine: Literal["auto", "string", "jinja2"] = "auto",
+) -> str:
+    """Отрендерить конфигурационный шаблон со словарём переменных ``context``.
+
+    Поддерживает два движка:
+    - ``"string"`` — стандартный ``string.Template`` (переменные ``$var`` / ``${var}``)
+    - ``"jinja2"`` — опциональный пакет ``jinja2`` (выражения ``{{ var }}``, ``{% if %}``)
+    - ``"auto"`` — использует ``jinja2``, если передан файл ``.j2``/``.jinja``/``.jinja2``
+      или в строке присутствуют теги ``{{`` / ``{%``, иначе ``string.Template``.
+
+    Args:
+        template_str_or_path: Путь к локальному файлу шаблона (``Path`` или строка-путь,
+            если такой файл существует) либо непосредственно текст шаблона.
+        context: Словарь подставляемых значений.
+        engine: Выбранный шаблонизатор (``"auto"``, ``"string"``, ``"jinja2"``).
+
+    Returns:
+        Отрендеренная строка.
+
+    """
+    ctx = dict(context or {})
+    is_jinja_ext = False
+
+    if isinstance(template_str_or_path, Path):
+        if not template_str_or_path.is_file():
+            raise FileNotFoundError(f"Template file not found: {template_str_or_path}")
+        raw_template = template_str_or_path.read_text(encoding="utf-8")
+        is_jinja_ext = template_str_or_path.suffix.lower() in (".j2", ".jinja", ".jinja2")
+    else:
+        candidate = Path(template_str_or_path)
+        try:
+            is_existing_file = (
+                "\n" not in template_str_or_path
+                and len(template_str_or_path) < 4096
+                and candidate.is_file()
+            )
+        except OSError:
+            is_existing_file = False
+
+        if is_existing_file:
+            raw_template = candidate.read_text(encoding="utf-8")
+            is_jinja_ext = candidate.suffix.lower() in (".j2", ".jinja", ".jinja2")
+        else:
+            raw_template = template_str_or_path
+
+    chosen_engine = engine
+    if chosen_engine == "auto":
+        has_jinja = is_jinja_ext or "{{" in raw_template or "{%" in raw_template
+        chosen_engine = "jinja2" if has_jinja else "string"
+
+    if chosen_engine == "jinja2":
+        try:
+            import jinja2  # type: ignore[import-not-found]
+        except ImportError as exc:
+            if engine == "auto":
+                return string.Template(raw_template).safe_substitute(ctx)
+            raise UniconnError(
+                "Jinja2 template engine requested, but 'jinja2' is not installed. "
+                "Install it via 'pip install jinja2' or use engine='string'."
+            ) from exc
+        env = jinja2.Environment(
+            autoescape=False,
+            keep_trailing_newline=True,
+            undefined=jinja2.StrictUndefined,
+        )
+        return env.from_string(raw_template).render(**ctx)
+
+    if chosen_engine == "string":
+        return string.Template(raw_template).safe_substitute(ctx)
+
+    raise ValueError(f"Unsupported template engine: {engine!r}")
+
 
 
 class _CwdContext:
@@ -1175,22 +1257,364 @@ class Connection:
         """
         return await self._transport.listdir(remote_path)
 
+    async def remove_file(
+        self,
+        remote_path: str | Path,
+    ) -> None:
+        """Удалить файл на хосте.
+
+        Поддерживается для ``SSHTransport`` (SFTP) и ``LocalTransport``.
+        Если активен контекст ``conn.cd()``, относительный путь разрешается
+        относительно текущей директории.
+        """
+        if self._dry_run:
+            self._logger.info(
+                f"[DRY-RUN] Skipping remove_file {str(remote_path)!r} on {self._config.uri_safe}"
+            )
+            return
+
+        if not self._transport.is_connected:
+            await self._transport.connect()
+
+        effective_path = str(remote_path)
+        if self.current_cwd and not Path(effective_path).is_absolute():
+            effective_path = str(Path(self.current_cwd) / effective_path)
+
+        await self._transport.remove_file(effective_path)
+
+    async def write_template(
+        self,
+        remote_path: str | Path,
+        template_str_or_path: str | Path,
+        context: Mapping[str, Any] | None = None,
+        mode: int | None = 0o644,
+        encoding: str = "utf-8",
+        engine: Literal["auto", "string", "jinja2"] = "auto",
+    ) -> str:
+        """Отрендерить шаблон конфигурации и записать его на хост.
+
+        Args:
+            remote_path: Целевой путь файла на удалённом/локальном хосте.
+            template_str_or_path: Строка шаблона или путь к локальному файлу шаблона.
+            context: Словарь переменных для подстановки в шаблон.
+            mode: Права доступа к создаваемому файлу (по умолчанию ``0o644``).
+            encoding: Кодировка файла (по умолчанию ``"utf-8"``).
+            engine: Шаблонизатор: ``"auto"``, ``"string"`` (``string.Template``)
+                или ``"jinja2"``.
+
+        Returns:
+            Отрендеренное текстовое содержимое.
+
+        """
+        rendered = render_template(
+            template_str_or_path=template_str_or_path,
+            context=context,
+            engine=engine,
+        )
+        await self.write_file(
+            str(remote_path),
+            rendered,
+            mode=mode,
+            encoding=encoding,
+        )
+        return rendered
+
+    async def sync_dir(
+        self,
+        local_dir: str | Path,
+        remote_dir: str | Path,
+        delete: bool = False,
+        exclude: Sequence[str] | None = None,
+        mtime_tolerance: float = 1.0,
+        dry_run: bool | None = None,
+    ) -> SyncResult:
+        """Инкрементально синхронизировать локальную директорию с удалённой.
+
+        Сравнивает размер (``size``) и время модификации (``mtime``) файлов
+        через ``stat``/``listdir`` и передаёт только новые или изменившиеся файлы.
+
+        Args:
+            local_dir: Локальная директория-источник.
+            remote_dir: Целевая директория на хосте.
+            delete: Удалять ли на удалённом хосте файлы, отсутствующие локально.
+            exclude: Список glob-паттернов для исключения (например, ``["*.pyc", ".git"]``).
+            mtime_tolerance: Допустимая погрешность сравнения ``mtime`` в секундах.
+            dry_run: Если ``True``, только вычислить список изменений без записи/удаления.
+
+        Returns:
+            Экземпляр ``SyncResult`` со списками ``uploaded``, ``skipped``, ``deleted``.
+
+        """
+        start_time = time.monotonic()
+        is_dry = self._dry_run if dry_run is None else dry_run
+        patterns = list(exclude or [])
+
+        src_root = Path(local_dir)
+        if not src_root.is_dir():
+            raise FileNotFoundError(f"Local directory does not exist: {local_dir}")
+
+        if not self._transport.is_connected and not is_dry:
+            await self._transport.connect()
+
+        effective_remote = str(remote_dir)
+        if self.current_cwd and not Path(effective_remote).is_absolute():
+            effective_remote = str(Path(self.current_cwd) / effective_remote)
+
+        def _is_excluded(rel_posix: str, name: str) -> bool:
+            for pat in patterns:
+                if fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(rel_posix, pat):
+                    return True
+                for part in rel_posix.split("/"):
+                    if fnmatch.fnmatch(part, pat):
+                        return True
+            return False
+
+        local_files: dict[str, tuple[Path, int, float]] = {}
+        local_rel_dirs: set[str] = {""}
+
+        for root, dirs, files in os.walk(src_root):
+            rel_dir_path = Path(root).relative_to(src_root)
+            rel_dir = "" if str(rel_dir_path) == "." else rel_dir_path.as_posix()
+
+            # Фильтруем поддиректории in-place, чтобы не заходить в исключённые (.git и т.д.)
+            kept_dirs: list[str] = []
+            for d in dirs:
+                d_rel = f"{rel_dir}/{d}" if rel_dir else d
+                if not _is_excluded(d_rel, d):
+                    kept_dirs.append(d)
+                    local_rel_dirs.add(d_rel)
+            dirs[:] = kept_dirs
+
+            for fname in files:
+                f_rel = f"{rel_dir}/{fname}" if rel_dir else fname
+                if _is_excluded(f_rel, fname):
+                    continue
+                full_local = Path(root) / fname
+                st = full_local.stat()
+                local_files[f_rel] = (full_local, int(st.st_size), float(st.st_mtime))
+
+        uploaded: list[str] = []
+        skipped: list[str] = []
+        deleted: list[str] = []
+        bytes_transferred = 0
+
+        if not is_dry:
+            for rel_d in sorted(local_rel_dirs):
+                target_d = f"{effective_remote.rstrip('/')}/{rel_d}" if rel_d else effective_remote
+                await self._transport.mkdir(target_d, parents=True, exist_ok=True)
+
+        for rel_path, (full_local, l_size, l_mtime) in sorted(local_files.items()):
+            target_file = f"{effective_remote.rstrip('/')}/{rel_path}"
+            needs_upload = True
+            if not is_dry or self._transport.is_connected:
+                with contextlib.suppress(Exception):
+                    if await self._transport.exists(target_file):
+                        r_stat = await self._transport.stat(target_file)
+                        r_size = int(r_stat.get("size", -1))
+                        r_mtime = float(r_stat.get("mtime") or 0.0)
+                        if (
+                            r_size == l_size
+                            and r_mtime > 0
+                            and (r_mtime + mtime_tolerance) >= l_mtime
+                        ):
+                            needs_upload = False
+
+            if needs_upload:
+                if not is_dry:
+                    data = full_local.read_bytes()
+                    mode = full_local.stat().st_mode & 0o777
+                    await self._transport.write_file(target_file, data, mode=mode)
+                uploaded.append(rel_path)
+                bytes_transferred += l_size
+            else:
+                skipped.append(rel_path)
+
+        if delete and (not is_dry or self._transport.is_connected):
+            async def _walk_remote(rel_prefix: str) -> None:
+                cur_remote = (
+                    f"{effective_remote.rstrip('/')}/{rel_prefix}"
+                    if rel_prefix
+                    else effective_remote
+                )
+                try:
+                    entries = await self._transport.listdir(cur_remote)
+                except Exception:
+                    return
+
+                for entry in entries:
+                    if entry in (".", ".."):
+                        continue
+                    entry_rel = f"{rel_prefix}/{entry}" if rel_prefix else entry
+                    if _is_excluded(entry_rel, entry):
+                        continue
+                    entry_full = f"{effective_remote.rstrip('/')}/{entry_rel}"
+                    try:
+                        info = await self._transport.stat(entry_full)
+                    except Exception:
+                        continue
+                    if info.get("is_dir"):
+                        await _walk_remote(entry_rel)
+                    elif entry_rel not in local_files:
+                        if not is_dry:
+                            await self._transport.remove_file(entry_full)
+                        deleted.append(entry_rel)
+
+            if await self._transport.exists(effective_remote):
+                await _walk_remote("")
+
+        duration = time.monotonic() - start_time
+        return SyncResult(
+            uploaded=uploaded,
+            skipped=skipped,
+            deleted=deleted,
+            bytes_transferred=bytes_transferred,
+            duration=duration,
+            dry_run=is_dry,
+        )
+
+    @contextlib.asynccontextmanager
+    async def forward_local_port(
+        self,
+        remote_host: str = "127.0.0.1",
+        remote_port: int = 80,
+        local_host: str = "127.0.0.1",
+        local_port: int = 0,
+    ) -> AsyncIterator[int]:
+        """Асинхронный контекстный менеджер прямого SSH-туннеля (Local Port Forwarding).
+
+        Пробрасывает локальный порт ``local_host:local_port`` через SSH-соединение
+        на ``remote_host:remote_port``. Если ``local_port=0``, ОС автоматически
+        выделяет свободный порт, который возвращается в ``as bound_port``.
+
+        Пример:
+            >>> async with conn.forward_local_port("127.0.0.1", 5432) as port:
+            ...     print(f"DB tunnel on 127.0.0.1:{port}")
+        """
+        if not self._transport.is_connected:
+            await self._transport.connect()
+
+        async with self._transport.forward_local_port(
+            remote_host=remote_host,
+            remote_port=remote_port,
+            local_host=local_host,
+            local_port=local_port,
+        ) as bound_port:
+            yield bound_port
+
+    @contextlib.asynccontextmanager
+    async def forward_remote_port(
+        self,
+        remote_host: str = "127.0.0.1",
+        remote_port: int = 0,
+        local_host: str = "127.0.0.1",
+        local_port: int = 80,
+    ) -> AsyncIterator[int]:
+        """Асинхронный контекстный менеджер обратного SSH-туннеля (Remote Port Forwarding).
+
+        Открывает слушающий порт ``remote_host:remote_port`` на удалённом SSH-сервере
+        и перенаправляет входящие соединения на локальный ``local_host:local_port``.
+
+        Пример:
+            >>> async with conn.forward_remote_port("127.0.0.1", 0, "127.0.0.1", 8000) as rport:
+            ...     print(f"Remote server listening on port {rport}")
+        """
+        if not self._transport.is_connected:
+            await self._transport.connect()
+
+        async with self._transport.forward_remote_port(
+            remote_host=remote_host,
+            remote_port=remote_port,
+            local_host=local_host,
+            local_port=local_port,
+        ) as bound_port:
+            yield bound_port
+
+    async def expect(
+        self,
+        command: str | Sequence[str],
+        patterns: Mapping[str, str | SecretStr] | None = None,
+        final_prompt: str | None = None,
+        timeout: float | None = None,
+        line_ending: str = "\n",
+        sensitive: bool = False,
+        term_type: str = "xterm",
+        term_size: tuple[int, int] = (80, 24),
+        **kwargs: Any,
+    ) -> Result:
+        r"""Выполнить интерактивную команду с декларативным сопоставлением regex-паттернов.
+
+        Открывает интерактивную сессию ``open_shell(init_posix=False)``, отправляет
+        команду и автоматически отвечает на интерактивные запросы по словарю
+        ``patterns`` (``{r"regex": "response\n"}``) до появления ``final_prompt``
+        или закрытия потока (EOF). Работает поверх SSH, Telnet, Serial и Local.
+
+        Args:
+            command: Команда для запуска (строка или список аргументов).
+            patterns: Словарь ``{regex_pattern: response}`` (поддерживает ``SecretStr``).
+            final_prompt: Регулярное выражение финального приглашения для завершения.
+            timeout: Общий таймаут ожидания в секундах.
+            line_ending: Перевод строки при отправке ``command`` (по умолчанию ``"\n"``).
+            sensitive: Скрывать ли вывод в ``Result`` и логах.
+            term_type: Тип терминала PTY.
+            term_size: Размер терминала PTY ``(cols, rows)``.
+            **kwargs: Дополнительные параметры для ``open_shell()``.
+
+        Returns:
+            ``Result`` с собранным выводом интерактивного диалога.
+
+        """
+        cmd_str = _format_command(command)
+        if self._dry_run:
+            self._logger.info(
+                f"[DRY-RUN] Skipping expect {cmd_str!r} on {self._config.uri_safe}"
+            )
+            return Result(
+                exit_code=0,
+                stdout="",
+                stderr="",
+                duration=0.0,
+                command=cmd_str,
+                host=self._config.host,
+                sensitive=sensitive,
+            )
+
+        session = await self.open_shell(
+            term_type=term_type,
+            term_size=term_size,
+            init_posix=False,
+            **kwargs,
+        )
+        try:
+            return await session.expect(
+                command=cmd_str,
+                patterns=patterns,
+                final_prompt=final_prompt,
+                timeout=timeout,
+                line_ending=line_ending,
+                sensitive=sensitive,
+            )
+        finally:
+            await session.close()
+
     async def open_shell(
         self,
         term_type: str = "xterm",
         term_size: tuple[int, int] = (80, 24),
+        init_posix: bool | None = None,
         **kwargs,
     ) -> ShellSession:
         """Открыть интерактивную stateful PTY shell-сессию.
 
-        Работает поверх текущего SSH-подключения (автоматически вызывает
-        ``connect()``, если соединение ещё не установлено) и позволяет
-        выполнять команды с сохранением состояния (``cd``, ``export`` и т.д.),
-        не разрывая соединение и параллельно с обычными вызовами ``run()``.
+        Работает поверх текущего подключения (SSH, Telnet, Serial, Local;
+        автоматически вызывает ``connect()``, если соединение ещё не установлено)
+        и позволяет выполнять команды с сохранением состояния (``cd``, ``export``
+        и т.д.) или интерактивные сценарии ``expect()``.
 
         Args:
             term_type: Тип терминала (по умолчанию "xterm")
             term_size: Размер терминала (cols, rows), по умолчанию (80, 24)
+            init_posix: Отправлять ли инициализацию POSIX-оболочки (``PS1='', stty -echo``).
+                По умолчанию ``True`` для SSH/Local/Telnet и ``False`` для Serial.
             **kwargs: Дополнительные параметры для транспорта
 
         Returns:
@@ -1220,7 +1644,13 @@ class Connection:
             host=self._config.host,
             default_timeout=self._config.timeout,
         )
-        await session.initialize()
+        should_init_posix = (
+            (self.transport_name != "serial") if init_posix is None else init_posix
+        )
+        if should_init_posix:
+            await session.initialize()
+        else:
+            session._initialized = True
         return session
 
     async def __aenter__(self) -> Self:

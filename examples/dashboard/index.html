@@ -613,10 +613,10 @@
               </tr>
             </thead>
             <tbody id="transports-table-body">
-              <tr><td class="mono">ssh://</td><td>run, stream, SFTP, open_shell, ProxyCommand</td><td class="num status-text status-ok">READY</td></tr>
-              <tr><td class="mono">local://</td><td>run, stream, file I/O, open_shell (PTY)</td><td class="num status-text status-ok">READY</td></tr>
-              <tr><td class="mono">telnet://</td><td>run, stream, open_shell (IAC NAWS)</td><td class="num status-text status-ok">READY</td></tr>
-              <tr><td class="mono">serial://</td><td>UART run, stream, baudrate/parity</td><td class="num status-text status-ok">READY</td></tr>
+              <tr><td class="mono">ssh://</td><td>run, stream, SFTP, sync_dir, forward_local_port, expect</td><td class="num status-text status-ok">READY</td></tr>
+              <tr><td class="mono">local://</td><td>run, stream, sync_dir, write_template, open_shell, expect</td><td class="num status-text status-ok">READY</td></tr>
+              <tr><td class="mono">telnet://</td><td>run, stream, open_shell (IAC NAWS), expect</td><td class="num status-text status-ok">READY</td></tr>
+              <tr><td class="mono">serial://</td><td>UART run, stream, open_shell, expect (baudrate/parity)</td><td class="num status-text status-ok">READY</td></tr>
               <tr><td class="mono">ipmi://</td><td>power, sensors, SEL, SOL console</td><td class="num status-text status-ok">READY</td></tr>
             </tbody>
           </table>
@@ -852,6 +852,8 @@
                 <option value="map_safe">pool.map_safe(cmd)</option>
                 <option value="map">pool.map(cmd)</option>
                 <option value="apply">pool.apply(custom_fn)</option>
+                <option value="sync_dir">pool.sync_dir(local_dir, remote_dir)</option>
+                <option value="write_template">pool.write_template(remote_path, tpl)</option>
               </select>
             </div>
             <div class="field-group" style="max-width: 120px;">

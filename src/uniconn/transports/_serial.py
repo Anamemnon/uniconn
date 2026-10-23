@@ -293,3 +293,82 @@ class SerialTransport(BaseTransport):
 
             except TimeoutError:
                 break
+
+    async def open_shell(
+        self,
+        term_type: str = "xterm",
+        term_size: tuple[int, int] = (80, 24),
+        **kwargs: Any,
+    ) -> "_SerialShellProcess":
+        """Открыть интерактивную сессию поверх Serial/UART для ``ShellSession`` и ``expect()``."""
+        if not self._connected or not self._reader or not self._writer:
+            raise ConnectionError(
+                "Serial transport is not connected. Call connect() first",
+                host=self._device,
+            )
+        return _SerialShellProcess(
+            self._reader,
+            self._writer,
+            term_size=term_size,
+        )
+
+
+class _SerialShellStdin:
+    """Адаптер текстовой записи поверх байтового StreamWriter для SerialTransport."""
+
+    def __init__(self, writer: Any) -> None:
+        self._writer = writer
+
+    def write(self, text: str | bytes) -> None:
+        data = text.encode("utf-8") if isinstance(text, str) else bytes(text)
+        self._writer.write(data)
+
+    async def drain(self) -> None:
+        drain_fn = getattr(self._writer, "drain", None)
+        if callable(drain_fn):
+            res = drain_fn()
+            if asyncio.iscoroutine(res):
+                await res
+
+
+class _SerialShellStdout:
+    """Адаптер текстового чтения поверх байтового StreamReader для SerialTransport."""
+
+    def __init__(self, reader: Any) -> None:
+        self._reader = reader
+
+    async def read(self, n: int = 4096) -> str:
+        chunk = await self._reader.read(n)
+        if isinstance(chunk, bytes):
+            return chunk.decode("utf-8", errors="replace")
+        return chunk or ""
+
+
+class _SerialShellProcess:
+    """Адаптер Serial reader/writer для работы с ``ShellSession`` и ``expect()``."""
+
+    def __init__(
+        self,
+        reader: Any,
+        writer: Any,
+        term_size: tuple[int, int] = (80, 24),
+    ) -> None:
+        self._reader = reader
+        self._writer = writer
+        self.stdin = _SerialShellStdin(writer)
+        self.stdout = _SerialShellStdout(reader)
+        self.term_size = term_size
+        self.returncode: int | None = None
+        self.terminated = False
+        self.closed = False
+
+    def change_terminal_size(self, cols: int, rows: int) -> None:
+        self.term_size = (cols, rows)
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = 0
+
+    def close(self) -> None:
+        self.closed = True
+        self.returncode = 0

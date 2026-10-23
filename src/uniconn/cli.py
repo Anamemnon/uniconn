@@ -946,6 +946,292 @@ def main():
 
         asyncio.run(_execute())
 
+    @app.command("sync")
+    def sync(
+        local_dir: str = typer.Argument(..., help="Local source directory"),
+        remote_dir: str = typer.Argument(..., help="Remote destination directory"),
+        uris: list[str] | None = typer.Argument(None, help="Target connection URIs"),  # noqa: B008
+        inventory: str | None = typer.Option(
+            None, "--inventory", "-i", help="Inventory file (.yaml/.json)"
+        ),
+        group: str | None = typer.Option(
+            None, "--group", "-g", help="Host group name in inventory"
+        ),
+        delete: bool = typer.Option(
+            False, "--delete", help="Delete remote files missing locally"
+        ),
+        exclude: list[str] | None = typer.Option(  # noqa: B008
+            None, "--exclude", "-x", help="Exclude glob pattern (repeatable)"
+        ),
+        dry_run: bool = typer.Option(
+            False, "--dry-run", "-n", help="Preview changes without modifying remote"
+        ),
+        max_concurrent: int = typer.Option(
+            10, "--max-concurrent", "-j", help="Max concurrent connections"
+        ),
+        output_format: str = typer.Option(
+            "table", "--format", "-f", help="Output format: table, json"
+        ),
+        verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+    ):
+        """Incrementally synchronize local directory to one or more hosts.
+
+        Examples:
+            uniconn sync ./app /opt/app "ssh://user@host" --exclude "*.pyc" --exclude ".git"
+            uniconn sync ./configs /etc/app -i hosts.yaml -g web --delete
+
+        """
+        host_uris = list(uris or [])
+        if not host_uris and not inventory:
+            console.print("[red]ERROR:[/red] specify at least one URI or --inventory/-i")
+            raise typer.Exit(code=1)
+
+        async def _execute():
+            import json as json_mod
+
+            logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
+            try:
+                if inventory:
+                    pool = ConnectionPool.from_file(
+                        inventory,
+                        group=group,
+                        max_concurrent=max_concurrent,
+                        logger=logger,
+                    )
+                else:
+                    pool = ConnectionPool(
+                        host_uris,
+                        max_concurrent=max_concurrent,
+                        logger=logger,
+                    )
+                results = await pool.sync_dir(
+                    local_dir=local_dir,
+                    remote_dir=remote_dir,
+                    delete=delete,
+                    exclude=list(exclude or []),
+                    dry_run=dry_run,
+                )
+
+                if output_format == "json":
+                    console.print(
+                        json_mod.dumps(
+                            {k: v.to_dict() for k, v in results.items()},
+                            indent=2,
+                        )
+                    )
+                else:
+                    table = Table(
+                        title=f"Directory Sync: {local_dir} -> {remote_dir}",
+                        box=box.ROUNDED,
+                        show_header=True,
+                        header_style="bold cyan",
+                    )
+                    table.add_column("Host", style="cyan")
+                    table.add_column("Uploaded", style="green")
+                    table.add_column("Skipped", style="dim")
+                    table.add_column("Deleted", style="yellow")
+                    table.add_column("Bytes", style="blue")
+                    for host_key, res in results.items():
+                        table.add_row(
+                            host_key,
+                            str(len(res.uploaded)),
+                            str(len(res.skipped)),
+                            str(len(res.deleted)),
+                            str(res.bytes_transferred),
+                        )
+                    console.print(table)
+            except Exception as e:
+                console.print(
+                    Panel(
+                        f"[red]ERROR:[/red] {e}",
+                        title="Sync Error",
+                        border_style="red",
+                    )
+                )
+                sys.exit(1)
+
+        asyncio.run(_execute())
+
+    @app.command("template")
+    def template(
+        template_path: str = typer.Argument(..., help="Template file path or inline string"),
+        remote_path: str = typer.Argument(..., help="Remote destination file path"),
+        uris: list[str] | None = typer.Argument(None, help="Target connection URIs"),  # noqa: B008
+        var: list[str] | None = typer.Option(  # noqa: B008
+            None, "--var", "-D", help="Template variable KEY=VALUE (repeatable)"
+        ),
+        engine: str = typer.Option(
+            "auto", "--engine", "-e", help="Template engine: auto, string, jinja2"
+        ),
+        mode: str = typer.Option(
+            "0644", "--mode", "-m", help="File permissions in octal (e.g., 0644)"
+        ),
+        inventory: str | None = typer.Option(
+            None, "--inventory", "-i", help="Inventory file (.yaml/.json)"
+        ),
+        group: str | None = typer.Option(
+            None, "--group", "-g", help="Host group name in inventory"
+        ),
+        max_concurrent: int = typer.Option(
+            10, "--max-concurrent", "-j", help="Max concurrent connections"
+        ),
+        output_format: str = typer.Option(
+            "panel", "--format", "-f", help="Output format: panel, json"
+        ),
+        verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+    ):
+        """Render configuration template and write to one or more remote hosts.
+
+        Examples:
+            uniconn template ./nginx.conf.j2 /etc/nginx/nginx.conf "ssh://user@host" -D port=8080
+
+        """
+        host_uris = list(uris or [])
+        if not host_uris and not inventory:
+            console.print("[red]ERROR:[/red] specify at least one URI or --inventory/-i")
+            raise typer.Exit(code=1)
+
+        ctx: dict[str, Any] = {}
+        for item in var or []:
+            if "=" not in item:
+                console.print(f"[red]ERROR:[/red] invalid --var {item!r}, expected KEY=VALUE")
+                raise typer.Exit(code=1)
+            k, v = item.split("=", 1)
+            ctx[k.strip()] = v
+
+        mode_int = int(mode, 8)
+        eng_val: Any = engine if engine in ("auto", "string", "jinja2") else "auto"
+
+        async def _execute():
+            import json as json_mod
+
+            logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
+            try:
+                if inventory:
+                    pool = ConnectionPool.from_file(
+                        inventory,
+                        group=group,
+                        max_concurrent=max_concurrent,
+                        logger=logger,
+                    )
+                else:
+                    pool = ConnectionPool(
+                        host_uris,
+                        max_concurrent=max_concurrent,
+                        logger=logger,
+                    )
+                rendered_map = await pool.write_template(
+                    remote_path=remote_path,
+                    template_str_or_path=template_path,
+                    context=ctx,
+                    mode=mode_int,
+                    engine=eng_val,
+                )
+
+                if output_format == "json":
+                    console.print(
+                        json_mod.dumps(
+                            {
+                                "action": "template",
+                                "remote_path": remote_path,
+                                "hosts": list(rendered_map.keys()),
+                                "rendered": next(iter(rendered_map.values()), ""),
+                                "ok": True,
+                            },
+                            indent=2,
+                        )
+                    )
+                else:
+                    console.print(
+                        f"[green]OK[/green] Rendered template to [cyan]{remote_path}[/cyan] "
+                        f"on {len(rendered_map)} host(s)"
+                    )
+            except Exception as e:
+                console.print(
+                    Panel(
+                        f"[red]ERROR:[/red] {e}",
+                        title="Template Error",
+                        border_style="red",
+                    )
+                )
+                sys.exit(1)
+
+        asyncio.run(_execute())
+
+    @app.command("expect")
+    def expect_cmd(
+        uri: str = typer.Argument(..., help="Connection URI"),
+        command: str = typer.Argument(..., help="Interactive command to run"),
+        pattern: list[str] | None = typer.Option(  # noqa: B008
+            None, "--pattern", "-p", help="Pattern rule REGEX=RESPONSE (repeatable)"
+        ),
+        final_prompt: str | None = typer.Option(
+            None, "--final-prompt", help="Regex for final prompt completion"
+        ),
+        timeout: float = typer.Option(30.0, "--timeout", "-t", help="Timeout in seconds"),
+        output_format: str = typer.Option(
+            "panel", "--format", "-f", help="Output format: panel, json, plain"
+        ),
+        verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
+    ):
+        r"""Run interactive CLI dialog using declarative regex patterns.
+
+        Examples:
+            uniconn expect "local://" "python3 ask.py" -p "Continue\?:yes\n"
+
+        """
+        patterns_dict: dict[str, str] = {}
+        for item in pattern or []:
+            sep = "=" if "=" in item else ":"
+            if sep not in item:
+                console.print(
+                    f"[red]ERROR:[/red] invalid --pattern {item!r}, expected REGEX=RESPONSE"
+                )
+                raise typer.Exit(code=1)
+            pat_str, resp_str = item.split(sep, 1)
+            resp_unescaped = resp_str.replace("\\n", "\n").replace("\\r", "\r")
+            patterns_dict[pat_str] = resp_unescaped
+
+        async def _execute():
+            import json as json_mod
+
+            logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
+            try:
+                async with Connection.from_uri(uri, logger=logger) as conn:
+                    res = await conn.expect(
+                        command=command,
+                        patterns=patterns_dict,
+                        final_prompt=final_prompt,
+                        timeout=timeout,
+                    )
+                    if output_format == "json":
+                        console.print(json_mod.dumps(res.to_dict(), indent=2))
+                    elif output_format == "plain":
+                        if res.stdout:
+                            console.print(res.stdout.rstrip())
+                    else:
+                        console.print(
+                            Panel(
+                                f"[green]OK[/green] Interactive expect completed in "
+                                f"{res.duration:.2f}s",
+                                title="Expect Result",
+                                border_style="green",
+                            )
+                        )
+                        if res.stdout:
+                            console.print(res.stdout)
+            except Exception as e:
+                console.print(
+                    Panel(
+                        f"[red]ERROR:[/red] {e}",
+                        title="Expect Error",
+                        border_style="red",
+                    )
+                )
+                sys.exit(1)
+
+        asyncio.run(_execute())
+
     app()
 
 

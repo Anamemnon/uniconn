@@ -93,3 +93,34 @@ class Result:
         """Вернуть краткое строковое представление результата."""
         return f"Result(exit_code={self.exit_code}, duration={self.duration:.2f}s)"
 
+
+@dataclass(frozen=True)
+class SyncResult:
+    """Результат инкрементальной синхронизации директории (``sync_dir``)."""
+
+    uploaded: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    deleted: list[str] = field(default_factory=list)
+    bytes_transferred: int = 0
+    duration: float = 0.0
+    dry_run: bool = False
+
+    @property
+    def total_checked(self) -> int:
+        """Общее число проверенных локальных файлов (uploaded + skipped)."""
+        return len(self.uploaded) + len(self.skipped)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Преобразовать отчёт синхронизации в сериализуемый словарь."""
+        return {
+            "uploaded": list(self.uploaded),
+            "skipped": list(self.skipped),
+            "deleted": list(self.deleted),
+            "uploaded_count": len(self.uploaded),
+            "skipped_count": len(self.skipped),
+            "deleted_count": len(self.deleted),
+            "bytes_transferred": self.bytes_transferred,
+            "duration": round(self.duration, 6),
+            "dry_run": self.dry_run,
+        }
+

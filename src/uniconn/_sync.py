@@ -10,15 +10,15 @@
 import asyncio
 import contextlib
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 from pydantic import SecretStr
 
 from ._connection import Connection, HookCallback, HookEvent, _CwdContext, _EnvContext
 from ._shell import ShellSession
-from .result import Result
+from .result import Result, SyncResult
 
 # Маркер завершения потока в очереди стриминга
 _STREAM_DONE = object()
@@ -71,6 +71,29 @@ class SyncShellSession:
         """Изменить размер окна терминала PTY (синхронно)."""
         self._sync_conn._run_coro(self._async_session.resize(cols, rows))
 
+    def expect(
+        self,
+        command: str | Sequence[str] | None = None,
+        patterns: Mapping[str, str | SecretStr] | None = None,
+        final_prompt: str | None = None,
+        timeout: float | None = None,
+        line_ending: str = "\n",
+        sensitive: bool = False,
+        allow_eof: bool = True,
+    ) -> Result:
+        """Выполнить интерактивный диалог по regex-паттернам в shell-сессии (синхронно)."""
+        return self._sync_conn._run_coro(
+            self._async_session.expect(
+                command=command,
+                patterns=patterns,
+                final_prompt=final_prompt,
+                timeout=timeout,
+                line_ending=line_ending,
+                sensitive=sensitive,
+                allow_eof=allow_eof,
+            )
+        )
+
     def close(self) -> None:
         """Закрыть shell-сессию (синхронно)."""
         if self._sync_conn._closed:
@@ -107,6 +130,22 @@ class _SyncTempDirContext:
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self._sync_conn._run_coro(
             self._async_ctx.__aexit__(exc_type, exc_val, exc_tb)
+        )
+
+
+class _SyncPortForwardContext:
+    """Синхронный контекстный менеджер проброса портов поверх ``SyncConnection``."""
+
+    def __init__(self, sync_conn: "SyncConnection", async_cm: Any) -> None:
+        self._sync_conn = sync_conn
+        self._async_cm = async_cm
+
+    def __enter__(self) -> int:
+        return int(self._sync_conn._run_coro(self._async_cm.__aenter__()))
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self._sync_conn._run_coro(
+            self._async_cm.__aexit__(exc_type, exc_val, exc_tb)
         )
 
 
@@ -316,6 +355,151 @@ class SyncConnection:
             dir=dir,
         )
 
+    def remove_file(self, remote_path: str | Path) -> None:
+        """Удалить файл на хосте (синхронно)."""
+        self._run_coro(self._async_conn.remove_file(remote_path))
+
+    def upload(
+        self,
+        local_path: str,
+        remote_path: str,
+        recurse: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        """Загрузить файл или директорию на хост (синхронно)."""
+        self._run_coro(
+            self._async_conn.upload(local_path, remote_path, recurse=recurse, **kwargs)
+        )
+
+    def download(
+        self,
+        remote_path: str,
+        local_path: str,
+        recurse: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        """Скачать файл или директорию с хоста (синхронно)."""
+        self._run_coro(
+            self._async_conn.download(remote_path, local_path, recurse=recurse, **kwargs)
+        )
+
+    def chmod(self, remote_path: str, mode: int) -> None:
+        """Изменить права доступа к файлу на хосте (синхронно)."""
+        self._run_coro(self._async_conn.chmod(remote_path, mode))
+
+    def stat(self, remote_path: str) -> dict[str, Any]:
+        """Получить метаданные файла на хосте (синхронно)."""
+        return self._run_coro(self._async_conn.stat(remote_path))
+
+    def listdir(self, remote_path: str = ".") -> list[str]:
+        """Получить список файлов в директории на хосте (синхронно)."""
+        return self._run_coro(self._async_conn.listdir(remote_path))
+
+    def write_template(
+        self,
+        remote_path: str | Path,
+        template_str_or_path: str | Path,
+        context: Mapping[str, Any] | None = None,
+        mode: int | None = 0o644,
+        encoding: str = "utf-8",
+        engine: Literal["auto", "string", "jinja2"] = "auto",
+    ) -> str:
+        """Отрендерить шаблон и записать его на хост (синхронно)."""
+        return self._run_coro(
+            self._async_conn.write_template(
+                remote_path=remote_path,
+                template_str_or_path=template_str_or_path,
+                context=context,
+                mode=mode,
+                encoding=encoding,
+                engine=engine,
+            )
+        )
+
+    def sync_dir(
+        self,
+        local_dir: str | Path,
+        remote_dir: str | Path,
+        delete: bool = False,
+        exclude: Sequence[str] | None = None,
+        mtime_tolerance: float = 1.0,
+        dry_run: bool | None = None,
+    ) -> SyncResult:
+        """Инкрементально синхронизировать директорию с хостом (синхронно)."""
+        return self._run_coro(
+            self._async_conn.sync_dir(
+                local_dir=local_dir,
+                remote_dir=remote_dir,
+                delete=delete,
+                exclude=exclude,
+                mtime_tolerance=mtime_tolerance,
+                dry_run=dry_run,
+            )
+        )
+
+    def forward_local_port(
+        self,
+        remote_host: str = "127.0.0.1",
+        remote_port: int = 80,
+        local_host: str = "127.0.0.1",
+        local_port: int = 0,
+    ) -> _SyncPortForwardContext:
+        """Синхронный контекстный менеджер прямого проброса порта (Local Port Forwarding)."""
+        return _SyncPortForwardContext(
+            self,
+            self._async_conn.forward_local_port(
+                remote_host=remote_host,
+                remote_port=remote_port,
+                local_host=local_host,
+                local_port=local_port,
+            ),
+        )
+
+    def forward_remote_port(
+        self,
+        remote_host: str = "127.0.0.1",
+        remote_port: int = 0,
+        local_host: str = "127.0.0.1",
+        local_port: int = 80,
+    ) -> _SyncPortForwardContext:
+        """Синхронный контекстный менеджер обратного проброса порта (Remote Port Forwarding)."""
+        return _SyncPortForwardContext(
+            self,
+            self._async_conn.forward_remote_port(
+                remote_host=remote_host,
+                remote_port=remote_port,
+                local_host=local_host,
+                local_port=local_port,
+            ),
+        )
+
+    def expect(
+        self,
+        command: str | Sequence[str],
+        patterns: Mapping[str, str | SecretStr] | None = None,
+        final_prompt: str | None = None,
+        timeout: float | None = None,
+        line_ending: str = "\n",
+        sensitive: bool = False,
+        term_type: str = "xterm",
+        term_size: tuple[int, int] = (80, 24),
+        **kwargs: Any,
+    ) -> Result:
+        """Выполнить интерактивную команду с сопоставлением паттернов (синхронно)."""
+        return self._run_coro(
+            self._async_conn.expect(
+                command=command,
+                patterns=patterns,
+                final_prompt=final_prompt,
+                timeout=timeout,
+                line_ending=line_ending,
+                sensitive=sensitive,
+                term_type=term_type,
+                term_size=term_size,
+                **kwargs,
+            )
+        )
+
     def run_commands(
         self,
         commands: Sequence[str | Sequence[str]],
@@ -403,6 +587,7 @@ class SyncConnection:
         self,
         term_type: str = "xterm",
         term_size: tuple[int, int] = (80, 24),
+        init_posix: bool | None = None,
         **kwargs,
     ) -> SyncShellSession:
         """Открыть интерактивную stateful PTY shell-сессию (синхронно).
@@ -410,6 +595,7 @@ class SyncConnection:
         Args:
             term_type: Тип терминала (по умолчанию "xterm")
             term_size: Размер терминала (cols, rows), по умолчанию (80, 24)
+            init_posix: Инициализировать ли POSIX-маркерный режим
             **kwargs: Дополнительные параметры для транспорта
 
         Returns:
@@ -420,6 +606,7 @@ class SyncConnection:
             self._async_conn.open_shell(
                 term_type=term_type,
                 term_size=term_size,
+                init_posix=init_posix,
                 **kwargs,
             )
         )
