@@ -1,4 +1,10 @@
 # src/uniconn/_pool.py
+"""Пул подключений для параллельного выполнения команд и групповых операций.
+
+Использует обобщённый движок параллельного распределения задач (``_fan_out_list`` /
+``_fan_out_dict``) и выделенный мультиплексор потоков ``PoolStreamMultiplexer``.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -10,8 +16,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar
 
 from ._config import ConnectionConfig
-from ._connection import Connection, _format_command
+from ._connection import Connection, format_command
 from ._facts import HostFacts
+from .pool.stream_mux import PoolStreamMultiplexer
 from .result import EnsureResult, Result, SyncResult
 
 if TYPE_CHECKING:
@@ -24,18 +31,7 @@ T = TypeVar("T")
 
 
 class ConnectionPool:
-    """Пул подключений для параллельного выполнения команд и групповых операций.
-
-    Поддерживает как одноразовые вызовы (соединение открывается на время операции),
-    так и постоянный пул через ``async with ConnectionPool(...) as pool:`` (соединения
-    удерживаются открытыми для серии команд без повторного SSH handshake).
-
-    Пример использования:
-        hosts = ["ssh://node1", "ssh://node2", "ssh://node3"]
-        async with ConnectionPool(hosts, max_concurrent=5) as pool:
-            await pool.map("apt-get update", sudo=True)
-            await pool.upload("./app.conf", "/etc/app/app.conf")
-    """
+    """Пул подключений для параллельного выполнения команд и групповых операций."""
 
     def __init__(
         self,
@@ -43,7 +39,7 @@ class ConnectionPool:
         max_concurrent: int = 10,
         retry_attempts: int = 3,
         logger: logging.Logger | None = None,
-    ):
+    ) -> None:
         self._uris = list(uris)
         self._max_concurrent = max_concurrent
         self._retry_attempts = retry_attempts
@@ -51,6 +47,7 @@ class ConnectionPool:
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._active_conns: dict[int, Connection] = {}
         self._is_entered = False
+        self._stream_mux = PoolStreamMultiplexer(self)
 
     @classmethod
     def from_file(
@@ -87,7 +84,9 @@ class ConnectionPool:
             return target.host or target.uri_safe
         return target.config.host or target.config.uri_safe
 
-    def _build_conn(self, target: PoolTarget, *, with_defaults: bool = True) -> Connection:
+    def _build_conn(
+        self, target: PoolTarget, *, with_defaults: bool = True
+    ) -> Connection:
         """Создать экземпляр Connection из элемента пула."""
         if isinstance(target, Connection):
             return target
@@ -112,7 +111,7 @@ class ConnectionPool:
         target: PoolTarget,
         *,
         with_defaults: bool = True,
-    ):
+    ) -> AsyncIterator[Connection]:
         """Получить открытое соединение (из пула или временное)."""
         if self._is_entered and idx in self._active_conns:
             yield self._active_conns[idx]
@@ -121,6 +120,66 @@ class ConnectionPool:
         conn = self._build_conn(target, with_defaults=with_defaults)
         async with conn as active:
             yield active
+
+    async def _fan_out_list(
+        self,
+        worker: Callable[[Connection], Awaitable[T]],
+        *,
+        with_defaults: bool = True,
+        log_errors: bool = False,
+    ) -> list[T]:
+        """Выполнить ``worker(conn)`` параллельно на всех хостах и вернуть список в порядке пула."""
+
+        async def _run_one(idx: int, target: PoolTarget) -> T:
+            async with self._semaphore:
+                try:
+                    async with self._use_conn(
+                        idx, target, with_defaults=with_defaults
+                    ) as conn:
+                        return await worker(conn)
+                except Exception as exc:
+                    if log_errors:
+                        self._logger.error(
+                            f"Failed to execute on {self._target_key(target)}: {exc}"
+                        )
+                    raise
+
+        try:
+            async with asyncio.TaskGroup() as tg:
+                tasks = [
+                    tg.create_task(_run_one(idx, target))
+                    for idx, target in enumerate(self._uris)
+                ]
+            return [task.result() for task in tasks]
+        except* Exception as eg:
+            if log_errors:
+                self._logger.error(
+                    f"Multiple failures: {len(eg.exceptions)} errors"
+                )
+            raise
+
+    async def _fan_out_dict(
+        self,
+        worker: Callable[[str, Connection], Awaitable[T]],
+        *,
+        with_defaults: bool = True,
+    ) -> dict[str, T]:
+        """Выполнить ``worker(key, conn)`` параллельно на всех хостах и вернуть словарь ``{key: T}``."""
+        results: dict[str, T] = {}
+
+        async def _run_one(idx: int, target: PoolTarget) -> None:
+            key = self._target_key(target)
+            async with (
+                self._semaphore,
+                self._use_conn(idx, target, with_defaults=with_defaults) as conn,
+            ):
+                results[key] = await worker(key, conn)
+
+        async with asyncio.TaskGroup() as tg:
+            for idx, target in enumerate(self._uris):
+                tg.create_task(_run_one(idx, target))
+
+        return results
 
     async def connect(self) -> None:
         """Открыть и удерживать соединения ко всем хостам пула."""
@@ -165,45 +224,17 @@ class ConnectionPool:
         raise_on_error: bool = False,
         **kwargs: Any,
     ) -> list[Result]:
-        """Выполнить команду на всех хостах пула.
-
-        Поддерживает проброс аргументов ``Connection.run()``:
-        ``sudo``, ``sudo_user``, ``sudo_password``, ``sensitive``, ``dry_run``,
-        ``input``, ``cwd``, ``env``.
-
-        Returns:
-            Список Result в том же порядке, что и хосты пула.
-
-        """
-        async def _run_single(idx: int, target: PoolTarget) -> Result:
-            async with self._semaphore:
-                try:
-                    async with self._use_conn(idx, target, with_defaults=True) as conn:
-                        return await conn.run(
-                            command,
-                            timeout=timeout,
-                            raise_on_error=raise_on_error,
-                            **kwargs,
-                        )
-                except Exception as e:
-                    self._logger.error(
-                        f"Failed to execute on {self._target_key(target)}: {e}"
-                    )
-                    raise
-
-        results: list[Result] = []
-        try:
-            async with asyncio.TaskGroup() as tg:
-                tasks = [
-                    tg.create_task(_run_single(idx, target))
-                    for idx, target in enumerate(self._uris)
-                ]
-            results = [task.result() for task in tasks]
-        except* Exception as eg:
-            self._logger.error(f"Multiple failures: {len(eg.exceptions)} errors")
-            raise
-
-        return results
+        """Выполнить команду на всех хостах пула."""
+        return await self._fan_out_list(
+            lambda conn: conn.run(
+                command,
+                timeout=timeout,
+                raise_on_error=raise_on_error,
+                **kwargs,
+            ),
+            with_defaults=True,
+            log_errors=True,
+        )
 
     async def map_with_callback(
         self,
@@ -213,13 +244,15 @@ class ConnectionPool:
         **kwargs: Any,
     ) -> None:
         """Выполнить команду с callback по мере готовности результатов."""
-        cmd_str = _format_command(command)
+        cmd_str = format_command(command)
 
         async def _run_and_notify(idx: int, target: PoolTarget) -> None:
             key = self._target_key(target)
             async with self._semaphore:
                 try:
-                    async with self._use_conn(idx, target, with_defaults=False) as conn:
+                    async with self._use_conn(
+                        idx, target, with_defaults=False
+                    ) as conn:
                         result = await conn.run(command, timeout=timeout, **kwargs)
                         callback(key, result)
                 except Exception as e:
@@ -245,26 +278,23 @@ class ConnectionPool:
         timeout: float | None = None,
         **kwargs: Any,
     ) -> dict[str, Result | Exception]:
-        """Выполнить команду, возвращая результаты или исключения без выброса.
-
-        Returns:
-            Dict[target_key, Result | Exception]
-
-        """
+        """Выполнить команду, возвращая результаты или исключения без выброса."""
         results: dict[str, Result | Exception] = {}
 
         async def _run_single(idx: int, target: PoolTarget) -> None:
             key = self._target_key(target)
             async with self._semaphore:
                 try:
-                    async with self._use_conn(idx, target, with_defaults=False) as conn:
+                    async with self._use_conn(
+                        idx, target, with_defaults=False
+                    ) as conn:
                         results[key] = await conn.run(
                             command, timeout=timeout, **kwargs
                         )
                 except Exception as e:
                     results[key] = e
 
-        with contextlib.suppress( BaseException):
+        with contextlib.suppress(BaseException):
             async with asyncio.TaskGroup() as tg:
                 for idx, target in enumerate(self._uris):
                     tg.create_task(_run_single(idx, target))
@@ -279,21 +309,14 @@ class ConnectionPool:
         **kwargs: Any,
     ) -> None:
         """Параллельно загрузить файл или директорию на все хосты пула."""
-        async def _upload_single(idx: int, target: PoolTarget) -> None:
-            async with (
-                self._semaphore,
-                self._use_conn(idx, target, with_defaults=True) as conn,
-            ):
-                await conn.upload(
-                    str(local_path),
-                    str(remote_path),
-                    recurse=recurse,
-                    **kwargs,
-                )
-
-        async with asyncio.TaskGroup() as tg:
-            for idx, target in enumerate(self._uris):
-                tg.create_task(_upload_single(idx, target))
+        await self._fan_out_list(
+            lambda conn: conn.upload(
+                str(local_path),
+                str(remote_path),
+                recurse=recurse,
+                **kwargs,
+            )
+        )
 
     async def download(
         self,
@@ -302,22 +325,11 @@ class ConnectionPool:
         recurse: bool = False,
         **kwargs: Any,
     ) -> dict[str, str]:
-        """Параллельно скачать файл или директорию со всех хостов пула.
-
-        Если в ``local_path`` присутствует шаблон ``{host}``, он заменяется
-        на имя/ключ хоста. Иначе при наличии нескольких хостов файлы
-        сохраняются в поддиректории ``<local_path>/<host>/<filename>``.
-
-        Returns:
-            Словарь ``{target_key: local_destination_path}``.
-
-        """
-        saved_paths: dict[str, str] = {}
+        """Параллельно скачать файл или директорию со всех хостов пула."""
         local_str = str(local_path)
         remote_name = Path(str(remote_path)).name
 
-        async def _download_single(idx: int, target: PoolTarget) -> None:
-            key = self._target_key(target)
+        async def _dl_worker(key: str, conn: Connection) -> str:
             safe_host = (
                 key.split("://", 1)[-1]
                 .replace("/", "_")
@@ -333,47 +345,22 @@ class ConnectionPool:
             else:
                 dest = local_str
 
-            async with (
-                self._semaphore,
-                self._use_conn(idx, target, with_defaults=True) as conn,
-            ):
-                await conn.download(
-                    str(remote_path),
-                    dest,
-                    recurse=recurse,
-                    **kwargs,
-                )
-                saved_paths[key] = dest
+            await conn.download(
+                str(remote_path),
+                dest,
+                recurse=recurse,
+                **kwargs,
+            )
+            return dest
 
-        async with asyncio.TaskGroup() as tg:
-            for idx, target in enumerate(self._uris):
-                tg.create_task(_download_single(idx, target))
-
-        return saved_paths
+        return await self._fan_out_dict(_dl_worker)
 
     async def apply(
         self,
         func: Callable[[Connection], Awaitable[T]],
     ) -> list[T]:
-        """Параллельно выполнить произвольную async-функцию ``func(conn)`` на всех хостах пула.
-
-        Returns:
-            Список результатов ``func(conn)`` в порядке хостов пула.
-
-        """
-        async def _apply_single(idx: int, target: PoolTarget) -> T:
-            async with (
-                self._semaphore,
-                self._use_conn(idx, target, with_defaults=True) as conn,
-            ):
-                return await func(conn)
-
-        async with asyncio.TaskGroup() as tg:
-            tasks = [
-                tg.create_task(_apply_single(idx, target))
-                for idx, target in enumerate(self._uris)
-            ]
-        return [task.result() for task in tasks]
+        """Параллельно выполнить произвольную async-функцию ``func(conn)`` на всех хостах пула."""
+        return await self._fan_out_list(func)
 
     async def sync_dir(
         self,
@@ -384,34 +371,17 @@ class ConnectionPool:
         mtime_tolerance: float = 1.0,
         dry_run: bool | None = None,
     ) -> dict[str, SyncResult]:
-        """Параллельно синхронизировать директорию на всех хостах пула.
-
-        Returns:
-            Словарь ``{target_key: SyncResult}``.
-
-        """
-        results: dict[str, SyncResult] = {}
-
-        async def _sync_single(idx: int, target: PoolTarget) -> None:
-            key = self._target_key(target)
-            async with (
-                self._semaphore,
-                self._use_conn(idx, target, with_defaults=True) as conn,
-            ):
-                results[key] = await conn.sync_dir(
-                    local_dir=local_dir,
-                    remote_dir=remote_dir,
-                    delete=delete,
-                    exclude=exclude,
-                    mtime_tolerance=mtime_tolerance,
-                    dry_run=dry_run,
-                )
-
-        async with asyncio.TaskGroup() as tg:
-            for idx, target in enumerate(self._uris):
-                tg.create_task(_sync_single(idx, target))
-
-        return results
+        """Параллельно синхронизировать директорию на всех хостах пула."""
+        return await self._fan_out_dict(
+            lambda _key, conn: conn.sync_dir(
+                local_dir=local_dir,
+                remote_dir=remote_dir,
+                delete=delete,
+                exclude=exclude,
+                mtime_tolerance=mtime_tolerance,
+                dry_run=dry_run,
+            )
+        )
 
     async def write_template(
         self,
@@ -422,99 +392,50 @@ class ConnectionPool:
         encoding: str = "utf-8",
         engine: Literal["auto", "string", "jinja2"] = "auto",
     ) -> dict[str, str]:
-        """Параллельно отрендерить и записать шаблон конфигурации на всех хостах пула.
-
-        Returns:
-            Словарь ``{target_key: rendered_content}``.
-
-        """
-        results: dict[str, str] = {}
-
-        async def _write_single(idx: int, target: PoolTarget) -> None:
-            key = self._target_key(target)
-            async with (
-                self._semaphore,
-                self._use_conn(idx, target, with_defaults=True) as conn,
-            ):
-                results[key] = await conn.write_template(
-                    remote_path=remote_path,
-                    template_str_or_path=template_str_or_path,
-                    context=context,
-                    mode=mode,
-                    encoding=encoding,
-                    engine=engine,
-                )
-
-        async with asyncio.TaskGroup() as tg:
-            for idx, target in enumerate(self._uris):
-                tg.create_task(_write_single(idx, target))
-
-        return results
+        """Параллельно отрендерить и записать шаблон конфигурации на всех хостах пула."""
+        return await self._fan_out_dict(
+            lambda _key, conn: conn.write_template(
+                remote_path=remote_path,
+                template_str_or_path=template_str_or_path,
+                context=context,
+                mode=mode,
+                encoding=encoding,
+                engine=engine,
+            )
+        )
 
     async def gather_facts(
         self,
         refresh: bool = False,
         timeout: float | None = None,
     ) -> dict[str, HostFacts]:
-        """Параллельно собрать системные факты (``HostFacts``) со всех хостов пула.
-
-        Returns:
-            Словарь ``{target_key: HostFacts}``.
-
-        """
-        results: dict[str, HostFacts] = {}
-
-        async def _facts_single(idx: int, target: PoolTarget) -> None:
-            key = self._target_key(target)
-            async with (
-                self._semaphore,
-                self._use_conn(idx, target, with_defaults=True) as conn,
-            ):
-                results[key] = await conn.gather_facts(refresh=refresh, timeout=timeout)
-
-        async with asyncio.TaskGroup() as tg:
-            for idx, target in enumerate(self._uris):
-                tg.create_task(_facts_single(idx, target))
-
-        return results
+        """Параллельно собрать системные факты (``HostFacts``) со всех хостов пула."""
+        return await self._fan_out_dict(
+            lambda _key, conn: conn.gather_facts(refresh=refresh, timeout=timeout)
+        )
 
     async def ensure_package(
         self,
         package: str | Sequence[str],
         state: Literal["present", "absent"] = "present",
-        manager: Literal["auto", "apt", "dnf", "yum", "apk", "pacman", "zypper"] = "auto",
+        manager: Literal[
+            "auto", "apt", "dnf", "yum", "apk", "pacman", "zypper"
+        ] = "auto",
         update_cache: bool = False,
         sudo: bool = True,
         dry_run: bool | None = None,
     ) -> dict[str, EnsureResult]:
-        """Параллельно проверить/установить/удалить пакет(ы) на всех хостах пула.
-
-        Returns:
-            Словарь ``{target_key: EnsureResult}``.
-
-        """
-        results: dict[str, EnsureResult] = {}
-
-        async def _pkg_single(idx: int, target: PoolTarget) -> None:
-            key = self._target_key(target)
-            async with (
-                self._semaphore,
-                self._use_conn(idx, target, with_defaults=True) as conn,
-            ):
-                results[key] = await conn.ensure_package(
-                    package=package,
-                    state=state,
-                    manager=manager,
-                    update_cache=update_cache,
-                    sudo=sudo,
-                    dry_run=dry_run,
-                )
-
-        async with asyncio.TaskGroup() as tg:
-            for idx, target in enumerate(self._uris):
-                tg.create_task(_pkg_single(idx, target))
-
-        return results
+        """Параллельно проверить/установить/удалить пакет(ы) на всех хостах пула."""
+        return await self._fan_out_dict(
+            lambda _key, conn: conn.ensure_package(
+                package=package,
+                state=state,
+                manager=manager,
+                update_cache=update_cache,
+                sudo=sudo,
+                dry_run=dry_run,
+            )
+        )
 
     async def ensure_service(
         self,
@@ -524,33 +445,16 @@ class ConnectionPool:
         sudo: bool = True,
         dry_run: bool | None = None,
     ) -> dict[str, EnsureResult]:
-        """Параллельно привести состояние системного сервиса на всех хостах пула.
-
-        Returns:
-            Словарь ``{target_key: EnsureResult}``.
-
-        """
-        results: dict[str, EnsureResult] = {}
-
-        async def _svc_single(idx: int, target: PoolTarget) -> None:
-            key = self._target_key(target)
-            async with (
-                self._semaphore,
-                self._use_conn(idx, target, with_defaults=True) as conn,
-            ):
-                results[key] = await conn.ensure_service(
-                    service=service,
-                    state=state,
-                    enabled=enabled,
-                    sudo=sudo,
-                    dry_run=dry_run,
-                )
-
-        async with asyncio.TaskGroup() as tg:
-            for idx, target in enumerate(self._uris):
-                tg.create_task(_svc_single(idx, target))
-
-        return results
+        """Параллельно привести состояние системного сервиса на всех хостах пула."""
+        return await self._fan_out_dict(
+            lambda _key, conn: conn.ensure_service(
+                service=service,
+                state=state,
+                enabled=enabled,
+                sudo=sudo,
+                dry_run=dry_run,
+            )
+        )
 
     async def ensure_line(
         self,
@@ -564,106 +468,32 @@ class ConnectionPool:
         encoding: str = "utf-8",
         dry_run: bool | None = None,
     ) -> dict[str, EnsureResult]:
-        """Параллельно обеспечить наличие или отсутствие строки в файле на всех хостах пула.
+        """Параллельно обеспечить наличие или отсутствие строки в файле на всех хостах пула."""
+        return await self._fan_out_dict(
+            lambda _key, conn: conn.ensure_line(
+                remote_path=remote_path,
+                line=line,
+                state=state,
+                regex=regex,
+                create=create,
+                backup=backup,
+                mode=mode,
+                encoding=encoding,
+                dry_run=dry_run,
+            )
+        )
 
-        Returns:
-            Словарь ``{target_key: EnsureResult}``.
-
-        """
-        results: dict[str, EnsureResult] = {}
-
-        async def _line_single(idx: int, target: PoolTarget) -> None:
-            key = self._target_key(target)
-            async with (
-                self._semaphore,
-                self._use_conn(idx, target, with_defaults=True) as conn,
-            ):
-                results[key] = await conn.ensure_line(
-                    remote_path=remote_path,
-                    line=line,
-                    state=state,
-                    regex=regex,
-                    create=create,
-                    backup=backup,
-                    mode=mode,
-                    encoding=encoding,
-                    dry_run=dry_run,
-                )
-
-        async with asyncio.TaskGroup() as tg:
-            for idx, target in enumerate(self._uris):
-                tg.create_task(_line_single(idx, target))
-
-        return results
-
-    async def stream(
+    def stream(
         self,
         command: str | Sequence[str],
         timeout: float | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[tuple[str, str]]:
-        """Мультиплексировать потоковый вывод команды со всех хостов пула в реальном времени.
-
-        Запускает ``conn.stream(command)`` конкурентно на всех хостах пула и
-        передаёт пары ``(host_key, line)`` через общую ``asyncio.Queue`` по мере
-        поступления строк. При досрочном выходе из ``async for`` (``break`` или
-        исключение) гарантированно отменяет и дожидается завершения фоновых задач.
-
-        Yields:
-            Кортежи ``(target_key, line)``.
-
-        """
-        if not self._uris:
-            return
-
-        done_sentinel = object()
-        queue: asyncio.Queue[tuple[str, str] | BaseException | object] = asyncio.Queue()
-
-        async def _pump_host(idx: int, target: PoolTarget) -> None:
-            key = self._target_key(target)
-            try:
-                async with (
-                    self._semaphore,
-                    self._use_conn(idx, target, with_defaults=True) as conn,
-                ):
-                    async for line in conn.stream(command, timeout=timeout, **kwargs):
-                        await queue.put((key, line))
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                await queue.put(exc)
-            finally:
-                await queue.put(done_sentinel)
-
-        tasks = [
-            asyncio.create_task(_pump_host(idx, target))
-            for idx, target in enumerate(self._uris)
-        ]
-        finished_hosts = 0
-        total_hosts = len(tasks)
-
-        try:
-            while finished_hosts < total_hosts:
-                item = await queue.get()
-                if item is done_sentinel:
-                    finished_hosts += 1
-                    continue
-                if isinstance(item, BaseException):
-                    raise item
-                if isinstance(item, tuple):
-                    yield item
-        finally:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+        """Мультиплексировать потоковый вывод команды со всех хостов пула в реальном времени."""
+        return self._stream_mux.stream(command, timeout=timeout, **kwargs)
 
     def to_sync(self) -> SyncConnectionPool:
         """Конвертировать пул в синхронную обёртку ``SyncConnectionPool``."""
         from ._sync import SyncConnectionPool
 
         return SyncConnectionPool(self)
-
-
-

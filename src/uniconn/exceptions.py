@@ -91,3 +91,14 @@ class ScreenPoolFullError(ScreenError):
     """Достигнут лимит одновременных сессий в пуле (max_screens)."""
 
     pass
+
+
+class CapabilityNotSupportedError(UniconnError, NotImplementedError):
+    """Транспорт не поддерживает запрошенную возможность (SFTP, PTY, Tunnel и т.д.).
+
+    Наследуется одновременно от ``UniconnError`` и ``NotImplementedError`` для
+    совместимости со стандартными проверками возможностей.
+    """
+
+    pass
+

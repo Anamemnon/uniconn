@@ -9,9 +9,13 @@ description: Обязательные правила запуска тестов
 
 ## 1. Золотые правила тестирования
 
-1. **Никаких изменений без запуска тестов**: После любого изменения в `src/uniconn/` или `tests/` агент **обязан** выполнить полный прогон unit-тестов:
+1. **Никаких изменений без запуска тестов**: После любого изменения в `src/uniconn/` или `tests/` агент **обязан** выполнить полный прогон unit-тестов с кратким выводом для экономии контекста:
    ```bash
-   uv run pytest -m "not integration"
+   uv run pytest -m "not integration" -q --tb=short | tail -n 5
+   ```
+   При обнаружении ошибок для детального просмотра упавших тестов запускайте:
+   ```bash
+   uv run pytest -m "not integration" -q --tb=short --lf | tail -n 30
    ```
 2. **Каждая новая фича или багфикс требует новых тестов**:
    - Размещайте новые тесты в соответствующем тематическом пакете внутри `tests/unit/`:
@@ -19,7 +23,7 @@ description: Обязательные правила запуска тестов
      - `tests/unit/transports/` — `SSHTransport`, `TelnetTransport`, `SerialTransport`, `LocalTransport`, `IPMITransport`, SFTP.
      - `tests/unit/pools/` — `ConnectionPool`, `SSHSessionPool`.
      - `tests/unit/screen/` — `ScreenPool`, `ScreenSession`, `LogPipeline`, cleanup.
-     - `tests/unit/cli/` — команды CLI (`typer` + `rich`).
+     - `tests/unit/cli/` — команды CLI (`cyclopts` + `rich`).
      - `tests/unit/releases/` — сквозные тесты функциональности конкретных релизов (`test_v0*_features.py`).
    - При добавлении метода/контекстного менеджера в `Connection` необходимо добавить unit-тесты как для асинхронного `Connection`, так и для синхронного `SyncConnection`.
    - Покрывайте не только «счастливый путь» (happy path), но и граничные случаи: ошибки сети/таймауты, `dry_run=True`, `sensitive=True` (проверка отсутствия утечки секретов в `repr`, `to_dict()` и логах).
@@ -41,8 +45,8 @@ description: Обязательные правила запуска тестов
 Перед тем как сообщить пользователю о готовности задачи, выполните последовательно:
 
 ```bash
-# 1. Прогон всех unit-тестов (410+ тестов, 0 failed, 0 RuntimeWarning)
-uv run pytest -m "not integration"
+# 1. Прогон всех unit-тестов с выводом последних строк для экономии контекста (0 failed, 0 RuntimeWarning)
+uv run pytest -m "not integration" -q --tb=short | tail -n 5
 
 # 2. Проверка стиля и докстрингов (лимит длины строки — 120 символов)
 uv run ruff check src/

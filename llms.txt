@@ -5,18 +5,23 @@
 ## Quick Facts & Commands
 - Package manager: `uv`
 - Install all dependencies: `uv sync`
-- Run unit tests: `uv run pytest -m "not integration"`
+- Run unit tests (context-saving output): `uv run pytest -m "not integration" -q --tb=short | tail -n 5`
+- Re-run failed unit tests with traceback: `uv run pytest -m "not integration" -q --tb=short --lf | tail -n 30`
 - Lint & typecheck: `uv run ruff check src/` and `uv run pyright`
 - Preview dashboard server: `python3 main.py --serve` (listens on `0.0.0.0:3000`)
 
 ## Public Exports (`from uniconn import ...`)
-- **Core**: `Connection`, `SyncConnection`, `ConnectionConfig`, `Result`, `SyncResult`, `EnsureResult`, `HostFacts`, `DiskInfo`, `NetworkInterface`, `render_template`, `quote`
-- **Pools**: `ConnectionPool`, `SyncConnectionPool`, `SSHSessionPool`
-- **Interactive PTY Shell**: `ShellSession`, `SyncShellSession`
+- **Core & Facade**: `Connection`, `SyncConnection`, `ConnectionConfig`, `Result`, `SyncResult`, `EnsureResult`, `HostFacts`, `DiskInfo`, `NetworkInterface`, `render_template`, `quote`
+- **Domain Services (`uniconn.services`)**: `FileOperationsService`, `DirectorySynchronizer`, `TemplateEngine`, `StateManagementService`, `FactCollector`, `TunnelService`, `SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`
+- **Strategies (`uniconn.services.provisioning`)**: `PackageManagerStrategy`, `AptStrategy`, `ApkStrategy`, `DnfYumStrategy`, `PacmanStrategy`, `ZypperStrategy`, `ServiceManagerStrategy`, `SystemdStrategy`, `OpenRCStrategy`, `SysVStrategy`
+- **Middleware Pipeline & Context (`uniconn.core`)**: `CommandRequest`, `CommandPipeline`, `CommandMiddleware`, `ContextMiddleware`, `SudoMiddleware`, `HookMiddleware`, `DryRunMiddleware`, `ObservabilityMiddleware`, `RetryMiddleware`, `ExecutionContext`, `EventLoopPortal`, `SyncContextBridge`, `InventoryLoader`
+- **Transport Protocols & Helpers (`uniconn.transports`)**: `BaseTransport`, `CommandTransport`, `FileCapableTransport`, `ShellCapableTransport`, `TunnelCapableTransport`, `require_capability`, `OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`
+- **Pools**: `ConnectionPool`, `SyncConnectionPool`, `PoolStreamMultiplexer`, `SSHSessionPool`
+- **Interactive PTY Shell (`uniconn.shell`)**: `ShellSession`, `SyncShellSession`, `PosixMarkerProtocol`, `ExpectStateMachine`
 - **Background GNU Screen**: `ScreenPool`, `ScreenSession`, `ScreenResult`, `LogConfig`
 - **Hooks (`uniconn.hooks`)**: `audit_log_hook`, `allowlist_hook`, `blocklist_hook`, `MetricsCollector`, `metrics_collector_hook`, `structured_log_hook`
 - **Logging (`structlog` + `stdlib`)**: `configure_logging`, `get_struct_logger`, `log_context`, `bind_log_context`, `unbind_log_context`, `clear_log_context`, `get_log_context`, `get_logger`, `setup_file_logging`, `SecretMaskingFilter`
-- **Exceptions**: `UniconnError`, `ConnectionError`, `AuthenticationError`, `ExecutionError`, `TimeoutError`, `TransportNotFoundError`, `BMCCapabilityError`, `ScreenError`, `ScreenNotFoundError`, `ScreenSessionExistsError`, `ScreenPoolFullError`
+- **Exceptions**: `UniconnError`, `ConnectionError`, `AuthenticationError`, `ExecutionError`, `TimeoutError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `ScreenError`, `ScreenNotFoundError`, `ScreenSessionExistsError`, `ScreenPoolFullError`
 
 ## URI Schemes
 - `ssh://[user[:password]@]host[:22][?key_file=...&known_hosts=strict&keepalive=30&ssh_config=true&use_agent=true&proxy=jump1,jump2&proxy_command=...]`

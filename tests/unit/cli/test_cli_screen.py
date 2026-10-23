@@ -5,24 +5,16 @@ from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import typer
-from typer.testing import CliRunner
 
 from uniconn import cli
+from uniconn.cli import CliRunner
 from uniconn.result import Result
 
 
 @pytest.fixture
-def cli_app(monkeypatch):
-    """Собрать typer app из cli.main(), не запуская его."""
-    captured = {}
-
-    def fake_call(self, *args, **kwargs):
-        captured["app"] = self
-
-    monkeypatch.setattr(typer.Typer, "__call__", fake_call)
-    cli.main()
-    return captured["app"]
+def cli_app():
+    """Собрать cyclopts.App из cli.create_cli_app()."""
+    return cli.create_cli_app()
 
 
 @pytest.fixture

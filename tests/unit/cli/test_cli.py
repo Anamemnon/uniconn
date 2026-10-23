@@ -225,22 +225,15 @@ class TestCLIBMC:
 class TestCLIShell:
     """Тесты интерактивной команды shell через ShellSession."""
 
-    def test_cli_shell_uses_shell_session_execute(self, monkeypatch):
+    def test_cli_shell_uses_shell_session_execute(self):
         """Команда `uniconn shell` открывает ShellSession и вызывает execute()."""
-        import typer
-        from typer.testing import CliRunner
         from unittest.mock import MagicMock
+
         from uniconn import cli
+        from uniconn.cli import CliRunner
         from uniconn.result import Result
 
-        captured = {}
-        monkeypatch.setattr(
-            typer.Typer,
-            "__call__",
-            lambda self, *a, **kw: captured.setdefault("app", self),
-        )
-        cli.main()
-        app = captured["app"]
+        app = cli.create_cli_app()
 
         session = MagicMock()
         session.execute = AsyncMock(
@@ -276,4 +269,19 @@ class TestCLIShell:
         assert session.execute.await_args_list[0].args[0] == "cd /tmp"
         assert session.execute.await_args_list[1].args[0] == "pwd"
         assert "/tmp" in res.output
+
+    def test_cli_global_log_options_and_version(self):
+        """Глобальные флаги --log-level и --log-format работают через meta-приложение Cyclopts."""
+        from uniconn import cli
+        from uniconn.cli import CliRunner
+
+        app = cli.create_cli_app()
+        runner = CliRunner()
+        res = runner.invoke(
+            app,
+            ["--log-level", "DEBUG", "--log-format", "json", "version"],
+        )
+        assert res.exit_code == 0, res.output
+        assert "uniconn" in res.output
+
 

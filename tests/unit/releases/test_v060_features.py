@@ -9,8 +9,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-import typer
-from typer.testing import CliRunner
+
+from uniconn.cli import CliRunner
 
 from uniconn import (
     Connection,
@@ -356,15 +356,9 @@ class TestSSHSessionPoolHealthCheck:
         conn.run.assert_awaited_once()
 
 
-def _get_cli_app(monkeypatch) -> typer.Typer:
-    captured: dict[str, typer.Typer] = {}
-    monkeypatch.setattr(
-        typer.Typer,
-        "__call__",
-        lambda self, *a, **kw: captured.setdefault("app", self),
-    )
-    cli.main()
-    return captured["app"]
+def _get_cli_app(monkeypatch=None):
+    _ = monkeypatch
+    return cli.create_cli_app()
 
 
 class TestCLIV060:

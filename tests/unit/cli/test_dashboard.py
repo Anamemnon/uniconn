@@ -23,7 +23,7 @@ class TestDashboardStatusAndShell:
     def test_run_demo_status_returns_full_metadata(self) -> None:
         """Проверить метаданные /api/status, включая список транспортов и тестовых пакетов."""
         status = _run_demo_status()
-        assert status["version"] == "0.6.0"
+        assert status["version"] == "0.8.0"
         assert "ssh" in status["transports"]
         assert "local" in status["transports"]
         assert "test_suites" in status

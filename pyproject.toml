@@ -1,6 +1,6 @@
 [project]
 name = "uniconn"
-version = "0.6.0"
+version = "0.8.0"
 description = "Universal library for remote command execution"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -20,37 +20,38 @@ classifiers = [
 
 # Dependencies (includes all built-in transports and CLI out of the box)
 dependencies = [
-    "pydantic>=2.0",           # Config validation, SecretStr
-    "tenacity>=8.0",           # Retry logic (async support)
-    "asyncssh>=2.13",          # SSH transport & SFTP
-    "telnetlib3>=2.0",         # Telnet transport
+    "pydantic>=2.14",          # Config validation, SecretStr
+    "tenacity>=9.2",           # Retry logic (async support)
+    "asyncssh>=2.24",          # SSH transport & SFTP
+    "telnetlib3>=5.0",         # Telnet transport
     "pyserial-asyncio>=0.6",   # Serial/UART transport
-    "pyghmi>=1.5",             # BMC/IPMI transport
-    "typer>=0.9",              # CLI interface
-    "rich>=13.0",              # CLI formatting
+    "pyghmi>=1.6",             # BMC/IPMI transport
+    "cyclopts>=5.0",           # Type-driven CLI interface
+    "rich>=15.0",              # CLI formatting
     "pyyaml>=6.0",             # YAML support for from_file() and ScreenPool
-    "structlog>=23.1",         # Structured logging (JSON / Console / ContextVars)
+    "jinja2>=3.1",             # Template rendering engine
+    "structlog>=26.1",         # Structured logging (JSON / Console / ContextVars)
 ]
 
 # Optional dependencies (extras kept for backward compatibility)
 [project.optional-dependencies]
-ssh = ["asyncssh>=2.13"]
-telnet = ["telnetlib3>=2.0"]
+ssh = ["asyncssh>=2.24"]
+telnet = ["telnetlib3>=5.0"]
 serial = ["pyserial-asyncio>=0.6"]
-bmc = ["pyghmi>=1.5"]
-cli = ["typer>=0.9", "rich>=13.0"]
+bmc = ["pyghmi>=1.6"]
+cli = ["cyclopts>=5.0", "rich>=15.0"]
 dev = [
-    "pytest>=7.4",
-    "pytest-asyncio>=0.21",
-    "pytest-mock>=3.12",
-    "pytest-cov>=4.1",
-    "pyright>=1.1",
-    "ruff>=0.1",
-    "sphinx>=7.0",
-    "sphinx-rtd-theme>=1.3",
-    "mkdocs>=1.5",
-    "mkdocstrings[python]>=0.23",
-    "testcontainers>=3.7",     # Docker containers for integration tests
+    "pytest>=8.0",
+    "pytest-asyncio>=1.0",
+    "pytest-mock>=3.14",
+    "pytest-cov>=6.0",
+    "pyright>=1.1.400",
+    "ruff>=0.15",
+    "sphinx>=8.0",
+    "sphinx-rtd-theme>=3.0",
+    "mkdocs>=1.6",
+    "mkdocstrings[python]>=1.0",
+    "testcontainers>=4.10",    # Docker containers for integration tests
 ]
 
 # Entry points for plugin architecture

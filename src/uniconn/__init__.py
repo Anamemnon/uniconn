@@ -1,38 +1,9 @@
 # src/uniconn/__init__.py
 """uniconn - Универсальная библиотека для выполнения команд на удалённых хостах.
 
-Эта библиотека предоставляет единый интерфейс для подключения и выполнения
-команд через различные транспорты: SSH, Telnet, Serial, IPMI и локальный.
-
-Основные компоненты:
-    - Connection: Главный класс для работы с удалёнными хостами (async)
-    - SyncConnection: Синхронная обёртка над Connection
-    - ConnectionPool: Пул подключений для параллельного выполнения
-    - ConnectionConfig: Конфигурация подключения (Pydantic модель)
-    - Result: Результат выполнения команды
-
-Пример использования:
-    >>> from uniconn import Connection
-    >>>
-    >>> # Асинхронное использование
-    >>> async with Connection.from_uri("ssh://user:pass@host") as conn:
-    ...     result = await conn.run("uptime")
-    ...     print(result.stdout)
-
-    >>> # Синхронное использование
-    >>> with Connection.from_uri("ssh://user:pass@host").to_sync() as conn:
-    ...     result = conn.run("uptime")
-    ...     print(result.stdout)
-
-    >>> # Параллельное выполнение
-    >>> from uniconn import ConnectionPool
-    >>> pool = ConnectionPool(["ssh://host1", "ssh://host2"])
-    >>> results = await pool.map("uptime")
-
-    >>> # Пул SSH-сессий для одного хоста (мультиплексинг каналов)
-    >>> from uniconn import SSHSessionPool
-    >>> pool = SSHSessionPool("ssh://host", max_sessions_per_conn=6)
-    >>> results = await pool.map(["lshw", "dmidecode", "nvme list"])
+Предоставляет единый фасад ``Connection`` с конвейером ``CommandPipeline``
+и модульными доменными сервисами (``conn.files``, ``conn.state``, ``conn.tunnels``)
+для работы поверх SSH, Telnet, Serial, IPMI и Local транспортов.
 """
 
 from importlib.metadata import PackageNotFoundError, version
@@ -55,12 +26,35 @@ from ._logging import (
 )
 from ._pool import ConnectionPool
 from ._session_pool import SSHSessionPool
-from ._shell import ShellSession
-from ._sync import SyncConnection, SyncConnectionPool, SyncShellSession
+from ._shell import ExpectStateMachine, PosixMarkerProtocol, ShellSession
+from ._sync import (
+    SyncConnection,
+    SyncConnectionPool,
+    SyncFileOperationsService,
+    SyncShellSession,
+    SyncStateManagementService,
+    SyncTunnelService,
+)
 from .background import LogConfig, ScreenPool, ScreenResult, ScreenSession
+from .config import InventoryLoader
+from .core import (
+    CommandMiddleware,
+    CommandPipeline,
+    CommandRequest,
+    ContextMiddleware,
+    DryRunMiddleware,
+    EventLoopPortal,
+    ExecutionContext,
+    HookMiddleware,
+    ObservabilityMiddleware,
+    RetryMiddleware,
+    SudoMiddleware,
+    SyncContextBridge,
+)
 from .exceptions import (
     AuthenticationError,
     BMCCapabilityError,
+    CapabilityNotSupportedError,
     ConnectionError,
     ExecutionError,
     ScreenError,
@@ -79,22 +73,54 @@ from .hooks import (
     metrics_collector_hook,
     structured_log_hook,
 )
+from .pool.stream_mux import PoolStreamMultiplexer
 from .result import EnsureResult, Result, SyncResult
+from .services import (
+    ApkStrategy,
+    AptStrategy,
+    DirectorySynchronizer,
+    DnfYumStrategy,
+    FactCollector,
+    FileOperationsService,
+    OpenRCStrategy,
+    PackageManagerStrategy,
+    PacmanStrategy,
+    ServiceManagerStrategy,
+    StateManagementService,
+    SystemdStrategy,
+    SysVStrategy,
+    TemplateEngine,
+    TunnelService,
+    ZypperStrategy,
+)
+from .transports.base import (
+    BaseTransport,
+    CommandTransport,
+    FileCapableTransport,
+    ShellCapableTransport,
+    TunnelCapableTransport,
+    require_capability,
+    supports_capability,
+)
+from .transports.ssh import OpenSSHConfigParser, SFTPClientAdapter, SSHJumpChainManager
 
 try:
     __version__ = version("uniconn")
 except PackageNotFoundError:  # пакет не установлен (запуск из исходников)
     __version__ = "0.0.0+unknown"
+
 __all__ = [
-    # Основные классы
+    # Основные классы и фасады
     "Connection",
     "SyncConnection",
     "ShellSession",
     "SyncShellSession",
     "ConnectionPool",
     "SyncConnectionPool",
+    "PoolStreamMultiplexer",
     "SSHSessionPool",
     "ConnectionConfig",
+    "InventoryLoader",
     "Result",
     "SyncResult",
     "EnsureResult",
@@ -103,7 +129,53 @@ __all__ = [
     "NetworkInterface",
     "render_template",
     "quote",
-    # Готовые хуки аудита, безопасности и метрик (v0.6.0)
+    # Ядро, конвейер команд и портал синхронизации
+    "CommandPipeline",
+    "CommandRequest",
+    "CommandMiddleware",
+    "ContextMiddleware",
+    "SudoMiddleware",
+    "HookMiddleware",
+    "DryRunMiddleware",
+    "ObservabilityMiddleware",
+    "RetryMiddleware",
+    "ExecutionContext",
+    "EventLoopPortal",
+    "SyncContextBridge",
+    "PosixMarkerProtocol",
+    "ExpectStateMachine",
+    # Доменные сервисы и стратегии
+    "FileOperationsService",
+    "SyncFileOperationsService",
+    "DirectorySynchronizer",
+    "StateManagementService",
+    "SyncStateManagementService",
+    "PackageManagerStrategy",
+    "AptStrategy",
+    "ApkStrategy",
+    "DnfYumStrategy",
+    "PacmanStrategy",
+    "ZypperStrategy",
+    "ServiceManagerStrategy",
+    "SystemdStrategy",
+    "OpenRCStrategy",
+    "SysVStrategy",
+    "TunnelService",
+    "SyncTunnelService",
+    "FactCollector",
+    "TemplateEngine",
+    # Протоколы возможностей транспортов (ISP) и SSH-компоненты
+    "BaseTransport",
+    "CommandTransport",
+    "FileCapableTransport",
+    "ShellCapableTransport",
+    "TunnelCapableTransport",
+    "require_capability",
+    "supports_capability",
+    "OpenSSHConfigParser",
+    "SSHJumpChainManager",
+    "SFTPClientAdapter",
+    # Готовые хуки аудита, безопасности и метрик
     "audit_log_hook",
     "allowlist_hook",
     "blocklist_hook",
@@ -122,6 +194,7 @@ __all__ = [
     "ExecutionError",
     "TimeoutError",
     "TransportNotFoundError",
+    "CapabilityNotSupportedError",
     "BMCCapabilityError",
     "ScreenError",
     "ScreenNotFoundError",

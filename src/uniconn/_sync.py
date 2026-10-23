@@ -1,49 +1,40 @@
 # src/uniconn/_sync.py
-"""Синхронная обёртка над async Connection.
+"""Синхронные обёртки над Connection, ConnectionPool и ShellSession.
 
-Использует выделенный event loop в отдельном daemon-потоке.
-Корректно управляет жизненным циклом loop — создаёт один раз при первом
-вызове и закрывает при close(). Daemon-поток не блокирует завершение
-процесса, даже если close() не был вызван.
+Все синхронные классы разделяют единый инфраструктурный портал ``EventLoopPortal``
+(``uniconn.core.bridge``), который управляет выделенным event loop в daemon-потоке.
+Также предоставляет синхронные отражения доменных сервисов:
+- ``sync_conn.files`` (``SyncFileOperationsService``)
+- ``sync_conn.state`` (``SyncStateManagementService``)
+- ``sync_conn.tunnels`` (``SyncTunnelService``)
 """
 
-import asyncio
-import contextlib
+from __future__ import annotations
+
 import logging
-import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import SecretStr
 
-from ._connection import Connection, HookCallback, HookEvent, _CwdContext, _EnvContext
+from ._connection import Connection
 from ._facts import HostFacts
 from ._shell import ShellSession
+from .core.bridge import EventLoopPortal, SyncContextBridge
+from .core.context import CwdContext, EnvContext
+from .core.pipeline import HookCallback, HookEvent
 from .result import EnsureResult, Result, SyncResult
+from .services.provisioning import PkgManagerName, ServiceState
 
 if TYPE_CHECKING:
     from ._pool import ConnectionPool
 
-# Маркер завершения потока в очереди стриминга
-_STREAM_DONE = object()
-
 
 class SyncShellSession:
-    """Синхронная обёртка над async ShellSession.
+    """Синхронная обёртка над async ShellSession на базе ``EventLoopPortal``."""
 
-    Делегирует все операции в выделенный event loop родительского
-    ``SyncConnection`` через ``run_coroutine_threadsafe``.
-
-    Пример использования:
-        with Connection.from_uri("ssh://user@host").to_sync() as conn:
-            with conn.open_shell() as shell:
-                shell.execute("cd /tmp")
-                res = shell.execute("pwd")
-                print(res.stdout)
-    """
-
-    def __init__(self, async_session: ShellSession, sync_conn: "SyncConnection"):
+    def __init__(self, async_session: ShellSession, sync_conn: SyncConnection) -> None:
         self._async_session = async_session
         self._sync_conn = sync_conn
 
@@ -112,113 +103,306 @@ class SyncShellSession:
         self.close()
 
 
-class _SyncTempDirContext:
-    """Синхронный контекстный менеджер временной директории поверх ``SyncConnection``."""
+class SyncFileOperationsService:
+    """Синхронное отражение доменного сервиса ``FileOperationsService`` (``sync_conn.files``)."""
 
-    def __init__(
+    def __init__(self, sync_conn: SyncConnection) -> None:
+        self._sync_conn = sync_conn
+
+    def upload(
         self,
-        sync_conn: "SyncConnection",
-        prefix: str = "uniconn_",
-        suffix: str = "",
-        dir: str | Path | None = None,
+        local_path: str,
+        remote_path: str,
+        recurse: bool = False,
+        **kwargs: Any,
     ) -> None:
-        self._sync_conn = sync_conn
-        self._async_ctx = sync_conn._async_conn.temp_dir(
-            prefix=prefix,
-            suffix=suffix,
-            dir=dir,
+        """Загрузить файл или директорию на хост (синхронно)."""
+        self._sync_conn._run_coro(
+            self._sync_conn._async_conn.files.upload(
+                local_path, remote_path, recurse=recurse, **kwargs
+            )
         )
 
-    def __enter__(self) -> str:
-        return self._sync_conn._run_coro(self._async_ctx.__aenter__())
-
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+    def download(
+        self,
+        remote_path: str,
+        local_path: str,
+        recurse: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        """Скачать файл или директорию с хоста (синхронно)."""
         self._sync_conn._run_coro(
-            self._async_ctx.__aexit__(exc_type, exc_val, exc_tb)
+            self._sync_conn._async_conn.files.download(
+                remote_path, local_path, recurse=recurse, **kwargs
+            )
+        )
+
+    def read_file(
+        self,
+        remote_path: str,
+        encoding: str | None = "utf-8",
+    ) -> str | bytes:
+        """Прочитать содержимое файла в память (синхронно)."""
+        return self._sync_conn._run_coro(
+            self._sync_conn._async_conn.files.read_file(remote_path, encoding=encoding)
+        )
+
+    def write_file(
+        self,
+        remote_path: str,
+        content: str | bytes,
+        mode: int | None = None,
+        encoding: str = "utf-8",
+    ) -> None:
+        """Записать строку или байты в файл (синхронно)."""
+        self._sync_conn._run_coro(
+            self._sync_conn._async_conn.files.write_file(
+                remote_path, content, mode=mode, encoding=encoding
+            )
+        )
+
+    def exists(self, remote_path: str | Path) -> bool:
+        """Проверить существование пути (синхронно)."""
+        return self._sync_conn._run_coro(
+            self._sync_conn._async_conn.files.exists(remote_path)
+        )
+
+    def mkdir(
+        self,
+        remote_path: str | Path,
+        parents: bool = True,
+        exist_ok: bool = True,
+        mode: int | None = None,
+    ) -> None:
+        """Создать директорию (синхронно)."""
+        self._sync_conn._run_coro(
+            self._sync_conn._async_conn.files.mkdir(
+                remote_path, parents=parents, exist_ok=exist_ok, mode=mode
+            )
+        )
+
+    def chmod(self, remote_path: str, mode: int) -> None:
+        """Изменить права доступа (синхронно)."""
+        self._sync_conn._run_coro(
+            self._sync_conn._async_conn.files.chmod(remote_path, mode)
+        )
+
+    def stat(self, remote_path: str) -> dict[str, Any]:
+        """Получить метаданные файла (синхронно)."""
+        return self._sync_conn._run_coro(
+            self._sync_conn._async_conn.files.stat(remote_path)
+        )
+
+    def listdir(self, remote_path: str = ".") -> list[str]:
+        """Получить список файлов в директории (синхронно)."""
+        return self._sync_conn._run_coro(
+            self._sync_conn._async_conn.files.listdir(remote_path)
+        )
+
+    def remove_file(self, remote_path: str | Path) -> None:
+        """Удалить файл (синхронно)."""
+        self._sync_conn._run_coro(
+            self._sync_conn._async_conn.files.remove_file(remote_path)
+        )
+
+    def write_template(
+        self,
+        remote_path: str | Path,
+        template_str_or_path: str | Path,
+        context: Mapping[str, Any] | None = None,
+        mode: int | None = 0o644,
+        encoding: str = "utf-8",
+        engine: Literal["auto", "string", "jinja2"] = "auto",
+    ) -> str:
+        """Отрендерить шаблон и записать его на хост (синхронно)."""
+        return self._sync_conn._run_coro(
+            self._sync_conn._async_conn.files.write_template(
+                remote_path=remote_path,
+                template_str_or_path=template_str_or_path,
+                context=context,
+                mode=mode,
+                encoding=encoding,
+                engine=engine,
+            )
+        )
+
+    def sync_dir(
+        self,
+        local_dir: str | Path,
+        remote_dir: str | Path,
+        delete: bool = False,
+        exclude: Sequence[str] | None = None,
+        mtime_tolerance: float = 1.0,
+        dry_run: bool | None = None,
+    ) -> SyncResult:
+        """Инкрементально синхронизировать директорию (синхронно)."""
+        return self._sync_conn._run_coro(
+            self._sync_conn._async_conn.files.sync_dir(
+                local_dir=local_dir,
+                remote_dir=remote_dir,
+                delete=delete,
+                exclude=exclude,
+                mtime_tolerance=mtime_tolerance,
+                dry_run=dry_run,
+            )
         )
 
 
-class _SyncPortForwardContext:
-    """Синхронный контекстный менеджер проброса портов поверх ``SyncConnection``."""
+class SyncStateManagementService:
+    """Синхронное отражение доменного сервиса ``StateManagementService`` (``sync_conn.state``)."""
 
-    def __init__(self, sync_conn: "SyncConnection", async_cm: Any) -> None:
+    def __init__(self, sync_conn: SyncConnection) -> None:
+        """Инициализировать синхронный сервис состояния."""
         self._sync_conn = sync_conn
-        self._async_cm = async_cm
 
-    def __enter__(self) -> int:
-        return int(self._sync_conn._run_coro(self._async_cm.__aenter__()))
+    def gather_facts(
+        self,
+        *,
+        refresh: bool = False,
+        timeout: float | None = None,
+    ) -> HostFacts:
+        """Собрать системные факты о хосте (синхронно)."""
+        return self._sync_conn.gather_facts(refresh=refresh, timeout=timeout)
 
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        self._sync_conn._run_coro(
-            self._async_cm.__aexit__(exc_type, exc_val, exc_tb)
+    def ensure_package(
+        self,
+        package: str | Sequence[str],
+        state: Literal["present", "absent"] = "present",
+        manager: PkgManagerName = "auto",
+        update_cache: bool = False,
+        sudo: bool = True,
+        dry_run: bool | None = None,
+    ) -> EnsureResult:
+        """Идемпотентно обеспечить наличие или отсутствие пакета(ов) (синхронно)."""
+        return self._sync_conn._run_coro(
+            self._sync_conn._async_conn.state.ensure_package(
+                package=package,
+                state=state,
+                manager=manager,
+                update_cache=update_cache,
+                sudo=sudo,
+                dry_run=dry_run,
+            )
+        )
+
+    def ensure_service(
+        self,
+        service: str,
+        state: ServiceState = "started",
+        enabled: bool | None = None,
+        sudo: bool = True,
+        dry_run: bool | None = None,
+    ) -> EnsureResult:
+        """Идемпотентно управлять состоянием системного сервиса (синхронно)."""
+        return self._sync_conn._run_coro(
+            self._sync_conn._async_conn.state.ensure_service(
+                service=service,
+                state=state,
+                enabled=enabled,
+                sudo=sudo,
+                dry_run=dry_run,
+            )
+        )
+
+    def ensure_line(
+        self,
+        remote_path: str | Path,
+        line: str,
+        state: Literal["present", "absent"] = "present",
+        regex: str | None = None,
+        create: bool = True,
+        backup: bool = False,
+        mode: int | None = None,
+        encoding: str = "utf-8",
+        dry_run: bool | None = None,
+    ) -> EnsureResult:
+        """Идемпотентно обеспечить наличие или отсутствие строки в файле (синхронно)."""
+        return self._sync_conn._run_coro(
+            self._sync_conn._async_conn.state.ensure_line(
+                remote_path=remote_path,
+                line=line,
+                state=state,
+                regex=regex,
+                create=create,
+                backup=backup,
+                mode=mode,
+                encoding=encoding,
+                dry_run=dry_run,
+            )
+        )
+
+
+class SyncTunnelService:
+    """Синхронное отражение доменного сервиса ``TunnelService`` (``sync_conn.tunnels``)."""
+
+    def __init__(self, sync_conn: SyncConnection) -> None:
+        self._sync_conn = sync_conn
+
+    def forward_local_port(
+        self,
+        remote_host: str = "127.0.0.1",
+        remote_port: int = 80,
+        local_host: str = "127.0.0.1",
+        local_port: int = 0,
+    ) -> SyncContextBridge[int]:
+        """Синхронный контекстный менеджер прямого проброса порта (Local Port Forwarding)."""
+        return SyncContextBridge(
+            self._sync_conn._portal,
+            self._sync_conn._async_conn.tunnels.forward_local_port(
+                remote_host=remote_host,
+                remote_port=remote_port,
+                local_host=local_host,
+                local_port=local_port,
+            ),
+            cast_fn=int,
+        )
+
+    def forward_remote_port(
+        self,
+        remote_host: str = "127.0.0.1",
+        remote_port: int = 0,
+        local_host: str = "127.0.0.1",
+        local_port: int = 80,
+    ) -> SyncContextBridge[int]:
+        """Синхронный контекстный менеджер обратного проброса порта (Remote Port Forwarding)."""
+        return SyncContextBridge(
+            self._sync_conn._portal,
+            self._sync_conn._async_conn.tunnels.forward_remote_port(
+                remote_host=remote_host,
+                remote_port=remote_port,
+                local_host=local_host,
+                local_port=local_port,
+            ),
+            cast_fn=int,
         )
 
 
 class SyncConnection:
-    """Синхронная обёртка над async Connection.
+    """Синхронная обёртка над async Connection на базе ``EventLoopPortal``."""
 
-    Event loop создаётся один раз (лениво) и крутится постоянно
-    в daemon-потоке; все корутины запускаются через
-    ``asyncio.run_coroutine_threadsafe``.
-
-    Пример использования:
-        with Connection.from_uri("ssh://user@host").to_sync() as conn:
-            result = conn.run("uptime")
-            print(result.stdout)
-
-    Потокобезопасность:
-        Не является потокобезопасной. Один экземпляр — один поток.
-    """
-
-    def __init__(self, async_conn: Connection):
+    def __init__(self, async_conn: Connection) -> None:
         self._async_conn = async_conn
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._loop_thread: threading.Thread | None = None
-        self._loop_lock = threading.Lock()
-        self._closed = False
+        self._portal = EventLoopPortal(owner_name="SyncConnection")
+        self.files = SyncFileOperationsService(self)
+        self.state = SyncStateManagementService(self)
+        self.tunnels = SyncTunnelService(self)
 
-    def _get_loop(self) -> asyncio.AbstractEventLoop:
-        """Получить или лениво создать и запустить event loop (однократно).
+    @property
+    def _closed(self) -> bool:
+        """Признак закрытия синхронной обёртки."""
+        return self._portal.closed
 
-        Loop крутится постоянно (``run_forever``) в daemon-потоке,
-        чтобы корутины можно было запускать через
-        ``run_coroutine_threadsafe`` (в т.ч. потоковые генераторы).
-        Daemon-поток не мешает завершению процесса при забытом close().
-        """
-        with self._loop_lock:
-            if self._loop is None or self._loop.is_closed():
-                self._loop = asyncio.new_event_loop()
-                self._loop_thread = threading.Thread(
-                    target=self._run_loop, args=(self._loop,), daemon=True
-                )
-                self._loop_thread.start()
-            return self._loop
+    def _run_coro(self, coro: Any) -> Any:
+        """Запустить корутину синхронно через ``EventLoopPortal``."""
+        return self._portal.call(coro)
 
-    @staticmethod
-    def _run_loop(loop: asyncio.AbstractEventLoop) -> None:
-        """Запустить loop навсегда (до ``loop.stop()`` из close())."""
-        asyncio.set_event_loop(loop)
-        try:
-            loop.run_forever()
-        finally:
-            asyncio.set_event_loop(None)
-
-    def _run_coro(self, coro) -> Any:
-        """Запустить корутину синхронно в выделенном потоке."""
-        if self._closed:
-            with contextlib.suppress(Exception):
-                coro.close()
-            raise RuntimeError("SyncConnection уже закрыт")
-
-        loop = self._get_loop()
-        future = asyncio.run_coroutine_threadsafe(coro, loop)
-        return future.result()
-
-    def cd(self, path: str | Path) -> _CwdContext:
+    def cd(self, path: str | Path) -> CwdContext:
         """Контекстный менеджер смены рабочей директории (синхронный)."""
         return self._async_conn.cd(path)
 
-    def env(self, mapping: dict[str, str] | None = None, **env_vars: str) -> _EnvContext:
+    def env(
+        self, mapping: dict[str, str] | None = None, **env_vars: str
+    ) -> EnvContext:
         """Контекстный менеджер переменных окружения (синхронный)."""
         return self._async_conn.env(mapping, **env_vars)
 
@@ -238,26 +422,9 @@ class SyncConnection:
         sudo_password: str | SecretStr | None = None,
         sensitive: bool = False,
         dry_run: bool | None = None,
-        **kwargs
+        **kwargs: Any,
     ) -> Result:
-        """Выполнить команду синхронно.
-
-        Args:
-            command: Команда (строка или последовательность аргументов)
-            timeout: Таймаут в секундах
-            raise_on_error: Выбросить исключение при ненулевом exit code
-            input: Данные для передачи в stdin процесса (``str`` или ``bytes``)
-            sudo: Выполнить команду через ``sudo``
-            sudo_user: Пользователь для ``sudo -u``
-            sudo_password: Пароль для ``sudo``
-            sensitive: Скрыть вывод в логах, ``repr(Result)`` и ``ExecutionError``
-            dry_run: Режим без реального выполнения команды
-            **kwargs: Дополнительные аргументы для транспорта
-
-        Returns:
-            Result объект с результатом
-
-        """
+        """Выполнить команду синхронно."""
         return self._run_coro(
             self._async_conn.run(
                 command,
@@ -269,7 +436,7 @@ class SyncConnection:
                 sudo_password=sudo_password,
                 sensitive=sensitive,
                 dry_run=dry_run,
-                **kwargs
+                **kwargs,
             )
         )
 
@@ -282,7 +449,7 @@ class SyncConnection:
         sudo: bool = False,
         sudo_user: str | None = None,
         sudo_password: str | SecretStr | None = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> bytes:
         """Выполнить команду синхронно и вернуть сырой байтовый вывод."""
         return self._run_coro(
@@ -304,9 +471,7 @@ class SyncConnection:
         encoding: str | None = "utf-8",
     ) -> str | bytes:
         """Прочитать содержимое файла в память (синхронно)."""
-        return self._run_coro(
-            self._async_conn.read_file(remote_path, encoding=encoding)
-        )
+        return self.files.read_file(remote_path, encoding=encoding)
 
     def write_file(
         self,
@@ -316,18 +481,13 @@ class SyncConnection:
         encoding: str = "utf-8",
     ) -> None:
         """Записать строку или байты из памяти в файл (синхронно)."""
-        self._run_coro(
-            self._async_conn.write_file(
-                remote_path,
-                content,
-                mode=mode,
-                encoding=encoding,
-            )
+        self.files.write_file(
+            remote_path, content, mode=mode, encoding=encoding
         )
 
     def exists(self, remote_path: str | Path) -> bool:
         """Проверить существование файла или директории на хосте (синхронно)."""
-        return self._run_coro(self._async_conn.exists(remote_path))
+        return self.files.exists(remote_path)
 
     def mkdir(
         self,
@@ -337,13 +497,8 @@ class SyncConnection:
         mode: int | None = None,
     ) -> None:
         """Создать директорию на хосте (синхронно)."""
-        self._run_coro(
-            self._async_conn.mkdir(
-                remote_path,
-                parents=parents,
-                exist_ok=exist_ok,
-                mode=mode,
-            )
+        self.files.mkdir(
+            remote_path, parents=parents, exist_ok=exist_ok, mode=mode
         )
 
     def temp_dir(
@@ -351,18 +506,16 @@ class SyncConnection:
         prefix: str = "uniconn_",
         suffix: str = "",
         dir: str | Path | None = None,
-    ) -> _SyncTempDirContext:
+    ) -> SyncContextBridge[str]:
         """Синхронный контекстный менеджер временной директории на хосте."""
-        return _SyncTempDirContext(
-            self,
-            prefix=prefix,
-            suffix=suffix,
-            dir=dir,
+        return SyncContextBridge(
+            self._portal,
+            self._async_conn.temp_dir(prefix=prefix, suffix=suffix, dir=dir),
         )
 
     def remove_file(self, remote_path: str | Path) -> None:
         """Удалить файл на хосте (синхронно)."""
-        self._run_coro(self._async_conn.remove_file(remote_path))
+        self.files.remove_file(remote_path)
 
     def upload(
         self,
@@ -372,9 +525,7 @@ class SyncConnection:
         **kwargs: Any,
     ) -> None:
         """Загрузить файл или директорию на хост (синхронно)."""
-        self._run_coro(
-            self._async_conn.upload(local_path, remote_path, recurse=recurse, **kwargs)
-        )
+        self.files.upload(local_path, remote_path, recurse=recurse, **kwargs)
 
     def download(
         self,
@@ -384,21 +535,19 @@ class SyncConnection:
         **kwargs: Any,
     ) -> None:
         """Скачать файл или директорию с хоста (синхронно)."""
-        self._run_coro(
-            self._async_conn.download(remote_path, local_path, recurse=recurse, **kwargs)
-        )
+        self.files.download(remote_path, local_path, recurse=recurse, **kwargs)
 
     def chmod(self, remote_path: str, mode: int) -> None:
         """Изменить права доступа к файлу на хосте (синхронно)."""
-        self._run_coro(self._async_conn.chmod(remote_path, mode))
+        self.files.chmod(remote_path, mode)
 
     def stat(self, remote_path: str) -> dict[str, Any]:
         """Получить метаданные файла на хосте (синхронно)."""
-        return self._run_coro(self._async_conn.stat(remote_path))
+        return self.files.stat(remote_path)
 
     def listdir(self, remote_path: str = ".") -> list[str]:
         """Получить список файлов в директории на хосте (синхронно)."""
-        return self._run_coro(self._async_conn.listdir(remote_path))
+        return self.files.listdir(remote_path)
 
     def write_template(
         self,
@@ -410,15 +559,13 @@ class SyncConnection:
         engine: Literal["auto", "string", "jinja2"] = "auto",
     ) -> str:
         """Отрендерить шаблон и записать его на хост (синхронно)."""
-        return self._run_coro(
-            self._async_conn.write_template(
-                remote_path=remote_path,
-                template_str_or_path=template_str_or_path,
-                context=context,
-                mode=mode,
-                encoding=encoding,
-                engine=engine,
-            )
+        return self.files.write_template(
+            remote_path=remote_path,
+            template_str_or_path=template_str_or_path,
+            context=context,
+            mode=mode,
+            encoding=encoding,
+            engine=engine,
         )
 
     def sync_dir(
@@ -431,15 +578,13 @@ class SyncConnection:
         dry_run: bool | None = None,
     ) -> SyncResult:
         """Инкрементально синхронизировать директорию с хостом (синхронно)."""
-        return self._run_coro(
-            self._async_conn.sync_dir(
-                local_dir=local_dir,
-                remote_dir=remote_dir,
-                delete=delete,
-                exclude=exclude,
-                mtime_tolerance=mtime_tolerance,
-                dry_run=dry_run,
-            )
+        return self.files.sync_dir(
+            local_dir=local_dir,
+            remote_dir=remote_dir,
+            delete=delete,
+            exclude=exclude,
+            mtime_tolerance=mtime_tolerance,
+            dry_run=dry_run,
         )
 
     def forward_local_port(
@@ -448,16 +593,13 @@ class SyncConnection:
         remote_port: int = 80,
         local_host: str = "127.0.0.1",
         local_port: int = 0,
-    ) -> _SyncPortForwardContext:
+    ) -> SyncContextBridge[int]:
         """Синхронный контекстный менеджер прямого проброса порта (Local Port Forwarding)."""
-        return _SyncPortForwardContext(
-            self,
-            self._async_conn.forward_local_port(
-                remote_host=remote_host,
-                remote_port=remote_port,
-                local_host=local_host,
-                local_port=local_port,
-            ),
+        return self.tunnels.forward_local_port(
+            remote_host=remote_host,
+            remote_port=remote_port,
+            local_host=local_host,
+            local_port=local_port,
         )
 
     def forward_remote_port(
@@ -466,16 +608,13 @@ class SyncConnection:
         remote_port: int = 0,
         local_host: str = "127.0.0.1",
         local_port: int = 80,
-    ) -> _SyncPortForwardContext:
+    ) -> SyncContextBridge[int]:
         """Синхронный контекстный менеджер обратного проброса порта (Remote Port Forwarding)."""
-        return _SyncPortForwardContext(
-            self,
-            self._async_conn.forward_remote_port(
-                remote_host=remote_host,
-                remote_port=remote_port,
-                local_host=local_host,
-                local_port=local_port,
-            ),
+        return self.tunnels.forward_remote_port(
+            remote_host=remote_host,
+            remote_port=remote_port,
+            local_host=local_host,
+            local_port=local_port,
         )
 
     def expect(
@@ -509,24 +648,14 @@ class SyncConnection:
         self,
         commands: Sequence[str | Sequence[str]],
         stop_on_error: bool = True,
-        **kwargs
+        **kwargs: Any,
     ) -> list[Result]:
-        """Последовательно выполнить список команд (синхронно).
-
-        Args:
-            commands: Список команд для выполнения
-            stop_on_error: Прервать выполнение при первой ошибке
-            **kwargs: Дополнительные аргументы для ``run()``
-
-        Returns:
-            Список Result в порядке выполнения команд
-
-        """
+        """Последовательно выполнить список команд (синхронно)."""
         return self._run_coro(
             self._async_conn.run_commands(
                 commands,
                 stop_on_error=stop_on_error,
-                **kwargs
+                **kwargs,
             )
         )
 
@@ -534,55 +663,12 @@ class SyncConnection:
         self,
         command: str | Sequence[str],
         timeout: float | None = None,
-        **kwargs
+        **kwargs: Any,
     ) -> Iterator[str]:
-        """Синхронный генератор для потокового выполнения команды.
-
-        Строки отдаются инкрементально, по мере поступления из
-        async-генератора, без буферизации всего вывода — подходит
-        для долгоживущих команд вроде ``tail -f``.
-
-        Yields:
-            Строки вывода команды
-
-        Пример:
-            for line in conn.stream("tail -f /var/log/syslog"):
-                print(line)
-
-        """
-        if self._closed:
-            raise RuntimeError("SyncConnection уже закрыт")
-
-        loop = self._get_loop()
-        q: asyncio.Queue = asyncio.Queue()
-
-        async def _pump() -> None:
-            """Читать async-генератор и складывать элементы в очередь."""
-            try:
-                async for line in self._async_conn.stream(
-                    command, timeout=timeout, **kwargs
-                ):
-                    await q.put(line)
-            except Exception as e:
-                # Пробрасываем исключение потребителю через очередь
-                await q.put(e)
-            else:
-                await q.put(_STREAM_DONE)
-
-        pump_future = asyncio.run_coroutine_threadsafe(_pump(), loop)
-
-        try:
-            while True:
-                item = asyncio.run_coroutine_threadsafe(q.get(), loop).result()
-                if item is _STREAM_DONE:
-                    break
-                if isinstance(item, Exception):
-                    raise item
-                yield item
-        finally:
-            # При досрочном закрытии генератора останавливаем pump-задачу
-            if not pump_future.done():
-                pump_future.cancel()
+        """Синхронный генератор для потокового выполнения команды."""
+        return self._portal.iter_async(
+            self._async_conn.stream(command, timeout=timeout, **kwargs)
+        )
 
     def is_alive(self, timeout: float | None = None) -> bool:
         """Проверить живость подключения (синхронно)."""
@@ -593,20 +679,9 @@ class SyncConnection:
         term_type: str = "xterm",
         term_size: tuple[int, int] = (80, 24),
         init_posix: bool | None = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> SyncShellSession:
-        """Открыть интерактивную stateful PTY shell-сессию (синхронно).
-
-        Args:
-            term_type: Тип терминала (по умолчанию "xterm")
-            term_size: Размер терминала (cols, rows), по умолчанию (80, 24)
-            init_posix: Инициализировать ли POSIX-маркерный режим
-            **kwargs: Дополнительные параметры для транспорта
-
-        Returns:
-            Экземпляр ``SyncShellSession``
-
-        """
+        """Открыть интерактивную stateful PTY shell-сессию (синхронно)."""
         async_session = self._run_coro(
             self._async_conn.open_shell(
                 term_type=term_type,
@@ -631,40 +706,36 @@ class SyncConnection:
         self,
         package: str | Sequence[str],
         state: Literal["present", "absent"] = "present",
-        manager: Literal["auto", "apt", "dnf", "yum", "apk", "pacman", "zypper"] = "auto",
+        manager: PkgManagerName = "auto",
         update_cache: bool = False,
         sudo: bool = True,
         dry_run: bool | None = None,
     ) -> EnsureResult:
         """Идемпотентно обеспечить наличие или отсутствие пакета(ов) на хосте (синхронно)."""
-        return self._run_coro(
-            self._async_conn.ensure_package(
-                package=package,
-                state=state,
-                manager=manager,
-                update_cache=update_cache,
-                sudo=sudo,
-                dry_run=dry_run,
-            )
+        return self.state.ensure_package(
+            package=package,
+            state=state,
+            manager=manager,
+            update_cache=update_cache,
+            sudo=sudo,
+            dry_run=dry_run,
         )
 
     def ensure_service(
         self,
         service: str,
-        state: Literal["started", "stopped", "restarted", "reloaded"] = "started",
+        state: ServiceState = "started",
         enabled: bool | None = None,
         sudo: bool = True,
         dry_run: bool | None = None,
     ) -> EnsureResult:
         """Идемпотентно управлять состоянием системного сервиса (синхронно)."""
-        return self._run_coro(
-            self._async_conn.ensure_service(
-                service=service,
-                state=state,
-                enabled=enabled,
-                sudo=sudo,
-                dry_run=dry_run,
-            )
+        return self.state.ensure_service(
+            service=service,
+            state=state,
+            enabled=enabled,
+            sudo=sudo,
+            dry_run=dry_run,
         )
 
     def ensure_line(
@@ -680,77 +751,42 @@ class SyncConnection:
         dry_run: bool | None = None,
     ) -> EnsureResult:
         """Идемпотентно обеспечить наличие или отсутствие строки в файле (синхронно)."""
-        return self._run_coro(
-            self._async_conn.ensure_line(
-                remote_path=remote_path,
-                line=line,
-                state=state,
-                regex=regex,
-                create=create,
-                backup=backup,
-                mode=mode,
-                encoding=encoding,
-                dry_run=dry_run,
-            )
+        return self.state.ensure_line(
+            remote_path=remote_path,
+            line=line,
+            state=state,
+            regex=regex,
+            create=create,
+            backup=backup,
+            mode=mode,
+            encoding=encoding,
+            dry_run=dry_run,
         )
 
     def close(self) -> None:
-        """Закрыть подключение и освободить ресурсы."""
-        if self._closed:
-            return
-
-        # Закрываем async подключение
-        if self._async_conn:
-            with contextlib.suppress(Exception):
-                self._run_coro(self._async_conn.close())
-
-        self._closed = True
-
-        # Останавливаем run_forever и ждём завершения потока loop'а,
-        # иначе loop останется крутиться в фоне
-        with self._loop_lock:
-            if self._loop and not self._loop.is_closed():
-                self._loop.call_soon_threadsafe(self._loop.stop)
-            thread = self._loop_thread
-
-        if thread is not None:
-            thread.join(timeout=5.0)
-
-        with self._loop_lock:
-            if self._loop and not self._loop.is_closed():
-                self._loop.close()
-            self._loop = None
-            self._loop_thread = None
+        """Закрыть подключение и освободить ресурсы фонового event loop."""
+        cleanup = self._async_conn.close() if self._async_conn else None
+        self._portal.close(cleanup_coro=cleanup)
 
     def __enter__(self) -> Self:
         self._run_coro(self._async_conn._transport.connect())
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        # close() сам закрывает async-подключение (disconnect транспорта),
-        # останавливает loop и его поток — отдельный disconnect не нужен
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         self.close()
 
 
 class SyncConnectionPool:
-    """Синхронная обёртка над ``ConnectionPool`` на базе выделенного event loop в daemon-потоке.
+    """Синхронная обёртка над ``ConnectionPool`` на базе ``EventLoopPortal``."""
 
-    Позволяет выполнять групповые операции (``map``, ``map_safe``, ``upload``,
-    ``download``, ``sync_dir``, ``write_template``, ``gather_facts``, ``ensure_*``,
-    ``stream``) в синхронном коде без ручного вызова ``asyncio.run()``.
-
-    Пример использования:
-        with ConnectionPool(["local://", "local://"]).to_sync() as pool:
-            facts = pool.gather_facts()
-            results = pool.map("uname -a")
-    """
-
-    def __init__(self, async_pool: "ConnectionPool"):
+    def __init__(self, async_pool: ConnectionPool) -> None:
         self._async_pool = async_pool
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._loop_thread: threading.Thread | None = None
-        self._loop_lock = threading.Lock()
-        self._closed = False
+        self._portal = EventLoopPortal(owner_name="SyncConnectionPool")
+
+    @property
+    def _closed(self) -> bool:
+        """Признак закрытия синхронного пула."""
+        return self._portal.closed
 
     @classmethod
     def from_file(
@@ -776,27 +812,9 @@ class SyncConnectionPool:
         )
         return cls(pool)
 
-    def _get_loop(self) -> asyncio.AbstractEventLoop:
-        with self._loop_lock:
-            if self._loop is None or self._loop.is_closed():
-                self._loop = asyncio.new_event_loop()
-                self._loop_thread = threading.Thread(
-                    target=SyncConnection._run_loop,
-                    args=(self._loop,),
-                    daemon=True,
-                )
-                self._loop_thread.start()
-            return self._loop
-
     def _run_coro(self, coro: Any) -> Any:
-        if self._closed:
-            with contextlib.suppress(Exception):
-                coro.close()
-            raise RuntimeError("SyncConnectionPool уже закрыт")
-
-        loop = self._get_loop()
-        future = asyncio.run_coroutine_threadsafe(coro, loop)
-        return future.result()
+        """Выполнить корутину пула в фоновом event loop."""
+        return self._portal.call(coro)
 
     def connect(self) -> None:
         """Открыть и удерживать соединения ко всем хостам пула (синхронно)."""
@@ -804,27 +822,8 @@ class SyncConnectionPool:
 
     def close(self) -> None:
         """Закрыть все соединения пула и остановить фоновый event loop."""
-        if self._closed:
-            return
-
-        with contextlib.suppress(Exception):
-            self._run_coro(self._async_pool.close())
-
-        self._closed = True
-
-        with self._loop_lock:
-            if self._loop and not self._loop.is_closed():
-                self._loop.call_soon_threadsafe(self._loop.stop)
-            thread = self._loop_thread
-
-        if thread is not None:
-            thread.join(timeout=5.0)
-
-        with self._loop_lock:
-            if self._loop and not self._loop.is_closed():
-                self._loop.close()
-            self._loop = None
-            self._loop_thread = None
+        cleanup = self._async_pool.close() if self._async_pool else None
+        self._portal.close(cleanup_coro=cleanup)
 
     def __enter__(self) -> Self:
         self.connect()
@@ -968,7 +967,7 @@ class SyncConnectionPool:
         self,
         package: str | Sequence[str],
         state: Literal["present", "absent"] = "present",
-        manager: Literal["auto", "apt", "dnf", "yum", "apk", "pacman", "zypper"] = "auto",
+        manager: PkgManagerName = "auto",
         update_cache: bool = False,
         sudo: bool = True,
         dry_run: bool | None = None,
@@ -988,7 +987,7 @@ class SyncConnectionPool:
     def ensure_service(
         self,
         service: str,
-        state: Literal["started", "stopped", "restarted", "reloaded"] = "started",
+        state: ServiceState = "started",
         enabled: bool | None = None,
         sudo: bool = True,
         dry_run: bool | None = None,
@@ -1037,45 +1036,7 @@ class SyncConnectionPool:
         timeout: float | None = None,
         **kwargs: Any,
     ) -> Iterator[tuple[str, str]]:
-        """Синхронный генератор мульти-стриминга со всех хостов пула.
-
-        Yields:
-            Кортежи ``(target_key, line)``.
-
-        """
-        if self._closed:
-            raise RuntimeError("SyncConnectionPool уже закрыт")
-
-        loop = self._get_loop()
-        q: asyncio.Queue[Any] = asyncio.Queue()
-
-        async def _pump() -> None:
-            try:
-                async for item in self._async_pool.stream(
-                    command, timeout=timeout, **kwargs
-                ):
-                    await q.put(item)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                await q.put(e)
-            else:
-                await q.put(_STREAM_DONE)
-
-        pump_future = asyncio.run_coroutine_threadsafe(_pump(), loop)
-
-        try:
-            while True:
-                item = asyncio.run_coroutine_threadsafe(q.get(), loop).result()
-                if item is _STREAM_DONE:
-                    break
-                if isinstance(item, Exception):
-                    raise item
-                yield item
-        finally:
-            if not pump_future.done():
-                pump_future.cancel()
-                with contextlib.suppress(BaseException):
-                    pump_future.result(timeout=2.0)
-
-
+        """Синхронный генератор мульти-стриминга со всех хостов пула."""
+        return self._portal.iter_async(
+            self._async_pool.stream(command, timeout=timeout, **kwargs)
+        )

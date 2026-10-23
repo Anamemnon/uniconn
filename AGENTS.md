@@ -2,24 +2,32 @@
 
 ## Обзор проекта
 
-`uniconn` (`v0.6.0`) — универсальная async-first Python-библиотека (Python 3.11+) для выполнения команд на удалённых и локальных хостах через единый интерфейс `Connection`. Управление зависимостями осуществляется через `uv`.
+`uniconn` (`v0.8.0`) — универсальная async-first Python-библиотека (Python 3.11+) для выполнения команд, инспекции хостов, идемпотентного управления состоянием и синхронизации файлов через единый фасад `Connection`. Управление зависимостями осуществляется через `uv`.
 
 Для быстрого ознакомления с сигнатурами публичного API и URI-схемами используйте файл `llms.txt` в корне репозитория.
 
 ## Структура модулей (`src/uniconn/`)
 
-- `_connection.py` — `Connection`: основной класс (фабрики `from_uri`, `from_config`, `from_dict`, `from_file` с поддержкой групп и хостов, `from_inventory`, `copy`, `with_overrides`, методы `run`, `run_bytes`, `run_commands`, `stream`, `open_shell`, `is_alive`, контекстные менеджеры `cd`, `env`, `temp_dir`, lifecycle-хуки `add_hook` (`before_run`, `after_run`, `on_error`), режим `dry_run`, безопасное повышение привилегий `sudo`/`sudo_user`/`sudo_password`, режим `sensitive`, файловые операции `read_file`, `write_file`, `exists`, `mkdir` и SFTP-методы `upload`, `download`, `chmod`, `stat`, `listdir`).
-- `result.py` — `Result`: результат выполнения команды (`ok`, `__bool__`, `text`, `lines`, `json()`, `to_dict()`, `raise_for_status()`).
-- `hooks.py` — готовые пресеты lifecycle-хуков (`audit_log_hook`, `structured_log_hook`, `allowlist_hook`, `blocklist_hook`, `MetricsCollector`, `metrics_collector_hook`).
-- `_logging.py` — структурированное логирование на базе `structlog` (`configure_logging` с режимами `json`/`console`, `get_struct_logger`, `log_context`, `bind_log_context`, `redact_event_dict`, `SecretMaskingFilter`, `setup_file_logging` с `structured=True`).
-- `_shell.py` — `ShellSession`: stateful PTY shell-сессия поверх SSH, Local и Telnet (`execute` с поддержкой `str | Sequence[str]` и маркерным протоколом `__UNICONN_{uuid}__{exit_code}`, `send`, `receive`, `resize`, `close`).
-- `_sync.py` — `SyncConnection` и `SyncShellSession`: синхронные обёртки на базе постоянного event loop в daemon-потоке (`asyncio.run_coroutine_threadsafe`), включая `cd`, `env`, `temp_dir`, `add_hook`, `run_bytes`, `read_file`, `write_file`, `exists`, `mkdir`.
-- `_pool.py` — `ConnectionPool`: параллельное выполнение команд и групповых операций на группе хостов (`async with pool:`, `from_file`, `map`, `map_safe`, `map_with_callback`, `upload`, `download`, `apply`).
+- `_connection.py` / `core/connection.py` — `Connection`: тонкий фасад, предоставляющий фабрики (`from_uri`, `from_config`, `from_dict`, `from_file`, `from_inventory`), доменные сервисы (`conn.files`, `conn.state`, `conn.tunnels`), конвейер выполнения (`conn.pipeline`) и удобные методы верхнего уровня (`run`, `run_bytes`, `run_commands`, `stream`, `expect`, `open_shell`, `gather_facts`, `ensure_package`, `ensure_service`, `ensure_line`, `sync_dir`, `write_template`, `forward_local_port`, `forward_remote_port` и др.).
+- `core/` — ядро выполнения:
+  - `pipeline.py` — `CommandRequest`, `CommandPipeline` и цепочка `CommandMiddleware` (`ContextMiddleware`, `SudoMiddleware`, `HookMiddleware`, `DryRunMiddleware`, `ObservabilityMiddleware`, `RetryMiddleware`).
+  - `context.py` — `ExecutionContext` и контекстные менеджеры `CwdContext`, `EnvContext`, `TempDirContext`.
+  - `bridge.py` — `EventLoopPortal` (единый синглтон фонового event loop для синхронных вызовов) и `SyncContextBridge`.
+- `services/` — выделенные доменные сервисы:
+  - `files.py` — `FileOperationsService` и `DirectorySynchronizer` (файловые операции, SFTP и дельта-синхронизация `sync_dir`).
+  - `templates.py` — `TemplateEngine` и `render_template` (`string.Template` и `jinja2`).
+  - `facts.py` — `FactCollector` (сбор и парсинг `HostFacts`).
+  - `provisioning.py` — `StateManagementService`, паттерн «Стратегия» для пакетных менеджеров (`PackageManagerStrategy`: `AptStrategy`, `ApkStrategy`, `DnfYumStrategy`, `PacmanStrategy`, `ZypperStrategy`) и менеджеров сервисов (`ServiceManagerStrategy`: `SystemdStrategy`, `OpenRCStrategy`, `SysVStrategy`).
+  - `tunnels.py` — `TunnelService` (`forward_local_port`, `forward_remote_port`).
+- `config/` — `ConnectionConfig` и `InventoryLoader` (`config/inventory.py` — парсинг YAML/TOML/JSON инвентарей).
+- `transports/` — протоколы возможностей ISP (`CommandTransport`, `FileCapableTransport`, `ShellCapableTransport`, `TunnelCapableTransport`, `require_capability` в `_base.py`/`base.py`), декомпозированный пакет `transports/ssh/` (`OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`) и реализации `_ssh.py`, `_telnet.py`, `_serial.py`, `_local.py`, `bmc/_ipmi.py`.
+- `shell/` и `_shell.py` — `ShellSession` (`shell/session.py`), `PosixMarkerProtocol` (`shell/marker_protocol.py`), `ExpectStateMachine` (`shell/expect_engine.py`).
+- `sync/` и `_sync.py` — `SyncConnection`, `SyncShellSession`, `SyncConnectionPool` и синхронные обёртки доменных сервисов (`SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`) на базе `EventLoopPortal`.
+- `pool/` и `_pool.py` — `ConnectionPool` с единым движком конкурентного выполнения (`_fan_out_list`, `_fan_out_dict`) и `PoolStreamMultiplexer` (`pool/stream_mux.py`).
 - `_session_pool.py` — `SSHSessionPool`: мультиплексинг SSH-каналов к одному хосту с поддержкой `health_check` и `check_health()`.
 - `background/` — `ScreenPool`, `ScreenSession`, `LogPipeline`: управление фоновыми задачами в GNU screen.
-- `transports/` — реализации транспортов (`_base.py`, `_ssh.py` с парсером `~/.ssh/config`, Jump-хостами и `ProxyCommand`/`proxy_command`, `_telnet.py`, `_serial.py`, `_local.py`, `bmc/_ipmi.py`).
-- `cli.py` — CLI на базе `typer` и `rich` (`--log-level`, `--log-format console|json`, `run`, `run-multi` с `--inventory`/`--group`, `upload`, `download`, `bmc`, `shell`, `transports`, `screen-*`, `version`).
-- `py.typed` — маркер типизации пакета (PEP 561).
+- `cli/` — модульный CLI на базе `cyclopts` и `rich` (`app.py`, `renderers.py`, `cmd_exec.py`, `cmd_files.py`, `cmd_ops.py`, `cmd_screen.py`).
+- `result.py`, `facts.py`, `hooks.py`, `_logging.py`, `exceptions.py`, `py.typed`.
 
 ## Точка входа и веб-панель (`main.py` и `examples/dashboard/`)
 
@@ -33,7 +41,7 @@ Unit-тесты (`tests/unit/`, 31 модуль, 422 теста) сгруппи�
 - `tests/unit/transports/` — тесты транспортов (`SSH`, `Telnet`, `Serial`, `Local`, `IPMI`, `BaseTransport`) и SFTP.
 - `tests/unit/pools/` — `ConnectionPool` и `SSHSessionPool`.
 - `tests/unit/screen/` — `ScreenPool`, `ScreenSession`, `LogPipeline`, `ScreenConfig`, cleanup.
-- `tests/unit/cli/` — CLI-команды (`typer` + `rich`), фоновые screen-команды и интерактивная веб-панель (`examples/dashboard/`).
+- `tests/unit/cli/` — CLI-команды (`cyclopts` + `rich`), фоновые screen-команды и интерактивная веб-панель (`examples/dashboard/`).
 - `tests/unit/releases/` — приёмочные наборы тестов по релизам (`v0.3.0` – `v0.6.0`).
 - `tests/integration/` — интеграционные тесты с Docker/testcontainers.
 
@@ -46,7 +54,7 @@ Unit-тесты (`tests/unit/`, 31 модуль, 422 теста) сгруппи�
 3. **Экономия контекста (`instractions.md`)**: Файл `instractions.md` содержит подробную историческую матрицу требований и реализованных фич. **Не нужно читать `instractions.md` в начале каждой задачи** (чтобы не засорять контекстное окно ИИ-агента) — используйте `llms.txt` для быстрого обзора API, а к `instractions.md` обращайтесь только тогда, когда нужно точечно сверить статус реализации конкретной возможности или отметить выполнение нового этапа.
 4. **Качество кода**: Ограничение длины строки — **120 символов** (`ruff`), типизация — `pyright` в режиме `standard` (0 ошибок).
 5. **Обязательный запуск и написание тестов**:
-   - После любых изменений кода обязательно запускайте `uv run pytest -m "not integration"`.
+   - После любых изменений кода обязательно запускайте `uv run pytest -m "not integration" -q --tb=short | tail -n 5` (для экономии контекстного окна выводится только итоговая сводка; при наличии упавших тестов используйте `uv run pytest -m "not integration" -q --tb=short --lf | tail -n 30`).
    - Каждая новая фича, метод, хук или исправление бага должны сопровождаться новыми unit-тестами в соответствующей поддиректории `tests/unit/<domain>/` для поддержания покрытия и стабильности проекта.
    - В `pytest` включено правило `error::RuntimeWarning`: не допускайте неожидаемых корутин (`coroutine was never awaited`). При мокировании `StreamWriter` синхронные методы (`write`, `close`) задавайте через `MagicMock()`, а не `AsyncMock()`.
 
@@ -56,8 +64,11 @@ Unit-тесты (`tests/unit/`, 31 модуль, 422 теста) сгруппи�
 # Установка всех зависимостей (включая транспорты, CLI и dev-зависимости)
 uv sync
 
-# Запуск unit-тестов (включает проверку 0 RuntimeWarning)
-uv run pytest -m "not integration"
+# Запуск unit-тестов с кратким выводом для экономии контекста (0 RuntimeWarning)
+uv run pytest -m "not integration" -q --tb=short | tail -n 5
+
+# Повторный запуск только упавших тестов с трейсбеком (при отладке)
+uv run pytest -m "not integration" -q --tb=short --lf | tail -n 30
 
 # Линтинг (лимит строки 120 символов) и проверка типов
 uv run ruff check src/
