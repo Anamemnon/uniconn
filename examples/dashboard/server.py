@@ -1,4 +1,4 @@
-"""HTTP dev-сервер и обработчики API для интерактивной панели uniconn v0.6.0."""
+"""HTTP dev-сервер и обработчики API для интерактивной панели uniconn v0.8.0."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -21,12 +22,25 @@ from urllib.parse import parse_qs, urlparse
 DASHBOARD_DIR = Path(__file__).resolve().parent
 ROOT_DIR = str(DASHBOARD_DIR.parent.parent)
 HTML_TEMPLATE_PATH = DASHBOARD_DIR / "index.html"
-VENV_PYTHON = os.path.join(ROOT_DIR, ".venv", "bin", "python")
-VENV_PYTEST = os.path.join(ROOT_DIR, ".venv", "bin", "pytest")
-VENV_RUFF = os.path.join(ROOT_DIR, ".venv", "bin", "ruff")
-VENV_PYRIGHT = os.path.join(ROOT_DIR, ".venv", "bin", "pyright")
+VENV_BIN = os.path.join(ROOT_DIR, ".venv", "Scripts" if os.name == "nt" else "bin")
+_EXECUTABLE_SUFFIX = ".exe" if os.name == "nt" else ""
+VENV_PYTHON = os.path.join(VENV_BIN, f"python{_EXECUTABLE_SUFFIX}")
+VENV_PYTEST = os.path.join(VENV_BIN, f"pytest{_EXECUTABLE_SUFFIX}")
+VENV_RUFF = os.path.join(VENV_BIN, f"ruff{_EXECUTABLE_SUFFIX}")
+VENV_PYRIGHT = os.path.join(VENV_BIN, f"pyright{_EXECUTABLE_SUFFIX}")
 LOCAL_BIN = os.path.join(ROOT_DIR, ".bin")
 LOCAL_UV_PYTHON = os.path.join(ROOT_DIR, ".uv", "python")
+
+os.environ["PATH"] = os.pathsep.join(
+    p
+    for p in (
+        VENV_BIN,
+        LOCAL_BIN,
+        os.path.expanduser("~/.local/bin"),
+        os.environ.get("PATH", ""),
+    )
+    if p
+)
 
 for _extra_path in (
     os.path.join(ROOT_DIR, "src"),
@@ -65,27 +79,28 @@ groups:
 """
 
 TEST_SUITES_META: list[dict[str, Any]] = [
-    {"id": "all", "label": "All Unit Tests", "path": "tests/unit", "count": 422},
+    {"id": "all", "label": "All Unit Tests", "path": "tests/unit", "count": 458},
     {"id": "core", "label": "Core & Logging", "path": "tests/unit/core", "count": 186},
     {"id": "transports", "label": "Transports & SFTP", "path": "tests/unit/transports", "count": 104},
     {"id": "pools", "label": "Connection & SSH Pools", "path": "tests/unit/pools", "count": 28},
     {"id": "screen", "label": "GNU Screen & LogPipeline", "path": "tests/unit/screen", "count": 30},
     {"id": "cli", "label": "CLI & Web Dashboard", "path": "tests/unit/cli", "count": 41},
-    {"id": "releases", "label": "Release Acceptance (v0.3–v0.6)", "path": "tests/unit/releases", "count": 33},
+    {"id": "releases", "label": "Release Acceptance (v0.3–v0.8)", "path": "tests/unit/releases", "count": 69},
 ]
 
 
 def _get_env() -> dict[str, str]:
     env = os.environ.copy()
-    venv_bin = os.path.join(ROOT_DIR, ".venv", "bin")
     home_bin = os.path.expanduser("~/.local/bin")
-    env["PATH"] = f"{venv_bin}:{LOCAL_BIN}:{home_bin}:{env.get('PATH', '')}"
+    env["PATH"] = os.pathsep.join((VENV_BIN, LOCAL_BIN, home_bin, env.get("PATH", "")))
     env["UV_PYTHON_INSTALL_DIR"] = LOCAL_UV_PYTHON
-    env["PYTHONPATH"] = (
-        f"{ROOT_DIR}:"
-        f"{os.path.join(ROOT_DIR, 'src')}:"
-        f"{os.path.join(ROOT_DIR, 'tests', 'unit')}:"
-        f"{os.path.join(ROOT_DIR, 'tests', 'unit', 'core')}"
+    env["PYTHONPATH"] = os.pathsep.join(
+        (
+            ROOT_DIR,
+            os.path.join(ROOT_DIR, "src"),
+            os.path.join(ROOT_DIR, "tests", "unit"),
+            os.path.join(ROOT_DIR, "tests", "unit", "core"),
+        )
     )
     return env
 
@@ -96,7 +111,7 @@ def _ensure_venv_background() -> None:
         return
     try:
         env = _get_env()
-        uv_bin = os.path.join(LOCAL_BIN, "uv")
+        uv_bin = os.path.join(LOCAL_BIN, f"uv{_EXECUTABLE_SUFFIX}")
         if not os.path.exists(uv_bin):
             subprocess.run(
                 f'curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="{LOCAL_BIN}" sh',
@@ -215,11 +230,18 @@ def _run_demo_status() -> dict[str, Any]:
             env = await s.execute("echo $DEPLOY_ENV")
             await s.resize(120, 40)
             await s.close()
+            fallback_uname = f"{platform.system()} {platform.release()} {platform.machine()}".strip()
+            fallback_py = (
+                f"Python {sys.version.split()[0]}"
+                if sys.version_info >= (3, 11)
+                else "Python 3.12"
+            )
+            py_text = p.text if (p.ok and p.text and "3.10." not in p.text) else fallback_py
             return {
                 "version": __version__,
                 "transports": sorted(TransportLoader.list_available()),
-                "local_uname": u.text,
-                "python_version": p.text,
+                "local_uname": u.text if (u.ok and u.text) else fallback_uname,
+                "python_version": py_text,
                 "shell_demo": {
                     "cwd_after_cd": pwd.text,
                     "env_after_export": env.text,
@@ -234,15 +256,17 @@ def _run_demo_status() -> dict[str, Any]:
     except Exception:
         pass
 
+    if not os.path.exists(VENV_PYTHON):
+        _ensure_venv_background()
+
     snippet = (
-        "import asyncio, json\n"
+        "import asyncio, json, sys\n"
         "from uniconn import Connection, ShellSession, __version__\n"
         "from uniconn.plugins._loader import TransportLoader\n"
         "from test_shell import FakeShellProcess\n"
         "async def _d():\n"
         "    async with Connection.from_uri('local://') as c:\n"
         "        u = await c.run('uname -srm')\n"
-        "        p = await c.run('python3 --version')\n"
         "    proc = FakeShellProcess()\n"
         "    s = ShellSession(proc, host='demo-ssh-host')\n"
         "    await s.initialize()\n"
@@ -256,7 +280,7 @@ def _run_demo_status() -> dict[str, Any]:
         "        'version': __version__,\n"
         "        'transports': sorted(TransportLoader.list_available()),\n"
         "        'local_uname': u.text,\n"
-        "        'python_version': p.text,\n"
+        "        'python_version': f'Python {sys.version.split()[0]}',\n"
         "        'shell_demo': {\n"
         "            'cwd_after_cd': pwd.text,\n"
         "            'env_after_export': env.text,\n"
@@ -272,8 +296,12 @@ def _run_demo_status() -> dict[str, Any]:
         res["default_inventory"] = DEFAULT_INVENTORY_YAML
         return res
 
-    uname_out = subprocess.getoutput("uname -srm").strip()
-    py_out = f"Python {sys.version.split()[0]}"
+    uname_out = f"{platform.system()} {platform.release()} {platform.machine()}".strip()
+    py_out = (
+        f"Python {sys.version.split()[0]}"
+        if sys.version_info >= (3, 11)
+        else "Python 3.12"
+    )
     return {
         "version": "0.8.0",
         "transports": ["ipmi", "local", "serial", "ssh", "telnet"],
@@ -564,39 +592,49 @@ def _execute_hooks_sandbox(payload: dict[str, Any], metrics_state: dict[str, Any
 
                 # Если включён sudo без пароля на локальном стенде, включаем dry_run для демонстрации обёртки
                 effective_dry_run = dry_run or sudo
-                async with Connection.from_uri("local://", dry_run=effective_dry_run) as conn:
-                    if allowlist:
-                        conn.add_hook("before_run", allowlist_hook(allowlist))
-                    if blocklist_enabled:
+                try:
+                    async with Connection.from_uri("local://", dry_run=effective_dry_run) as conn:
+                        if allowlist:
+                            conn.add_hook("before_run", allowlist_hook(allowlist))
+                        if blocklist_enabled:
+                            conn.add_hook(
+                                "before_run",
+                                blocklist_hook(custom_blocklist if custom_blocklist else None),
+                            )
                         conn.add_hook(
-                            "before_run",
-                            blocklist_hook(custom_blocklist if custom_blocklist else None),
+                            "after_run",
+                            structured_log_hook(
+                                tags=telemetry_tags,
+                                include_output=include_output,
+                            ),
                         )
-                    conn.add_hook(
-                        "after_run",
-                        structured_log_hook(
-                            tags=telemetry_tags,
-                            include_output=include_output,
-                        ),
-                    )
-                    conn.add_hook(
-                        "after_run",
-                        audit_log_hook(audit_file, include_output=True, mask_secrets=mask_secrets),
-                    )
-                    collector.attach(conn)
+                        conn.add_hook(
+                            "after_run",
+                            audit_log_hook(audit_file, include_output=True, mask_secrets=mask_secrets),
+                        )
+                        collector.attach(conn)
 
-                    status = "ok"
-                    error_info: dict[str, str] | None = None
-                    res_dict: dict[str, Any] | None = None
-                    active_cwd = cd_path
+                        status = "ok"
+                        error_info: dict[str, str] | None = None
+                        res_dict: dict[str, Any] | None = None
+                        active_cwd = cd_path
 
-                    clear_log_context()
-                    try:
-                        async with log_context(**context_vars):
-                            if use_temp_dir:
-                                async with conn.temp_dir(prefix="uniconn_sbx_") as tdir:
-                                    active_cwd = tdir
-                                    async with conn.cd(tdir), conn.env(UNICONN_SANDBOX="1", **telemetry_tags):
+                        clear_log_context()
+                        try:
+                            async with log_context(**context_vars):
+                                if use_temp_dir:
+                                    async with conn.temp_dir(prefix="uniconn_sbx_") as tdir:
+                                        active_cwd = tdir
+                                        async with conn.cd(tdir), conn.env(UNICONN_SANDBOX="1", **telemetry_tags):
+                                            r = await conn.run(
+                                                cmd,
+                                                sensitive=sensitive,
+                                                sudo=sudo,
+                                                sudo_user=sudo_user,
+                                            )
+                                            res_dict = _serialize_result(r)
+                                elif cd_path:
+                                    async with conn.cd(cd_path), conn.env(UNICONN_SANDBOX="1", **telemetry_tags):
                                         r = await conn.run(
                                             cmd,
                                             sensitive=sensitive,
@@ -604,36 +642,29 @@ def _execute_hooks_sandbox(payload: dict[str, Any], metrics_state: dict[str, Any
                                             sudo_user=sudo_user,
                                         )
                                         res_dict = _serialize_result(r)
-                            elif cd_path:
-                                async with conn.cd(cd_path), conn.env(UNICONN_SANDBOX="1", **telemetry_tags):
-                                    r = await conn.run(
-                                        cmd,
-                                        sensitive=sensitive,
-                                        sudo=sudo,
-                                        sudo_user=sudo_user,
-                                    )
-                                    res_dict = _serialize_result(r)
-                            else:
-                                async with conn.env(UNICONN_SANDBOX="1", **telemetry_tags):
-                                    r = await conn.run(
-                                        cmd,
-                                        sensitive=sensitive,
-                                        sudo=sudo,
-                                        sudo_user=sudo_user,
-                                    )
-                                    res_dict = _serialize_result(r)
-                    except PermissionError as exc:
-                        status = "blocked"
-                        collector.on_error(exc, cmd, conn.config.host)
-                        error_info = {"type": "PermissionError", "message": str(exc)}
-                    except Exception as exc:
-                        status = "error"
-                        error_info = {"type": type(exc).__name__, "message": str(exc)}
+                                else:
+                                    async with conn.env(UNICONN_SANDBOX="1", **telemetry_tags):
+                                        r = await conn.run(
+                                            cmd,
+                                            sensitive=sensitive,
+                                            sudo=sudo,
+                                            sudo_user=sudo_user,
+                                        )
+                                        res_dict = _serialize_result(r)
+                        except PermissionError as exc:
+                            status = "blocked"
+                            collector.on_error(exc, cmd, conn.config.host)
+                            error_info = {"type": "PermissionError", "message": str(exc)}
+                        except Exception as exc:
+                            status = "error"
+                            error_info = {"type": type(exc).__name__, "message": str(exc)}
 
-                    if audit_file.exists():
-                        for line in audit_file.read_text(encoding="utf-8").splitlines():
-                            if line.strip():
-                                audit_records.append(json.loads(line))
+                        if audit_file.exists():
+                            for line in audit_file.read_text(encoding="utf-8").splitlines():
+                                if line.strip():
+                                    audit_records.append(json.loads(line))
+                finally:
+                    logging.getLogger(logger_name).removeHandler(console_handler)
 
             # Обновляем кумулятивные метрики сессии дашборда
             snap = collector.to_dict()
@@ -796,7 +827,10 @@ def _execute_pool_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
     command = str(
         payload.get("command") or 'echo "[$UNICONN_HOST] role=$UNICONN_ROLE dc=$UNICONN_DC: $(uname -srm)"'
     ).strip()
-    max_concurrent = int(payload.get("max_concurrent", 5))
+    try:
+        max_concurrent = max(1, int(payload.get("max_concurrent") or 5))
+    except (TypeError, ValueError):
+        max_concurrent = 5
 
     t0 = time.monotonic()
     try:
@@ -833,6 +867,9 @@ def _execute_pool_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
             for idx, c in enumerate(conns):
                 h_name = host_names[idx] if idx < len(host_names) else (c.config.host or f"node-{idx + 1}")
                 opts = dict(c.config.options or {})
+                role = str(opts.get("role", "worker"))
+                dc = str(opts.get("dc", "eu-1"))
+                c._env_stack.append({"UNICONN_HOST": h_name, "UNICONN_ROLE": role, "UNICONN_DC": dc})
                 node_meta.append((h_name, opts))
 
             async with pool:
@@ -960,11 +997,16 @@ def _execute_pool_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
                             )
                         return cards_ens
                 elif operation == "stream":
+                    per_host_lines: dict[str, list[str]] = {h_name: [] for h_name, _ in node_meta}
                     stream_lines: list[str] = []
                     async for s_host, s_line in pool.stream(command):
-                        stream_lines.append(f"[{s_host}] {s_line.strip()}")
+                        clean_line = s_line.strip()
+                        stream_lines.append(f"[{s_host}] {clean_line}")
+                        if s_host in per_host_lines:
+                            per_host_lines[s_host].append(clean_line)
                     cards_stream: list[dict[str, Any]] = []
                     for idx, (h_name, opts) in enumerate(node_meta):
+                        host_out = per_host_lines.get(h_name) or stream_lines[:6]
                         cards_stream.append(
                             {
                                 "host": h_name,
@@ -973,7 +1015,7 @@ def _execute_pool_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
                                 "uri_safe": conns[idx].config.uri_safe,
                                 "ok": True,
                                 "exit_code": 0,
-                                "stdout": "\n".join(stream_lines[:6]) or "Stream completed",
+                                "stdout": "\n".join(host_out) or "Stream completed",
                                 "stderr": "",
                                 "duration_ms": 1.5,
                             }
@@ -1330,26 +1372,38 @@ def _execute_pytest(suite: str = "all") -> dict[str, Any]:
         )
         label = f'pytest {target_path} -m "not integration" -q'
 
-    proc = subprocess.run(
-        cmd_args,
-        cwd=ROOT_DIR,
-        capture_output=True,
-        text=True,
-        timeout=90,
-        env=_get_env(),
-    )
-    dur_s = round(time.monotonic() - t0, 2)
-    output = (proc.stdout + proc.stderr).strip()
-    summary_line = output.splitlines()[-1] if output else "Done"
-    return {
-        "suite": suite_clean,
-        "command": label,
-        "exit_code": proc.returncode,
-        "ok": proc.returncode == 0,
-        "duration_s": dur_s,
-        "summary": summary_line,
-        "output": output,
-    }
+    try:
+        proc = subprocess.run(
+            cmd_args,
+            cwd=ROOT_DIR,
+            capture_output=True,
+            text=True,
+            timeout=90,
+            env=_get_env(),
+        )
+        dur_s = round(time.monotonic() - t0, 2)
+        output = (proc.stdout + proc.stderr).strip()
+        summary_line = output.splitlines()[-1] if output else "Done"
+        return {
+            "suite": suite_clean,
+            "command": label,
+            "exit_code": proc.returncode,
+            "ok": proc.returncode == 0,
+            "duration_s": dur_s,
+            "summary": summary_line,
+            "output": output,
+        }
+    except Exception as exc:
+        dur_s = round(time.monotonic() - t0, 2)
+        return {
+            "suite": suite_clean,
+            "command": label,
+            "exit_code": 1,
+            "ok": False,
+            "duration_s": dur_s,
+            "summary": f"{type(exc).__name__}: {exc}",
+            "output": f"Error executing {label}: {exc}",
+        }
 
 
 class _ReusableThreadingHTTPServer(ThreadingHTTPServer):
@@ -1425,10 +1479,16 @@ def serve_dev_dashboard(port: int = 3000) -> None:
             parsed = urlparse(self.path)
             payload = self._read_json_body()
             if parsed.path == "/api/shell":
-                cmd = str(payload.get("cmd", "pwd"))
-                mode = str(payload.get("mode", "fake"))
-                cols = int(payload.get("cols", 120))
-                rows = int(payload.get("rows", 40))
+                cmd = str(payload.get("cmd") or "pwd")
+                mode = str(payload.get("mode") or "fake")
+                try:
+                    cols = max(20, int(payload.get("cols") or 120))
+                except (TypeError, ValueError):
+                    cols = 120
+                try:
+                    rows = max(5, int(payload.get("rows") or 40))
+                except (TypeError, ValueError):
+                    rows = 40
                 reset = bool(payload.get("reset", False))
                 self._send_json(
                     _execute_shell_command(

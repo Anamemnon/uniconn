@@ -61,7 +61,10 @@ def create_cli_app() -> Any:
     return app
 
 
-def main() -> None:
+def main(tokens: list[str] | None = None) -> None:
     """Точка входа для CLI."""
     app = create_cli_app()
-    app.meta()
+    if tokens is None:
+        tokens = sys.argv[1:]
+    app.meta(tokens)
+

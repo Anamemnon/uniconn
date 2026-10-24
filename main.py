@@ -3,31 +3,39 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent
 VENV_DIR = ROOT_DIR / ".venv"
-VENV_BIN = VENV_DIR / "bin"
-VENV_PYTHON = VENV_BIN / "python"
+VENV_BIN = VENV_DIR / ("Scripts" if os.name == "nt" else "bin")
+VENV_PYTHON = VENV_BIN / ("python.exe" if os.name == "nt" else "python")
 LOCAL_BIN = ROOT_DIR / ".bin"
 
 
 def _ensure_venv_runtime() -> None:
-    """Переключить процесс на Python 3.12 из .venv, если запущен системный Python."""
-    path_parts = [str(VENV_BIN), str(LOCAL_BIN), os.environ.get("PATH", "")]
-    os.environ["PATH"] = ":".join(p for p in path_parts if p)
+    """Переключить процесс на Python 3.12 из .venv, если запущен системный Python (< 3.11)."""
+    path_parts = [str(VENV_BIN), str(LOCAL_BIN), os.path.expanduser("~/.local/bin"), os.environ.get("PATH", "")]
+    os.environ["PATH"] = os.pathsep.join(p for p in path_parts if p)
     src_dir = str(ROOT_DIR / "src")
     if src_dir not in sys.path:
         sys.path.insert(0, src_dir)
 
+    if not VENV_PYTHON.exists() and sys.version_info < (3, 11):
+        from examples.dashboard.server import _ensure_venv_background
+
+        _ensure_venv_background()
+
     if VENV_PYTHON.exists() and os.environ.get("UNICONN_VENV_REEXEC") != "1":
         try:
-            in_venv = Path(sys.prefix).resolve() == VENV_DIR.resolve()
+            in_venv = Path(sys.prefix).resolve() == VENV_DIR.resolve() and sys.version_info >= (3, 11)
         except OSError:
             in_venv = False
         if not in_venv:
             os.environ["UNICONN_VENV_REEXEC"] = "1"
+            if os.name == "nt":
+                raise SystemExit(subprocess.call([str(VENV_PYTHON), *sys.argv]))
             os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), *sys.argv])
 
 

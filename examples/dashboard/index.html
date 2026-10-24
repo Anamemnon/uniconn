@@ -11,23 +11,25 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <style>
+    /* 2026 workspace refresh: quiet surfaces, clear hierarchy, high-contrast controls. */
     :root {
-      --bg: #0b0f19;
-      --surface: #111827;
-      --surface-alt: #0f172a;
-      --code-bg: #070a12;
-      --border: #1e293b;
-      --border-focus: #38bdf8;
-      --text: #f1f5f9;
-      --text-secondary: #cbd5e1;
-      --muted: #94a3b8;
-      --accent: #38bdf8;
-      --accent-hover: #0ea5e9;
-      --success: #22c55e;
-      --warning: #f59e0b;
-      --danger: #ef4444;
-      --sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      --bg: #f5f6fa;
+      --surface: #ffffff;
+      --surface-alt: #f8f9fc;
+      --code-bg: #111522;
+      --border: #e2e5ef;
+      --border-focus: #5b4ee4;
+      --text: #1c1f2e;
+      --text-secondary: #454c60;
+      --muted: #6e768c;
+      --accent: #5b4ee4;
+      --accent-hover: #483bc7;
+      --success: #147a52;
+      --warning: #b06506;
+      --danger: #cc3b3b;
+      --sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
       --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      --shadow: 0 1px 2px rgba(27, 31, 59, .03), 0 8px 28px rgba(27, 31, 59, .035);
     }
 
     * {
@@ -36,535 +38,383 @@
       padding: 0;
     }
 
+    html { scroll-behavior: smooth; }
     body {
+      display: block;
       background-color: var(--bg);
       color: var(--text);
       font-family: var(--sans);
-      font-size: 15px;
+      font-size: 14px;
       line-height: 1.55;
-      letter-spacing: 0.005em;
+      letter-spacing: 0;
       min-height: 100vh;
-      display: flex;
-      flex-direction: column;
     }
 
-    /* ─── Top Bar Contract (3 Zones) ───────────────────────── */
+    button, input, select, textarea { font: inherit; }
+    button:focus:not(:focus-visible), a:focus:not(:focus-visible) {
+      outline: none;
+      box-shadow: none;
+    }
+    button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    button:disabled { cursor: wait; opacity: .62; }
+
+    /* ─── Top Bar ───────────────────────────────────────────── */
     header.topbar {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 2rem;
-      padding: 0.9rem 2rem;
+      height: 68px;
+      padding: 0 28px;
+      background: rgba(255, 255, 255, .92);
       border-bottom: 1px solid var(--border);
-      background: rgba(11, 15, 25, 0.92);
-      backdrop-filter: blur(8px);
+      backdrop-filter: blur(16px);
+      gap: 20px;
       position: sticky;
       top: 0;
       z-index: 30;
     }
-
-    .brand-wordmark {
-      font-family: var(--mono);
-      font-size: 1.15rem;
-      font-weight: 600;
-      color: var(--text);
-      text-decoration: none;
-      white-space: nowrap;
-      flex-shrink: 0;
-      letter-spacing: -0.02em;
+    .brand { display: flex; align-items: center; gap: 11px; color: var(--text); text-decoration: none; }
+    .brand-mark {
+      display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px;
+      background: var(--accent); color: #ffffff; font: 600 18px var(--mono); box-shadow: 0 5px 14px rgba(91, 78, 228, .22);
     }
+    .brand-wordmark { font: 700 18px var(--sans); letter-spacing: -.04em; color: var(--text); text-decoration: none; white-space: nowrap; }
+    .brand-edition { color: var(--muted); font-size: 11px; font-weight: 500; margin-left: 2px; }
+    .topbar-status { display: flex; align-items: center; gap: 8px; margin-left: auto; color: var(--muted); font-size: 12px; }
+    .live-dot { width: 7px; height: 7px; border-radius: 50%; background: #24b47e; box-shadow: 0 0 0 4px #e8f7f1; }
+    .topbar-cta { margin-left: 4px; flex-shrink: 0; }
 
-    nav.topnav {
-      display: flex;
-      align-items: center;
-      gap: 1.5rem;
-      overflow-x: auto;
+    /* ─── App Layout & Sidebar ─────────────────────────────── */
+    .app-layout { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: calc(100vh - 68px); }
+    .sidebar {
+      position: sticky; top: 68px; height: calc(100vh - 68px); padding: 28px 16px 20px;
+      border-right: 1px solid var(--border); background: #fbfbfd; display: flex; flex-direction: column;
     }
-
+    .nav-caption { margin: 0 12px 10px; color: #8c93a6; font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+    nav.topnav { display: flex; flex-direction: column; align-items: stretch; gap: 5px; overflow: visible; }
     nav.topnav button.nav-link {
-      background: transparent;
-      border: none;
-      color: var(--muted);
-      font-family: var(--sans);
-      font-size: 0.88rem;
-      font-weight: 500;
-      padding: 0.35rem 0;
-      cursor: pointer;
-      white-space: nowrap;
-      flex-shrink: 0;
-      border-bottom: 2px solid transparent;
-      transition: color 150ms ease, border-color 150ms ease;
+      display: flex; align-items: center; gap: 11px; width: 100%; padding: 11px 12px;
+      background: transparent; border: 0; border-radius: 9px; color: var(--text-secondary);
+      text-align: left; font-size: 13px; font-weight: 500; cursor: pointer; white-space: nowrap;
+      transition: background 160ms ease, color 160ms ease;
+    }
+    nav.topnav button.nav-link svg { width: 17px; height: 17px; flex: 0 0 auto; stroke-width: 1.7; }
+    nav.topnav button.nav-link:hover { color: var(--text); background: #f0eff8; }
+    nav.topnav button.nav-link.active { color: var(--accent); background: #ece8ff; font-weight: 650; }
+    .sidebar-note {
+      margin-top: auto; padding: 15px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface);
+    }
+    .sidebar-note strong { display: block; margin-bottom: 5px; color: var(--text-secondary); font-size: 11px; }
+    .sidebar-note span { display: block; color: var(--muted); font: 10px/1.6 var(--mono); overflow-wrap: anywhere; }
+
+    /* ─── Workspace & Headings ─────────────────────────────── */
+    main.workspace { width: 100%; max-width: 1540px; padding: 32px 36px 48px; margin: 0; }
+    .page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 26px; }
+    .page-eyebrow { margin-bottom: 8px; color: var(--accent); font-size: 10px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase; }
+    .page-heading h1 { color: var(--text); font-size: clamp(23px, 2vw, 29px); line-height: 1.25; letter-spacing: -.035em; }
+    .page-heading p { max-width: 700px; margin-top: 8px; color: var(--muted); font-size: 13px; line-height: 1.65; }
+    .environment-chip {
+      flex: 0 0 auto; display: flex; align-items: center; gap: 8px; margin-top: 4px; padding: 7px 10px;
+      border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-secondary);
+      font: 10px var(--mono); max-width: 330px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
     }
 
-    nav.topnav button.nav-link:hover {
-      color: var(--text);
+    /* ─── Tabs, KPIs & Panels ──────────────────────────────── */
+    .tab-panel { display: none; animation: panel-in 180ms ease-out; }
+    .tab-panel.active { display: block; }
+    @keyframes panel-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
+    .kpi-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .kpi-box {
+      position: relative; background: var(--surface); border: 1px solid var(--border);
+      padding: 16px 18px; border-radius: 12px; box-shadow: none; min-width: 0;
+    }
+    .kpi-label { margin-bottom: 8px; font-size: 11px; font-weight: 500; color: var(--muted); }
+    .kpi-value {
+      font-family: var(--sans); font-size: 20px; font-weight: 650; letter-spacing: -.03em;
+      color: var(--text); font-variant-numeric: tabular-nums;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .kpi-sub {
+      margin-top: 6px; font: 10px/1.5 var(--mono); color: var(--muted);
+      font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
 
-    nav.topnav button.nav-link.active {
-      color: var(--accent);
-      border-bottom-color: var(--accent);
-    }
+    .split-grid, .split-grid-asym { display: grid; gap: 18px; margin: 0; align-items: start; }
+    .split-grid { grid-template-columns: 1fr 1fr; }
+    .split-grid-asym { grid-template-columns: minmax(330px, 5fr) minmax(460px, 7fr); }
 
-    .topbar-cta {
-      flex-shrink: 0;
+    .panel {
+      background: var(--surface); border: 1px solid var(--border);
+      padding: 0; border-radius: 14px; box-shadow: var(--shadow); overflow: hidden;
     }
-
-    /* ─── Main Container & Typography ──────────────────────── */
-    main.workspace {
-      width: 100%;
-      max-width: 1360px;
-      margin: 0 auto;
-      padding: 1.75rem 2rem 3rem;
-      flex: 1;
-    }
-
-    .hero-banner {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: space-between;
-      align-items: flex-end;
-      gap: 1.25rem;
-      padding-bottom: 1.5rem;
-      margin-bottom: 1.75rem;
+    .panel-header {
+      display: flex; justify-content: space-between; align-items: center; gap: 1rem;
+      min-height: 75px; margin: 0; padding: 18px 20px; background: var(--surface);
       border-bottom: 1px solid var(--border);
     }
+    .panel-header[style*="column"] { padding: 18px 20px 14px; }
+    .panel-title { font-size: 13px; font-weight: 650; letter-spacing: -.01em; color: var(--text); }
+    .panel-subtitle { margin-top: 4px; font-size: 11px; line-height: 1.5; color: var(--muted); }
+    .panel > :not(.panel-header) { margin-left: 20px; margin-right: 20px; }
+    .panel > .panel-header + * { margin-top: 16px; }
+    .panel > .panel-header + :last-child, .panel > :last-child { margin-bottom: 20px; }
+    .panel > table.data-table { width: calc(100% - 40px); }
+    .panel > .fleet-grid { margin-top: 16px; }
 
-    .hero-title {
-      font-size: clamp(1.45rem, 2.2vw, 1.9rem);
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      color: var(--text);
-      text-wrap: balance;
-    }
-
-    .hero-meta {
-      margin-top: 0.4rem;
-      font-size: 0.84rem;
-      color: var(--muted);
-      font-family: var(--mono);
-      font-variant-numeric: tabular-nums;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.5rem;
-      align-items: center;
-    }
-
-    .hero-meta .sep {
-      color: #475569;
-    }
-
-    /* ─── Buttons & Controls ───────────────────────────────── */
+    /* ─── Buttons & Segmented Controls ─────────────────────── */
     button.btn {
       background: var(--accent);
-      color: #030712;
-      border: 1px solid transparent;
-      padding: 0.5rem 1rem;
-      border-radius: 6px;
+      color: #ffffff;
+      border: 1px solid var(--accent);
+      padding: 9px 14px;
+      border-radius: 8px;
       font-family: var(--sans);
-      font-size: 0.84rem;
-      font-weight: 600;
+      font-size: 11px;
+      font-weight: 650;
       cursor: pointer;
       white-space: nowrap;
       flex-shrink: 0;
-      transition: opacity 150ms ease, transform 150ms ease;
+      transition: background 150ms ease, border-color 150ms ease, color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
     }
-
     button.btn:hover {
-      opacity: 0.92;
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+      color: #ffffff;
     }
+    button.btn:active { transform: translateY(1px); }
 
     button.btn.secondary {
       background: var(--surface);
       color: var(--text-secondary);
       border-color: var(--border);
     }
-
     button.btn.secondary:hover {
-      border-color: #334155;
-      color: var(--text);
+      color: var(--accent);
+      border-color: #c7bff8;
+      background: #f8f6ff;
     }
 
     button.btn.ghost {
-      background: transparent;
-      color: var(--muted);
-      border-color: var(--border);
-      padding: 0.35rem 0.7rem;
-      font-size: 0.78rem;
-      font-family: var(--mono);
+      padding: 6px 10px;
+      border-radius: 7px;
+      background: var(--surface-alt);
+      color: var(--text-secondary);
+      border: 1px solid var(--border);
+      font: 500 10px var(--sans);
+    }
+    button.btn.ghost:hover {
+      color: var(--accent);
+      border-color: #c7bff8;
+      background: #f2efff;
+    }
+    button.btn.ghost.active-preset {
+      color: var(--accent);
+      border-color: #b8aef5;
+      background: #ece8ff;
+      font-weight: 650;
     }
 
-    button.btn.ghost:hover {
-      color: var(--text);
-      border-color: var(--accent);
-    }
+    .preset-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 16px; margin-bottom: 14px; }
+    .preset-bar span.preset-caption { font-size: 10px; color: var(--muted); margin-right: 4px; font-weight: 500; }
 
     .segmented {
-      display: inline-flex;
-      background: var(--code-bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 0.2rem;
-      gap: 0.2rem;
+      display: inline-flex; padding: 3px; gap: 2px; border-radius: 8px;
+      background: var(--surface-alt); border: 1px solid var(--border);
     }
-
     .segmented button {
-      background: transparent;
-      border: none;
-      color: var(--muted);
-      font-family: var(--sans);
-      font-size: 0.8rem;
-      font-weight: 500;
-      padding: 0.35rem 0.75rem;
-      border-radius: 4px;
-      cursor: pointer;
-      white-space: nowrap;
+      background: transparent; border: none; padding: 6px 10px; border-radius: 6px;
+      color: var(--text-secondary); font: 500 10px var(--sans); cursor: pointer; white-space: nowrap;
     }
-
+    .segmented button:hover { color: var(--text); }
     .segmented button.active {
-      background: var(--surface);
-      color: var(--text);
-      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-    }
-
-    /* ─── Layout Sections & Panels (Single-Elevation) ──────── */
-    .tab-panel {
-      display: none;
-    }
-
-    .tab-panel.active {
-      display: block;
-    }
-
-    .kpi-strip {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-      gap: 1rem;
-      margin-bottom: 1.5rem;
-    }
-
-    .kpi-box {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 1rem 1.25rem;
-    }
-
-    .kpi-label {
-      font-size: 0.78rem;
-      color: var(--muted);
-      margin-bottom: 0.35rem;
-    }
-
-    .kpi-value {
-      font-family: var(--mono);
-      font-size: 1.35rem;
-      font-weight: 600;
-      font-variant-numeric: tabular-nums;
-      color: var(--text);
-    }
-
-    .kpi-sub {
-      font-size: 0.76rem;
-      color: var(--muted);
-      margin-top: 0.25rem;
-      font-family: var(--mono);
-      font-variant-numeric: tabular-nums;
-    }
-
-    .split-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 1.5rem;
-      margin-bottom: 1.5rem;
-      align-items: stretch;
-    }
-
-    .split-grid-asym {
-      display: grid;
-      grid-template-columns: 5fr 7fr;
-      gap: 1.5rem;
-      margin-bottom: 1.5rem;
-      align-items: start;
-    }
-
-    @media (max-width: 980px) {
-      .split-grid,
-      .split-grid-asym {
-        grid-template-columns: 1fr;
-      }
-    }
-
-    .panel {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 1.35rem;
-    }
-
-    .panel-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 1rem;
-      margin-bottom: 1rem;
-      padding-bottom: 0.75rem;
-      border-bottom: 1px solid var(--border);
-    }
-
-    .panel-title {
-      font-size: 0.98rem;
-      font-weight: 600;
-      color: var(--text);
-    }
-
-    .panel-subtitle {
-      font-size: 0.8rem;
-      color: var(--muted);
+      color: var(--accent); background: var(--surface); font-weight: 650;
+      box-shadow: 0 1px 4px rgba(30, 30, 50, .08);
     }
 
     /* ─── Forms & Inputs ───────────────────────────────────── */
-    .form-row {
-      display: flex;
-      gap: 0.75rem;
-      margin-bottom: 0.85rem;
-      flex-wrap: wrap;
-      align-items: center;
+    .form-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 14px; }
+    .field-group { display: flex; flex-direction: column; flex: 1; gap: 6px; min-width: 110px; }
+    .field-group label { color: var(--text-secondary); font-size: 10px; font-weight: 550; }
+    input[type="text"], input[type="number"], input[type="password"], select, textarea {
+      width: 100%; min-height: 38px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px;
+      background: var(--surface-alt); color: var(--text); font: 11px/1.5 var(--mono);
+      transition: border-color 150ms ease, background 150ms ease, box-shadow 150ms ease;
     }
-
-    .field-group {
-      display: flex;
-      flex-direction: column;
-      gap: 0.3rem;
-      flex: 1;
-      min-width: 160px;
-    }
-
-    .field-group label {
-      font-size: 0.78rem;
-      color: var(--muted);
-      font-weight: 500;
-    }
-
-    input[type="text"],
-    input[type="number"],
-    input[type="password"],
-    select,
-    textarea {
-      background: var(--code-bg);
-      border: 1px solid var(--border);
-      color: var(--text);
-      padding: 0.52rem 0.75rem;
-      border-radius: 5px;
-      font-family: var(--mono);
-      font-size: 0.83rem;
-      width: 100%;
-      transition: border-color 150ms ease;
-    }
-
-    input:focus,
-    select:focus,
-    textarea:focus {
+    input:hover, select:hover, textarea:hover { border-color: #c8ccd9; }
+    input:focus, select:focus, textarea:focus {
+      background: var(--surface);
+      border-color: var(--accent);
       outline: none;
-      border-color: var(--border-focus);
+      box-shadow: 0 0 0 3px rgba(91, 78, 228, .12);
     }
-
-    textarea {
-      min-height: 150px;
-      resize: vertical;
-      line-height: 1.45;
-    }
+    textarea { min-height: 310px; resize: vertical; }
 
     .checkbox-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
-      gap: 0.6rem;
-      margin: 0.85rem 0;
-      padding: 0.85rem;
-      background: var(--code-bg);
-      border: 1px solid var(--border);
-      border-radius: 5px;
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+      gap: 10px 14px; margin: 14px 0; padding: 13px;
+      border: 1px solid var(--border); border-radius: 9px; background: var(--surface-alt);
     }
-
     .checkbox-label {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      font-size: 0.82rem;
-      color: var(--text-secondary);
-      cursor: pointer;
-      user-select: none;
+      display: flex; align-items: center; gap: 8px;
+      color: var(--text-secondary); font-size: 10px; cursor: pointer; user-select: none;
     }
-
-    .checkbox-label input[type="checkbox"] {
-      accent-color: var(--accent);
-      width: 15px;
-      height: 15px;
-    }
+    .checkbox-label input[type="checkbox"] { accent-color: var(--accent); width: 14px; height: 14px; }
 
     /* ─── Code & Terminal Blocks ───────────────────────────── */
     pre.code-view {
-      background: var(--code-bg);
-      border: 1px solid var(--border);
-      border-radius: 5px;
-      padding: 1rem;
-      font-family: var(--mono);
-      font-size: 0.81rem;
-      line-height: 1.5;
-      color: #e2e8f0;
-      overflow-x: auto;
-      white-space: pre-wrap;
-      word-break: break-word;
-      max-height: 400px;
-      overflow-y: auto;
+      min-height: 250px; max-height: 510px; padding: 17px; border: 0; border-radius: 10px;
+      background: var(--code-bg); color: #e2e8f0; font: 11px/1.7 var(--mono); tab-size: 2;
+      overflow-x: auto; overflow-y: auto; white-space: pre-wrap; word-break: break-word;
       font-variant-numeric: tabular-nums;
     }
-
-    .preset-bar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 0.45rem;
-      margin-bottom: 0.85rem;
-      align-items: center;
+    pre.code-view:empty::before { content: 'Нет данных'; color: #7f879c; }
+    .output-wrap { position: relative; }
+    .output-wrap pre.code-view { margin: 0 20px 20px !important; }
+    .copy-output { position: absolute; z-index: 2; top: 10px; right: 30px; }
+    .code-view.is-loading { color: #a8b0c3; }
+    .code-view.is-loading::after {
+      content: ''; display: inline-block; width: 12px; height: 12px; margin-left: 8px;
+      border: 2px solid #535c73; border-top-color: #c8cfdf; border-radius: 50%;
+      vertical-align: -2px; animation: spin .7s linear infinite;
     }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
-    .preset-bar span.preset-caption {
-      font-size: 0.76rem;
-      color: var(--muted);
-      margin-right: 0.25rem;
+    .uri-preview-bar {
+      margin-bottom: 14px; padding: 10px 12px; background: var(--surface-alt);
+      border: 1px solid var(--border); border-radius: 8px; font: 11px var(--mono);
+      display: flex; justify-content: space-between; align-items: center; gap: 12px;
     }
+    .uri-preview-bar span { color: var(--accent); font-weight: 600; word-break: break-all; }
 
-    /* ─── Data Tables & Lists ──────────────────────────────── */
-    table.data-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.83rem;
-      font-variant-numeric: tabular-nums;
+    /* ─── Data Tables & Status Pills ───────────────────────── */
+    table.data-table { width: 100%; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }
+    table.data-table th, table.data-table td {
+      padding: 11px 9px; text-align: left; border-bottom: 1px solid var(--border);
     }
-
-    table.data-table th,
-    table.data-table td {
-      padding: 0.55rem 0.75rem;
-      text-align: left;
-      border-bottom: 1px solid var(--border);
-    }
-
     table.data-table th {
-      color: var(--muted);
-      font-weight: 500;
-      font-size: 0.76rem;
+      color: var(--muted); font-size: 9px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase;
     }
-
-    table.data-table td.num,
-    table.data-table th.num {
-      text-align: right;
-      font-family: var(--mono);
-    }
-
-    table.data-table td.mono {
-      font-family: var(--mono);
-    }
+    table.data-table tbody tr:last-child td { border-bottom: 0; }
+    table.data-table td { color: var(--text-secondary); }
+    table.data-table td.num, table.data-table th.num { text-align: right; font-family: var(--mono); }
+    table.data-table td.mono { font-family: var(--mono); overflow-wrap: anywhere; }
 
     .status-text {
-      font-family: var(--mono);
-      font-size: 0.78rem;
-      font-weight: 600;
+      display: inline-flex; align-items: center; padding: 4px 7px; border-radius: 20px;
+      font: 600 9px var(--sans); white-space: nowrap;
     }
+    .status-ok { color: var(--success); background: #edf8f3; }
+    .status-warn { color: var(--warning); background: #fff6e9; }
+    .status-err { color: var(--danger); background: #fff0f0; }
 
-    .status-ok { color: var(--success); }
-    .status-warn { color: var(--warning); }
-    .status-err { color: var(--danger); }
-
-    /* ─── Fleet Node Matrix ────────────────────────────────── */
-    .fleet-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 1rem;
-      margin-top: 1rem;
-    }
-
-    .fleet-node {
-      background: var(--code-bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 1rem;
-    }
-
-    .fleet-node-top {
-      display: flex;
-      justify-content: space-between;
-      align-items: baseline;
-      margin-bottom: 0.4rem;
-    }
-
-    .fleet-node-name {
-      font-family: var(--mono);
-      font-weight: 600;
-      font-size: 0.9rem;
-      color: var(--text);
-    }
-
-    .fleet-node-meta {
-      font-size: 0.76rem;
-      color: var(--muted);
-      font-family: var(--mono);
-      margin-bottom: 0.65rem;
-    }
-
+    /* ─── Fleet Node Matrix & Toast ────────────────────────── */
+    .fleet-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin-top: 1rem; }
+    .fleet-node { padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-alt); }
+    .fleet-node-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 0.4rem; }
+    .fleet-node-name { font: 600 11px var(--mono); color: var(--text); }
+    .fleet-node-meta { font: 9px/1.6 var(--mono); color: var(--muted); margin-bottom: 0.65rem; overflow-wrap: anywhere; }
     .fleet-node-out {
-      font-family: var(--mono);
-      font-size: 0.79rem;
-      color: var(--text-secondary);
-      padding-top: 0.55rem;
-      border-top: 1px solid var(--border);
-      word-break: break-word;
+      max-height: 140px; overflow: auto; color: var(--text-secondary); font: 10px var(--mono);
+      padding-top: 0.55rem; border-top: 1px solid var(--border); white-space: pre-wrap; word-break: break-word;
     }
 
-    footer.site-footer {
-      border-top: 1px solid var(--border);
-      padding: 1.25rem 2rem;
-      text-align: center;
-      font-size: 0.8rem;
-      color: var(--muted);
-      font-family: var(--mono);
+    .toast-region { position: fixed; right: 24px; bottom: 24px; z-index: 100; display: grid; gap: 8px; pointer-events: none; }
+    .toast {
+      max-width: 360px; padding: 12px 16px; border: 1px solid var(--border); border-radius: 10px;
+      background: #202332; box-shadow: 0 12px 30px rgba(20, 22, 35, .18); color: #ffffff;
+      font-size: 12px; animation: panel-in 180ms ease;
+    }
+    .toast.error { background: #9f3434; }
+
+    @media (max-width: 1180px) {
+      .app-layout { grid-template-columns: 200px minmax(0, 1fr); }
+      main.workspace { padding: 26px 24px 40px; }
+      .split-grid, .split-grid-asym { grid-template-columns: 1fr; }
+      .kpi-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 760px) {
+      header.topbar { height: 60px; padding: 0 16px; }
+      .brand-edition, .topbar-status { display: none; }
+      .app-layout { display: block; min-height: calc(100vh - 60px); }
+      .sidebar { position: sticky; top: 60px; z-index: 20; width: 100%; height: auto; padding: 8px 12px; border-right: 0; border-bottom: 1px solid var(--border); overflow-x: auto; }
+      .nav-caption, .sidebar-note { display: none; }
+      nav.topnav { flex-direction: row; gap: 4px; }
+      nav.topnav button.nav-link { width: auto; padding: 9px 11px; white-space: nowrap; }
+      nav.topnav button.nav-link svg { display: none; }
+      main.workspace { padding: 24px 16px 36px; }
+      .page-heading { margin-bottom: 20px; }
+      .environment-chip { display: none; }
+      .kpi-strip { gap: 9px; }
+      .kpi-box { padding: 13px; }
+      .kpi-value { font-size: 16px; }
+      .split-grid, .split-grid-asym { grid-template-columns: minmax(0, 1fr); }
+      .panel-header { padding: 16px; flex-wrap: wrap; }
+      .panel > :not(.panel-header) { margin-left: 16px; margin-right: 16px; }
+      .panel > table.data-table { width: calc(100% - 32px); }
+      .output-wrap pre.code-view { margin: 0 16px 16px !important; }
+      .field-group { min-width: 100%; }
+      .field-group[style*="max-width"] { max-width: none !important; }
+      .toast-region { left: 16px; right: 16px; bottom: 16px; }
+      .toast { max-width: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
     }
   </style>
 </head>
 <body>
-  <!-- 3-Zone Top Navigation Bar -->
   <header class="topbar">
-    <a href="#shell" class="brand-wordmark" onclick="switchTab('shell'); return false;">uniconn</a>
-
-    <nav class="topnav" aria-label="Primary Workspace Navigation">
-      <button type="button" class="nav-link active" data-tab="shell" onclick="switchTab('shell')">Overview &amp; Shell</button>
-      <button type="button" class="nav-link" data-tab="hooks" onclick="switchTab('hooks')">Hooks &amp; Telemetry</button>
-      <button type="button" class="nav-link" data-tab="pool" onclick="switchTab('pool')">Fleet &amp; Inventory</button>
-      <button type="button" class="nav-link" data-tab="uri" onclick="switchTab('uri')">URI &amp; Code Builder</button>
-      <button type="button" class="nav-link" data-tab="tests" onclick="switchTab('tests')">Screen &amp; Test Suite</button>
-    </nav>
-
+    <a href="#shell" class="brand" onclick="switchTab('shell'); return false;" aria-label="uniconn — командная консоль">
+      <span class="brand-mark">u</span>
+      <span class="brand-wordmark">uniconn</span>
+      <span class="brand-edition">CONSOLE</span>
+    </a>
+    <div class="topbar-status"><span class="live-dot"></span><span>Локальная среда</span></div>
     <div class="topbar-cta">
-      <button type="button" class="btn" onclick="switchTab('tests'); runTestSuite('all');">Run Unit Tests</button>
+      <button type="button" class="btn secondary" onclick="switchTab('tests'); runTestSuite('all');">Запустить тесты</button>
     </div>
   </header>
 
-  <main class="workspace">
-    <!-- Hero Context Strip -->
-    <section class="hero-banner">
-      <div>
-        <h1 class="hero-title">Universal Async-First Command Execution &amp; Telemetry Console</h1>
-        <div class="hero-meta">
-          <span id="meta-version">uniconn v0.6.0</span>
-          <span class="sep">·</span>
-          <span id="meta-python">Python 3.12</span>
-          <span class="sep">·</span>
-          <span id="meta-uname">Linux</span>
-          <span class="sep">·</span>
-          <span id="meta-transports">ssh / local / telnet / serial / ipmi</span>
-          <span class="sep">·</span>
-          <span>structlog JSONL + ClickHouse/Loki ready</span>
-        </div>
+  <div class="app-layout">
+    <aside class="sidebar">
+      <div class="nav-caption">Рабочие области</div>
+      <nav class="topnav" aria-label="Основная навигация">
+        <button type="button" class="nav-link active" data-tab="shell" onclick="switchTab('shell')" aria-current="page">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="m4 17 6-6-6-6M12 19h8"/></svg>Команды
+        </button>
+        <button type="button" class="nav-link" data-tab="hooks" onclick="switchTab('hooks')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Хуки и телеметрия
+        </button>
+        <button type="button" class="nav-link" data-tab="pool" onclick="switchTab('pool')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>Хосты и инвентарь
+        </button>
+        <button type="button" class="nav-link" data-tab="uri" onclick="switchTab('uri')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.1 1.1M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.1-1.1"/></svg>URI и код
+        </button>
+        <button type="button" class="nav-link" data-tab="tests" onclick="switchTab('tests')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3M8 15h8"/></svg>Тесты и Screen
+        </button>
+      </nav>
+      <div class="sidebar-note">
+        <strong>Среда выполнения</strong>
+        <span id="meta-version">uniconn v0.8.0</span>
+        <span id="meta-python">Python 3.12</span>
+        <span id="meta-transports">ssh · local · telnet · serial · ipmi</span>
       </div>
-    </section>
+    </aside>
+
+    <main class="workspace">
+      <section class="page-heading" aria-labelledby="page-title">
+        <div>
+          <div class="page-eyebrow" id="page-eyebrow">Песочница</div>
+          <h1 id="page-title">Выполнение команд</h1>
+          <p id="page-description">Запускайте команды в интерактивной сессии, проверяйте результат и состояние окружения.</p>
+        </div>
+        <div class="environment-chip" id="meta-uname" title="Операционная система">Linux</div>
+      </section>
 
     <!-- ===================================================================== -->
     <!-- TAB 1: OVERVIEW & SHELL                                               -->
@@ -676,8 +526,8 @@
               onkeydown="handleTerminalKeydown(event)"
               style="flex: 1;"
             />
-            <button type="button" class="btn" onclick="runShellCmd()">ShellSession.execute()</button>
-            <button type="button" class="btn secondary" onclick="runLocalCmd()">Connection('local://').run()</button>
+            <button type="button" class="btn" id="btn-run-shell" onclick="runShellCmd()">ShellSession.execute()</button>
+            <button type="button" class="btn secondary" id="btn-run-local" onclick="runLocalCmd()">Connection('local://').run()</button>
           </div>
 
           <pre class="code-view" id="output-box">Ready. Execute a command via ShellSession.execute() or Connection.from_uri("local://").run().</pre>
@@ -777,7 +627,7 @@
             </div>
           </div>
 
-          <div class="form-row" style="margin-top: 1rem; margin-bottom: 0;">
+          <div class="form-row" style="margin-top: 1rem;">
             <button type="button" class="btn" onclick="runHooksSandbox()">Execute with Hooks &amp; Telemetry</button>
             <span id="hk-status-badge" class="status-text status-ok">READY</span>
           </div>
@@ -878,9 +728,9 @@
 
           <div class="preset-bar">
             <span class="preset-caption">Fleet Presets:</span>
-            <button type="button" class="btn ghost" onclick="setPoolPreset('identity')">Node Identity &amp; Kernel</button>
-            <button type="button" class="btn ghost" onclick="setPoolPreset('health')">Health Probe</button>
-            <button type="button" class="btn ghost" onclick="setPoolPreset('role')">Role-Aware Check</button>
+            <button type="button" class="btn ghost active-preset" data-pool-preset="identity" onclick="setPoolPreset('identity')">Node Identity &amp; Kernel</button>
+            <button type="button" class="btn ghost" data-pool-preset="health" onclick="setPoolPreset('health')">Health Probe</button>
+            <button type="button" class="btn ghost" data-pool-preset="role" onclick="setPoolPreset('role')">Role-Aware Check</button>
           </div>
 
           <div class="form-row">
@@ -888,6 +738,7 @@
               type="text"
               id="pool-cmd"
               value='echo "[$UNICONN_HOST] role=$UNICONN_ROLE dc=$UNICONN_DC: $(uname -srm)"'
+              onkeydown="if (event.key === 'Enter') { event.preventDefault(); runPoolSandbox(); }"
             />
           </div>
 
@@ -998,9 +849,9 @@
             </div>
           </div>
 
-          <div style="margin-bottom: 0.85rem; padding: 0.65rem 0.85rem; background: var(--code-bg); border: 1px solid var(--border); border-radius: 5px; font-family: var(--mono); font-size: 0.8rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
-            <span id="ub-uri-safe-display" style="color: var(--accent); word-break: break-all;">ssh://deploy:***@prod-web-01.eu.internal:22?keepalive=30&amp;known_hosts=strict</span>
-            <button type="button" class="btn ghost" onclick="copyCurrentSnippet()">Copy Code</button>
+          <div class="uri-preview-bar">
+            <span id="ub-uri-safe-display">ssh://deploy:***@prod-web-01.eu.internal:22?keepalive=30&amp;known_hosts=strict</span>
+            <button type="button" class="btn ghost" id="copy-snippet-btn" onclick="copyCurrentSnippet()">Copy Code</button>
           </div>
 
           <pre class="code-view" id="ub-snippet-box" style="min-height: 260px;"></pre>
@@ -1078,11 +929,9 @@
         </div>
       </div>
     </section>
-  </main>
-
-  <footer class="site-footer">
-    uniconn v0.6.0 · Async-First Remote Execution &amp; Structured Telemetry Library · Python 3.11+
-  </footer>
+    </main>
+  </div>
+  <div class="toast-region" id="toast-region" role="status" aria-live="polite"></div>
 
   <script>
     // ─── State ───────────────────────────────────────────────────────
@@ -1102,23 +951,76 @@
     let currentSnippetView = 'async_python';
     let defaultInventoryYaml = '';
 
-    // ─── Tab Switching ───────────────────────────────────────────────
+    const WORKSPACES = {
+      shell: ['Песочница', 'Выполнение команд', 'Запускайте команды в интерактивной сессии, проверяйте результат и состояние окружения.'],
+      hooks: ['Наблюдаемость', 'Хуки и телеметрия', 'Проверяйте политики безопасности, маскирование секретов и структурированные события.'],
+      pool: ['Оркестрация', 'Хосты и инвентарь', 'Настройте YAML-инвентарь и выполните операцию на группе хостов параллельно.'],
+      uri: ['Конструктор', 'URI и готовый код', 'Соберите подключение и получите проверенный фрагмент для Async Python, Sync Python или CLI.'],
+      tests: ['Качество', 'Тесты и фоновые задачи', 'Запускайте пакеты unit-тестов и проверяйте обработку логов ScreenPool.']
+    };
+
     function switchTab(tabId) {
+      const workspace = WORKSPACES[tabId] || WORKSPACES.shell;
       document.querySelectorAll('.tab-panel').forEach(el => {
-        el.classList.toggle('active', el.id === 'tab-' + tabId);
+        const active = el.id === 'tab-' + tabId;
+        el.classList.toggle('active', active);
+        el.hidden = !active;
       });
       document.querySelectorAll('nav.topnav .nav-link').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.tab === tabId);
+        const active = btn.dataset.tab === tabId;
+        btn.classList.toggle('active', active);
+        if (active) btn.setAttribute('aria-current', 'page');
+        else btn.removeAttribute('aria-current');
       });
-      if (tabId === 'uri' && !lastUriData) {
-        buildUriLive();
+      document.getElementById('page-eyebrow').textContent = workspace[0];
+      document.getElementById('page-title').textContent = workspace[1];
+      document.getElementById('page-description').textContent = workspace[2];
+      history.replaceState(null, '', '#' + tabId);
+      if (tabId === 'uri' && !lastUriData) buildUriLive();
+    }
+
+    function showToast(message, isError = false) {
+      const toast = document.createElement('div');
+      toast.className = 'toast' + (isError ? ' error' : '');
+      toast.textContent = message;
+      document.getElementById('toast-region').append(toast);
+      setTimeout(() => toast.remove(), 3200);
+    }
+
+    async function apiFetch(url, options) {
+      try {
+        const response = await window.fetch(url, options);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return response;
+      } catch (error) {
+        showToast('Не удалось связаться с сервером. Проверьте, что панель запущена.', true);
+        throw error;
+      }
+    }
+
+    function setBusy(box, active, text = 'Выполняется запрос…') {
+      box.classList.toggle('is-loading', active);
+      box.setAttribute('aria-busy', String(active));
+      if (active) box.textContent = text;
+    }
+
+    async function copyText(text, button) {
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+        const previous = button?.textContent;
+        if (button) button.textContent = 'Скопировано';
+        showToast('Содержимое скопировано в буфер обмена');
+        setTimeout(() => { if (button) button.textContent = previous; }, 1800);
+      } catch (_) {
+        showToast('Буфер обмена недоступен в этом окружении', true);
       }
     }
 
     // ─── Initial Status Load ─────────────────────────────────────────
     async function loadStatus() {
       try {
-        const res = await fetch('/api/status');
+        const res = await apiFetch('/api/status');
         const data = await res.json();
         document.getElementById('meta-version').textContent = 'uniconn v' + data.version;
         document.getElementById('meta-python').textContent = data.python_version;
@@ -1217,64 +1119,97 @@
       }
     }
 
+    function setActiveRunner(kind) {
+      const shellBtn = document.getElementById('btn-run-shell');
+      const localBtn = document.getElementById('btn-run-local');
+      if (shellBtn && localBtn) {
+        shellBtn.className = kind === 'shell' ? 'btn' : 'btn secondary';
+        localBtn.className = kind === 'local' ? 'btn' : 'btn secondary';
+      }
+    }
+
     async function runShellCmd() {
       const cmd = document.getElementById('cmd-input').value.trim();
       if (!cmd) return;
       pushHistory(cmd);
+      setActiveRunner('shell');
       const mode = document.getElementById('shell-mode-select').value;
-      const cols = parseInt(document.getElementById('shell-cols').value || '120', 10);
-      const rows = parseInt(document.getElementById('shell-rows').value || '40', 10);
+      const cols = parseInt(document.getElementById('shell-cols').value || '120', 10) || 120;
+      const rows = parseInt(document.getElementById('shell-rows').value || '40', 10) || 40;
       const box = document.getElementById('output-box');
-      box.textContent = 'Executing in ShellSession...';
+      setBusy(box, true, 'Executing in ShellSession...');
 
-      const res = await fetch('/api/shell', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cmd, mode, cols, rows })
-      });
-      const data = await res.json();
-      lastResultData = data;
+      try {
+        const res = await apiFetch('/api/shell', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cmd, mode, cols, rows })
+        });
+        const data = await res.json();
+        lastResultData = data;
 
-      if (data.cwd) document.getElementById('kpi-shell-cwd').textContent = data.cwd;
-      if (data.term_size) document.getElementById('kpi-shell-size').textContent = data.term_size.join('×');
-      document.getElementById('kpi-shell-latency').textContent = (data.duration_ms ?? (data.duration_s * 1000)).toFixed(2) + ' ms';
-      document.getElementById('kpi-shell-exit').textContent = `Exit code: ${data.exit_code} (${data.ok ? 'OK' : 'ERROR'})`;
+        if (data.cwd) document.getElementById('kpi-shell-cwd').textContent = data.cwd;
+        if (data.term_size) document.getElementById('kpi-shell-size').textContent = data.term_size.join('×');
+        document.getElementById('kpi-shell-latency').textContent = (data.duration_ms ?? (data.duration_s * 1000)).toFixed(2) + ' ms';
+        document.getElementById('kpi-shell-exit').textContent = `Exit code: ${data.exit_code} (${data.ok ? 'OK' : 'ERROR'})`;
 
-      const envKeys = Object.entries(data.env || {});
-      document.getElementById('shell-env-summary').textContent = envKeys.length
-        ? 'Exported env vars: ' + envKeys.map(([k, v]) => `${k}=${v}`).join(', ')
-        : 'Exported env vars: none';
+        const envKeys = Object.entries(data.env || {});
+        document.getElementById('shell-env-summary').textContent = envKeys.length
+          ? 'Exported env vars: ' + envKeys.map(([k, v]) => `${k}=${v}`).join(', ')
+          : 'Exported env vars: none';
 
-      renderResultBox();
+        renderResultBox();
+      } catch (_) {
+        box.textContent = 'Error executing command in ShellSession.';
+      } finally {
+        setBusy(box, false);
+      }
     }
 
     async function resetShellSession() {
-      const cols = parseInt(document.getElementById('shell-cols').value || '120', 10);
-      const rows = parseInt(document.getElementById('shell-rows').value || '40', 10);
-      const res = await fetch('/api/shell', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cmd: 'pwd', mode: 'fake', cols, rows, reset: true })
-      });
-      const data = await res.json();
-      lastResultData = data;
-      document.getElementById('kpi-shell-cwd').textContent = data.cwd || '/root';
-      document.getElementById('shell-env-summary').textContent = 'Exported env vars: none';
-      renderResultBox();
+      const mode = document.getElementById('shell-mode-select').value;
+      const cols = parseInt(document.getElementById('shell-cols').value || '120', 10) || 120;
+      const rows = parseInt(document.getElementById('shell-rows').value || '40', 10) || 40;
+      const box = document.getElementById('output-box');
+      setBusy(box, true, 'Resetting ShellSession...');
+      try {
+        const res = await apiFetch('/api/shell', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ cmd: 'pwd', mode, cols, rows, reset: true })
+        });
+        const data = await res.json();
+        lastResultData = data;
+        document.getElementById('kpi-shell-cwd').textContent = data.cwd || '/root';
+        if (data.term_size) document.getElementById('kpi-shell-size').textContent = data.term_size.join('×');
+        document.getElementById('shell-env-summary').textContent = 'Exported env vars: none';
+        renderResultBox();
+      } catch (_) {
+        box.textContent = 'Error resetting ShellSession.';
+      } finally {
+        setBusy(box, false);
+      }
     }
 
     async function runLocalCmd() {
       const cmd = document.getElementById('cmd-input').value.trim();
       if (!cmd) return;
       pushHistory(cmd);
+      setActiveRunner('local');
       const box = document.getElementById('output-box');
-      box.textContent = 'Executing via Connection.from_uri("local://").run()...';
-      const res = await fetch('/api/local?cmd=' + encodeURIComponent(cmd));
-      const data = await res.json();
-      lastResultData = data;
-      document.getElementById('kpi-shell-latency').textContent = (data.duration_ms ?? (data.duration_s * 1000)).toFixed(2) + ' ms';
-      document.getElementById('kpi-shell-exit').textContent = `Exit code: ${data.exit_code} (${data.ok ? 'OK' : 'ERROR'})`;
-      renderResultBox();
+      setBusy(box, true, 'Executing via Connection.from_uri("local://").run()...');
+      try {
+        const res = await apiFetch('/api/local?cmd=' + encodeURIComponent(cmd));
+        const data = await res.json();
+        lastResultData = data;
+        document.getElementById('kpi-shell-latency').textContent = (data.duration_ms ?? (data.duration_s * 1000)).toFixed(2) + ' ms';
+        document.getElementById('kpi-shell-exit').textContent = `Exit code: ${data.exit_code} (${data.ok ? 'OK' : 'ERROR'})`;
+        renderResultBox();
+      } catch (_) {
+        box.textContent = 'Error executing command via local:// transport.';
+      } finally {
+        setBusy(box, false);
+      }
     }
 
     // ─── Tab 2: Hooks, Security & Telemetry Sandbox ──────────────────
@@ -1383,7 +1318,7 @@
         }
       };
 
-      const res = await fetch('/api/hooks', {
+      const res = await apiFetch('/api/hooks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -1408,7 +1343,7 @@
     }
 
     async function resetHooksMetrics() {
-      const res = await fetch('/api/hooks', {
+      const res = await apiFetch('/api/hooks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reset_metrics: true, only_reset: true })
@@ -1458,8 +1393,12 @@
 
     function setPoolPreset(presetOrCmd) {
       const cmd = POOL_PRESETS[presetOrCmd] || presetOrCmd;
-      document.getElementById('pool-cmd').value = cmd;
-      runPoolSandbox();
+      const input = document.getElementById('pool-cmd');
+      input.value = cmd;
+      document.querySelectorAll('[data-pool-preset]').forEach(btn => {
+        btn.classList.toggle('active-preset', btn.dataset.poolPreset === presetOrCmd);
+      });
+      input.focus();
     }
 
     async function runPoolSandbox() {
@@ -1470,37 +1409,41 @@
         inventory_yaml: document.getElementById('pool-yaml').value,
         group: document.getElementById('pool-group').value,
         operation: document.getElementById('pool-op').value,
-        max_concurrent: parseInt(document.getElementById('pool-conc').value || '4', 10),
+        max_concurrent: parseInt(document.getElementById('pool-conc').value || '4', 10) || 4,
         command: document.getElementById('pool-cmd').value
       };
 
-      const res = await fetch('/api/pool', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json();
+      try {
+        const res = await apiFetch('/api/pool', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
 
-      if (data.status !== 'ok') {
-        grid.innerHTML = `<div class="fleet-node"><div class="fleet-node-name status-err">Inventory Error</div><div class="fleet-node-out">${escapeHtml(data.error?.message || 'Unknown error')}</div></div>`;
-        return;
+        if (data.status !== 'ok') {
+          grid.innerHTML = `<div class="fleet-node"><div class="fleet-node-name status-err">Inventory Error</div><div class="fleet-node-out">${escapeHtml(data.error?.message || 'Unknown error')}</div></div>`;
+          return;
+        }
+
+        document.getElementById('pool-summary-subtitle').textContent =
+          `Group "${data.group}" · ${data.ok_hosts}/${data.total_hosts} hosts OK · Total fleet wall time: ${data.total_duration_ms} ms`;
+
+        grid.innerHTML = (data.nodes || []).map(node => {
+          const stClass = node.ok ? 'status-ok' : 'status-err';
+          const stText = node.ok ? `OK (${node.duration_ms} ms)` : `EXIT ${node.exit_code}`;
+          return `<div class="fleet-node">
+            <div class="fleet-node-top">
+              <span class="fleet-node-name">${escapeHtml(node.host)}</span>
+              <span class="status-text ${stClass}">${escapeHtml(stText)}</span>
+            </div>
+            <div class="fleet-node-meta">role: ${escapeHtml(node.role)} · dc: ${escapeHtml(node.dc)} · ${escapeHtml(node.uri_safe)}</div>
+            <div class="fleet-node-out">${escapeHtml(node.stdout || node.stderr || '(no output)')}</div>
+          </div>`;
+        }).join('');
+      } catch (_) {
+        grid.innerHTML = '<div class="fleet-node"><div class="fleet-node-name status-err">Execution Error</div><div class="fleet-node-out">Failed to execute across ConnectionPool.</div></div>';
       }
-
-      document.getElementById('pool-summary-subtitle').textContent =
-        `Group "${data.group}" · ${data.ok_hosts}/${data.total_hosts} hosts OK · Total fleet wall time: ${data.total_duration_ms} ms`;
-
-      grid.innerHTML = (data.nodes || []).map(node => {
-        const stClass = node.ok ? 'status-ok' : 'status-err';
-        const stText = node.ok ? `OK (${node.duration_ms} ms)` : `EXIT ${node.exit_code}`;
-        return `<div class="fleet-node">
-          <div class="fleet-node-top">
-            <span class="fleet-node-name">${escapeHtml(node.host)}</span>
-            <span class="status-text ${stClass}">${escapeHtml(stText)}</span>
-          </div>
-          <div class="fleet-node-meta">role: ${escapeHtml(node.role)} · dc: ${escapeHtml(node.dc)} · ${escapeHtml(node.uri_safe)}</div>
-          <div class="fleet-node-out">${escapeHtml(node.stdout || node.stderr || '(no output)')}</div>
-        </div>`;
-      }).join('');
     }
 
     // ─── Tab 4: URI & Code Builder ───────────────────────────────────
@@ -1613,25 +1556,25 @@
         command: document.getElementById('ub-cmd').value
       };
 
-      const res = await fetch('/api/uri', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json();
-      lastUriData = data;
-      if (data.valid) {
-        document.getElementById('ub-uri-safe-display').textContent = data.uri_safe;
-      }
-      renderSnippetBox();
+      try {
+        const res = await apiFetch('/api/uri', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        lastUriData = data;
+        if (data.valid) {
+          document.getElementById('ub-uri-safe-display').textContent = data.uri_safe;
+        }
+        renderSnippetBox();
+      } catch (_) {}
     }
 
     async function copyCurrentSnippet() {
       const box = document.getElementById('ub-snippet-box');
-      if (!box.textContent) return;
-      try {
-        await navigator.clipboard.writeText(box.textContent);
-      } catch (_) {}
+      const btn = document.getElementById('copy-snippet-btn');
+      await copyText(box.textContent, btn);
     }
 
     // ─── Tab 5: Modular Pytest Runner & ScreenPool ───────────────────
@@ -1650,23 +1593,31 @@
       const badge = document.getElementById('pytest-status-badge');
       badge.textContent = `RUNNING ${suiteId.toUpperCase()}...`;
       badge.className = 'status-text status-warn';
-      box.textContent = `Executing test suite "${suiteId}"...`;
+      setBusy(box, true, `Executing test suite "${suiteId}"...`);
 
-      const res = await fetch('/api/pytest?suite=' + encodeURIComponent(suiteId));
-      const data = await res.json();
-      if (data.ok) {
-        badge.textContent = `PASS (${data.duration_s}s) · ${data.summary}`;
-        badge.className = 'status-text status-ok';
-      } else {
-        badge.textContent = `FAIL (exit ${data.exit_code})`;
+      try {
+        const res = await apiFetch('/api/pytest?suite=' + encodeURIComponent(suiteId));
+        const data = await res.json();
+        if (data.ok) {
+          badge.textContent = `PASS (${data.duration_s}s) · ${data.summary}`;
+          badge.className = 'status-text status-ok';
+        } else {
+          badge.textContent = `FAIL (exit ${data.exit_code})`;
+          badge.className = 'status-text status-err';
+        }
+        box.textContent = `# Command: ${data.command}\n# Duration: ${data.duration_s}s\n\n${data.output}`;
+      } catch (_) {
+        badge.textContent = 'ERROR';
         badge.className = 'status-text status-err';
+        box.textContent = `Failed to run test suite "${suiteId}".`;
+      } finally {
+        setBusy(box, false);
       }
-      box.textContent = `# Command: ${data.command}\n# Duration: ${data.duration_s}s\n\n${data.output}`;
     }
 
     async function runScreenSandbox() {
       const box = document.getElementById('sc-output-box');
-      box.textContent = 'Running LocalFileHandler & regex trigger pipeline...';
+      setBusy(box, true, 'Running LocalFileHandler & regex trigger pipeline...');
       const payload = {
         action: 'analyze',
         session_name: document.getElementById('sc-name').value,
@@ -1674,13 +1625,19 @@
         strategy: document.getElementById('sc-strategy').value,
         pattern: document.getElementById('sc-pattern').value
       };
-      const res = await fetch('/api/screen', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json();
-      box.textContent = JSON.stringify(data.current || data, null, 2);
+      try {
+        const res = await apiFetch('/api/screen', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        box.textContent = JSON.stringify(data.current || data, null, 2);
+      } catch (_) {
+        box.textContent = 'Error running ScreenPool LogPipeline sandbox.';
+      } finally {
+        setBusy(box, false);
+      }
     }
 
     function escapeHtml(str) {
@@ -1692,6 +1649,8 @@
     }
 
     // Initialize on load
+    const initialTab = (location.hash || '').replace('#', '');
+    switchTab(WORKSPACES[initialTab] ? initialTab : 'shell');
     loadStatus();
   </script>
 </body>

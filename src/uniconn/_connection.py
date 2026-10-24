@@ -177,13 +177,35 @@ class Connection:
         """Создать подключение из словаря."""
         retry = data.get("retry_attempts", retry_attempts)
         effective_dry_run = bool(data.get("dry_run", dry_run))
-        if "uri" in data and "transport" not in data:
-            return cls.from_uri(
+        if "uri" in data:
+            conn = cls.from_uri(
                 str(data["uri"]),
                 retry_attempts=retry,
                 logger=logger,
                 dry_run=effective_dry_run,
             )
+            overrides = {
+                k: v
+                for k, v in data.items()
+                if k
+                not in (
+                    "uri",
+                    "transport",
+                    "retry_attempts",
+                    "logger",
+                    "dry_run",
+                    "name",
+                    "groups",
+                )
+                and (
+                    k != "host"
+                    or conn.config.host is None
+                    or (conn.config.transport == "local" and conn.config.host == "localhost")
+                )
+            }
+            if overrides:
+                conn = conn.with_overrides(**overrides)
+            return conn
         config = ConnectionConfig(
             **{
                 k: v

@@ -26,6 +26,7 @@ class TestDashboardStatusAndShell:
         assert status["version"] == "0.8.0"
         assert "ssh" in status["transports"]
         assert "local" in status["transports"]
+        assert "3.10" not in status["python_version"]
         assert "test_suites" in status
         assert len(status["test_suites"]) >= 6
         assert "default_inventory" in status
@@ -159,6 +160,8 @@ class TestDashboardUriPoolAndScreen:
         assert res["ok_hosts"] == 2
         hosts = [n["host"] for n in res["nodes"]]
         assert hosts == ["web-eu-01", "web-eu-02"]
+        assert [n["role"] for n in res["nodes"]] == ["frontend", "frontend"]
+        assert all("role=frontend" in n["stdout"] for n in res["nodes"])
 
         probe_cmd = (
             "python3 -c \"import os, time; print(os.environ.get('UNICONN_HOST', 'node'),"
@@ -195,3 +198,4 @@ class TestDashboardUriPoolAndScreen:
         for dup_id in ("quick-tab-shell", "quick-tab-hooks", "quick-tab-pool"):
             assert dup_id not in html
         assert "setPoolPreset('health')" in html
+        assert "color: #030712" not in html
