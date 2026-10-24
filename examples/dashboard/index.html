@@ -756,6 +756,33 @@
           </div>
         </div>
       </div>
+
+      <!-- v0.9.0 Resilience & Adaptive SSHSessionPool Lab -->
+      <div class="panel" style="margin-top: 1.25rem;">
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title">v0.9.0 Resilience &amp; Adaptive `SSHSessionPool` Lab</h2>
+            <p class="panel-subtitle">Test adaptive `MaxSessions` / `MaxStartups` auto-scaling, `pool.resize()` graceful drain, `CircuitBreaker`, `RateLimiter`, `diff_facts()`, and `run_script()`</p>
+          </div>
+          <button type="button" class="btn" onclick="runV090Sandbox()">Run v0.9.0 Feature</button>
+        </div>
+
+        <div class="form-row">
+          <div class="field-group">
+            <label for="v090-feature">v0.9.0 Feature Scenario</label>
+            <select id="v090-feature" onchange="runV090Sandbox()">
+              <option value="adaptive_ssh_pool">SSHSessionPool: Adaptive MaxSessions Scale-Down (6 → 2) &amp; resize() Graceful Drain</option>
+              <option value="circuit_breaker">CircuitBreaker: CLOSED → OPEN → HALF_OPEN → CLOSED State Machine</option>
+              <option value="rate_limiter">RateLimiter: Token Bucket Burst &amp; Throttling Telemetry</option>
+              <option value="diff_facts">diff_facts(): Fleet Configuration Drift Detection (FactsDiffReport)</option>
+              <option value="run_script">run_script(): Upload to temp_dir, Execute with Args &amp; Auto-Cleanup</option>
+              <option value="ping">pool.ping(): Parallel Latency Probe (PingResult)</option>
+            </select>
+          </div>
+        </div>
+
+        <pre class="code-view" id="v090-output-box" style="min-height: 190px;">Select a v0.9.0 scenario above and click "Run v0.9.0 Feature" to inspect live execution telemetry.</pre>
+      </div>
     </section>
 
     <!-- ===================================================================== -->
@@ -1446,6 +1473,25 @@
         }).join('');
       } catch (_) {
         grid.innerHTML = '<div class="fleet-node"><div class="fleet-node-name status-err">Execution Error</div><div class="fleet-node-out">Failed to execute across ConnectionPool.</div></div>';
+      }
+    }
+
+    async function runV090Sandbox() {
+      const box = document.getElementById('v090-output-box');
+      const feat = document.getElementById('v090-feature').value;
+      setBusy(box, true, `Running v0.9.0 scenario "${feat}"...`);
+      try {
+        const res = await apiFetch('/api/v090', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ feature: feat })
+        });
+        const data = await res.json();
+        box.textContent = JSON.stringify(data, null, 2);
+      } catch (_) {
+        box.textContent = 'Failed to execute v0.9.0 sandbox scenario.';
+      } finally {
+        setBusy(box, false);
       }
     }
 

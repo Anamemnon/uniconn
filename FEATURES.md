@@ -1,6 +1,6 @@
 # Реализованные возможности и архитектура библиотеки uniconn
 
-> **Версия**: v0.9.0 | **470 unit-тестов** | 34 файла тестов (6 пакетов в `tests/unit/`) | 5 транспортов | Модульный CLI (`cyclopts` + `rich`) | Интерактивная веб-панель (`examples/dashboard/`) | PEP 561 (`py.typed`)
+> **Версия**: v0.9.0 | **475 unit-тестов** | 34 файла тестов (6 пакетов в `tests/unit/`) | 5 транспортов | Модульный CLI (`cyclopts` + `rich`) | Интерактивная веб-панель (`examples/dashboard/`) | PEP 561 (`py.typed`)
 >
 > **Для ИИ-агентов**: этот файл (`FEATURES.md`) является полным каталогом реализованных фич и архитектурных решений библиотеки `uniconn`. **Не загружайте его в контекст при каждом запросе** — используйте `llms.txt` для быстрого обзора сигнатур API, а к `FEATURES.md` обращайтесь только по требованию (on-demand), когда нужно сверить наличие конкретной функциональности или обновить список возможностей после релиза.
 >
@@ -15,7 +15,7 @@
 | Конвейер команд | ✅ `CommandPipeline` | Цепочка `CommandMiddleware`: `Context`, `Sudo`, `Hook`, `DryRun`, `Observability`, `CircuitBreaker`, `RateLimit`, `Retry` (`conn.pipeline`) |
 | Отказоустойчивость (`v0.9.0`) | ✅ `CircuitBreaker` + `RateLimiter` | Состояния `CLOSED` → `OPEN` → `HALF_OPEN` (`CircuitOpenError`), Token Bucket `RateLimiter` на уровне `Connection`, `ConnectionPool` и `SSHSessionPool` |
 | Доменные сервисы | ✅ `conn.files` / `state` / `tunnels` | `FileOperationsService`, `DirectorySynchronizer`, `StateManagementService`, `FactCollector`, `TunnelService`, `TemplateEngine` |
-| SSH мультиплексинг | ✅ `SSHSessionPool` | До N каналов на соединение, авто-создание новых, `health_check`, `check_health()`, `rate_limit`, `circuit_breaker` |
+| SSH мультиплексинг | ✅ `SSHSessionPool` | Адаптивное авто-понижение лимитов (`adaptive=True` при `MaxSessions`/`MaxStartups`), динамический `resize()` (graceful drain), `health_check`, `rate_limit`, `circuit_breaker` |
 | Screen-сессии | ✅ `ScreenPool` | Долгоживущие команды в GNU screen, `LogPipeline`, `ScreenSession`, многоуровневый cleanup |
 | PTY Shell & Expect | ✅ `ShellSession` + `expect()` | Stateful сессии (`open_shell`, `execute`, `SyncShellSession`) для SSH, Local, Telnet, Serial + декларативный `expect()` (`ExpectStateMachine`) |
 | Инспекция и сравнение | ✅ `gather_facts()` + `diff_facts()` | `FactCollector` → `HostFacts` + детектор конфигурационного дрейфа `diff_facts()` (`FactsDiffReport`, `uniconn facts --diff`) |
@@ -33,7 +33,7 @@
 | Security | ✅ `SecretStr` + `sudo` | `passphrase`, `sudo` через `stdin`, `sensitive=True`, `shlex.join`/`quote`, `allowlist_hook`/`blocklist_hook` |
 | CLI | ✅ `cyclopts` + `rich` | Модульный CLI (`src/uniconn/cli/`): `run`, `run-multi`, `stream-multi`, `exec-script`, `ping`, `expect`, `upload`, `download`, `sync-dir`, `template`, `facts` (`--diff`), `ensure-package`, `ensure-service`, `ensure-line`, `tunnel`, `bmc`, `shell`, `transports`, `screen-*`, `version` |
 | Веб-панель (Dashboard) | ✅ `examples/dashboard/` | Интерактивный веб-интерфейс и HTTP API (`python3 main.py --serve` на порту `3000`) с 5 рабочими вкладками и песочницами (`v0.7.0`–`v0.9.0`) |
-| Тесты | ✅ 470 unit | 34 тестовых модуля в `tests/unit/`, 0 failed, 0 warnings (`error::RuntimeWarning`) |
+| Тесты | ✅ 475 unit | 34 тестовых модуля в `tests/unit/`, 0 failed, 0 warnings (`error::RuntimeWarning`) |
 | Linting & Types | ✅ `ruff` + `pyright` | Лимит строки 120 символов (0 ошибок `ruff`), `pyright` в режиме `standard` (0 ошибок) + `py.typed` (PEP 561) |
 | AI Agent Docs | ✅ Настроено | `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.claude/skills/`, `.cursor/rules/`, `llms.txt`, `FEATURES.md` |
 | CI/CD | ❌ | GitHub Actions не настроены (осознанно исключено) |
@@ -111,8 +111,10 @@
 ### 10a. SSH Session Pool (мультиплексинг каналов к одному хосту)
 - ✅ `SSHSessionPool` (`src/uniconn/_session_pool.py`) — пул SSH-сессий к одному хосту
 - ✅ Настройка `max_sessions_per_conn` и `max_connections` с авто-созданием соединений при пиковой нагрузке
+- ✅ Адаптивный режим по умолчанию (`adaptive=True`): автоматическое снижение `max_sessions_per_conn` (при отказе открытия каналов `MaxSessions`) и `max_connections` (при отказе новых подключений `MaxStartups`) с фиксацией найденного потолка и прозрачным повтором команд
+- ✅ Динамическое изменение лимитов `await pool.resize(max_sessions_per_conn=..., max_connections=...)` с мягким дренажем (`graceful drain`) избыточных соединений и телеметрией `pool.stats()`
 - ✅ Проверка живости `health_check=True` и метод `check_health()` для отбраковки оборванных соединений
-- ✅ Методы `run()`, `map()`, `close()` и контекстный менеджер `async with`
+- ✅ Методы `run()`, `map()`, `resize()`, `stats()`, `close()` и контекстный менеджер `async with`
 
 ### 11. Иерархия исключений
 - ✅ `UniconnError` → `ConnectionError`, `ExecutionError`, `TimeoutError`, `AuthenticationError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `ScreenError` (`ScreenNotFoundError`, `ScreenSessionExistsError`, `ScreenPoolFullError`)
@@ -220,7 +222,7 @@
 | `PosixMarkerProtocol` и `ExpectStateMachine` (`shell/`) | Разделение маркерной синхронизации команд `__UNICONN_{uuid}__{exit_code}` и автомата интерактивных диалогов `expect()` |
 | Модульный CLI на `cyclopts` (`src/uniconn/cli/`) | Декларативный CLI на стандартных аннотациях `typing.Annotated` без избыточных зависимостей |
 | Структурированные логи (`structlog` + `contextvars`) | Единый пайплайн `ProcessorFormatter` для `structlog` и `stdlib logging`, JSONL/Console и авто-редакция секретов |
-| Модульная группировка `tests/unit/` | 34 тестовых модуля (470 тестов) в 6 пакетах: `core/`, `transports/`, `pools/`, `screen/`, `cli/`, `releases/` |
+| Модульная группировка `tests/unit/` | 34 тестовых модуля (475 тестов) в 6 пакетах: `core/`, `transports/`, `pools/`, `screen/`, `cli/`, `releases/` |
 | `CircuitBreaker` и `RateLimiter` (`core/resilience.py`) | Защита инфраструктуры на уровне `CommandPipeline` (`CircuitBreakerMiddleware`, `RateLimitMiddleware`) и пулов (`ConnectionPool`, `SSHSessionPool`) |
 
 ---

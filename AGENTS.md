@@ -25,7 +25,7 @@
 - `shell/` и `_shell.py` — `ShellSession` (`shell/session.py`), `PosixMarkerProtocol` (`shell/marker_protocol.py`), `ExpectStateMachine` (`shell/expect_engine.py`).
 - `sync/` и `_sync.py` — `SyncConnection`, `SyncShellSession`, `SyncConnectionPool` и синхронные обёртки доменных сервисов (`SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`) на базе `EventLoopPortal`.
 - `pool/` и `_pool.py` — `ConnectionPool` с единым движком конкурентного выполнения (`_fan_out_list`, `_fan_out_dict`), встроенными `RateLimiter` / пер-хостовыми `CircuitBreaker` и `PoolStreamMultiplexer` (`pool/stream_mux.py`).
-- `_session_pool.py` — `SSHSessionPool`: мультиплексинг SSH-каналов к одному хосту с поддержкой `health_check`, `check_health()`, `rate_limit` и `circuit_breaker`.
+- `_session_pool.py` — `SSHSessionPool`: мультиплексинг SSH-каналов к одному хосту с адаптивным авто-понижением лимитов (`adaptive=True`), динамическим `resize()` (graceful drain), `health_check`, `check_health()`, `rate_limit` и `circuit_breaker`.
 - `background/` — `ScreenPool`, `ScreenSession`, `LogPipeline`: управление фоновыми задачами в GNU screen.
 - `cli/` — модульный CLI на базе `cyclopts` и `rich` (`app.py`, `renderers.py`, `cmd_exec.py`, `cmd_files.py`, `cmd_ops.py`, `cmd_screen.py`).
 - `result.py` (`Result`, `PingResult`, `SyncResult`, `EnsureResult`), `facts.py`, `hooks.py`, `_logging.py`, `exceptions.py` (`CircuitOpenError`), `py.typed`.
@@ -37,7 +37,7 @@
 
 ## Структура тестов (`tests/`)
 
-Unit-тесты (`tests/unit/`, 34 модуля, 470 тестов) сгруппированы по тематическим пакетам:
+Unit-тесты (`tests/unit/`, 34 модуля, 475 тестов) сгруппированы по тематическим пакетам:
 - `tests/unit/core/` — базовые абстракции (`Connection`, `SyncConnection`, `Result`, `ShellSession`, URI, конфиги, плагины, исключения, `structlog`-логирование).
 - `tests/unit/transports/` — тесты транспортов (`SSH`, `Telnet`, `Serial`, `Local`, `IPMI`, `BaseTransport`) и SFTP.
 - `tests/unit/pools/` — `ConnectionPool` и `SSHSessionPool`.

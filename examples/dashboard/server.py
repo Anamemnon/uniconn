@@ -1424,10 +1424,76 @@ def _execute_v090_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
             ConnectionPool,
             HostFacts,
             RateLimiter,
+            Result,
+            SSHSessionPool,
             diff_facts,
         )
 
         async def _run_feature() -> dict[str, Any]:
+            if feature == "adaptive_ssh_pool":
+                from datetime import datetime
+                from unittest.mock import AsyncMock, patch
+
+                server_max_sessions = 2
+
+                def _make_server_conn(*_args: Any, **_kwargs: Any) -> Any:
+                    conn = AsyncMock()
+                    active_on_conn = 0
+
+                    async def _sim_run(command: str, **_kw: Any) -> Result:
+                        nonlocal active_on_conn
+                        active_on_conn += 1
+                        try:
+                            if active_on_conn > server_max_sessions:
+                                raise ConnectionError(
+                                    "Channel open failed: Administratively prohibited (MaxSessions=2)"
+                                )
+                            await asyncio.sleep(0.015)
+                            return Result(
+                                exit_code=0,
+                                stdout=f"ok:{command}",
+                                stderr="",
+                                duration=0.015,
+                                command=command,
+                                timestamp=datetime.now(),
+                                host="bastion",
+                            )
+                        finally:
+                            active_on_conn -= 1
+
+                    conn.run = _sim_run
+                    conn.is_alive = AsyncMock(return_value=True)
+                    conn.close = AsyncMock()
+                    return conn
+
+                with patch(
+                    "uniconn._session_pool.Connection.from_uri",
+                    side_effect=_make_server_conn,
+                ):
+                    async with SSHSessionPool(
+                        "ssh://admin@bastion",
+                        max_sessions_per_conn=6,
+                        max_connections=3,
+                        adaptive=True,
+                    ) as ssh_pool:
+                        cmds = [f"check-subsystem-{i}" for i in range(1, 7)]
+                        res_list = await ssh_pool.map(cmds)
+                        stats_after_wave = ssh_pool.stats()
+                        stats_after_resize = await ssh_pool.resize(
+                            max_sessions_per_conn=2,
+                            max_connections=1,
+                        )
+                return {
+                    "status": "ok",
+                    "feature": "adaptive_ssh_pool",
+                    "initial_max_sessions": 6,
+                    "server_max_sessions_limit": server_max_sessions,
+                    "commands_completed": len(res_list),
+                    "all_ok": all(r.ok for r in res_list),
+                    "stats_after_adaptive_wave": stats_after_wave,
+                    "stats_after_resize": stats_after_resize,
+                }
+
             if feature == "circuit_breaker":
                 cb = CircuitBreaker(failure_threshold=2, recovery_timeout=0.05)
                 cb.record_failure()

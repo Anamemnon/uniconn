@@ -389,7 +389,14 @@ class TestCLIV090AndDashboard:
 
     def test_dashboard_v090_sandbox_and_pool_ops(self) -> None:
         """Проверить обработчики /api/v090 и новые операции пула в дашборде."""
-        for feat in ("circuit_breaker", "rate_limiter", "ping", "diff_facts", "run_script"):
+        for feat in (
+            "adaptive_ssh_pool",
+            "circuit_breaker",
+            "rate_limiter",
+            "ping",
+            "diff_facts",
+            "run_script",
+        ):
             res = _execute_v090_sandbox({"feature": feat})
             assert res["status"] == "ok", f"Feature {feat} failed: {res}"
             assert res["feature"] == feat

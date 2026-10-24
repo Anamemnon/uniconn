@@ -208,3 +208,230 @@ async def test_session_pool_empty_commands():
     pool = SSHSessionPool("ssh://user@host")
     results = await pool.map([])
     assert results == []
+
+
+@pytest.mark.asyncio
+async def test_session_pool_adaptive_channel_limit_scale_down():
+    """При превышении серверного MaxSessions пул автоматически снижает max_sessions_per_conn и повторяет команды."""
+    server_max_sessions = 2
+
+    def make_limited_conn(*_args, **_kwargs):
+        conn = make_mock_connection(sleep_time=0.02)
+        active_on_conn = 0
+
+        async def _limited_run(command, **_kw):
+            nonlocal active_on_conn
+            active_on_conn += 1
+            try:
+                if active_on_conn > server_max_sessions:
+                    from uniconn.exceptions import ConnectionError as UniconnConnError
+
+                    raise UniconnConnError(
+                        "Channel open failed: Administratively prohibited (MaxSessions=2)"
+                    )
+                await asyncio.sleep(0.02)
+                return Result(
+                    exit_code=0,
+                    stdout=f"ok:{command}",
+                    stderr="",
+                    duration=0.02,
+                    command=command,
+                    timestamp=datetime.now(),
+                    host="testhost",
+                )
+            finally:
+                active_on_conn -= 1
+
+        conn.run = _limited_run
+        conn.is_alive = AsyncMock(return_value=True)
+        return conn
+
+    with patch(
+        "uniconn._session_pool.Connection.from_uri",
+        side_effect=make_limited_conn,
+    ):
+        async with SSHSessionPool(
+            "ssh://user@host",
+            max_sessions_per_conn=6,
+            max_connections=2,
+            adaptive=True,
+        ) as pool:
+            assert pool.max_sessions_per_conn == 6
+            results = await pool.map([f"cmd-{i}" for i in range(6)])
+            assert len(results) == 6
+            assert all(r.ok for r in results)
+            # Лимит автоматически снизился до серверного потолка 2 и зафиксировался
+            assert pool.max_sessions_per_conn == 2
+            assert pool.scale_down_events >= 1
+
+
+@pytest.mark.asyncio
+async def test_session_pool_adaptive_max_connections_scale_down():
+    """При отказе открытия новых TCP-соединений (MaxStartups) пул фиксирует рабочий max_connections."""
+    created_conns = []
+    server_max_conns = 2
+
+    def make_conn_with_startup_limit(*_args, **_kwargs):
+        idx = len(created_conns) + 1
+        conn = make_mock_connection(sleep_time=0.02)
+        if idx > server_max_conns:
+            from uniconn.exceptions import ConnectionError as UniconnConnError
+
+            conn.run = AsyncMock(
+                side_effect=UniconnConnError("Connection reset by peer (MaxStartups)")
+            )
+        created_conns.append(conn)
+        return conn
+
+    with patch(
+        "uniconn._session_pool.Connection.from_uri",
+        side_effect=make_conn_with_startup_limit,
+    ):
+        async with SSHSessionPool(
+            "ssh://user@host",
+            max_sessions_per_conn=1,
+            max_connections=4,
+            adaptive=True,
+        ) as pool:
+            results = await pool.map(["c1", "c2", "c3", "c4"])
+            assert len(results) == 4
+            assert all(r.ok for r in results)
+            assert pool.max_connections == 2
+            assert pool.active_connections == 2
+            assert pool.scale_down_events >= 1
+            # Отклонённые 3-е и 4-е соединения должны быть закрыты при дренаже
+            for rejected in created_conns[2:]:
+                rejected.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_session_pool_adaptive_disabled_propagates_error():
+    """При adaptive=False ошибка превышения каналов пробрасывается без авто-снижения."""
+    def make_failing_second_channel(*_args, **_kwargs):
+        conn = make_mock_connection(sleep_time=0.02)
+        active = 0
+
+        async def _run(command, **_kw):
+            nonlocal active
+            active += 1
+            try:
+                if active > 1:
+                    from uniconn.exceptions import ConnectionError as UniconnConnError
+
+                    raise UniconnConnError("Channel open failed")
+                await asyncio.sleep(0.02)
+                return Result(
+                    exit_code=0,
+                    stdout="ok",
+                    stderr="",
+                    duration=0.02,
+                    command=command,
+                    timestamp=datetime.now(),
+                    host="testhost",
+                )
+            finally:
+                active -= 1
+
+        conn.run = _run
+        return conn
+
+    with patch(
+        "uniconn._session_pool.Connection.from_uri",
+        side_effect=make_failing_second_channel,
+    ):
+        pool = SSHSessionPool(
+            "ssh://user@host",
+            max_sessions_per_conn=4,
+            max_connections=1,
+            adaptive=False,
+        )
+        with pytest.raises(ExceptionGroup):
+            await pool.map(["c1", "c2"])
+        assert pool.max_sessions_per_conn == 4
+        assert pool.scale_down_events == 0
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_session_pool_resize_graceful_drain():
+    """resize() мягко дренирует лишние активные соединения после завершения текущих команд."""
+    gate = asyncio.Event()
+    started = asyncio.Event()
+    in_flight_counter = 0
+    created: list[AsyncMock] = []
+
+    def make_gated_conn(*_args, **_kwargs):
+        conn = make_mock_connection(sleep_time=0.0)
+
+        async def _gated_run(command, **_kw):
+            nonlocal in_flight_counter
+            in_flight_counter += 1
+            if in_flight_counter >= 3:
+                started.set()
+            await gate.wait()
+            return Result(
+                exit_code=0,
+                stdout=command,
+                stderr="",
+                duration=0.01,
+                command=command,
+                timestamp=datetime.now(),
+                host="testhost",
+            )
+
+        conn.run = _gated_run
+        created.append(conn)
+        return conn
+
+    with patch(
+        "uniconn._session_pool.Connection.from_uri",
+        side_effect=make_gated_conn,
+    ):
+        pool = SSHSessionPool(
+            "ssh://user@host",
+            max_sessions_per_conn=1,
+            max_connections=3,
+        )
+        task = asyncio.create_task(pool.map(["cmd1", "cmd2", "cmd3"]))
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+        assert len(created) == 3
+        assert pool.in_flight_sessions == 3
+
+        # Уменьшаем max_connections с 3 до 1 во время выполнения команд
+        snap = await pool.resize(max_sessions_per_conn=2, max_connections=1)
+        assert snap["max_sessions_per_conn"] == 2
+        assert snap["max_connections"] == 1
+        assert snap["active_connections"] == 1
+        assert snap["draining_connections"] == 2
+        # Пока команды выполняются, ни одно соединение ещё не закрыто
+        for c in created:
+            c.close.assert_not_awaited()
+
+        # Отпускаем барьер — команды завершаются, а 2 лишних соединения автоматически закрываются
+        gate.set()
+        results = await task
+        assert len(results) == 3
+        assert pool.active_connections == 1
+        assert pool.draining_connections == 0
+        closed_count = sum(1 for c in created if c.close.await_count == 1)
+        assert closed_count == 2
+
+        await pool.close()
+
+
+def test_session_pool_validation_and_stats():
+    """Проверка валидации параметров SSHSessionPool и метода stats()."""
+    with pytest.raises(ValueError):
+        SSHSessionPool("ssh://user@host", max_sessions_per_conn=0)
+    with pytest.raises(ValueError):
+        SSHSessionPool("ssh://user@host", max_connections=0)
+    with pytest.raises(ValueError):
+        SSHSessionPool("ssh://user@host", min_sessions_per_conn=0)
+
+    pool = SSHSessionPool("ssh://user@host", max_sessions_per_conn=4, max_connections=2)
+    st = pool.stats()
+    assert st["max_sessions_per_conn"] == 4
+    assert st["max_connections"] == 2
+    assert st["adaptive"] is True
+    assert st["scale_down_events"] == 0
+

@@ -183,7 +183,7 @@ with pool.to_sync() as sync_pool:
         print(host, line)
 ```
 
-### `SSHSessionPool` (Single-host SSH channel multiplexing)
+### `SSHSessionPool` (Single-host SSH channel multiplexing with adaptive concurrency)
 ```python
 async with SSHSessionPool(
     "ssh://user@host",
@@ -194,9 +194,13 @@ async with SSHSessionPool(
     circuit_breaker=True,
     failure_threshold=5,
     recovery_timeout=30.0,
+    adaptive=True,            # auto-scales down on MaxSessions / MaxStartups rejections
+    min_sessions_per_conn=1,
 ) as pool:
     res = await pool.run("uptime")
     results = await pool.map(["lshw", "dmidecode", "nvme list"])
+    await pool.resize(max_sessions_per_conn=2, max_connections=2)  # graceful drain of excess connections
+    stats = pool.stats()
     healthy_count = await pool.check_health()
 ```
 
