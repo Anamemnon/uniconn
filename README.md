@@ -16,11 +16,13 @@
 - 📈 **Структурированные логи (`structlog`)**: JSONL и консольный вывод (`configure_logging`), сквозной контекст (`log_context` / `contextvars`) и готовые метрики для **Grafana Loki, ClickHouse, InfluxDB**
 - 📂 **Контекстные менеджеры `cd()`, `env()`, `temp_dir()`**: Удобная работа с директориями, переменными окружения и временными папками
 - 🔄 **Повторные попытки**: Встроенный retry с экспоненциальным backoff и автореконнектом
-- 📊 **Пул соединений**: Параллельное выполнение на множестве хостов (`ConnectionPool` и `SSHSessionPool` с `check_health()`)
-- 📁 **Файловые операции и SFTP**: `read_file`/`write_file`, `exists`, `mkdir`, `upload`/`download`, `chmod`, `stat`, `listdir`
-- 💻 **Stateful PTY Shell**: Интерактивные сессии `ShellSession` с сохранением `cd`/`export` для SSH, Local и Telnet
-- 🖥️ **ScreenPool**: Долгоживущие команды в detached GNU screen сессиях
-- 🛠️ **CLI инструмент**: Командная строка с поддержкой инвентаря (`--inventory`, `--group`), `upload`/`download`, `--sudo` и `--log-format json`
+- 📊 **Пул соединений**: Параллельное выполнение на множестве хостов (`ConnectionPool` и `SyncConnectionPool` со стримингом `pool.stream()`, а также `SSHSessionPool` с `check_health()`)
+- 🔎 **Инспекция хостов и идемпотентность**: Автосбор фактов `gather_facts()` (`HostFacts`) и идемпотентные проверки `ensure_package()`, `ensure_service()`, `ensure_line()` (`EnsureResult`)
+- 📁 **Файловые операции, SFTP и шаблоны**: `read_file`/`write_file`, `remove_file`, `exists`, `mkdir`, `upload`/`download`, дельта-синхронизация директорий `sync_dir()` (`SyncResult`) и рендеринг шаблонов `write_template()` (`jinja2` / `string.Template`)
+- 💻 **Stateful PTY Shell, Expect и Туннели**: Интерактивные сессии `ShellSession` (SSH, Local, Telnet, Serial), декларативный автомат диалогов `expect()` и проброс портов `forward_local_port()` / `forward_remote_port()`
+- 🖥️ **ScreenPool**: Долгоживущие команды в detached GNU screen сессиях с `LogPipeline`
+- 🛠️ **Модульный CLI (`cyclopts` + `rich`)**: Командная строка с поддержкой инвентаря (`--inventory`, `--group`), `facts`, `ensure-*`, `sync-dir`, `template`, `expect`, `tunnel`, `stream-multi`, `--sudo` и `--log-format json`
+- 🌐 **Интерактивная веб-панель**: Встроенный веб-интерфейс (`python3 main.py --serve`) для интерактивного тестирования команд, хуков, `structlog`-телеметрии, пулов хостов, конструктора URI и запуска unit-тестов
 
 ## Установка
 
@@ -90,6 +92,34 @@ async def main():
 
 asyncio.run(main())
 ```
+
+## Интерактивная веб-панель (Web Dashboard)
+
+В состав репозитория входит интерактивная веб-панель (`examples/dashboard/server.py` и `examples/dashboard/index.html`), позволяющая тестировать возможности `uniconn` в браузере без необходимости поднимать внешние серверы.
+
+### Запуск веб-страницы
+
+```bash
+# Запуск HTTP-сервера предпросмотра на http://0.0.0.0:3000 (требуется Python 3.11+)
+uv run python main.py --serve
+
+# Или напрямую (скрипт автоматически активирует .venv с Python 3.12+ при наличии):
+python3 main.py --serve
+```
+
+После запуска откройте в браузере адрес **http://localhost:3000**.
+
+> При запуске `python3 main.py` без флага `--serve` в терминале выполняется консольная демонстрация основных возможностей библиотеки.
+
+### Возможности веб-интерфейса
+
+Веб-панель разделена на 5 интерактивных рабочих областей:
+
+1. **Shell & Local Runner (`ShellSession` / `LocalTransport`)** — интерактивный запуск команд в stateful PTY-сессии `ShellSession.execute()` (с сохранением рабочей директории `cd`, переменных окружения `export` и размера терминала `cols × rows`) или через `Connection("local://").run()`, с детальным инспектором объекта `Result` (`stdout`, `stderr`, `.lines`, `.json()`, `.to_dict()`, время выполнения).
+2. **Hooks, Security & Telemetry (`CommandPipeline` & `structlog`)** — песочница конвейера middleware и хуков (`allowlist_hook`, `blocklist_hook`, `audit_log_hook`, `structured_log_hook`, `metrics_collector_hook`), тестирование флагов `sudo`, `sensitive=True`, `dry_run=True`, контекстных менеджеров `conn.cd()` и `conn.temp_dir()`, а также просмотр `structlog` JSONL и консольных логов с маскированием секретов в реальном времени.
+3. **Pool, Inventory & Screen (`ConnectionPool` & `ScreenPool`)** — оркестратор мульти-хостового пула с редактируемым YAML-инвентарём, фильтрацией по группам (`all`, `web`, `backend`), готовыми пресетами (`Fleet Presets`) и групповыми операциями (`map_safe`, `apply`, `gather_facts`, `ensure_line`, `sync_dir`, `write_template`, `stream`), плюс симулятор `ScreenPool` / `LogPipeline` и интерактивные песочницы функций релизов `v0.7.0` и `v0.8.0`.
+4. **URI Builder & Codegen (`URIParser` & `ConnectionConfig`)** — визуальный конструктор и валидатор URI для всех транспортов (`ssh://`, `telnet://`, `serial://`, `ipmi://`, `local://`) с безопасным представлением `uri_safe` и автоматической генерацией готовых сниппетов кода (Async Python, Sync Python и CLI).
+5. **Unit Test Runner (`pytest`)** — запуск всех 458 unit-тестов или отдельных тематических пакетов (`core`, `transports`, `pools`, `screen`, `cli`, `releases`) прямо из браузера с отображением статуса и консольного вывода.
 
 ## Документация API
 
@@ -741,17 +771,17 @@ mytransport = "my_package.transports:MyTransport"
 ## Тестирование
 
 ```bash
-# Запуск всех тестов
-pytest
+# Запуск unit-тестов с кратким выводом для экономии контекста
+uv run pytest -m "not integration" -q --tb=short | tail -n 5
 
-# Только unit тесты
-pytest -m "not integration"
+# Повторный запуск только упавших тестов с трейсбеком
+uv run pytest -m "not integration" -q --tb=short --lf | tail -n 30
 
 # Интеграционные тесты (требуется Docker)
-pytest -m integration
+uv run pytest -m integration
 
 # С покрытием
-pytest --cov=uniconn
+uv run pytest --cov=uniconn
 ```
 
 ## Лицензия
@@ -774,3 +804,6 @@ MIT License. См. [LICENSE](LICENSE) файл.
 - [pyghmi](https://github.com/openstack/pyghmi) - IPMI реализация
 - [Pydantic](https://github.com/pydantic/pydantic) - Валидация данных
 - [Tenacity](https://github.com/jd/tenacity) - Retry логика
+- [Cyclopts](https://github.com/BrianPugh/cyclopts) - CLI интерфейс
+- [Rich](https://github.com/Textualize/rich) - Форматирование вывода в терминале
+- [structlog](https://github.com/hynek/structlog) - Структурированное логирование

@@ -9,6 +9,7 @@
 - Re-run failed unit tests with traceback: `uv run pytest -m "not integration" -q --tb=short --lf | tail -n 30`
 - Lint & typecheck: `uv run ruff check src/` and `uv run pyright`
 - Preview dashboard server: `python3 main.py --serve` (listens on `0.0.0.0:3000`)
+- Documentation & Feature Matrix: `AGENTS.md` (architecture & rules), `FEATURES.md` (full catalog of implemented features — consult on-demand only)
 
 ## Public Exports (`from uniconn import ...`)
 - **Core & Facade**: `Connection`, `SyncConnection`, `ConnectionConfig`, `Result`, `SyncResult`, `EnsureResult`, `HostFacts`, `DiskInfo`, `NetworkInterface`, `render_template`, `quote`

@@ -1,11 +1,11 @@
 # Cursor & AI Agent Rules for uniconn
 
 - Read `AGENTS.md`, `llms.txt`, and `.claude/skills/testing-and-stability/SKILL.md` first for module structure, public API signatures, and testing standards.
-- Do NOT read `instractions.md` on every task (to preserve context window); consult `instractions.md` only on-demand when verifying whether a specific feature is already implemented or updating release status.
+- Do NOT read `FEATURES.md` on every task (to preserve context window); consult `FEATURES.md` only on-demand when verifying whether a specific feature is already implemented or updating the feature list.
 - Python 3.11+ async-first codebase managed via `uv`.
 - Line length limit: 120 characters (`ruff check src/`).
 - Type checking: `pyright` in standard mode (`0 errors` required across `src/uniconn`).
 - Maintain strict parity between `Connection` (`src/uniconn/_connection.py`) and `SyncConnection` (`src/uniconn/_sync.py`).
 - All public symbols must be exported in `src/uniconn/__init__.py` (`__all__`).
-- Mandatory Testing & Coverage: Always write new unit tests in the appropriate `tests/unit/{core,transports,pools,screen,cli,releases}/` subdirectory for any new feature or bugfix, and always run `uv run pytest -m "not integration"`, `uv run ruff check src/`, and `uv run pyright` before finishing.
+- Mandatory Testing & Coverage: Always write new unit tests in the appropriate `tests/unit/{core,transports,pools,screen,cli,releases}/` subdirectory for any new feature or bugfix, and always run `uv run pytest -m "not integration" -q --tb=short | tail -n 5`, `uv run ruff check src/`, and `uv run pyright` before finishing.
 - Zero `RuntimeWarning` tolerance: When mocking stream writers (`AsyncMock`), always set synchronous methods (`writer.write = MagicMock()`, `writer.close = MagicMock()`) so no unawaited coroutine warnings occur.
