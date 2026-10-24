@@ -400,7 +400,7 @@
       </nav>
       <div class="sidebar-note">
         <strong>Среда выполнения</strong>
-        <span id="meta-version">uniconn v0.8.0</span>
+        <span id="meta-version">uniconn v0.9.0</span>
         <span id="meta-python">Python 3.12</span>
         <span id="meta-transports">ssh · local · telnet · serial · ipmi</span>
       </div>
@@ -701,6 +701,9 @@
               <select id="pool-op">
                 <option value="map_safe">pool.map_safe(cmd)</option>
                 <option value="map">pool.map(cmd)</option>
+                <option value="ping">pool.ping() [v0.9.0]</option>
+                <option value="diff_facts">pool.diff_facts() [v0.9.0]</option>
+                <option value="run_script">pool.run_script(script) [v0.9.0]</option>
                 <option value="gather_facts">pool.gather_facts() [v0.8.0]</option>
                 <option value="stream">pool.stream(cmd) [v0.8.0]</option>
                 <option value="ensure_line">pool.ensure_line(...) [v0.8.0]</option>

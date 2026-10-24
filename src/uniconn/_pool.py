@@ -15,11 +15,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar
 
+from pydantic import SecretStr
+
 from ._config import ConnectionConfig
-from ._connection import Connection, format_command
-from ._facts import HostFacts
+from ._connection import Connection, _resolve_rate_limiter, format_command
+from ._facts import FactsDiffReport, HostFacts, diff_facts
+from .core.resilience import CircuitBreaker, RateLimiter
 from .pool.stream_mux import PoolStreamMultiplexer
-from .result import EnsureResult, Result, SyncResult
+from .result import EnsureResult, PingResult, Result, SyncResult
 
 if TYPE_CHECKING:
     from ._sync import SyncConnectionPool
@@ -39,6 +42,10 @@ class ConnectionPool:
         max_concurrent: int = 10,
         retry_attempts: int = 3,
         logger: logging.Logger | None = None,
+        rate_limit: float | RateLimiter | None = None,
+        circuit_breaker: bool = False,
+        failure_threshold: int = 5,
+        recovery_timeout: float = 30.0,
     ) -> None:
         self._uris = list(uris)
         self._max_concurrent = max_concurrent
@@ -48,6 +55,43 @@ class ConnectionPool:
         self._active_conns: dict[int, Connection] = {}
         self._is_entered = False
         self._stream_mux = PoolStreamMultiplexer(self)
+        self._rate_limiter = _resolve_rate_limiter(rate_limit, {})
+        self._circuit_breaker_enabled = circuit_breaker
+        self._failure_threshold = failure_threshold
+        self._recovery_timeout = recovery_timeout
+        self._circuit_breakers: dict[str, CircuitBreaker] = {}
+        for target in self._uris:
+            key = self._target_key(target)
+            if isinstance(target, Connection):
+                if self._rate_limiter is not None and not isinstance(
+                    getattr(target, "rate_limiter", None), RateLimiter
+                ):
+                    target.rate_limiter = self._rate_limiter
+                target_cb = getattr(target, "circuit_breaker", None)
+                if isinstance(target_cb, CircuitBreaker):
+                    self._circuit_breakers[key] = target_cb
+                elif self._circuit_breaker_enabled:
+                    cb = CircuitBreaker(
+                        failure_threshold=self._failure_threshold,
+                        recovery_timeout=self._recovery_timeout,
+                    )
+                    self._circuit_breakers[key] = cb
+                    target.circuit_breaker = cb
+            elif self._circuit_breaker_enabled and key not in self._circuit_breakers:
+                self._circuit_breakers[key] = CircuitBreaker(
+                    failure_threshold=self._failure_threshold,
+                    recovery_timeout=self._recovery_timeout,
+                )
+
+    @property
+    def rate_limiter(self) -> RateLimiter | None:
+        """Общий ограничитель частоты команд пула (если настроен)."""
+        return self._rate_limiter
+
+    @property
+    def circuit_breakers(self) -> dict[str, CircuitBreaker]:
+        """Словарь предохранителей ``CircuitBreaker`` по ключам хостов пула."""
+        return self._circuit_breakers
 
     @classmethod
     def from_file(
@@ -59,6 +103,10 @@ class ConnectionPool:
         max_concurrent: int = 10,
         retry_attempts: int = 3,
         logger: logging.Logger | None = None,
+        rate_limit: float | RateLimiter | None = None,
+        circuit_breaker: bool = False,
+        failure_threshold: int = 5,
+        recovery_timeout: float = 30.0,
     ) -> Self:
         """Создать пул подключений из JSON или YAML инвентарного файла."""
         conns = Connection.from_file(
@@ -73,6 +121,10 @@ class ConnectionPool:
             max_concurrent=max_concurrent,
             retry_attempts=retry_attempts,
             logger=logger,
+            rate_limit=rate_limit,
+            circuit_breaker=circuit_breaker,
+            failure_threshold=failure_threshold,
+            recovery_timeout=recovery_timeout,
         )
 
     @staticmethod
@@ -84,25 +136,49 @@ class ConnectionPool:
             return target.host or target.uri_safe
         return target.config.host or target.config.uri_safe
 
+    def _attach_resilience(self, target: PoolTarget, conn: Connection) -> Connection:
+        """Привязать пуловый ``RateLimiter`` и пер-хостовый ``CircuitBreaker`` к соединению."""
+        key = self._target_key(target)
+        if self._rate_limiter is not None and not isinstance(
+            getattr(conn, "rate_limiter", None), RateLimiter
+        ):
+            conn.rate_limiter = self._rate_limiter
+        conn_cb = getattr(conn, "circuit_breaker", None)
+        if isinstance(conn_cb, CircuitBreaker):
+            self._circuit_breakers.setdefault(key, conn_cb)
+        elif self._circuit_breaker_enabled:
+            cb = self._circuit_breakers.setdefault(
+                key,
+                CircuitBreaker(
+                    failure_threshold=self._failure_threshold,
+                    recovery_timeout=self._recovery_timeout,
+                ),
+            )
+            conn.circuit_breaker = cb
+        return conn
+
     def _build_conn(
         self, target: PoolTarget, *, with_defaults: bool = True
     ) -> Connection:
         """Создать экземпляр Connection из элемента пула."""
         if isinstance(target, Connection):
-            return target
+            return self._attach_resilience(target, target)
         if isinstance(target, ConnectionConfig):
-            return Connection.from_config(
+            conn = Connection.from_config(
                 target,
                 retry_attempts=self._retry_attempts,
                 logger=self._logger,
             )
+            return self._attach_resilience(target, conn)
         if with_defaults:
-            return Connection.from_uri(
+            conn = Connection.from_uri(
                 target,
                 retry_attempts=self._retry_attempts,
                 logger=self._logger,
             )
-        return Connection.from_uri(target)
+            return self._attach_resilience(target, conn)
+        conn = Connection.from_uri(target)
+        return self._attach_resilience(target, conn)
 
     @contextlib.asynccontextmanager
     async def _use_conn(
@@ -118,8 +194,25 @@ class ConnectionPool:
             return
 
         conn = self._build_conn(target, with_defaults=with_defaults)
-        async with conn as active:
-            yield active
+        cb = getattr(conn, "circuit_breaker", None)
+        if not isinstance(cb, CircuitBreaker):
+            cb = self._circuit_breakers.get(self._target_key(target))
+        if isinstance(cb, CircuitBreaker):
+            cfg_host = getattr(getattr(conn, "_config", None), "host", None)
+            host = cfg_host if isinstance(cfg_host, str) and cfg_host else self._target_key(target)
+            cb.check_or_raise(host=host, command="<connect>")
+        try:
+            async with conn as active:
+                yield active
+        except Exception as exc:
+            from .exceptions import ConnectionError as UniconnConnectionError
+            from .exceptions import TimeoutError as UniconnTimeoutError
+
+            if isinstance(cb, CircuitBreaker) and isinstance(
+                exc, UniconnConnectionError | UniconnTimeoutError | OSError
+            ):
+                cb.record_failure()
+            raise
 
     async def _fan_out_list(
         self,
@@ -412,6 +505,82 @@ class ConnectionPool:
         """Параллельно собрать системные факты (``HostFacts``) со всех хостов пула."""
         return await self._fan_out_dict(
             lambda _key, conn: conn.gather_facts(refresh=refresh, timeout=timeout)
+        )
+
+    async def diff_facts(
+        self,
+        *,
+        baseline_host: str | None = None,
+        fields: Sequence[str] | None = None,
+        refresh: bool = False,
+        timeout: float | None = None,
+    ) -> FactsDiffReport:
+        """Собрать системные факты со всех хостов пула и найти расхождения с эталоном."""
+        facts_map = await self.gather_facts(refresh=refresh, timeout=timeout)
+        return diff_facts(
+            facts_map,
+            baseline_host=baseline_host,
+            fields=fields,
+        )
+
+    async def ping(
+        self,
+        timeout: float | None = None,
+    ) -> dict[str, PingResult]:
+        """Параллельно проверить доступность всех хостов пула с измерением задержки."""
+        results: dict[str, PingResult] = {}
+
+        async def _ping_one(idx: int, target: PoolTarget) -> None:
+            key = self._target_key(target)
+            async with self._semaphore:
+                if self._is_entered and idx in self._active_conns:
+                    res = await self._active_conns[idx].ping(timeout=timeout)
+                    results[key] = res
+                    return
+
+                conn = self._build_conn(target, with_defaults=True)
+                try:
+                    results[key] = await conn.ping(timeout=timeout)
+                finally:
+                    with contextlib.suppress(Exception):
+                        await conn.close()
+
+        async with asyncio.TaskGroup() as tg:
+            for idx, target in enumerate(self._uris):
+                tg.create_task(_ping_one(idx, target))
+
+        return results
+
+    async def run_script(
+        self,
+        local_path: str | Path,
+        args: Sequence[str] | None = None,
+        *,
+        interpreter: str | None = None,
+        sudo: bool = False,
+        sudo_user: str | None = None,
+        sudo_password: str | SecretStr | None = None,
+        env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+        raise_on_error: bool = False,
+        sensitive: bool = False,
+        dry_run: bool | None = None,
+    ) -> dict[str, Result]:
+        """Параллельно загрузить, выполнить и удалить локальный скрипт на всех хостах пула."""
+        return await self._fan_out_dict(
+            lambda _key, conn: conn.run_script(
+                local_path=local_path,
+                args=args,
+                interpreter=interpreter,
+                sudo=sudo,
+                sudo_user=sudo_user,
+                sudo_password=sudo_password,
+                env=env,
+                timeout=timeout,
+                raise_on_error=raise_on_error,
+                sensitive=sensitive,
+                dry_run=dry_run,
+            )
         )
 
     async def ensure_package(

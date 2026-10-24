@@ -11,7 +11,7 @@ from shlex import quote
 
 from ._config import ConnectionConfig
 from ._connection import Connection, render_template
-from ._facts import DiskInfo, HostFacts, NetworkInterface
+from ._facts import DiskInfo, FactsDiffReport, HostFacts, NetworkInterface, diff_facts
 from ._logging import (
     SecretMaskingFilter,
     bind_log_context,
@@ -38,6 +38,9 @@ from ._sync import (
 from .background import LogConfig, ScreenPool, ScreenResult, ScreenSession
 from .config import InventoryLoader
 from .core import (
+    CircuitBreaker,
+    CircuitBreakerMiddleware,
+    CircuitState,
     CommandMiddleware,
     CommandPipeline,
     CommandRequest,
@@ -47,6 +50,8 @@ from .core import (
     ExecutionContext,
     HookMiddleware,
     ObservabilityMiddleware,
+    RateLimiter,
+    RateLimitMiddleware,
     RetryMiddleware,
     SudoMiddleware,
     SyncContextBridge,
@@ -55,6 +60,7 @@ from .exceptions import (
     AuthenticationError,
     BMCCapabilityError,
     CapabilityNotSupportedError,
+    CircuitOpenError,
     ConnectionError,
     ExecutionError,
     ScreenError,
@@ -74,7 +80,7 @@ from .hooks import (
     structured_log_hook,
 )
 from .pool.stream_mux import PoolStreamMultiplexer
-from .result import EnsureResult, Result, SyncResult
+from .result import EnsureResult, PingResult, Result, SyncResult
 from .services import (
     ApkStrategy,
     AptStrategy,
@@ -122,14 +128,17 @@ __all__ = [
     "ConnectionConfig",
     "InventoryLoader",
     "Result",
+    "PingResult",
     "SyncResult",
     "EnsureResult",
     "HostFacts",
+    "FactsDiffReport",
+    "diff_facts",
     "DiskInfo",
     "NetworkInterface",
     "render_template",
     "quote",
-    # Ядро, конвейер команд и портал синхронизации
+    # Ядро, конвейер команд, отказоустойчивость и портал синхронизации
     "CommandPipeline",
     "CommandRequest",
     "CommandMiddleware",
@@ -138,7 +147,12 @@ __all__ = [
     "HookMiddleware",
     "DryRunMiddleware",
     "ObservabilityMiddleware",
+    "CircuitBreakerMiddleware",
+    "RateLimitMiddleware",
     "RetryMiddleware",
+    "CircuitBreaker",
+    "CircuitState",
+    "RateLimiter",
     "ExecutionContext",
     "EventLoopPortal",
     "SyncContextBridge",
@@ -190,6 +204,7 @@ __all__ = [
     # Исключения
     "UniconnError",
     "ConnectionError",
+    "CircuitOpenError",
     "AuthenticationError",
     "ExecutionError",
     "TimeoutError",

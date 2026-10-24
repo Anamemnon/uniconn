@@ -12,8 +12,10 @@
 from __future__ import annotations
 
 import logging
+import shlex
 import shutil
 import tempfile
+import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self
@@ -35,8 +37,9 @@ from .core.pipeline import (
     format_command,
     prepare_sudo_command,
 )
+from .core.resilience import CircuitBreaker, RateLimiter
 from .plugins._loader import TransportLoader
-from .result import EnsureResult, Result, SyncResult
+from .result import EnsureResult, PingResult, Result, SyncResult
 from .services.facts import FactCollector
 from .services.files import FileOperationsService
 from .services.provisioning import PkgManagerName, ServiceState, StateManagementService
@@ -56,6 +59,44 @@ _TempDirContext = TempDirContext
 _format_command = format_command
 _parse_inventory_data = InventoryLoader.parse_data
 _wait_exponential_jitter = wait_exponential_jitter
+
+
+def _resolve_rate_limiter(
+    rate_limit: float | RateLimiter | None,
+    options: Mapping[str, Any],
+) -> RateLimiter | None:
+    """Создать или вернуть экземпляр ``RateLimiter`` из параметра или ``config.options``."""
+    if isinstance(rate_limit, RateLimiter):
+        return rate_limit
+    if isinstance(rate_limit, int | float) and not isinstance(rate_limit, bool):
+        return RateLimiter(float(rate_limit))
+    opt_rate = options.get("rate_limit")
+    if isinstance(opt_rate, int | float) and not isinstance(opt_rate, bool) and opt_rate > 0:
+        return RateLimiter(float(opt_rate))
+    return None
+
+
+def _resolve_circuit_breaker(
+    circuit_breaker: CircuitBreaker | bool | None,
+    options: Mapping[str, Any],
+) -> CircuitBreaker | None:
+    """Создать или вернуть экземпляр ``CircuitBreaker`` из параметра или ``config.options``."""
+    if isinstance(circuit_breaker, CircuitBreaker):
+        return circuit_breaker
+    if circuit_breaker is False:
+        return None
+    has_opt_cb = (
+        options.get("circuit_breaker") is True
+        or "circuit_breaker_threshold" in options
+    )
+    if circuit_breaker is True or (circuit_breaker is None and has_opt_cb):
+        threshold = int(options.get("circuit_breaker_threshold", 5))
+        recovery = float(options.get("circuit_breaker_recovery_timeout", 30.0))
+        return CircuitBreaker(
+            failure_threshold=threshold,
+            recovery_timeout=recovery,
+        )
+    return None
 
 
 class Connection:
@@ -79,12 +120,18 @@ class Connection:
         before_run: Sequence[HookCallback] | None = None,
         after_run: Sequence[HookCallback] | None = None,
         on_error: Sequence[HookCallback] | None = None,
+        rate_limit: float | RateLimiter | None = None,
+        circuit_breaker: CircuitBreaker | bool | None = None,
     ) -> None:
         self._transport = transport
         self._config = config
         self._retry_attempts = retry_attempts
         self._logger = logger or logging.getLogger(__name__)
         self._dry_run = dry_run
+        self._rate_limiter = _resolve_rate_limiter(rate_limit, config.options)
+        self._circuit_breaker = _resolve_circuit_breaker(
+            circuit_breaker, config.options
+        )
         self._context = ExecutionContext()
         self._cwd_stack = self._context.cwd_stack
         self._env_stack = self._context.env_stack
@@ -103,6 +150,24 @@ class Connection:
     def pipeline(self) -> CommandPipeline:
         """Конвейер выполнения команд (Middleware Pipeline)."""
         return self._pipeline
+
+    @property
+    def rate_limiter(self) -> RateLimiter | None:
+        """Ограничитель частоты команд (Token Bucket), если настроен."""
+        return self._rate_limiter
+
+    @rate_limiter.setter
+    def rate_limiter(self, value: RateLimiter | None) -> None:
+        self._rate_limiter = value
+
+    @property
+    def circuit_breaker(self) -> CircuitBreaker | None:
+        """Автоматический предохранитель (Circuit Breaker), если настроен."""
+        return self._circuit_breaker
+
+    @circuit_breaker.setter
+    def circuit_breaker(self, value: CircuitBreaker | None) -> None:
+        self._circuit_breaker = value
 
     @property
     def _cached_facts(self) -> HostFacts | None:
@@ -125,6 +190,8 @@ class Connection:
         before_run: Sequence[HookCallback] | None = None,
         after_run: Sequence[HookCallback] | None = None,
         on_error: Sequence[HookCallback] | None = None,
+        rate_limit: float | RateLimiter | None = None,
+        circuit_breaker: CircuitBreaker | bool | None = None,
     ) -> Self:
         """Создать подключение из URI строки."""
         config = ConnectionConfig.from_uri(uri)
@@ -139,6 +206,8 @@ class Connection:
             before_run=before_run,
             after_run=after_run,
             on_error=on_error,
+            rate_limit=rate_limit,
+            circuit_breaker=circuit_breaker,
         )
 
     @classmethod
@@ -151,6 +220,8 @@ class Connection:
         before_run: Sequence[HookCallback] | None = None,
         after_run: Sequence[HookCallback] | None = None,
         on_error: Sequence[HookCallback] | None = None,
+        rate_limit: float | RateLimiter | None = None,
+        circuit_breaker: CircuitBreaker | bool | None = None,
     ) -> Self:
         """Создать подключение из конфигурации."""
         transport_class = TransportLoader.get(config.transport)
@@ -164,6 +235,8 @@ class Connection:
             before_run=before_run,
             after_run=after_run,
             on_error=on_error,
+            rate_limit=rate_limit,
+            circuit_breaker=circuit_breaker,
         )
 
     @classmethod
@@ -177,12 +250,16 @@ class Connection:
         """Создать подключение из словаря."""
         retry = data.get("retry_attempts", retry_attempts)
         effective_dry_run = bool(data.get("dry_run", dry_run))
+        rate_limit = data.get("rate_limit")
+        circuit_breaker = data.get("circuit_breaker")
         if "uri" in data:
             conn = cls.from_uri(
                 str(data["uri"]),
                 retry_attempts=retry,
                 logger=logger,
                 dry_run=effective_dry_run,
+                rate_limit=rate_limit,
+                circuit_breaker=circuit_breaker,
             )
             overrides = {
                 k: v
@@ -196,6 +273,8 @@ class Connection:
                     "dry_run",
                     "name",
                     "groups",
+                    "rate_limit",
+                    "circuit_breaker",
                 )
                 and (
                     k != "host"
@@ -210,12 +289,29 @@ class Connection:
             **{
                 k: v
                 for k, v in data.items()
-                if k not in ("retry_attempts", "logger", "dry_run", "name", "groups")
+                if k
+                not in (
+                    "retry_attempts",
+                    "logger",
+                    "dry_run",
+                    "name",
+                    "groups",
+                    "rate_limit",
+                    "circuit_breaker",
+                )
             }
         )
         transport_class = TransportLoader.get(config.transport)
         transport = transport_class(config)
-        return cls(transport, config, retry, logger, dry_run=effective_dry_run)
+        return cls(
+            transport,
+            config,
+            retry,
+            logger,
+            dry_run=effective_dry_run,
+            rate_limit=rate_limit,
+            circuit_breaker=circuit_breaker,
+        )
 
     @classmethod
     def from_file(
@@ -264,6 +360,8 @@ class Connection:
         retry_attempts: int | None = None,
         logger: logging.Logger | None = None,
         dry_run: bool | None = None,
+        rate_limit: float | RateLimiter | None = None,
+        circuit_breaker: CircuitBreaker | bool | None = None,
     ) -> Self:
         """Создать копию подключения с возможностью изменения параметров."""
         new_config = ConnectionConfig(
@@ -303,6 +401,14 @@ class Connection:
             before_run=self._hooks["before_run"],
             after_run=self._hooks["after_run"],
             on_error=self._hooks["on_error"],
+            rate_limit=(
+                self._rate_limiter if rate_limit is None else rate_limit
+            ),
+            circuit_breaker=(
+                self._circuit_breaker
+                if circuit_breaker is None
+                else circuit_breaker
+            ),
         )
 
     def with_overrides(self, **overrides: Any) -> Self:
@@ -320,6 +426,8 @@ class Connection:
             retry_attempts=overrides.get("retry_attempts"),
             logger=overrides.get("logger"),
             dry_run=overrides.get("dry_run"),
+            rate_limit=overrides.get("rate_limit"),
+            circuit_breaker=overrides.get("circuit_breaker"),
         )
 
     # ─── Контекстные менеджеры cd / env / temp_dir и Hooks ─────────
@@ -512,6 +620,99 @@ class Connection:
     async def is_alive(self, timeout: float | None = None) -> bool:
         """Проверить живость подключения."""
         return await self._transport.ping(timeout=timeout)
+
+    async def ping(self, timeout: float | None = None) -> PingResult:
+        """Проверить доступность хоста с измерением задержки (``latency_ms``)."""
+        host = self._config.host or self._config.uri_safe or "localhost"
+        transport = self.transport_name
+        if self._dry_run:
+            return PingResult(
+                host=host,
+                alive=True,
+                latency_ms=0.0,
+                transport=transport,
+            )
+
+        start = time.monotonic()
+        try:
+            if not self._transport.is_connected:
+                await self._transport.connect()
+            alive = await self._transport.ping(timeout=timeout)
+            elapsed_ms = (time.monotonic() - start) * 1000.0
+            return PingResult(
+                host=host,
+                alive=alive,
+                latency_ms=elapsed_ms,
+                transport=transport,
+                error=None if alive else "Ping check returned False",
+            )
+        except Exception as exc:
+            elapsed_ms = (time.monotonic() - start) * 1000.0
+            return PingResult(
+                host=host,
+                alive=False,
+                latency_ms=elapsed_ms,
+                transport=transport,
+                error=str(exc),
+            )
+
+    async def run_script(
+        self,
+        local_path: str | Path,
+        args: Sequence[str] | None = None,
+        *,
+        interpreter: str | None = None,
+        sudo: bool = False,
+        sudo_user: str | None = None,
+        sudo_password: str | SecretStr | None = None,
+        env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+        raise_on_error: bool = False,
+        sensitive: bool = False,
+        dry_run: bool | None = None,
+    ) -> Result:
+        """Загрузить локальный скрипт во временную директорию, выполнить и удалить."""
+        script_path = Path(local_path)
+        if not script_path.is_file():
+            raise FileNotFoundError(f"Local script not found: {local_path}")
+
+        effective_dry_run = self._dry_run if dry_run is None else dry_run
+        async with self.temp_dir() as remote_dir:
+            remote_script = f"{remote_dir.rstrip('/')}/{script_path.name}"
+            if not effective_dry_run:
+                await self.upload(str(script_path), remote_script)
+                await self.chmod(remote_script, 0o700)
+
+            if interpreter:
+                cmd_parts: list[str] = [*shlex.split(interpreter), remote_script]
+            else:
+                cmd_parts = [remote_script]
+
+            if args:
+                cmd_parts.extend(str(a) for a in args)
+
+            if env:
+                with self.env(dict(env)):
+                    return await self.run(
+                        cmd_parts,
+                        timeout=timeout,
+                        raise_on_error=raise_on_error,
+                        sudo=sudo,
+                        sudo_user=sudo_user,
+                        sudo_password=sudo_password,
+                        sensitive=sensitive,
+                        dry_run=dry_run,
+                    )
+            return await self.run(
+                cmd_parts,
+                timeout=timeout,
+                raise_on_error=raise_on_error,
+                sudo=sudo,
+                sudo_user=sudo_user,
+                sudo_password=sudo_password,
+                sensitive=sensitive,
+                dry_run=dry_run,
+            )
 
     # ─── Файловые операции и шаблоны (делегация в conn.files) ──────
 

@@ -135,10 +135,11 @@ class URIParser:
         from ._config import ConnectionConfig
 
         options = cls._parse_options(parsed.query)
+        host = str(options["host"]) if "host" in options else (parsed.hostname or "localhost")
 
         return ConnectionConfig(
             transport="local",
-            host="localhost",
+            host=host,
             port=None,
             username=None,
             password=None,

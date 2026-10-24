@@ -147,3 +147,29 @@ class EnsureResult:
             "dry_run": self.dry_run,
         }
 
+
+@dataclass(frozen=True)
+class PingResult:
+    """Результат проверки доступности хоста с измерением задержки (``ping``)."""
+
+    host: str
+    alive: bool
+    latency_ms: float
+    transport: str = "unknown"
+    error: str | None = None
+
+    def __bool__(self) -> bool:
+        """Позволяет использовать PingResult в условных выражениях (``if await conn.ping():``)."""
+        return self.alive
+
+    def to_dict(self) -> dict[str, Any]:
+        """Преобразовать результат пинга в сериализуемый словарь."""
+        return {
+            "host": self.host,
+            "alive": self.alive,
+            "latency_ms": round(self.latency_ms, 3),
+            "transport": self.transport,
+            "error": self.error,
+        }
+
+

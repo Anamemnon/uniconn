@@ -18,7 +18,9 @@ import logging
 from collections.abc import Sequence
 from typing import Self
 
-from ._connection import Connection
+from ._connection import Connection, _resolve_rate_limiter
+from .core.resilience import CircuitBreaker, RateLimiter
+from .exceptions import ConnectionError, TimeoutError
 from .result import Result
 
 
@@ -37,6 +39,10 @@ class SSHSessionPool:
         retry_attempts: int = 3,
         logger: logging.Logger | None = None,
         health_check: bool = False,
+        rate_limit: float | RateLimiter | None = None,
+        circuit_breaker: CircuitBreaker | bool = False,
+        failure_threshold: int = 5,
+        recovery_timeout: float = 30.0,
     ):
         self._uri = uri
         self._max_sessions = max_sessions_per_conn
@@ -44,10 +50,30 @@ class SSHSessionPool:
         self._retry_attempts = retry_attempts
         self._logger = logger or logging.getLogger(__name__)
         self._health_check = health_check
+        self._rate_limiter = _resolve_rate_limiter(rate_limit, {})
+        if isinstance(circuit_breaker, CircuitBreaker):
+            self._circuit_breaker: CircuitBreaker | None = circuit_breaker
+        elif circuit_breaker is True:
+            self._circuit_breaker = CircuitBreaker(
+                failure_threshold=failure_threshold,
+                recovery_timeout=recovery_timeout,
+            )
+        else:
+            self._circuit_breaker = None
 
         self._connections: list[Connection] = []
         self._semaphores: list[asyncio.Semaphore] = []
         self._lock = asyncio.Lock()
+
+    @property
+    def rate_limiter(self) -> RateLimiter | None:
+        """Ограничитель скорости команд пула SSH-сессий (если настроен)."""
+        return self._rate_limiter
+
+    @property
+    def circuit_breaker(self) -> CircuitBreaker | None:
+        """Автоматический предохранитель пула SSH-сессий (если настроен)."""
+        return self._circuit_breaker
 
     async def _run_on_conn(
         self,
@@ -55,14 +81,28 @@ class SSHSessionPool:
         command: str,
         **kwargs,
     ) -> Result:
-        """Выполнить команду на соединении с опциональной проверкой живости."""
-        is_connected = getattr(getattr(conn, "_transport", None), "is_connected", True)
-        if self._health_check and is_connected and not await conn.is_alive():
-            self._logger.debug(
-                f"Unhealthy connection detected in SSHSessionPool for {self._uri}; reconnecting"
-            )
-            await conn.close()
-        return await conn.run(command, **kwargs)
+        """Выполнить команду на соединении с опциональной проверкой живости, RateLimiter и CircuitBreaker."""
+        if self._circuit_breaker is not None:
+            self._circuit_breaker.check_or_raise(host=self._uri, command=command)
+        if self._rate_limiter is not None:
+            await self._rate_limiter.acquire()
+
+        try:
+            is_connected = getattr(getattr(conn, "_transport", None), "is_connected", True)
+            if self._health_check and is_connected and not await conn.is_alive():
+                self._logger.debug(
+                    f"Unhealthy connection detected in SSHSessionPool for {self._uri}; reconnecting"
+                )
+                await conn.close()
+            res = await conn.run(command, **kwargs)
+        except (ConnectionError, TimeoutError, OSError):
+            if self._circuit_breaker is not None:
+                self._circuit_breaker.record_failure()
+            raise
+        else:
+            if self._circuit_breaker is not None:
+                self._circuit_breaker.record_success()
+            return res
 
     async def check_health(self, timeout: float | None = None) -> int:
         """Проверить живость всех соединений пула и удалить оборванные.

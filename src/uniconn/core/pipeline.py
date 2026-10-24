@@ -26,8 +26,9 @@ from tenacity import (
 )
 
 from .._logging import log_context, log_event
-from ..exceptions import ConnectionError, TimeoutError
+from ..exceptions import CircuitOpenError, ConnectionError, TimeoutError
 from ..result import Result
+from .resilience import CircuitBreaker, RateLimiter
 
 if TYPE_CHECKING:
     from .._connection import Connection
@@ -234,9 +235,6 @@ class ObservabilityMiddleware:
             uri=self._conn._config.uri_safe,
         ):
             try:
-                if not self._conn._transport.is_connected:
-                    await self._conn._transport.connect()
-
                 request.timeout = request.timeout or self._conn._config.timeout
                 log_event(
                     self._conn._logger,
@@ -300,6 +298,53 @@ class ObservabilityMiddleware:
                 raise
 
 
+class CircuitBreakerMiddleware:
+    """Контролирует состояние ``CircuitBreaker`` до обращения к транспорту и фиксирует сбои."""
+
+    def __init__(self, conn: Connection) -> None:
+        """Инициализировать CircuitBreakerMiddleware."""
+        self._conn = conn
+
+    async def __call__(self, request: CommandRequest, call_next: NextHandler) -> Result:
+        """Проверить состояние цепи и обновить статистику успеха/сбоя."""
+        cb = getattr(self._conn, "_circuit_breaker", None)
+        if not isinstance(cb, CircuitBreaker):
+            return await call_next(request)
+
+        cb.check_or_raise(
+            host=self._conn._config.host,
+            command="***REDACTED***" if request.sensitive else request.command,
+        )
+        try:
+            result = await call_next(request)
+        except (
+            ConnectionError,
+            TimeoutError,
+            builtins.TimeoutError,
+        ) as exc:
+            if not isinstance(exc, CircuitOpenError):
+                cb.record_failure()
+            raise
+        else:
+            cb.record_success()
+            return result
+
+
+class RateLimitMiddleware:
+    """Ограничивает частоту запуска команд через ``RateLimiter`` (Token Bucket)."""
+
+    def __init__(self, conn: Connection) -> None:
+        """Инициализировать RateLimitMiddleware."""
+        self._conn = conn
+
+    async def __call__(self, request: CommandRequest, call_next: NextHandler) -> Result:
+        """Дождаться токена ``RateLimiter`` перед передачей запроса в транспорт."""
+        rl = getattr(self._conn, "_rate_limiter", None)
+        if isinstance(rl, RateLimiter):
+            await rl.acquire()
+        return await call_next(request)
+
+
 class RetryMiddleware:
     """Выполняет повторные попытки (Exponential Backoff + Jitter) с переподключением транспорта."""
 
@@ -327,6 +372,8 @@ class RetryMiddleware:
         ):
             with attempt:
                 try:
+                    if not self._conn._transport.is_connected:
+                        await self._conn._transport.connect()
                     result = await call_next(request)
                 except (
                     ConnectionError,
@@ -379,10 +426,17 @@ class CommandPipeline:
                     hook_mw,
                     DryRunMiddleware(self._conn),
                     ObservabilityMiddleware(self._conn, hook_mw),
+                    CircuitBreakerMiddleware(self._conn),
+                    RateLimitMiddleware(self._conn),
                     RetryMiddleware(self._conn),
                 ]
             else:
                 self._middlewares = []
+
+    @property
+    def middlewares(self) -> list[CommandMiddleware]:
+        """Вернуть копию списка зарегистрированных Middleware в конвейере."""
+        return list(self._middlewares)
 
     def add_middleware(self, middleware: CommandMiddleware) -> None:
         """Добавить пользовательский Middleware в конвейер."""
@@ -417,3 +471,4 @@ class CommandPipeline:
             handler = _step
 
         return await handler(request)
+

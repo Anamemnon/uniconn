@@ -1,20 +1,105 @@
 # src/uniconn/cli/cmd_ops.py
-"""Операционные и диагностические команды CLI: facts, tail, bmc."""
+"""Операционные и диагностические команды CLI: ping, facts, tail, bmc."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import shlex
+import sys
 from typing import Annotated, Any
 
+from .._facts import diff_facts
 from .._logging import get_logger
 from .renderers import CLIOutputRenderer, Panel, Parameter, Table, box, build_cli_pool
 
 
 def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -> None:
-    """Зарегистрировать команды инспекции и мониторинга (facts, tail, bmc)."""
+    """Зарегистрировать команды инспекции и мониторинга (ping, facts, tail, bmc)."""
     import uniconn.cli as cli_pkg
+
+    @app.command(name="ping")
+    def ping_cmd(
+        *uris: Annotated[str, Parameter(help="Target connection URIs")],
+        inventory: Annotated[
+            str | None,
+            Parameter(name=["--inventory", "-i"], help="Inventory file (.yaml/.json)"),
+        ] = None,
+        group: Annotated[
+            str | None,
+            Parameter(name=["--group", "-g"], help="Host group name in inventory"),
+        ] = None,
+        timeout: Annotated[
+            float, Parameter(name=["--timeout", "-t"], help="Timeout in seconds")
+        ] = 5.0,
+        max_concurrent: Annotated[
+            int,
+            Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
+        ] = 20,
+        output_format: Annotated[
+            str,
+            Parameter(name=["--format", "-f"], help="Output format: table, json"),
+        ] = "table",
+        verbose: Annotated[
+            bool, Parameter(name=["--verbose", "-v"], negative="", help="Verbose output")
+        ] = False,
+    ) -> None:
+        """Parallel host availability and latency check across URIs or inventory."""
+        host_uris = list(uris)
+        if not host_uris and not inventory:
+            host_uris = ["local://"]
+
+        async def _execute() -> None:
+            logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
+            try:
+                pool = build_cli_pool(
+                    cli_pkg, host_uris, inventory, group, max_concurrent, logger
+                )
+                ping_map = await pool.ping(timeout=timeout)
+                dead_count = sum(1 for r in ping_map.values() if not r.alive)
+
+                if output_format == "json":
+                    payload = {k: v.to_dict() for k, v in ping_map.items()}
+                    console.print(json.dumps(payload, indent=2))
+                    if dead_count > 0:
+                        sys.exit(1)
+                    return
+
+                table = Table(
+                    title=f"Ping Latency Report ({len(ping_map)} host(s))",
+                    box=box.ROUNDED,
+                    show_header=True,
+                    header_style="bold cyan",
+                )
+                table.add_column("Host", style="cyan")
+                table.add_column("Status", style="bold")
+                table.add_column("Transport", style="magenta")
+                table.add_column("Latency (ms)", justify="right")
+                table.add_column("Details")
+
+                for host_key, pr in ping_map.items():
+                    status_str = "[green]ALIVE[/green]" if pr.alive else "[red]DEAD[/red]"
+                    lat_str = f"{pr.latency_ms:.2f} ms"
+                    details_str = pr.error or "OK"
+                    table.add_row(
+                        host_key,
+                        status_str,
+                        pr.transport,
+                        lat_str,
+                        details_str,
+                    )
+                console.print(table)
+                if dead_count > 0:
+                    console.print(
+                        f"\n[red]Unreachable hosts: {dead_count}/{len(ping_map)}[/red]"
+                    )
+                    sys.exit(1)
+            except SystemExit:
+                raise
+            except Exception as e:
+                renderer.print_error_and_exit(e, title="Ping Error")
+
+        asyncio.run(_execute())
 
     @app.command
     def bmc(
@@ -70,6 +155,21 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
             str | None,
             Parameter(name=["--group", "-g"], help="Host group name in inventory"),
         ] = None,
+        diff: Annotated[
+            bool,
+            Parameter(
+                name=["--diff", "-d"],
+                negative="",
+                help="Compare facts across hosts and highlight configuration drift",
+            ),
+        ] = False,
+        baseline: Annotated[
+            str | None,
+            Parameter(
+                name="--baseline",
+                help="Baseline host key for --diff comparison",
+            ),
+        ] = None,
         max_concurrent: Annotated[
             int,
             Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
@@ -94,6 +194,48 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                     cli_pkg, host_uris, inventory, group, max_concurrent, logger
                 )
                 facts_map = await pool.gather_facts()
+                if diff:
+                    report = diff_facts(facts_map, baseline_host=baseline)
+                    if output_format == "json":
+                        console.print(json.dumps(report.to_dict(), indent=2))
+                        return
+
+                    if not report.has_drift:
+                        console.print(
+                            Panel(
+                                f"[green]OK[/green] All {len(report.in_sync_hosts)} host(s) "
+                                f"match baseline [bold cyan]{report.baseline_host}[/bold cyan]",
+                                title="Facts Drift Report",
+                                border_style="green",
+                            )
+                        )
+                        return
+
+                    diff_table = Table(
+                        title=(
+                            f"Facts Drift Report (baseline: {report.baseline_host}, "
+                            f"drifted: {len(report.drifted_hosts)})"
+                        ),
+                        box=box.ROUNDED,
+                        show_header=True,
+                        header_style="bold yellow",
+                    )
+                    diff_table.add_column("Host", style="cyan")
+                    diff_table.add_column("Field", style="magenta")
+                    diff_table.add_column("Expected (Baseline)", style="green")
+                    diff_table.add_column("Actual", style="red")
+
+                    for drifted_host, fields_diff in report.drifted_hosts.items():
+                        for fld, vals in fields_diff.items():
+                            diff_table.add_row(
+                                drifted_host,
+                                fld,
+                                str(vals["expected"]),
+                                str(vals["actual"]),
+                            )
+                    console.print(diff_table)
+                    return
+
                 if output_format == "json":
                     payload = {k: v.to_dict() for k, v in facts_map.items()}
                     console.print(json.dumps(payload, indent=2))

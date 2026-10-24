@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -340,10 +342,114 @@ def parse_facts_output(raw_stdout: str, default_host: str | None = None) -> Host
     )
 
 
+DEFAULT_DIFF_FIELDS: tuple[str, ...] = (
+    "os_family",
+    "distro",
+    "kernel",
+    "arch",
+    "cpu_count",
+    "memory_total_mb",
+)
+
+
+@dataclass(frozen=True)
+class FactsDiffReport:
+    """Отчёт о расхождениях системных характеристик (drift detection) между хостами."""
+
+    baseline_host: str
+    in_sync_hosts: list[str] = field(default_factory=list)
+    drifted_hosts: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
+    checked_fields: list[str] = field(default_factory=list)
+
+    @property
+    def has_drift(self) -> bool:
+        """True, если хотя бы на одном хосте обнаружены расхождения с эталоном."""
+        return bool(self.drifted_hosts)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Преобразовать отчёт о расхождениях в сериализуемый словарь."""
+        return {
+            "baseline_host": self.baseline_host,
+            "has_drift": self.has_drift,
+            "in_sync_hosts": list(self.in_sync_hosts),
+            "drifted_hosts": dict(self.drifted_hosts),
+            "checked_fields": list(self.checked_fields),
+        }
+
+
+def _extract_fact_field(facts: HostFacts, field_name: str) -> Any:
+    """Извлечь значение поля из ``HostFacts`` для сравнения (включая вычисляемые поля)."""
+    if field_name == "memory_total_mb":
+        return round(facts.memory_total_bytes / (1024 * 1024))
+    return getattr(facts, field_name, None)
+
+
+def diff_facts(
+    facts_map: Mapping[str, HostFacts],
+    *,
+    baseline_host: str | None = None,
+    fields: Sequence[str] | None = None,
+) -> FactsDiffReport:
+    """Сравнить ``HostFacts`` группы хостов относительно эталонного (``baseline_host``).
+
+    Args:
+        facts_map: Словарь ``{host: HostFacts}``.
+        baseline_host: Имя эталонного хоста (по умолчанию — первый хост в ``facts_map``).
+        fields: Список проверяемых полей (по умолчанию ``DEFAULT_DIFF_FIELDS``).
+
+    Returns:
+        Экземпляр ``FactsDiffReport`` со списками синхронных и расходящихся хостов.
+
+    """
+    checked = list(fields) if fields is not None else list(DEFAULT_DIFF_FIELDS)
+    if not facts_map:
+        return FactsDiffReport(baseline_host="", checked_fields=checked)
+
+    if baseline_host is None:
+        base_key = next(iter(facts_map.keys()))
+    else:
+        if baseline_host not in facts_map:
+            raise ValueError(f"Baseline host {baseline_host!r} not found in facts_map")
+        base_key = baseline_host
+
+    base_facts = facts_map[base_key]
+    in_sync: list[str] = []
+    drifted: dict[str, dict[str, dict[str, Any]]] = {}
+
+    for host, host_facts in facts_map.items():
+        if host == base_key:
+            in_sync.append(host)
+            continue
+        host_diffs: dict[str, dict[str, Any]] = {}
+        for fld in checked:
+            expected_val = _extract_fact_field(base_facts, fld)
+            actual_val = _extract_fact_field(host_facts, fld)
+            if actual_val != expected_val:
+                host_diffs[fld] = {
+                    "expected": expected_val,
+                    "actual": actual_val,
+                }
+        if host_diffs:
+            drifted[host] = host_diffs
+        else:
+            in_sync.append(host)
+
+    return FactsDiffReport(
+        baseline_host=base_key,
+        in_sync_hosts=in_sync,
+        drifted_hosts=drifted,
+        checked_fields=checked,
+    )
+
+
 __all__ = [
+    "DEFAULT_DIFF_FIELDS",
     "FACT_COLLECTION_SCRIPT",
     "DiskInfo",
+    "FactsDiffReport",
     "HostFacts",
     "NetworkInterface",
+    "diff_facts",
     "parse_facts_output",
 ]
+

@@ -19,12 +19,13 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 from pydantic import SecretStr
 
 from ._connection import Connection
-from ._facts import HostFacts
+from ._facts import FactsDiffReport, HostFacts
 from ._shell import ShellSession
 from .core.bridge import EventLoopPortal, SyncContextBridge
 from .core.context import CwdContext, EnvContext
 from .core.pipeline import HookCallback, HookEvent
-from .result import EnsureResult, Result, SyncResult
+from .core.resilience import CircuitBreaker, RateLimiter
+from .result import EnsureResult, PingResult, Result, SyncResult
 from .services.provisioning import PkgManagerName, ServiceState
 
 if TYPE_CHECKING:
@@ -406,6 +407,16 @@ class SyncConnection:
         """Контекстный менеджер переменных окружения (синхронный)."""
         return self._async_conn.env(mapping, **env_vars)
 
+    @property
+    def rate_limiter(self) -> RateLimiter | None:
+        """Ограничитель частоты команд (Token Bucket), если настроен."""
+        return self._async_conn.rate_limiter
+
+    @property
+    def circuit_breaker(self) -> CircuitBreaker | None:
+        """Автоматический предохранитель (Circuit Breaker), если настроен."""
+        return self._async_conn.circuit_breaker
+
     def add_hook(self, event: HookEvent, callback: HookCallback) -> Self:
         """Зарегистрировать lifecycle-хук (``before_run``, ``after_run``, ``on_error``)."""
         self._async_conn.add_hook(event, callback)
@@ -674,6 +685,42 @@ class SyncConnection:
         """Проверить живость подключения (синхронно)."""
         return self._run_coro(self._async_conn.is_alive(timeout=timeout))
 
+    def ping(self, timeout: float | None = None) -> PingResult:
+        """Проверить доступность хоста с измерением задержки (синхронно)."""
+        return self._run_coro(self._async_conn.ping(timeout=timeout))
+
+    def run_script(
+        self,
+        local_path: str | Path,
+        args: Sequence[str] | None = None,
+        *,
+        interpreter: str | None = None,
+        sudo: bool = False,
+        sudo_user: str | None = None,
+        sudo_password: str | SecretStr | None = None,
+        env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+        raise_on_error: bool = False,
+        sensitive: bool = False,
+        dry_run: bool | None = None,
+    ) -> Result:
+        """Загрузить локальный скрипт во временную директорию, выполнить и удалить (синхронно)."""
+        return self._run_coro(
+            self._async_conn.run_script(
+                local_path=local_path,
+                args=args,
+                interpreter=interpreter,
+                sudo=sudo,
+                sudo_user=sudo_user,
+                sudo_password=sudo_password,
+                env=env,
+                timeout=timeout,
+                raise_on_error=raise_on_error,
+                sensitive=sensitive,
+                dry_run=dry_run,
+            )
+        )
+
     def open_shell(
         self,
         term_type: str = "xterm",
@@ -788,6 +835,16 @@ class SyncConnectionPool:
         """Признак закрытия синхронного пула."""
         return self._portal.closed
 
+    @property
+    def rate_limiter(self) -> RateLimiter | None:
+        """Общий ограничитель частоты команд пула (если настроен)."""
+        return self._async_pool.rate_limiter
+
+    @property
+    def circuit_breakers(self) -> dict[str, CircuitBreaker]:
+        """Словарь предохранителей ``CircuitBreaker`` по ключам хостов пула."""
+        return self._async_pool.circuit_breakers
+
     @classmethod
     def from_file(
         cls,
@@ -798,6 +855,10 @@ class SyncConnectionPool:
         max_concurrent: int = 10,
         retry_attempts: int = 3,
         logger: logging.Logger | None = None,
+        rate_limit: float | RateLimiter | None = None,
+        circuit_breaker: bool = False,
+        failure_threshold: int = 5,
+        recovery_timeout: float = 30.0,
     ) -> Self:
         """Создать синхронный пул подключений из JSON или YAML инвентарного файла."""
         from ._pool import ConnectionPool
@@ -809,6 +870,10 @@ class SyncConnectionPool:
             max_concurrent=max_concurrent,
             retry_attempts=retry_attempts,
             logger=logger,
+            rate_limit=rate_limit,
+            circuit_breaker=circuit_breaker,
+            failure_threshold=failure_threshold,
+            recovery_timeout=recovery_timeout,
         )
         return cls(pool)
 
@@ -961,6 +1026,63 @@ class SyncConnectionPool:
         """Параллельно собрать системные факты (``HostFacts``) со всех хостов пула (синхронно)."""
         return self._run_coro(
             self._async_pool.gather_facts(refresh=refresh, timeout=timeout)
+        )
+
+    def diff_facts(
+        self,
+        *,
+        baseline_host: str | None = None,
+        fields: Sequence[str] | None = None,
+        refresh: bool = False,
+        timeout: float | None = None,
+    ) -> FactsDiffReport:
+        """Собрать системные факты со всех хостов пула и найти расхождения с эталоном (синхронно)."""
+        return self._run_coro(
+            self._async_pool.diff_facts(
+                baseline_host=baseline_host,
+                fields=fields,
+                refresh=refresh,
+                timeout=timeout,
+            )
+        )
+
+    def ping(
+        self,
+        timeout: float | None = None,
+    ) -> dict[str, PingResult]:
+        """Параллельно проверить доступность всех хостов пула с измерением задержки (синхронно)."""
+        return self._run_coro(self._async_pool.ping(timeout=timeout))
+
+    def run_script(
+        self,
+        local_path: str | Path,
+        args: Sequence[str] | None = None,
+        *,
+        interpreter: str | None = None,
+        sudo: bool = False,
+        sudo_user: str | None = None,
+        sudo_password: str | SecretStr | None = None,
+        env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+        raise_on_error: bool = False,
+        sensitive: bool = False,
+        dry_run: bool | None = None,
+    ) -> dict[str, Result]:
+        """Параллельно загрузить, выполнить и удалить локальный скрипт на всех хостах пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.run_script(
+                local_path=local_path,
+                args=args,
+                interpreter=interpreter,
+                sudo=sudo,
+                sudo_user=sudo_user,
+                sudo_password=sudo_password,
+                env=env,
+                timeout=timeout,
+                raise_on_error=raise_on_error,
+                sensitive=sensitive,
+                dry_run=dry_run,
+            )
         )
 
     def ensure_package(

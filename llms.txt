@@ -1,4 +1,4 @@
-# uniconn — LLM & AI Agent API Reference (v0.8.0)
+# uniconn — LLM & AI Agent API Reference (v0.9.0)
 
 > Universal async-first Python library (Python 3.11+) and CLI for executing commands, inspecting host facts, enforcing idempotent states, and managing files across SSH, Telnet, Serial/UART, IPMI BMC, and Local transports.
 
@@ -12,21 +12,22 @@
 - Documentation & Feature Matrix: `AGENTS.md` (architecture & rules), `FEATURES.md` (full catalog of implemented features — consult on-demand only)
 
 ## Public Exports (`from uniconn import ...`)
-- **Core & Facade**: `Connection`, `SyncConnection`, `ConnectionConfig`, `Result`, `SyncResult`, `EnsureResult`, `HostFacts`, `DiskInfo`, `NetworkInterface`, `render_template`, `quote`
+- **Core & Facade**: `Connection`, `SyncConnection`, `ConnectionConfig`, `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `HostFacts`, `FactsDiffReport`, `DiskInfo`, `NetworkInterface`, `diff_facts`, `render_template`, `quote`
+- **Resilience (`uniconn.core.resilience`)**: `CircuitBreaker`, `CircuitState`, `RateLimiter`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`
 - **Domain Services (`uniconn.services`)**: `FileOperationsService`, `DirectorySynchronizer`, `TemplateEngine`, `StateManagementService`, `FactCollector`, `TunnelService`, `SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`
 - **Strategies (`uniconn.services.provisioning`)**: `PackageManagerStrategy`, `AptStrategy`, `ApkStrategy`, `DnfYumStrategy`, `PacmanStrategy`, `ZypperStrategy`, `ServiceManagerStrategy`, `SystemdStrategy`, `OpenRCStrategy`, `SysVStrategy`
-- **Middleware Pipeline & Context (`uniconn.core`)**: `CommandRequest`, `CommandPipeline`, `CommandMiddleware`, `ContextMiddleware`, `SudoMiddleware`, `HookMiddleware`, `DryRunMiddleware`, `ObservabilityMiddleware`, `RetryMiddleware`, `ExecutionContext`, `EventLoopPortal`, `SyncContextBridge`, `InventoryLoader`
+- **Middleware Pipeline & Context (`uniconn.core`)**: `CommandRequest`, `CommandPipeline`, `CommandMiddleware`, `ContextMiddleware`, `SudoMiddleware`, `HookMiddleware`, `DryRunMiddleware`, `ObservabilityMiddleware`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`, `RetryMiddleware`, `ExecutionContext`, `EventLoopPortal`, `SyncContextBridge`, `InventoryLoader`
 - **Transport Protocols & Helpers (`uniconn.transports`)**: `BaseTransport`, `CommandTransport`, `FileCapableTransport`, `ShellCapableTransport`, `TunnelCapableTransport`, `require_capability`, `OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`
 - **Pools**: `ConnectionPool`, `SyncConnectionPool`, `PoolStreamMultiplexer`, `SSHSessionPool`
 - **Interactive PTY Shell (`uniconn.shell`)**: `ShellSession`, `SyncShellSession`, `PosixMarkerProtocol`, `ExpectStateMachine`
 - **Background GNU Screen**: `ScreenPool`, `ScreenSession`, `ScreenResult`, `LogConfig`
 - **Hooks (`uniconn.hooks`)**: `audit_log_hook`, `allowlist_hook`, `blocklist_hook`, `MetricsCollector`, `metrics_collector_hook`, `structured_log_hook`
 - **Logging (`structlog` + `stdlib`)**: `configure_logging`, `get_struct_logger`, `log_context`, `bind_log_context`, `unbind_log_context`, `clear_log_context`, `get_log_context`, `get_logger`, `setup_file_logging`, `SecretMaskingFilter`
-- **Exceptions**: `UniconnError`, `ConnectionError`, `AuthenticationError`, `ExecutionError`, `TimeoutError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `ScreenError`, `ScreenNotFoundError`, `ScreenSessionExistsError`, `ScreenPoolFullError`
+- **Exceptions**: `UniconnError`, `ConnectionError`, `CircuitOpenError`, `AuthenticationError`, `ExecutionError`, `TimeoutError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `ScreenError`, `ScreenNotFoundError`, `ScreenSessionExistsError`, `ScreenPoolFullError`
 
 ## URI Schemes
-- `ssh://[user[:password]@]host[:22][?key_file=...&known_hosts=strict&keepalive=30&ssh_config=true&use_agent=true&proxy=jump1,jump2&proxy_command=...]`
-- `local://[?timeout=30]`
+- `ssh://[user[:password]@]host[:22][?key_file=...&known_hosts=strict&keepalive=30&ssh_config=true&use_agent=true&proxy=jump1,jump2&proxy_command=...&rate_limit=10&circuit_breaker_threshold=5&circuit_breaker_timeout=30]`
+- `local://[?timeout=30&rate_limit=10&circuit_breaker_threshold=5]`
 - `telnet://[user[:password]@]host[:23][?term_type=vt100]`
 - `serial:///dev/ttyUSB0[?baudrate=115200&parity=N&stopbits=1]`
 - `ipmi://admin:password@bmc-host[:623]`
@@ -36,7 +37,14 @@
 ### `Connection` (Async) & `SyncConnection` (`conn.to_sync()`)
 ```python
 # Factories
-conn = Connection.from_uri(uri: str, retry_attempts: int = 3, logger=None, dry_run: bool = False)
+conn = Connection.from_uri(
+    uri: str,
+    retry_attempts: int = 3,
+    logger=None,
+    dry_run: bool = False,
+    rate_limit: float | RateLimiter | None = None,
+    circuit_breaker: bool | CircuitBreaker | None = None,
+)
 conn = Connection.from_config(config: ConnectionConfig, ...)
 conn = Connection.from_dict(data: dict, ...)
 conns = Connection.from_file(path: str | Path, *, host: str | None = None, group: str | None = None)
@@ -46,7 +54,7 @@ conn = Connection.from_inventory(path: str | Path, host: str)
 conn2 = conn.copy(host=..., port=..., username=..., password=..., timeout=..., dry_run=...)
 conn2 = conn.with_overrides(**overrides)
 
-# Execution
+# Execution & Scripts
 res: Result = await conn.run(
     command: str | Sequence[str],
     timeout: float | None = None,
@@ -61,10 +69,21 @@ res: Result = await conn.run(
 )
 raw: bytes = await conn.run_bytes(command, timeout=None, raise_on_error=False, input=None, sudo=False, **kwargs)
 results: list[Result] = await conn.run_commands(commands: Sequence[str | Sequence[str]], stop_on_error: bool = True, **kwargs)
+script_res: Result = await conn.run_script(
+    script_path: str | Path,
+    args: Sequence[str] = (),
+    *,
+    interpreter: str | None = None,
+    sudo: bool = False,
+    timeout: float | None = None,
+    raise_on_error: bool = False,
+    **kwargs,
+)
 async for line in conn.stream(command, timeout=None, **kwargs): ...
 alive: bool = await conn.is_alive(timeout=None)
+ping_res: PingResult = await conn.ping(timeout=5.0)
 
-# Host Inspection & Idempotent Checks (v0.8.0)
+# Host Inspection & Idempotent Checks (v0.8.0+)
 facts: HostFacts = await conn.gather_facts(refresh: bool = False, timeout: float | None = None)
 pkg_res: EnsureResult = await conn.ensure_package(package, state="present", manager="auto", update_cache=False, sudo=True, dry_run=None)
 svc_res: EnsureResult = await conn.ensure_service(service, state="started", enabled=None, sudo=True, dry_run=None)
@@ -120,21 +139,34 @@ async with await conn.open_shell(term_type="xterm", term_size=(80, 24), init_pos
     await shell.resize(120, 40)
 ```
 
-### `Result`, `SyncResult`, `EnsureResult` & `HostFacts`
+### `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `HostFacts` & `FactsDiffReport`
 - `Result`: `exit_code: int`, `stdout: str`, `stderr: str`, `duration: float`, `command: str`, `host: str | None`, `ok: bool`, `text: str` (`stdout.strip()`), `lines: list[str]`, `sensitive: bool`, `result.json() -> Any`, `result.raise_for_status() -> Self`, `result.to_dict() -> dict`
+- `PingResult`: `host: str`, `alive: bool`, `latency_ms: float`, `transport: str`, `error: str | None`, `bool(ping_res) == ping_res.alive`, `ping_res.to_dict() -> dict`
 - `SyncResult`: `uploaded: list[str]`, `skipped: list[str]`, `deleted: list[str]`, `bytes_transferred: int`, `duration: float`, `dry_run: bool`, `total_checked: int`, `sync_res.to_dict() -> dict`
 - `EnsureResult`: `target: str`, `state: str`, `changed: bool`, `ok: bool`, `details: str`, `dry_run: bool`, `ensure_res.to_dict() -> dict`
 - `HostFacts`: `os_family: str`, `distro: str`, `kernel: str`, `arch: str`, `hostname: str`, `uptime_seconds: float`, `cpu_count: int`, `memory_total_bytes: int`, `memory_available_bytes: int`, `disks: list[DiskInfo]`, `interfaces: list[NetworkInterface]`, `facts.to_dict() -> dict`
+- `FactsDiffReport`: `baseline_host: str`, `hosts_checked: int`, `is_homogeneous: bool`, `mismatches: dict[str, dict[str, Any]]`, `facts: dict[str, HostFacts]`, `report.to_dict() -> dict`
 
 ### `ConnectionPool` & `SyncConnectionPool` (`pool.to_sync()`)
 ```python
-pool = ConnectionPool(uris_or_conns, max_concurrent=10, retry_attempts=3)
-pool = ConnectionPool.from_file("inventory.yaml", group="web", max_concurrent=10)
+pool = ConnectionPool(
+    uris_or_conns,
+    max_concurrent=10,
+    retry_attempts=3,
+    rate_limit=None,           # float (ops/sec) or RateLimiter
+    circuit_breaker=False,
+    failure_threshold=5,
+    recovery_timeout=30.0,
+)
+pool = ConnectionPool.from_file("inventory.yaml", group="web", max_concurrent=10, rate_limit=20.0, circuit_breaker=True)
 
 async with pool:  # Keeps connections open across multiple pool operations
     results: list[Result] = await pool.map("uptime", sudo=True)
     safe_map: dict[str, Result | Exception] = await pool.map_safe("uptime")
+    ping_map: dict[str, PingResult] = await pool.ping(timeout=5.0)
+    script_map: dict[str, Result | Exception] = await pool.run_script("./check.sh", args=["--fast"])
     facts_map: dict[str, HostFacts] = await pool.gather_facts()
+    diff_rep: FactsDiffReport = await pool.diff_facts(baseline=None)
     line_map: dict[str, EnsureResult] = await pool.ensure_line("/etc/hosts", "10.0.0.5 db.internal")
     async for host, line in pool.stream("journalctl -f -n 5"):
         print(host, line)
@@ -145,14 +177,24 @@ async with pool:  # Keeps connections open across multiple pool operations
     custom = await pool.apply(lambda c: c.run("hostname"))
 
 with pool.to_sync() as sync_pool:
-    facts_map = sync_pool.gather_facts()
+    ping_map = sync_pool.ping()
+    diff_rep = sync_pool.diff_facts()
     for host, line in sync_pool.stream("tail -n 5 /var/log/syslog"):
         print(host, line)
 ```
 
 ### `SSHSessionPool` (Single-host SSH channel multiplexing)
 ```python
-async with SSHSessionPool("ssh://user@host", max_sessions_per_conn=6, max_connections=6, health_check=True) as pool:
+async with SSHSessionPool(
+    "ssh://user@host",
+    max_sessions_per_conn=6,
+    max_connections=6,
+    health_check=True,
+    rate_limit=50.0,
+    circuit_breaker=True,
+    failure_threshold=5,
+    recovery_timeout=30.0,
+) as pool:
     res = await pool.run("uptime")
     results = await pool.map(["lshw", "dmidecode", "nvme list"])
     healthy_count = await pool.check_health()

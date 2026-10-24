@@ -2,11 +2,14 @@
 """Доменные сервисы библиотеки uniconn (files, state, tunnels, facts, templates)."""
 
 from .facts import (
+    DEFAULT_DIFF_FIELDS,
     FACT_COLLECTION_SCRIPT,
     DiskInfo,
     FactCollector,
+    FactsDiffReport,
     HostFacts,
     NetworkInterface,
+    diff_facts,
     parse_facts_output,
 )
 from .files import DirectorySynchronizer, FileOperationsService
@@ -30,6 +33,7 @@ from .templates import TemplateEngine, render_template
 from .tunnels import TunnelService
 
 __all__ = [
+    "DEFAULT_DIFF_FIELDS",
     "FACT_COLLECTION_SCRIPT",
     "PACKAGE_STRATEGIES",
     "SERVICE_STRATEGIES",
@@ -39,6 +43,7 @@ __all__ = [
     "DiskInfo",
     "DnfYumStrategy",
     "FactCollector",
+    "FactsDiffReport",
     "FileOperationsService",
     "HostFacts",
     "NetworkInterface",
@@ -53,6 +58,7 @@ __all__ = [
     "TunnelService",
     "UniversalServiceStrategy",
     "ZypperStrategy",
+    "diff_facts",
     "parse_facts_output",
     "render_template",
 ]

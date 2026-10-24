@@ -102,3 +102,20 @@ class CapabilityNotSupportedError(UniconnError, NotImplementedError):
 
     pass
 
+
+class CircuitOpenError(ConnectionError):
+    """Цепь CircuitBreaker разомкнута (OPEN) — вызов отклонён без обращения к сети."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        host: str | None = None,
+        remaining_seconds: float = 0.0,
+        command: str | None = None,
+    ) -> None:
+        """Инициализировать ошибку разомкнутого CircuitBreaker."""
+        super().__init__(message, command=command, host=host)
+        self.remaining_seconds = remaining_seconds
+
+

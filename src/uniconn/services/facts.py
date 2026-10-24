@@ -6,10 +6,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .._facts import (
+    DEFAULT_DIFF_FIELDS,
     FACT_COLLECTION_SCRIPT,
     DiskInfo,
+    FactsDiffReport,
     HostFacts,
     NetworkInterface,
+    diff_facts,
     parse_facts_output,
 )
 
@@ -51,10 +54,13 @@ class FactCollector:
 
 
 __all__ = [
+    "DEFAULT_DIFF_FIELDS",
     "FACT_COLLECTION_SCRIPT",
     "DiskInfo",
     "FactCollector",
+    "FactsDiffReport",
     "HostFacts",
     "NetworkInterface",
+    "diff_facts",
     "parse_facts_output",
 ]

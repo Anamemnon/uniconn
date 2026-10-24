@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from .bridge import EventLoopPortal, SyncContextBridge
 from .context import CwdContext, EnvContext, ExecutionContext, TempDirContext
 from .pipeline import (
+    CircuitBreakerMiddleware,
     CommandMiddleware,
     CommandPipeline,
     CommandRequest,
@@ -17,11 +18,13 @@ from .pipeline import (
     HookEvent,
     HookMiddleware,
     ObservabilityMiddleware,
+    RateLimitMiddleware,
     RetryMiddleware,
     SudoMiddleware,
     format_command,
     prepare_sudo_command,
 )
+from .resilience import CircuitBreaker, CircuitState, RateLimiter
 
 if TYPE_CHECKING:
     from .connection import Connection
@@ -38,6 +41,9 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "CircuitBreaker",
+    "CircuitBreakerMiddleware",
+    "CircuitState",
     "CommandMiddleware",
     "CommandPipeline",
     "CommandRequest",
@@ -52,6 +58,8 @@ __all__ = [
     "HookEvent",
     "HookMiddleware",
     "ObservabilityMiddleware",
+    "RateLimitMiddleware",
+    "RateLimiter",
     "RetryMiddleware",
     "SudoMiddleware",
     "SyncContextBridge",
@@ -59,3 +67,4 @@ __all__ = [
     "format_command",
     "prepare_sudo_command",
 ]
+

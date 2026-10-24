@@ -1,4 +1,4 @@
-"""HTTP dev-сервер и обработчики API для интерактивной панели uniconn v0.8.0."""
+"""HTTP dev-сервер и обработчики API для интерактивной панели uniconn v0.9.0."""
 
 from __future__ import annotations
 
@@ -85,7 +85,7 @@ TEST_SUITES_META: list[dict[str, Any]] = [
     {"id": "pools", "label": "Connection & SSH Pools", "path": "tests/unit/pools", "count": 28},
     {"id": "screen", "label": "GNU Screen & LogPipeline", "path": "tests/unit/screen", "count": 30},
     {"id": "cli", "label": "CLI & Web Dashboard", "path": "tests/unit/cli", "count": 41},
-    {"id": "releases", "label": "Release Acceptance (v0.3–v0.8)", "path": "tests/unit/releases", "count": 69},
+    {"id": "releases", "label": "Release Acceptance (v0.3–v0.9)", "path": "tests/unit/releases", "count": 85},
 ]
 
 
@@ -303,7 +303,7 @@ def _run_demo_status() -> dict[str, Any]:
         else "Python 3.12"
     )
     return {
-        "version": "0.8.0",
+        "version": "0.9.0",
         "transports": ["ipmi", "local", "serial", "ssh", "telnet"],
         "local_uname": uname_out,
         "python_version": py_out,
@@ -1021,6 +1021,75 @@ def _execute_pool_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
                             }
                         )
                     return cards_stream
+                elif operation == "ping":
+                    ping_map = await pool.ping()
+                    cards_ping: list[dict[str, Any]] = []
+                    for idx, (_key, p_res) in enumerate(ping_map.items()):
+                        h_name, opts = node_meta[idx] if idx < len(node_meta) else (f"node-{idx}", {})
+                        cards_ping.append(
+                            {
+                                "host": h_name,
+                                "role": str(opts.get("role", "node")),
+                                "dc": str(opts.get("dc", "local")),
+                                "uri_safe": conns[idx].config.uri_safe,
+                                "ok": p_res.alive,
+                                "exit_code": 0 if p_res.alive else 1,
+                                "stdout": (
+                                    f"PingResult: alive={p_res.alive}, "
+                                    f"latency={p_res.latency_ms:.2f}ms, transport={p_res.transport}"
+                                ),
+                                "stderr": p_res.error or "",
+                                "duration_ms": round(p_res.latency_ms, 2),
+                            }
+                        )
+                    return cards_ping
+                elif operation == "diff_facts":
+                    diff_rep = await pool.diff_facts()
+                    cards_diff: list[dict[str, Any]] = []
+                    for idx, (h_name, opts) in enumerate(node_meta):
+                        cards_diff.append(
+                            {
+                                "host": h_name,
+                                "role": str(opts.get("role", "node")),
+                                "dc": str(opts.get("dc", "local")),
+                                "uri_safe": conns[idx].config.uri_safe,
+                                "ok": not diff_rep.has_drift,
+                                "exit_code": 0,
+                                "stdout": (
+                                    f"FactsDiffReport: baseline={diff_rep.baseline_host}, "
+                                    f"has_drift={diff_rep.has_drift}, "
+                                    f"checked={','.join(diff_rep.checked_fields)}"
+                                ),
+                                "stderr": "",
+                                "duration_ms": 1.1,
+                            }
+                        )
+                    return cards_diff
+                elif operation == "run_script":
+                    with tempfile.TemporaryDirectory(prefix="uniconn_scr_") as tmp_root:
+                        scr_path = Path(tmp_root) / "health_probe.sh"
+                        scr_path.write_text(
+                            "#!/bin/sh\necho \"[$UNICONN_HOST] script executed with args: $*\"\n",
+                            encoding="utf-8",
+                        )
+                        scr_map = await pool.run_script(scr_path, args=["--check", "v0.9.0"])
+                        cards_scr: list[dict[str, Any]] = []
+                        for idx, (_key, s_res) in enumerate(scr_map.items()):
+                            h_name, opts = node_meta[idx] if idx < len(node_meta) else (f"node-{idx}", {})
+                            cards_scr.append(
+                                {
+                                    "host": h_name,
+                                    "role": str(opts.get("role", "node")),
+                                    "dc": str(opts.get("dc", "local")),
+                                    "uri_safe": conns[idx].config.uri_safe,
+                                    "ok": s_res.ok,
+                                    "exit_code": s_res.exit_code,
+                                    "stdout": s_res.text,
+                                    "stderr": s_res.stderr.strip(),
+                                    "duration_ms": round(s_res.duration * 1000, 2),
+                                }
+                            )
+                        return cards_scr
                 else:
 
                     async def _mapped_node(conn_obj: Connection) -> Any:
@@ -1344,6 +1413,125 @@ def _execute_v080_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
         }
 
 
+def _execute_v090_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
+    """Песочница возможностей v0.9.0: CircuitBreaker, RateLimiter, ping(), run_script(), diff_facts()."""
+    feature = str(payload.get("feature", "ping")).strip()
+    try:
+        from uniconn import (
+            CircuitBreaker,
+            CircuitOpenError,
+            Connection,
+            ConnectionPool,
+            HostFacts,
+            RateLimiter,
+            diff_facts,
+        )
+
+        async def _run_feature() -> dict[str, Any]:
+            if feature == "circuit_breaker":
+                cb = CircuitBreaker(failure_threshold=2, recovery_timeout=0.05)
+                cb.record_failure()
+                cb.record_failure()
+                blocked_error: str | None = None
+                try:
+                    cb.check_or_raise(host="db-primary-01", command="SELECT 1")
+                except CircuitOpenError as exc:
+                    blocked_error = str(exc)
+                open_snap = cb.to_dict()
+                await asyncio.sleep(0.06)
+                half_open_state = cb.state.value
+                cb.record_success()
+                return {
+                    "status": "ok",
+                    "feature": "circuit_breaker",
+                    "open_snapshot": open_snap,
+                    "blocked_error": blocked_error,
+                    "half_open_state": half_open_state,
+                    "recovered_snapshot": cb.to_dict(),
+                }
+
+            if feature == "rate_limiter":
+                limiter = RateLimiter(rate=50.0, burst=2)
+                waits = [
+                    await limiter.acquire(),
+                    await limiter.acquire(),
+                    await limiter.acquire(),
+                ]
+                return {
+                    "status": "ok",
+                    "feature": "rate_limiter",
+                    "waits_sec": [round(w, 4) for w in waits],
+                    "limiter": limiter.to_dict(),
+                }
+
+            if feature == "diff_facts":
+                facts_map = {
+                    "web-eu-01": HostFacts(
+                        os_family="Debian",
+                        distro="Ubuntu 24.04",
+                        kernel="6.8.0-45-generic",
+                        arch="x86_64",
+                        cpu_count=8,
+                        memory_total_bytes=16384 * 1024 * 1024,
+                    ),
+                    "web-eu-02": HostFacts(
+                        os_family="Debian",
+                        distro="Ubuntu 24.04",
+                        kernel="6.8.0-45-generic",
+                        arch="x86_64",
+                        cpu_count=8,
+                        memory_total_bytes=16384 * 1024 * 1024,
+                    ),
+                    "api-core-01": HostFacts(
+                        os_family="Debian",
+                        distro="Ubuntu 22.04",
+                        kernel="5.15.0-112-generic",
+                        arch="x86_64",
+                        cpu_count=4,
+                        memory_total_bytes=8192 * 1024 * 1024,
+                    ),
+                }
+                report = diff_facts(facts_map, baseline_host="web-eu-01")
+                return {
+                    "status": "ok",
+                    "feature": "diff_facts",
+                    "report": report.to_dict(),
+                }
+
+            if feature == "run_script":
+                with tempfile.TemporaryDirectory(prefix="uniconn_v090_scr_") as tmp:
+                    script_file = Path(tmp) / "deploy_hook.sh"
+                    script_file.write_text(
+                        "#!/bin/sh\necho \"deploy_hook args=$* user=$(whoami)\"\n",
+                        encoding="utf-8",
+                    )
+                    async with Connection.from_uri("local://") as conn:
+                        res = await conn.run_script(script_file, args=["--release", "v0.9.0"])
+                    return {
+                        "status": "ok",
+                        "feature": "run_script",
+                        "result": res.to_dict(),
+                    }
+
+            pool = ConnectionPool(["local://?host=web-01", "local://?host=web-02"])
+            ping_map = await pool.ping()
+            return {
+                "status": "ok",
+                "feature": "ping",
+                "results": {k: v.to_dict() for k, v in ping_map.items()},
+            }
+
+        return asyncio.run(_run_feature())
+    except Exception as exc:
+        delegated = _call_handler_in_venv("_execute_v090_sandbox", payload)
+        if delegated is not None:
+            return delegated
+        return {
+            "status": "error",
+            "error": {"type": type(exc).__name__, "message": str(exc)},
+        }
+
+
 def _execute_pytest(suite: str = "all") -> dict[str, Any]:
     """Запустить выбранный модульный пакет тестов pytest или проверку качества кода (ruff/pyright)."""
     if not os.path.exists(VENV_PYTEST):
@@ -1518,6 +1706,9 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                 return
             if parsed.path == "/api/v080":
                 self._send_json(_execute_v080_sandbox(payload))
+                return
+            if parsed.path == "/api/v090":
+                self._send_json(_execute_v090_sandbox(payload))
                 return
 
             self._send_json({"error": "Not found"}, status=404)
