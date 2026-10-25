@@ -40,6 +40,7 @@ telnet = ["telnetlib3>=5.0"]
 serial = ["pyserial-asyncio>=0.6"]
 bmc = ["pyghmi>=1.6"]
 cli = ["cyclopts>=5.0", "rich>=15.0"]
+otel = ["opentelemetry-api>=1.25"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=1.0",
@@ -61,6 +62,7 @@ ssh = "uniconn.transports._ssh:SSHTransport"
 telnet = "uniconn.transports._telnet:TelnetTransport"
 serial = "uniconn.transports._serial:SerialTransport"
 ipmi = "uniconn.transports.bmc._ipmi:IPMITransport"
+replay = "uniconn.transports.replay:ReplayTransport"
 
 [project.scripts]
 uniconn = "uniconn.cli:main"

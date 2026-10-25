@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import threading
 from collections.abc import AsyncIterator, Iterator
 from typing import Any, Generic, TypeVar
@@ -67,7 +68,14 @@ class EventLoopPortal:
             raise RuntimeError(f"{self._owner_name} уже закрыт")
 
         loop = self.get_loop()
-        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        caller_ctx = contextvars.copy_context()
+
+        async def _run_in_caller_context() -> Any:
+            for var, val in caller_ctx.items():
+                var.set(val)
+            return await coro
+
+        future = asyncio.run_coroutine_threadsafe(_run_in_caller_context(), loop)
         return future.result()
 
     def iter_async(self, async_gen: AsyncIterator[T]) -> Iterator[T]:
@@ -83,9 +91,12 @@ class EventLoopPortal:
             raise RuntimeError(f"{self._owner_name} уже закрыт")
 
         loop = self.get_loop()
+        caller_ctx = contextvars.copy_context()
         q: asyncio.Queue[Any] = asyncio.Queue()
 
         async def _pump() -> None:
+            for var, val in caller_ctx.items():
+                var.set(val)
             try:
                 async for item in async_gen:
                     await q.put(item)

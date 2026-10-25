@@ -14,8 +14,36 @@
 
 from ._base import BaseTransport
 from ._local import LocalTransport
+from .replay import (
+    Cassette,
+    CassetteContext,
+    CassetteTransportProxy,
+    RecordedExecInteraction,
+    RecordedFsInteraction,
+    RecordedShellInteraction,
+    RecordedStreamInteraction,
+    RecordMode,
+    ReplayShellProcess,
+    ReplayTransport,
+    ShellDialogStep,
+    SyncCassetteContext,
+    normalize_temp_paths,
+)
 
 __all__ = [
     "BaseTransport",
+    "Cassette",
+    "CassetteContext",
+    "CassetteTransportProxy",
     "LocalTransport",
+    "RecordMode",
+    "RecordedExecInteraction",
+    "RecordedFsInteraction",
+    "RecordedShellInteraction",
+    "RecordedStreamInteraction",
+    "ReplayShellProcess",
+    "ReplayTransport",
+    "ShellDialogStep",
+    "SyncCassetteContext",
+    "normalize_temp_paths",
 ]

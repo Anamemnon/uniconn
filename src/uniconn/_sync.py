@@ -919,6 +919,33 @@ class SyncConnection:
             dry_run=dry_run,
         )
 
+    def use_cassette(
+        self,
+        path: str | Path,
+        *,
+        mode: Any = "once",
+        match_on: Sequence[Literal["command", "cwd", "sudo"]] = (
+            "command",
+            "cwd",
+            "sudo",
+        ),
+        normalize_temp: bool = True,
+        allow_playback_repeats: bool = True,
+        mask_secrets: bool = True,
+    ) -> Any:
+        """Синхронный контекстный менеджер записи и воспроизведения кассет взаимодействий."""
+        from .transports.replay import SyncCassetteContext
+
+        async_ctx = self._async_conn.use_cassette(
+            path,
+            mode=mode,
+            match_on=match_on,
+            normalize_temp=normalize_temp,
+            allow_playback_repeats=allow_playback_repeats,
+            mask_secrets=mask_secrets,
+        )
+        return SyncCassetteContext(async_ctx, self)
+
     def close(self) -> None:
         """Закрыть подключение и освободить ресурсы фонового event loop."""
         cleanup = self._async_conn.close() if self._async_conn else None

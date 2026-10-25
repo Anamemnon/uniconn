@@ -103,6 +103,7 @@ class CommandRequest:
     sensitive: bool = False
     dry_run: bool = False
     transport_kwargs: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 NextHandler = Callable[[CommandRequest], Awaitable[Result]]
@@ -394,6 +395,19 @@ class RetryMiddleware:
                         error=str(retry_exc),
                         sensitive=request.sensitive,
                     )
+                    otel_span = request.metadata.get("otel_span")
+                    if otel_span is not None and hasattr(otel_span, "add_event"):
+                        otel_span.add_event(
+                            "command.retry",
+                            {
+                                "retry.attempt": attempt_num,
+                                "retry.max_attempts": self._conn._retry_attempts,
+                                "exception.type": type(retry_exc).__name__,
+                                "exception.message": (
+                                    "***REDACTED***" if request.sensitive else str(retry_exc)
+                                ),
+                            },
+                        )
                     await self._conn._transport.disconnect()
                     await self._conn._transport.connect()
                     raise

@@ -476,6 +476,33 @@ class Connection:
         """Асинхронный контекстный менеджер временной директории на хосте."""
         return TempDirContext(self, prefix=prefix, suffix=suffix, dir=dir)
 
+    def use_cassette(
+        self,
+        path: str | Path,
+        *,
+        mode: Any = "once",
+        match_on: Sequence[Literal["command", "cwd", "sudo"]] = (
+            "command",
+            "cwd",
+            "sudo",
+        ),
+        normalize_temp: bool = True,
+        allow_playback_repeats: bool = True,
+        mask_secrets: bool = True,
+    ) -> Any:
+        """Асинхронный контекстный менеджер записи и воспроизведения кассет взаимодействий."""
+        from .transports.replay import CassetteContext
+
+        return CassetteContext(
+            self,
+            path,
+            mode=mode,
+            match_on=match_on,
+            normalize_temp=normalize_temp,
+            allow_playback_repeats=allow_playback_repeats,
+            mask_secrets=mask_secrets,
+        )
+
     async def _create_temp_dir(
         self,
         prefix: str = "uniconn_",

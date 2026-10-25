@@ -16,14 +16,14 @@
 - **Resilience (`uniconn.core.resilience`)**: `CircuitBreaker`, `CircuitState`, `RateLimiter`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`
 - **Domain Services (`uniconn.services`)**: `FileOperationsService`, `DirectorySynchronizer`, `TemplateEngine`, `StateManagementService`, `FactCollector`, `TunnelService`, `SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`
 - **Strategies (`uniconn.services.provisioning`)**: `PackageManagerStrategy`, `AptStrategy`, `ApkStrategy`, `DnfYumStrategy`, `PacmanStrategy`, `ZypperStrategy`, `ServiceManagerStrategy`, `SystemdStrategy`, `OpenRCStrategy`, `SysVStrategy`
-- **Middleware Pipeline & Context (`uniconn.core`)**: `CommandRequest`, `CommandPipeline`, `CommandMiddleware`, `ContextMiddleware`, `SudoMiddleware`, `HookMiddleware`, `DryRunMiddleware`, `ObservabilityMiddleware`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`, `RetryMiddleware`, `ExecutionContext`, `EventLoopPortal`, `SyncContextBridge`, `InventoryLoader`
-- **Transport Protocols & Helpers (`uniconn.transports`)**: `BaseTransport`, `CommandTransport`, `FileCapableTransport`, `ShellCapableTransport`, `TunnelCapableTransport`, `require_capability`, `OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`
+- **Middleware Pipeline & Context (`uniconn.core`)**: `CommandRequest`, `CommandPipeline`, `CommandMiddleware`, `ContextMiddleware`, `SudoMiddleware`, `HookMiddleware`, `DryRunMiddleware`, `ObservabilityMiddleware`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`, `RetryMiddleware`, `TracingMiddleware`, `ExecutionContext`, `EventLoopPortal`, `SyncContextBridge`, `InventoryLoader`
+- **Transport Protocols, Replay/Cassette & Helpers (`uniconn.transports`)**: `BaseTransport`, `CommandTransport`, `FileCapableTransport`, `ShellCapableTransport`, `TunnelCapableTransport`, `require_capability`, `ReplayTransport`, `CassetteTransportProxy`, `Cassette`, `CassetteContext`, `SyncCassetteContext`, `RecordMode`, `RecordedExecInteraction`, `RecordedStreamInteraction`, `RecordedFsInteraction`, `RecordedShellInteraction`, `ShellDialogStep`, `ReplayShellProcess`, `normalize_temp_paths`, `OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`
 - **Pools**: `ConnectionPool`, `SyncConnectionPool`, `PoolStreamMultiplexer`, `SSHSessionPool`
 - **Interactive PTY Shell (`uniconn.shell`)**: `ShellSession`, `SyncShellSession`, `PosixMarkerProtocol`, `ExpectStateMachine`
 - **Background Diagnostics, Streaming Logs & GNU Screen (`uniconn.background`)**: `DiagnosticSession`, `SyncDiagnosticSession`, `DiagnosticConfig`, `DiagnosticResult`, `StreamSourceSpec`, `DirectStreamCollector`, `LogPipeline`, `LogHandler`, `LocalFileHandler`, `ForwardHandler`, `StreamHandler`, `ArchiveHandler`, `ScreenPool`, `ScreenSession`, `ScreenResult`, `LogConfig`
-- **Hooks (`uniconn.hooks`)**: `audit_log_hook`, `allowlist_hook`, `blocklist_hook`, `MetricsCollector`, `metrics_collector_hook`, `structured_log_hook`
+- **Hooks & OpenTelemetry (`uniconn.hooks` / `uniconn.telemetry`)**: `audit_log_hook`, `allowlist_hook`, `blocklist_hook`, `MetricsCollector`, `metrics_collector_hook`, `structured_log_hook`, `OtelTracingHook`, `otel_tracing_hook`, `InMemoryTracer`, `RecordedSpan`, `SpanProtocol`, `TracerProtocol`, `get_current_span`
 - **Logging (`structlog` + `stdlib`)**: `configure_logging`, `get_struct_logger`, `log_context`, `bind_log_context`, `unbind_log_context`, `clear_log_context`, `get_log_context`, `get_logger`, `setup_file_logging`, `SecretMaskingFilter`
-- **Exceptions**: `UniconnError`, `ConnectionError`, `CircuitOpenError`, `AuthenticationError`, `ExecutionError`, `TimeoutError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `ScreenError`, `ScreenNotFoundError`, `ScreenSessionExistsError`, `ScreenPoolFullError`
+- **Exceptions**: `UniconnError`, `ConnectionError`, `CircuitOpenError`, `CassetteError`, `CassetteMissError`, `AuthenticationError`, `ExecutionError`, `TimeoutError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `ScreenError`, `ScreenNotFoundError`, `ScreenSessionExistsError`, `ScreenPoolFullError`
 
 ## URI Schemes
 - `ssh://[user[:password]@]host[:22][?key_file=...&known_hosts=strict&keepalive=30&ssh_config=true&use_agent=true&proxy=jump1,jump2&proxy_command=...&rate_limit=10&circuit_breaker_threshold=5&circuit_breaker_timeout=30]`
@@ -31,6 +31,7 @@
 - `telnet://[user[:password]@]host[:23][?term_type=vt100]`
 - `serial:///dev/ttyUSB0[?baudrate=115200&parity=N&stopbits=1]`
 - `ipmi://admin:password@bmc-host[:623]`
+- `replay://host[?cassette=path/to/cassette.yaml&mode=none&normalize_temp=true&allow_playback_repeats=true]`
 
 ## Core API Signatures
 
@@ -130,6 +131,17 @@ async with conn.cd("/var/www"), conn.env(APP_ENV="prod"):
 async with conn.temp_dir(prefix="uniconn_") as tmp_path:
     await conn.write_file(f"{tmp_path}/data.txt", "hello")
 
+# Contract Testing & Cassette Recording/Replay (v0.10.0)
+async with conn.use_cassette(
+    "tests/cassettes/host_facts.yaml",
+    mode="once",                  # "once" | "new_episodes" | "none" | "all"
+    match_on=("command", "cwd", "sudo"),
+    normalize_temp=True,
+    allow_playback_repeats=True,
+    mask_secrets=True,
+) as cassette:
+    facts = await conn.gather_facts()
+
 # Lifecycle Hooks
 conn.add_hook("before_run", callback)  # callback(command_str, host, kwargs)
 conn.add_hook("after_run", callback)   # callback(result: Result)
@@ -222,9 +234,15 @@ async with SSHSessionPool(
     healthy_count = await pool.check_health()
 ```
 
-### Built-in Hooks (`uniconn.hooks`)
+### Built-in Hooks & OpenTelemetry Tracing (`uniconn.hooks`)
 ```python
-from uniconn.hooks import audit_log_hook, allowlist_hook, blocklist_hook, metrics_collector_hook
+from uniconn.hooks import (
+    audit_log_hook,
+    allowlist_hook,
+    blocklist_hook,
+    metrics_collector_hook,
+    otel_tracing_hook,
+)
 
 conn.add_hook("before_run", allowlist_hook(["ls", "cat", "uptime", "systemctl status"]))
 conn.add_hook("before_run", blocklist_hook(["rm -rf /", "mkfs", "shutdown"]))
@@ -232,4 +250,7 @@ conn.add_hook("after_run", audit_log_hook("/var/log/uniconn_audit.jsonl", includ
 
 metrics = metrics_collector_hook()
 metrics.attach(conn)  # registers after_run and on_error
+
+otel = otel_tracing_hook(service_name="uniconn", record_output=False, mask_secrets=True)
+otel.attach(conn)     # instruments run(), upload(), download(), read_file(), write_file(), sync_dir(), open_shell(), stream()
 ```

@@ -119,3 +119,25 @@ class CircuitOpenError(ConnectionError):
         self.remaining_seconds = remaining_seconds
 
 
+class CassetteError(UniconnError):
+    """Базовое исключение подсистемы записи и воспроизведения кассет (Replay/Cassette)."""
+
+    pass
+
+
+class CassetteMissError(CassetteError):
+    """Эпизод взаимодействия не найден в кассете при воспроизведении."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: str = "exec",
+        command: str | None = None,
+        host: str | None = None,
+        candidates: list[str] | None = None,
+    ) -> None:
+        """Инициализировать ошибку промаха кассеты с диагностикой кандидатов."""
+        super().__init__(message, command=command, host=host)
+        self.kind = kind
+        self.candidates: list[str] = candidates or []

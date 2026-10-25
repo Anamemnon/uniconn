@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ..telemetry import TracingMiddleware
 from .bridge import EventLoopPortal, SyncContextBridge
 from .context import CwdContext, EnvContext, ExecutionContext, TempDirContext
 from .pipeline import (
@@ -64,6 +65,7 @@ __all__ = [
     "SudoMiddleware",
     "SyncContextBridge",
     "TempDirContext",
+    "TracingMiddleware",
     "format_command",
     "prepare_sudo_command",
 ]

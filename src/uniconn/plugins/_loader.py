@@ -32,12 +32,19 @@ class TransportLoader:
         # Python 3.10+ entry_points с group параметром
         eps = entry_points(group="uniconn.transports")
 
+        if transport_name == "replay" and "replay" not in eps.names:
+            from ..transports.replay import ReplayTransport
+
+            cls._cache["replay"] = ReplayTransport
+            return ReplayTransport
+
         # Транспорт не зарегистрирован — сразу осмысленная ошибка
         # (без повторного обёртывания TransportNotFoundError)
         if transport_name not in eps.names:
+            available = sorted({*eps.names, "replay"})
             raise TransportNotFoundError(
                 f"Transport '{transport_name}' not found. "
-                f"Available: {', '.join(sorted(eps.names))}. "
+                f"Available: {', '.join(available)}. "
                 f"Install with: pip install uniconn[{transport_name}]"
             )
 
@@ -56,7 +63,10 @@ class TransportLoader:
     def list_available(cls) -> list[str]:
         """Список доступных транспортов."""
         eps = entry_points(group="uniconn.transports")
-        return list(eps.names)
+        names = list(eps.names)
+        if "replay" not in names:
+            names.append("replay")
+        return names
 
     @classmethod
     def clear_cache(cls) -> None:

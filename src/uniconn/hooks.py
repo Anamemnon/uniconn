@@ -32,6 +32,16 @@ from typing import Any, Self
 
 from ._logging import SecretMaskingFilter, get_struct_logger, log_event
 from .result import Result
+from .telemetry import (
+    InMemoryTracer,
+    OtelTracingHook,
+    RecordedSpan,
+    SpanProtocol,
+    TracerProtocol,
+    TracingMiddleware,
+    get_current_span,
+    otel_tracing_hook,
+)
 
 DEFAULT_BLOCKED_PATTERNS: tuple[str, ...] = (
     r"\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/($|\s)",
@@ -329,4 +339,23 @@ def structured_log_hook(
         )
 
     return _on_after_run
+
+
+__all__ = [
+    "DEFAULT_BLOCKED_PATTERNS",
+    "InMemoryTracer",
+    "MetricsCollector",
+    "OtelTracingHook",
+    "RecordedSpan",
+    "SpanProtocol",
+    "TracerProtocol",
+    "TracingMiddleware",
+    "allowlist_hook",
+    "audit_log_hook",
+    "blocklist_hook",
+    "get_current_span",
+    "metrics_collector_hook",
+    "otel_tracing_hook",
+    "structured_log_hook",
+]
 
