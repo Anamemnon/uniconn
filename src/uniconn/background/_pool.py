@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Self
 from urllib.parse import urlparse, urlunparse
 
-from .._connection import Connection
+from ..core.connection import Connection
 from ..exceptions import ScreenError, ScreenPoolFullError
 from ._cleanup import ScreenCleanupManager
 from ._config import LogConfig, LogRule, ScreenPoolConfig

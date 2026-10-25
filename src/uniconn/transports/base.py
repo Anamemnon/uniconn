@@ -20,9 +20,15 @@ class FileStat(TypedDict, total=False):
     """Типизированный словарь метаданных файла, возвращаемый методом ``stat()``."""
 
     size: int
-    mtime: float | None
+    uid: int | None
+    gid: int | None
+    permissions: str | None
     mode: int | None
+    atime: float | None
+    mtime: float | None
+    is_file: bool
     is_dir: bool
+    is_symlink: bool
 
 
 class ShellStdinProtocol(Protocol):
@@ -49,8 +55,8 @@ class ShellStdoutProtocol(Protocol):
 class ShellProcessProtocol(Protocol):
     """Структурный протокол процесса интерактивной PTY-оболочки."""
 
-    stdin: Any
-    stdout: Any
+    stdin: ShellStdinProtocol
+    stdout: ShellStdoutProtocol
 
     def change_terminal_size(self, width: int, height: int) -> Any:
         """Изменить размер терминала PTY."""
@@ -139,7 +145,7 @@ class FileCapableTransport(Protocol):
         """Изменить права доступа к файлу."""
         ...
 
-    async def stat(self, remote_path: str) -> dict[str, Any]:
+    async def stat(self, remote_path: str) -> FileStat:
         """Получить метаданные файла."""
         ...
 
@@ -355,7 +361,7 @@ class BaseTransport(ABC):
     async def stat(
         self,
         remote_path: str,
-    ) -> dict[str, Any]:
+    ) -> FileStat:
         """Получить информацию о файле."""
         raise CapabilityNotSupportedError(
             f"stat not supported for {self.name} transport",
@@ -438,7 +444,7 @@ class BaseTransport(ABC):
         remote_port: int = 80,
         local_host: str = "127.0.0.1",
         local_port: int = 0,
-    ) -> Any:
+    ) -> AbstractAsyncContextManager[int]:
         """Открыть локальный проброс порта (SSH Local Port Forwarding)."""
         raise CapabilityNotSupportedError(
             f"forward_local_port not supported for {self.name} transport",
@@ -451,7 +457,7 @@ class BaseTransport(ABC):
         remote_port: int = 0,
         local_host: str = "127.0.0.1",
         local_port: int = 80,
-    ) -> Any:
+    ) -> AbstractAsyncContextManager[int]:
         """Открыть удалённый проброс порта (SSH Remote Port Forwarding)."""
         raise CapabilityNotSupportedError(
             f"forward_remote_port not supported for {self.name} transport",

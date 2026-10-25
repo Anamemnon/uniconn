@@ -5,7 +5,7 @@ from collections.abc import AsyncIterator, Callable
 
 from ...exceptions import BMCCapabilityError
 from ...result import Result
-from .._base import BaseTransport
+from ..base import BaseTransport
 
 # Импорт опциональный (extra dependency)
 try:

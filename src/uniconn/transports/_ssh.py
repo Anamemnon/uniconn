@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import contextlib
 import inspect
 import shlex
@@ -20,10 +21,15 @@ from typing import Any
 
 from pydantic import SecretStr
 
-from .._config import ConnectionConfig
-from ..exceptions import AuthenticationError, ConnectionError, ExecutionError
+from ..config.models import ConnectionConfig
+from ..exceptions import (
+    AuthenticationError,
+    ConnectionError,
+    ExecutionError,
+    TimeoutError,
+)
 from ..result import Result
-from ._base import BaseTransport
+from .base import BaseTransport, FileStat
 from .ssh.config_parser import OpenSSHConfigParser
 from .ssh.sftp import SFTPClientAdapter
 from .ssh.tunnel_chain import SSHJumpChainManager
@@ -330,8 +336,9 @@ class SSHTransport(BaseTransport):
         input_data = kwargs.get("input")
         effective_cmd = self._wrap_cwd(command, cwd)
 
-        async with self._conn.create_process(effective_cmd, env=env) as proc:
-            try:
+        proc: Any = None
+        try:
+            async with self._conn.create_process(effective_cmd, env=env) as proc:
                 if input_data is not None:
                     text_in = (
                         input_data.decode("utf-8", errors="replace")
@@ -348,9 +355,14 @@ class SSHTransport(BaseTransport):
                     timeout=timeout,
                 )
                 await proc.wait()
-            except TimeoutError:
+        except builtins.TimeoutError as exc:
+            if proc is not None and hasattr(proc, "terminate"):
                 proc.terminate()
-                raise
+            raise TimeoutError(
+                f"SSH command timed out after {timeout}s",
+                command=command,
+                host=self.config.host,
+            ) from exc
 
         duration = time.monotonic() - start_time
 
@@ -382,10 +394,11 @@ class SSHTransport(BaseTransport):
         input_data = kwargs.get("input")
         effective_cmd = self._wrap_cwd(command, cwd)
 
-        async with self._conn.create_process(
-            effective_cmd, env=env, encoding=None
-        ) as proc:
-            try:
+        proc: Any = None
+        try:
+            async with self._conn.create_process(
+                effective_cmd, env=env, encoding=None
+            ) as proc:
                 if input_data is not None:
                     bytes_in = (
                         input_data.encode("utf-8")
@@ -402,9 +415,14 @@ class SSHTransport(BaseTransport):
                     timeout=timeout,
                 )
                 await proc.wait()
-            except TimeoutError:
+        except builtins.TimeoutError as exc:
+            if proc is not None and hasattr(proc, "terminate"):
                 proc.terminate()
-                raise
+            raise TimeoutError(
+                f"SSH command timed out after {timeout}s",
+                command=command,
+                host=self.config.host,
+            ) from exc
 
         raw_stdout = (
             stdout.encode("utf-8") if isinstance(stdout, str) else bytes(stdout or b"")
@@ -471,7 +489,7 @@ class SSHTransport(BaseTransport):
         """Изменить права доступа к файлу через SFTP chmod."""
         await self._sftp.chmod(asyncssh, remote_path, mode)
 
-    async def stat(self, remote_path: str) -> dict[str, Any]:
+    async def stat(self, remote_path: str) -> FileStat:
         """Получить информацию о файле через SFTP stat."""
         return await self._sftp.stat(asyncssh, remote_path)
 

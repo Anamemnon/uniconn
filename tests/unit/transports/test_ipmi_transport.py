@@ -1,12 +1,11 @@
 # tests/unit/test_ipmi_transport.py
 """Тесты для IPMITransport"""
 
-import pytest
-import asyncio
-from datetime import datetime
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import MagicMock, patch
 
+import pytest
 from pydantic import SecretStr
+
 from uniconn._config import ConnectionConfig
 from uniconn.exceptions import BMCCapabilityError
 

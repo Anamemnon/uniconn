@@ -9,11 +9,10 @@ from pathlib import Path
 import pytest
 
 from uniconn._logging import (
+    DETAILED_FORMAT,
     SecretMaskingFilter,
     get_logger,
     setup_file_logging,
-    DEFAULT_FORMAT,
-    DETAILED_FORMAT,
 )
 
 
@@ -389,7 +388,9 @@ class TestStructuredLogging:
         """Пароли, SecretStr и sensitive-поля маскируются в JSON-логах."""
         import io
         import json
+
         from pydantic import SecretStr
+
         from uniconn import configure_logging, get_struct_logger
 
         buf = io.StringIO()
@@ -428,6 +429,7 @@ class TestStructuredLogging:
         """Connection.run() генерирует структурированные события command.start и command.finish."""
         import io
         import json
+
         from uniconn import Connection, configure_logging, log_context
 
         buf = io.StringIO()
@@ -465,6 +467,7 @@ class TestStructuredLogging:
         """structured_log_hook формирует событие command.executed с метриками для БД/Grafana."""
         import io
         import json
+
         from uniconn import Connection, configure_logging, structured_log_hook
 
         buf = io.StringIO()
@@ -502,6 +505,7 @@ class TestStructuredLogging:
         """log_event() маскирует секреты при mask_secrets=True и сохраняет при mask_secrets=False."""
         import io
         import json
+
         from uniconn import configure_logging
         from uniconn._logging import log_event
 
@@ -552,6 +556,7 @@ class TestStructuredLogging:
         """sensitive=True скрывает команду в structlog JSON даже при mask_secrets=False."""
         import io
         import json
+
         from uniconn import Connection, configure_logging
 
         buf = io.StringIO()

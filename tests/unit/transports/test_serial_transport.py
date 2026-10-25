@@ -1,10 +1,9 @@
 # tests/unit/test_serial_transport.py
 """Тесты для SerialTransport"""
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
-import asyncio
-from datetime import datetime
-from unittest.mock import patch, MagicMock, AsyncMock
 
 from uniconn._config import ConnectionConfig
 from uniconn.exceptions import ConnectionError
@@ -106,6 +105,7 @@ class TestSerialDeviceDetection:
             "uniconn.transports._serial.serial_asyncio", MagicMock()
         ):
             import sys
+
             from uniconn.transports._serial import SerialTransport
             transport = SerialTransport(config)
             device = transport._get_device()
@@ -121,7 +121,7 @@ class TestSerialConnect:
     @pytest.mark.asyncio
     async def test_connect_basic(self, serial_config, mock_serial_asyncio):
         """Базовое подключение"""
-        serial_mock, reader, writer = mock_serial_asyncio
+        serial_mock, _reader, _writer = mock_serial_asyncio
 
         with patch(
             "uniconn.transports._serial.serial_asyncio", serial_mock
@@ -178,7 +178,7 @@ class TestSerialDisconnect:
     @pytest.mark.asyncio
     async def test_disconnect(self, serial_config, mock_serial_asyncio):
         """Отключение"""
-        serial_mock, reader, writer = mock_serial_asyncio
+        serial_mock, _reader, writer = mock_serial_asyncio
 
         with patch(
             "uniconn.transports._serial.serial_asyncio", serial_mock
@@ -198,7 +198,7 @@ class TestSerialRun:
     @pytest.mark.asyncio
     async def test_run_basic(self, serial_config, mock_serial_asyncio, mocker):
         """Базовое выполнение команды"""
-        serial_mock, reader, writer = mock_serial_asyncio
+        serial_mock, reader, _writer = mock_serial_asyncio
 
         lines = [b"OK\r\n", b"\r\n"]
         call_idx = 0
@@ -265,7 +265,7 @@ class TestSerialStream:
     @pytest.mark.asyncio
     async def test_stream_basic(self, serial_config, mock_serial_asyncio, mocker):
         """Базовый стриминг"""
-        serial_mock, reader, writer = mock_serial_asyncio
+        serial_mock, reader, _writer = mock_serial_asyncio
 
         lines = [b"line1\r\n", b"line2\r\n", b""]
         call_idx = 0
@@ -313,7 +313,7 @@ class TestSerialContextManager:
     @pytest.mark.asyncio
     async def test_context_manager(self, serial_config, mock_serial_asyncio):
         """Контекстный менеджер"""
-        serial_mock, reader, writer = mock_serial_asyncio
+        serial_mock, _reader, _writer = mock_serial_asyncio
 
         with patch(
             "uniconn.transports._serial.serial_asyncio", serial_mock

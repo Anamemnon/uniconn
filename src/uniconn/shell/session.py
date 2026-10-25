@@ -226,11 +226,24 @@ class ShellSession:
         timeout: float | None = None,
     ) -> Result:
         """Выполнить команду в stateful shell-сессии и дождаться маркера завершения."""
-        for obs in self._observers:
-            return await obs.observe_shell_execute(
-                self._conn, self._raw_execute, command, timeout=timeout
-            )
-        return await self._raw_execute(command, timeout=timeout)
+        handler = self._raw_execute
+        for obs in reversed(self._observers):
+            prev_fn = handler
+
+            async def _step(
+                cmd: str | Sequence[str],
+                *,
+                timeout: float | None = None,
+                _obs: Any = obs,
+                _nxt: Any = prev_fn,
+            ) -> Result:
+                return await _obs.observe_shell_execute(
+                    self._conn, _nxt, cmd, timeout=timeout
+                )
+
+            handler = _step
+
+        return await handler(command, timeout=timeout)
 
     def _mark_closed(self) -> None:
         self._closed = True
@@ -332,19 +345,37 @@ class ShellSession:
         allow_eof: bool = True,
     ) -> Result:
         """Выполнить интерактивный диалог по регулярным выражениям (``expect``)."""
-        for obs in self._observers:
-            return await obs.observe_shell_expect(
-                self._conn,
-                self._raw_expect,
-                command=command,
-                patterns=patterns,
-                final_prompt=final_prompt,
-                timeout=timeout,
-                line_ending=line_ending,
-                sensitive=sensitive,
-                allow_eof=allow_eof,
-            )
-        return await self._raw_expect(
+        handler = self._raw_expect
+        for obs in reversed(self._observers):
+            prev_fn = handler
+
+            async def _step(
+                *,
+                command: str | Sequence[str] | None = None,
+                patterns: Mapping[str, str | SecretStr] | None = None,
+                final_prompt: str | None = None,
+                timeout: float | None = None,
+                line_ending: str = "\n",
+                sensitive: bool = False,
+                allow_eof: bool = True,
+                _obs: Any = obs,
+                _nxt: Any = prev_fn,
+            ) -> Result:
+                return await _obs.observe_shell_expect(
+                    self._conn,
+                    _nxt,
+                    command=command,
+                    patterns=patterns,
+                    final_prompt=final_prompt,
+                    timeout=timeout,
+                    line_ending=line_ending,
+                    sensitive=sensitive,
+                    allow_eof=allow_eof,
+                )
+
+            handler = _step
+
+        return await handler(
             command=command,
             patterns=patterns,
             final_prompt=final_prompt,

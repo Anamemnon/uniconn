@@ -4,7 +4,7 @@ import logging
 import re
 import shlex
 
-from .._connection import Connection
+from ..core.connection import Connection
 from ..exceptions import ScreenNotFoundError, ScreenSessionExistsError
 
 logger = logging.getLogger(__name__)

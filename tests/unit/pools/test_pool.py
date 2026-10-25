@@ -2,13 +2,14 @@
 """Тесты для ConnectionPool"""
 
 import asyncio
-import pytest
 from datetime import datetime
-from unittest.mock import patch, AsyncMock
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from uniconn._pool import ConnectionPool
-from uniconn.result import Result
 from uniconn.exceptions import ConnectionError
+from uniconn.result import Result
 
 
 def make_mock_connection():
@@ -73,7 +74,7 @@ def patch_connection_factory():
 @pytest.mark.asyncio
 async def test_pool_map_basic(patch_connection):
     """Тест map с успешным выполнением на всех хостах"""
-    mock_from_uri, mock_conn = patch_connection
+    mock_from_uri, _mock_conn = patch_connection
 
     uris = ["ssh://host1", "ssh://host2", "ssh://host3"]
     pool = ConnectionPool(uris, max_concurrent=3)
@@ -92,7 +93,7 @@ async def test_pool_map_basic(patch_connection):
 @pytest.mark.asyncio
 async def test_pool_map_with_timeout(patch_connection):
     """Тест map с таймаутом"""
-    mock_from_uri, mock_conn = patch_connection
+    _mock_from_uri, mock_conn = patch_connection
 
     pool = ConnectionPool(["ssh://host1"])
     await pool.map("sleep 100", timeout=5.0)
@@ -105,7 +106,7 @@ async def test_pool_map_with_timeout(patch_connection):
 @pytest.mark.asyncio
 async def test_pool_map_with_raise_on_error(patch_connection):
     """Тест map с raise_on_error=True"""
-    mock_from_uri, mock_conn = patch_connection
+    _mock_from_uri, mock_conn = patch_connection
 
     pool = ConnectionPool(["ssh://host1"])
     await pool.map("false_cmd", raise_on_error=True)
@@ -130,7 +131,7 @@ async def test_pool_map_with_retry_attempts(patch_connection):
 @pytest.mark.asyncio
 async def test_pool_map_safe_success(patch_connection):
     """Тест map_safe с успешным выполнением"""
-    mock_from_uri, mock_conn = patch_connection
+    _mock_from_uri, _mock_conn = patch_connection
 
     pool = ConnectionPool(["ssh://host1", "ssh://host2"])
     results = await pool.map_safe("uptime")
@@ -167,7 +168,7 @@ async def test_pool_map_safe_with_error():
 @pytest.mark.asyncio
 async def test_pool_map_callback(patch_connection):
     """Тест map_with_callback"""
-    mock_from_uri, mock_conn = patch_connection
+    _mock_from_uri, _mock_conn = patch_connection
 
     callbacks_received = []
 
@@ -185,7 +186,7 @@ async def test_pool_map_callback(patch_connection):
 @pytest.mark.asyncio
 async def test_pool_max_concurrent(patch_connection):
     """Тест ограничения параллелизма"""
-    mock_from_uri, mock_conn = patch_connection
+    _mock_from_uri, mock_conn = patch_connection
 
     concurrent_count = 0
     max_concurrent_seen = 0

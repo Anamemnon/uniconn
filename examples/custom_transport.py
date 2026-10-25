@@ -13,7 +13,6 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from uniconn._config import ConnectionConfig
-from uniconn.exceptions import ConnectionError
 from uniconn.result import Result
 from uniconn.transports._base import BaseTransport
 

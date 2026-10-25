@@ -10,8 +10,8 @@
 """
 
 import asyncio
-from uniconn import Connection, ConnectionConfig
 
+from uniconn import Connection, ConnectionConfig
 
 # ─── Async API ──────────────────────────────────────────────────────
 
@@ -28,7 +28,7 @@ async def async_with_timeout():
     """Выполнение с таймаутом."""
     async with Connection.from_uri("ssh://user@host") as conn:
         try:
-            result = await conn.run("sleep 100", timeout=5.0)
+            await conn.run("sleep 100", timeout=5.0)
         except TimeoutError:
             print("Command timed out!")
 
@@ -37,7 +37,7 @@ async def async_raise_on_error():
     """Исключение при ошибке."""
     async with Connection.from_uri("ssh://user@host") as conn:
         try:
-            result = await conn.run("false", raise_on_error=True)
+            await conn.run("false", raise_on_error=True)
         except Exception as e:
             print(f"Command failed: {e}")
 

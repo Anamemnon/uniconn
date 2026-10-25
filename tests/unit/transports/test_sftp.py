@@ -1,10 +1,10 @@
 # tests/unit/test_sftp.py
 """Тесты для передачи файлов (SFTP) через SSH транспорт."""
 
-import pytest
-import asyncio
 from datetime import datetime
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from uniconn._config import ConnectionConfig
 from uniconn._connection import Connection

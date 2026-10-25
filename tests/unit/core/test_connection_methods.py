@@ -3,13 +3,12 @@
 
 import json
 import tempfile
-import pytest
 from datetime import datetime
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
+import pytest
 from pydantic import SecretStr
-from uniconn._config import ConnectionConfig
+
 from uniconn._connection import Connection
 from uniconn.result import Result
 
@@ -49,7 +48,7 @@ class TestFromDict:
 
     def test_from_dict_basic(self, mock_transport_class):
         """Создание из словаря"""
-        _, transport = mock_transport_class
+        _, _transport = mock_transport_class
 
         conn = Connection.from_dict({
             "transport": "ssh",
@@ -65,7 +64,7 @@ class TestFromDict:
 
     def test_from_dict_with_password(self, mock_transport_class):
         """Создание с паролем"""
-        _, transport = mock_transport_class
+        _, _transport = mock_transport_class
 
         conn = Connection.from_dict({
             "transport": "ssh",
@@ -78,7 +77,7 @@ class TestFromDict:
 
     def test_from_dict_with_retry(self, mock_transport_class):
         """Создание с кастомным retry_attempts"""
-        _, transport = mock_transport_class
+        _, _transport = mock_transport_class
 
         conn = Connection.from_dict(
             {"transport": "ssh", "host": "example.com"},
@@ -90,7 +89,7 @@ class TestFromDict:
     def test_from_dict_with_logger(self, mock_transport_class):
         """Создание с кастомным логером"""
         import logging
-        _, transport = mock_transport_class
+        _, _transport = mock_transport_class
 
         my_logger = logging.getLogger("my_test")
         conn = Connection.from_dict(
@@ -106,7 +105,7 @@ class TestFromFile:
 
     def test_from_json_file(self, mock_transport_class):
         """Загрузка из JSON файла"""
-        _, transport = mock_transport_class
+        _, _transport = mock_transport_class
 
         data = [
             {"transport": "ssh", "host": "node1"},
@@ -126,12 +125,9 @@ class TestFromFile:
 
     def test_from_yaml_file(self, mock_transport_class):
         """Загрузка из YAML файла"""
-        _, transport = mock_transport_class
+        _, _transport = mock_transport_class
 
-        try:
-            import yaml
-        except ImportError:
-            pytest.skip("PyYAML not installed")
+        pytest.importorskip("yaml")
 
         content = """
 - transport: ssh
@@ -152,12 +148,9 @@ class TestFromFile:
 
     def test_from_yml_file(self, mock_transport_class):
         """Загрузка из .yml файла"""
-        _, transport = mock_transport_class
+        _, _transport = mock_transport_class
 
-        try:
-            import yaml
-        except ImportError:
-            pytest.skip("PyYAML not installed")
+        pytest.importorskip("yaml")
 
         content = "- transport: ssh\n  host: server1\n"
         with tempfile.NamedTemporaryFile(
@@ -172,7 +165,7 @@ class TestFromFile:
 
     def test_from_single_object_json(self, mock_transport_class):
         """Загрузка одиночного объекта из JSON"""
-        _, transport = mock_transport_class
+        _, _transport = mock_transport_class
 
         data = {"transport": "ssh", "host": "single"}
 

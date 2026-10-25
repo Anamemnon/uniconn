@@ -1,8 +1,9 @@
 # tests/conftest.py
-import pytest
-from unittest.mock import AsyncMock, MagicMock
-from uniconn.result import Result
 from datetime import datetime
+
+import pytest
+
+from uniconn.result import Result
 
 # pytest-mock фикстура 'mocker' предоставляется автоматически плагином pytest-mock
 

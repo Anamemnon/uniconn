@@ -8,8 +8,8 @@
 """
 
 import asyncio
-from uniconn import Connection, ConnectionPool
 
+from uniconn import Connection, ConnectionPool
 
 # ─── Single host ────────────────────────────────────────────────────
 

@@ -31,7 +31,7 @@ from ._log_pipeline import (
 )
 
 if TYPE_CHECKING:
-    from .._connection import Connection
+    from ..core.connection import Connection
 
 logger = logging.getLogger(__name__)
 
@@ -340,7 +340,7 @@ class DiagnosticSession:
         tools_dir.mkdir(parents=True, exist_ok=True)
 
         if self._external_forward_conn is None and self._config.forward_uri:
-            from .._connection import Connection as ConnCls
+            from ..core.connection import Connection as ConnCls
 
             try:
                 self._owned_forward_conn = ConnCls.from_uri(self._config.forward_uri)

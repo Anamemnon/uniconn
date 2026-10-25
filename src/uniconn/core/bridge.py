@@ -2,7 +2,8 @@
 """Универсальный портал исполнения асинхронных корутин и генераторов в фоновом daemon-потоке.
 
 Устраняет дублирование кода управления event loop между ``SyncConnection``,
-``SyncConnectionPool`` и ``SyncShellSession``.
+``SyncConnectionPool`` и ``SyncShellSession`` и переиспользует единый
+разделяемый фоновый цикл событий (Singleton Event Loop Portal).
 """
 
 from __future__ import annotations
@@ -12,31 +13,41 @@ import contextlib
 import contextvars
 import threading
 from collections.abc import AsyncIterator, Iterator
-from typing import Any, Generic, TypeVar
+from typing import Any, ClassVar, Generic, TypeVar
 
 T = TypeVar("T")
 _STREAM_DONE = object()
 
 
 class EventLoopPortal:
-    """Управляет выделенным ``asyncio.AbstractEventLoop`` в фоновом daemon-потоке.
+    """Управляет разделяемым ``asyncio.AbstractEventLoop`` в фоновом daemon-потоке.
 
     Безопасно исполняет корутины, асинхронные контекстные менеджеры и
     асинхронные генераторы из синхронного кода через ``run_coroutine_threadsafe``.
+    Все экземпляры ``EventLoopPortal`` разделяют один общий daemon-поток,
+    предотвращая создание десятков потоков ОС при работе с множеством ``SyncConnection``.
     """
+
+    _shared_loop: ClassVar[asyncio.AbstractEventLoop | None] = None
+    _shared_thread: ClassVar[threading.Thread | None] = None
+    _shared_lock: ClassVar[threading.Lock] = threading.Lock()
 
     def __init__(self, owner_name: str = "SyncPortal") -> None:
         """Инициализировать портал фонового цикла событий."""
         self._owner_name = owner_name
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
-        self._loop_lock = threading.Lock()
+        self._loop_lock = self._shared_lock
         self._closed = False
 
     @property
     def closed(self) -> bool:
         """Признак того, что портал закрыт."""
         return self._closed
+
+    def reopen(self) -> None:
+        """Повторно активировать портал (например, при повторном входе в ``with sync_conn:``)."""
+        self._closed = False
 
     @staticmethod
     def _run_loop_forever(loop: asyncio.AbstractEventLoop) -> None:
@@ -47,18 +58,36 @@ class EventLoopPortal:
         finally:
             asyncio.set_event_loop(None)
 
-    def get_loop(self) -> asyncio.AbstractEventLoop:
-        """Лениво создать и запустить фоновый event loop в daemon-потоке."""
-        with self._loop_lock:
-            if self._loop is None or self._loop.is_closed():
-                self._loop = asyncio.new_event_loop()
-                self._loop_thread = threading.Thread(
-                    target=self._run_loop_forever,
-                    args=(self._loop,),
+    @classmethod
+    def _ensure_shared_loop(
+        cls,
+    ) -> tuple[asyncio.AbstractEventLoop, threading.Thread]:
+        """Лениво создать и запустить единый фоновый event loop в daemon-потоке."""
+        with cls._shared_lock:
+            if (
+                cls._shared_loop is None
+                or cls._shared_loop.is_closed()
+                or cls._shared_thread is None
+                or not cls._shared_thread.is_alive()
+            ):
+                loop = asyncio.new_event_loop()
+                thread = threading.Thread(
+                    target=cls._run_loop_forever,
+                    args=(loop,),
+                    name="uniconn-event-loop-portal",
                     daemon=True,
                 )
-                self._loop_thread.start()
-            return self._loop
+                thread.start()
+                cls._shared_loop = loop
+                cls._shared_thread = thread
+            return cls._shared_loop, cls._shared_thread
+
+    def get_loop(self) -> asyncio.AbstractEventLoop:
+        """Вернуть активный фоновый event loop в daemon-потоке."""
+        loop, thread = self._ensure_shared_loop()
+        self._loop = loop
+        self._loop_thread = thread
+        return loop
 
     def call(self, coro: Any) -> Any:
         """Синхронно выполнить корутину в фоновом event loop и вернуть результат."""
@@ -124,7 +153,7 @@ class EventLoopPortal:
                     pump_future.result(timeout=2.0)
 
     def close(self, cleanup_coro: Any = None) -> None:
-        """Выполнить финальную корутину очистки и остановить фоновый event loop."""
+        """Выполнить финальную корутину очистки и пометить портал закрытым."""
         if self._closed:
             if cleanup_coro is not None:
                 with contextlib.suppress(Exception):
@@ -136,20 +165,8 @@ class EventLoopPortal:
                 self.call(cleanup_coro)
 
         self._closed = True
-
-        with self._loop_lock:
-            if self._loop and not self._loop.is_closed():
-                self._loop.call_soon_threadsafe(self._loop.stop)
-            thread = self._loop_thread
-
-        if thread is not None:
-            thread.join(timeout=5.0)
-
-        with self._loop_lock:
-            if self._loop and not self._loop.is_closed():
-                self._loop.close()
-            self._loop = None
-            self._loop_thread = None
+        self._loop = None
+        self._loop_thread = None
 
 
 class SyncContextBridge(Generic[T]):

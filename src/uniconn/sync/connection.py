@@ -45,6 +45,161 @@ class SyncConnection:
         self.state = SyncStateManagementService(self)
         self.tunnels = SyncTunnelService(self)
 
+    # ─── Фабричные методы и клонирование ───────────────────────────
+
+    @classmethod
+    def from_uri(
+        cls,
+        uri: str,
+        retry_attempts: int = 3,
+        logger: logging.Logger | None = None,
+        dry_run: bool = False,
+        before_run: Sequence[HookCallback] | None = None,
+        after_run: Sequence[HookCallback] | None = None,
+        on_error: Sequence[HookCallback] | None = None,
+        rate_limit: float | RateLimiter | None = None,
+        circuit_breaker: CircuitBreaker | bool | None = None,
+    ) -> Self:
+        """Создать синхронное подключение напрямую из URI строки."""
+        return cls(
+            Connection.from_uri(
+                uri,
+                retry_attempts=retry_attempts,
+                logger=logger,
+                dry_run=dry_run,
+                before_run=before_run,
+                after_run=after_run,
+                on_error=on_error,
+                rate_limit=rate_limit,
+                circuit_breaker=circuit_breaker,
+            )
+        )
+
+    @classmethod
+    def from_config(
+        cls,
+        config: ConnectionConfig,
+        retry_attempts: int = 3,
+        logger: logging.Logger | None = None,
+        dry_run: bool = False,
+        before_run: Sequence[HookCallback] | None = None,
+        after_run: Sequence[HookCallback] | None = None,
+        on_error: Sequence[HookCallback] | None = None,
+        rate_limit: float | RateLimiter | None = None,
+        circuit_breaker: CircuitBreaker | bool | None = None,
+    ) -> Self:
+        """Создать синхронное подключение из объекта ``ConnectionConfig``."""
+        return cls(
+            Connection.from_config(
+                config,
+                retry_attempts=retry_attempts,
+                logger=logger,
+                dry_run=dry_run,
+                before_run=before_run,
+                after_run=after_run,
+                on_error=on_error,
+                rate_limit=rate_limit,
+                circuit_breaker=circuit_breaker,
+            )
+        )
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: dict[str, Any],
+        retry_attempts: int = 3,
+        logger: logging.Logger | None = None,
+        dry_run: bool = False,
+    ) -> Self:
+        """Создать синхронное подключение из словаря."""
+        return cls(
+            Connection.from_dict(
+                data,
+                retry_attempts=retry_attempts,
+                logger=logger,
+                dry_run=dry_run,
+            )
+        )
+
+    @classmethod
+    def from_file(
+        cls,
+        path: str | Path,
+        retry_attempts: int = 3,
+        logger: logging.Logger | None = None,
+        *,
+        host: str | None = None,
+        group: str | None = None,
+    ) -> list[Self]:
+        """Создать список синхронных подключений из JSON/YAML/TOML файла."""
+        conns = Connection.from_file(
+            path,
+            retry_attempts=retry_attempts,
+            logger=logger,
+            host=host,
+            group=group,
+        )
+        return [cls(c) for c in conns]
+
+    @classmethod
+    def from_inventory(
+        cls,
+        path: str | Path,
+        host: str,
+        retry_attempts: int = 3,
+        logger: logging.Logger | None = None,
+    ) -> Self:
+        """Создать одиночное синхронное подключение по имени хоста из инвентарного файла."""
+        return cls(
+            Connection.from_inventory(
+                path,
+                host=host,
+                retry_attempts=retry_attempts,
+                logger=logger,
+            )
+        )
+
+    def copy(
+        self,
+        host: str | None = None,
+        port: int | None = None,
+        username: str | None = None,
+        password: str | SecretStr | None = None,
+        key_file: str | None = None,
+        passphrase: str | SecretStr | None = None,
+        ssh_config: str | bool | None = None,
+        timeout: float | None = None,
+        options: dict[str, Any] | None = None,
+        retry_attempts: int | None = None,
+        logger: logging.Logger | None = None,
+        dry_run: bool | None = None,
+        rate_limit: float | RateLimiter | None = None,
+        circuit_breaker: CircuitBreaker | bool | None = None,
+    ) -> Self:
+        """Создать копию синхронного подключения с возможностью изменения параметров."""
+        return type(self)(
+            self._async_conn.copy(
+                host=host,
+                port=port,
+                username=username,
+                password=password,
+                key_file=key_file,
+                passphrase=passphrase,
+                ssh_config=ssh_config,
+                timeout=timeout,
+                options=options,
+                retry_attempts=retry_attempts,
+                logger=logger,
+                dry_run=dry_run,
+                rate_limit=rate_limit,
+                circuit_breaker=circuit_breaker,
+            )
+        )
+
+    def with_overrides(self, **overrides: Any) -> Self:
+        """Создать копию синхронного подключения с переопределёнными параметрами."""
+        return type(self)(self._async_conn.with_overrides(**overrides))
+
     @property
     def _closed(self) -> bool:
         """Признак закрытия синхронной обёртки."""
@@ -198,6 +353,8 @@ class SyncConnection:
         sudo: bool = False,
         sudo_user: str | None = None,
         sudo_password: str | SecretStr | None = None,
+        sensitive: bool = False,
+        dry_run: bool | None = None,
         **kwargs: Any,
     ) -> bytes:
         """Выполнить команду синхронно и вернуть сырой байтовый вывод."""
@@ -210,6 +367,8 @@ class SyncConnection:
                 sudo=sudo,
                 sudo_user=sudo_user,
                 sudo_password=sudo_password,
+                sensitive=sensitive,
+                dry_run=dry_run,
                 **kwargs,
             )
         )
@@ -620,6 +779,7 @@ class SyncConnection:
         self._portal.close(cleanup_coro=cleanup)
 
     def __enter__(self) -> Self:
+        self._portal.reopen()
         self._run_coro(self._async_conn.transport.connect())
         return self
 

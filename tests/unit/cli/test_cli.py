@@ -1,9 +1,10 @@
 # tests/unit/test_cli.py
 """Тесты для CLI интерфейса"""
 
-import pytest
-from unittest.mock import patch, AsyncMock
 from datetime import datetime
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 
 @pytest.fixture
@@ -161,6 +162,7 @@ class TestCLIOutputFormats:
     def test_json_format_structure(self):
         """JSON формат имеет правильную структуру"""
         import json
+
         from uniconn.result import Result
 
         result = Result(

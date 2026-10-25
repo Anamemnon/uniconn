@@ -1,13 +1,12 @@
 # tests/unit/test_local_transport.py
 """Тесты для LocalTransport"""
 
-import pytest
 import asyncio
-from datetime import datetime
 
-from uniconn.transports._local import LocalTransport
+import pytest
+
 from uniconn._config import ConnectionConfig
-from uniconn.exceptions import ConnectionError
+from uniconn.transports._local import LocalTransport
 
 
 @pytest.fixture

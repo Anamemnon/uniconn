@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Literal
 from ._models import LogEvent
 
 if TYPE_CHECKING:
-    from .._connection import Connection
+    from ..core.connection import Connection
 
 logger = logging.getLogger(__name__)
 

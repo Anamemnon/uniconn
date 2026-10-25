@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import contextlib
 import os
 import sys
@@ -10,9 +11,9 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from ..exceptions import ConnectionError, ExecutionError
+from ..exceptions import ConnectionError, ExecutionError, TimeoutError
 from ..result import Result
-from ._base import BaseTransport
+from .base import BaseTransport, FileStat
 
 
 class _LocalShellStdin:
@@ -160,10 +161,14 @@ class LocalTransport(BaseTransport):
                 comm_coro,
                 timeout=timeout,
             )
-        except TimeoutError:
+        except builtins.TimeoutError as exc:
             proc.kill()
             await proc.wait()
-            raise
+            raise TimeoutError(
+                f"Local command timed out after {timeout}s",
+                command=command,
+                host="localhost",
+            ) from exc
         finally:
             transport = getattr(proc, "_transport", None)
             if transport is not None:
@@ -275,7 +280,7 @@ class LocalTransport(BaseTransport):
                 host="localhost",
             ) from e
 
-    async def stat(self, remote_path: str) -> dict[str, Any]:
+    async def stat(self, remote_path: str) -> FileStat:
         """Получить метаданные локального файла."""
         import stat as stat_module
 

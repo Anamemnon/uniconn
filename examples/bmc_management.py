@@ -8,8 +8,8 @@
 """
 
 import asyncio
-from uniconn import Connection
 
+from uniconn import Connection
 
 # ─── IPMI ───────────────────────────────────────────────────────────
 
@@ -60,7 +60,7 @@ async def batch_bmc():
     pool = ConnectionPool(bmc_hosts, max_concurrent=5)
     results = await pool.map("power status")
 
-    for host, result in zip(bmc_hosts, results):
+    for host, result in zip(bmc_hosts, results, strict=False):
         print(f"  {host}: {result.stdout.strip()}")
 
 

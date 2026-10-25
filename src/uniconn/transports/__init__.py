@@ -12,8 +12,8 @@
     - IPMITransport: IPMI BMC через pyghmi
 """
 
-from ._base import BaseTransport
 from ._local import LocalTransport
+from .base import BaseTransport
 from .replay import (
     Cassette,
     CassetteContext,

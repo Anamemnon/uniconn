@@ -9,8 +9,8 @@
 """
 
 import asyncio
-from uniconn import ConnectionPool, Connection
 
+from uniconn import Connection, ConnectionPool
 
 # ─── Basic parallel execution ──────────────────────────────────────
 
@@ -25,7 +25,7 @@ async def basic_parallel():
     pool = ConnectionPool(hosts, max_concurrent=5)
     results = await pool.map("uptime")
 
-    for host, result in zip(hosts, results):
+    for host, result in zip(hosts, results, strict=False):
         print(f"{host}: {result.stdout.strip()}")
 
 
@@ -97,7 +97,7 @@ async def with_retry():
     )
     results = await pool.map("uptime")
 
-    for host, result in zip(hosts, results):
+    for host, result in zip(hosts, results, strict=False):
         print(f"  {host}: exit_code={result.exit_code}")
 
 
@@ -119,7 +119,7 @@ async def from_file():
     pool = ConnectionPool(uris, max_concurrent=5)
     results = await pool.map("hostname")
 
-    for uri, result in zip(uris, results):
+    for uri, result in zip(uris, results, strict=False):
         print(f"  {uri}: {result.stdout.strip()}")
 
 

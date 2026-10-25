@@ -2,10 +2,11 @@
 """Тесты для Result dataclass"""
 
 from datetime import datetime
+
 import pytest
 
-from uniconn.result import Result
 from uniconn.exceptions import ExecutionError
+from uniconn.result import Result
 
 
 class TestResult:

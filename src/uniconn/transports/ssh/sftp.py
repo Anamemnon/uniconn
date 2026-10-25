@@ -8,6 +8,7 @@ import stat as stat_module
 from typing import Any
 
 from ...exceptions import ConnectionError
+from ..base import FileStat
 
 
 class SFTPClientAdapter:
@@ -82,7 +83,7 @@ class SFTPClientAdapter:
                 host=self._transport.config.host,
             ) from e
 
-    async def stat(self, asyncssh_mod: Any, remote_path: str) -> dict[str, Any]:
+    async def stat(self, asyncssh_mod: Any, remote_path: str) -> FileStat:
         """Получить атрибуты файла через SFTP stat."""
         conn = self._require_conn(asyncssh_mod)
         try:

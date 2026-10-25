@@ -4,7 +4,7 @@ import logging
 import shlex
 from collections.abc import AsyncIterator, Sequence
 
-from .._connection import Connection
+from ..core.connection import Connection
 from ._models import LogEvent
 from ._session import ScreenSession
 

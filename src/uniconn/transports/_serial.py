@@ -24,7 +24,7 @@ from typing import Any
 
 from ..exceptions import ConnectionError, ExecutionError
 from ..result import Result
-from ._base import BaseTransport
+from .base import BaseTransport
 
 # Импорт опциональный (extra dependency)
 try:

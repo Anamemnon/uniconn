@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from ..exceptions import ExecutionError
 from ..result import SyncResult
+from ..transports.base import FileStat
 from .templates import TemplateEngine
 
 if TYPE_CHECKING:
@@ -224,8 +225,17 @@ class FileOperationsService:
         recurse: bool = False,
         **kwargs: Any,
     ) -> None:
+        if self._conn.is_dry_run:
+            self._conn.logger.info(
+                f"[DRY-RUN] Skipping upload {str(local_path)!r} -> {str(remote_path)!r} "
+                f"on {self._conn.config.uri_safe}"
+            )
+            return
+
+        await self._ensure_connected()
+        effective_path = self._conn.context.resolve_path(remote_path)
         await self._conn.transport.upload(
-            str(local_path), str(remote_path), recurse=recurse, **kwargs
+            str(local_path), effective_path, recurse=recurse, **kwargs
         )
 
     async def upload(
@@ -236,17 +246,31 @@ class FileOperationsService:
         **kwargs: Any,
     ) -> None:
         """Загрузить файл или директорию на удалённый хост."""
-        for obs in self._conn.operation_observers:
-            await obs.observe_upload(
-                self._conn,
-                self._raw_upload,
-                local_path,
-                remote_path,
-                recurse=recurse,
-                **kwargs,
-            )
-            return
-        await self._raw_upload(local_path, remote_path, recurse=recurse, **kwargs)
+        handler = self._raw_upload
+        for obs in reversed(self._conn.operation_observers):
+            prev_fn = handler
+
+            async def _step(
+                l_path: str | Path,
+                r_path: str | Path,
+                *,
+                recurse: bool = False,
+                _obs: Any = obs,
+                _nxt: Any = prev_fn,
+                **kw: Any,
+            ) -> None:
+                await _obs.observe_upload(
+                    self._conn,
+                    _nxt,
+                    l_path,
+                    r_path,
+                    recurse=recurse,
+                    **kw,
+                )
+
+            handler = _step
+
+        await handler(local_path, remote_path, recurse=recurse, **kwargs)
 
     async def _raw_download(
         self,
@@ -255,8 +279,10 @@ class FileOperationsService:
         recurse: bool = False,
         **kwargs: Any,
     ) -> None:
+        await self._ensure_connected()
+        effective_path = self._conn.context.resolve_path(remote_path)
         await self._conn.transport.download(
-            str(remote_path), str(local_path), recurse=recurse, **kwargs
+            effective_path, str(local_path), recurse=recurse, **kwargs
         )
 
     async def download(
@@ -267,17 +293,31 @@ class FileOperationsService:
         **kwargs: Any,
     ) -> None:
         """Скачать файл или директорию с удалённого хоста."""
-        for obs in self._conn.operation_observers:
-            await obs.observe_download(
-                self._conn,
-                self._raw_download,
-                remote_path,
-                local_path,
-                recurse=recurse,
-                **kwargs,
-            )
-            return
-        await self._raw_download(remote_path, local_path, recurse=recurse, **kwargs)
+        handler = self._raw_download
+        for obs in reversed(self._conn.operation_observers):
+            prev_fn = handler
+
+            async def _step(
+                r_path: str | Path,
+                l_path: str | Path,
+                *,
+                recurse: bool = False,
+                _obs: Any = obs,
+                _nxt: Any = prev_fn,
+                **kw: Any,
+            ) -> None:
+                await _obs.observe_download(
+                    self._conn,
+                    _nxt,
+                    r_path,
+                    l_path,
+                    recurse=recurse,
+                    **kw,
+                )
+
+            handler = _step
+
+        await handler(remote_path, local_path, recurse=recurse, **kwargs)
 
     async def _raw_read_file(
         self,
@@ -297,14 +337,27 @@ class FileOperationsService:
         encoding: str | None = "utf-8",
     ) -> str | bytes:
         """Прочитать содержимое файла с хоста напрямую в память."""
-        for obs in self._conn.operation_observers:
-            return await obs.observe_read_file(
-                self._conn,
-                self._raw_read_file,
-                remote_path,
-                encoding=encoding,
-            )
-        return await self._raw_read_file(remote_path, encoding=encoding)
+        handler = self._raw_read_file
+        for obs in reversed(self._conn.operation_observers):
+            prev_fn = handler
+
+            async def _step(
+                r_path: str | Path,
+                *,
+                encoding: str | None = "utf-8",
+                _obs: Any = obs,
+                _nxt: Any = prev_fn,
+            ) -> str | bytes:
+                return await _obs.observe_read_file(
+                    self._conn,
+                    _nxt,
+                    r_path,
+                    encoding=encoding,
+                )
+
+            handler = _step
+
+        return await handler(remote_path, encoding=encoding)
 
     async def _raw_write_file(
         self,
@@ -332,17 +385,31 @@ class FileOperationsService:
         encoding: str = "utf-8",
     ) -> None:
         """Записать строку или байты из памяти в файл на хосте."""
-        for obs in self._conn.operation_observers:
-            await obs.observe_write_file(
-                self._conn,
-                self._raw_write_file,
-                remote_path,
-                content,
-                mode=mode,
-                encoding=encoding,
-            )
-            return
-        await self._raw_write_file(
+        handler = self._raw_write_file
+        for obs in reversed(self._conn.operation_observers):
+            prev_fn = handler
+
+            async def _step(
+                r_path: str | Path,
+                c_data: str | bytes,
+                *,
+                mode: int | None = None,
+                encoding: str = "utf-8",
+                _obs: Any = obs,
+                _nxt: Any = prev_fn,
+            ) -> None:
+                await _obs.observe_write_file(
+                    self._conn,
+                    _nxt,
+                    r_path,
+                    c_data,
+                    mode=mode,
+                    encoding=encoding,
+                )
+
+            handler = _step
+
+        await handler(
             remote_path, content, mode=mode, encoding=encoding
         )
 
@@ -377,15 +444,28 @@ class FileOperationsService:
 
     async def chmod(self, remote_path: str | Path, mode: int) -> None:
         """Изменить права доступа к файлу на удалённом хосте."""
-        await self._conn.transport.chmod(str(remote_path), mode)
+        if self._conn.is_dry_run:
+            self._conn.logger.info(
+                f"[DRY-RUN] Skipping chmod {oct(mode)} {str(remote_path)!r} "
+                f"on {self._conn.config.uri_safe}"
+            )
+            return
 
-    async def stat(self, remote_path: str | Path) -> dict[str, Any]:
+        await self._ensure_connected()
+        effective_path = self._conn.context.resolve_path(remote_path)
+        await self._conn.transport.chmod(effective_path, mode)
+
+    async def stat(self, remote_path: str | Path) -> FileStat:
         """Получить метаданные файла на удалённом хосте."""
-        return await self._conn.transport.stat(str(remote_path))
+        await self._ensure_connected()
+        effective_path = self._conn.context.resolve_path(remote_path)
+        return await self._conn.transport.stat(effective_path)
 
     async def listdir(self, remote_path: str | Path = ".") -> list[str]:
         """Получить список имён файлов в директории."""
-        return await self._conn.transport.listdir(str(remote_path))
+        await self._ensure_connected()
+        effective_path = self._conn.context.resolve_path(remote_path)
+        return await self._conn.transport.listdir(effective_path)
 
     async def remove_file(self, remote_path: str | Path) -> None:
         """Удалить файл на хосте."""
@@ -450,18 +530,35 @@ class FileOperationsService:
         dry_run: bool | None = None,
     ) -> SyncResult:
         """Инкрементально синхронизировать локальную директорию с удалённой."""
-        for obs in self._conn.operation_observers:
-            return await obs.observe_sync_dir(
-                self._conn,
-                self._raw_sync_dir,
-                local_dir=local_dir,
-                remote_dir=remote_dir,
-                delete=delete,
-                exclude=exclude,
-                mtime_tolerance=mtime_tolerance,
-                dry_run=dry_run,
-            )
-        return await self._raw_sync_dir(
+        handler = self._raw_sync_dir
+        for obs in reversed(self._conn.operation_observers):
+            prev_fn = handler
+
+            async def _step(
+                *,
+                local_dir: str | Path,
+                remote_dir: str | Path,
+                delete: bool = False,
+                exclude: Sequence[str] | None = None,
+                mtime_tolerance: float = 1.0,
+                dry_run: bool | None = None,
+                _obs: Any = obs,
+                _nxt: Any = prev_fn,
+            ) -> SyncResult:
+                return await _obs.observe_sync_dir(
+                    self._conn,
+                    _nxt,
+                    local_dir=local_dir,
+                    remote_dir=remote_dir,
+                    delete=delete,
+                    exclude=exclude,
+                    mtime_tolerance=mtime_tolerance,
+                    dry_run=dry_run,
+                )
+
+            handler = _step
+
+        return await handler(
             local_dir=local_dir,
             remote_dir=remote_dir,
             delete=delete,

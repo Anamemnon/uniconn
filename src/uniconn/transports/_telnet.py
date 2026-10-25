@@ -28,7 +28,7 @@ from ..exceptions import (
     TimeoutError as UniconnTimeoutError,
 )
 from ..result import Result
-from ._base import BaseTransport
+from .base import BaseTransport
 
 # Импорт опциональный (extra dependency)
 try:

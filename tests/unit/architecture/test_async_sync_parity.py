@@ -48,8 +48,8 @@ def _public_methods(cls: type) -> set[str]:
 
 
 def test_connection_and_sync_connection_parity() -> None:
-    """Все публичные методы и свойства Connection (кроме фабрик) должны быть в SyncConnection."""
-    async_methods = _public_methods(Connection) - _ASYNC_ONLY_METHODS
+    """Все публичные методы и свойства Connection (включая фабрики и copy) должны быть в SyncConnection."""
+    async_methods = _public_methods(Connection) - {"to_sync"}
     sync_methods = _public_methods(SyncConnection)
     missing = async_methods - sync_methods
     assert not missing, f"SyncConnection is missing methods from Connection: {missing}"

@@ -1,4 +1,4 @@
-"""HTTP dev-сервер и обработчики API для интерактивной панели uniconn v0.11.0."""
+"""HTTP dev-сервер и обработчики API для интерактивной панели uniconn v0.11.1."""
 
 from __future__ import annotations
 
@@ -1680,7 +1680,7 @@ def serve_dev_dashboard(port: int = 3000) -> None:
     screen_state: dict[str, Any] = {"sessions": []}
 
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+        def log_message(self, format: str, *args: object) -> None:
             return
 
         def _send_json(self, payload: dict[str, Any], status: int = 200) -> None:
@@ -1701,7 +1701,7 @@ def serve_dev_dashboard(port: int = 3000) -> None:
             except Exception:
                 return {}
 
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             parsed = urlparse(self.path)
             qs = parse_qs(parsed.query)
             if parsed.path == "/api/status":
@@ -1729,7 +1729,7 @@ def serve_dev_dashboard(port: int = 3000) -> None:
             self.end_headers()
             self.wfile.write(body)
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             parsed = urlparse(self.path)
             payload = self._read_json_body()
             if parsed.path == "/api/shell":

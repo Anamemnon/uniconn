@@ -412,7 +412,8 @@ class RetryMiddleware:
                             },
                         )
                     await self._conn.transport.disconnect()
-                    await self._conn.transport.connect()
+                    if attempt_num < max_attempts:
+                        await self._conn.transport.connect()
                     raise
 
         assert result is not None

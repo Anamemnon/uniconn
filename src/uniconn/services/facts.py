@@ -27,7 +27,7 @@ from .facts_models import (
 )
 
 if TYPE_CHECKING:
-    from .._connection import Connection
+    from ..core.connection import Connection
 
 _ARTIFACT_PATH_RE = re.compile(
     r"(/[A-Za-z0-9._/-]+\.(?:tar\.xz|tar\.gz|tgz|tar\.bz2|zip|log|json|txt))"
@@ -176,7 +176,8 @@ class FactCollector:
                 artifact_dir=artifact_dir,
             )
 
-        self.cached = facts
+        if include_builtin:
+            self.cached = facts
         return facts
 
     async def _collect_spec_sources(

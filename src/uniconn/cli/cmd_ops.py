@@ -9,8 +9,8 @@ import shlex
 import sys
 from typing import Annotated, Any
 
-from .._facts import diff_facts
 from .._logging import get_logger
+from ..services.facts_models import diff_facts
 from .renderers import CLIOutputRenderer, Panel, Parameter, Table, box, build_cli_pool
 
 

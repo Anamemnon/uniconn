@@ -10,8 +10,8 @@
 """
 
 import asyncio
-from uniconn import Connection
 
+from uniconn import Connection
 
 # ─── Upload / Download ──────────────────────────────────────────────
 
@@ -79,7 +79,7 @@ async def file_metadata():
     async with Connection.from_uri("ssh://user:pass@host") as conn:
         info = await conn.stat("/var/log/syslog")
 
-        print(f"File: /var/log/syslog")
+        print("File: /var/log/syslog")
         print(f"  Size:     {info['size']:,} bytes")
         print(f"  Owner:    uid={info['uid']}, gid={info['gid']}")
         print(f"  Perms:    {info['permissions']}")
@@ -93,7 +93,7 @@ async def directory_listing():
     """Список файлов в директории."""
     async with Connection.from_uri("ssh://user:pass@host") as conn:
         files = await conn.listdir("/var/log")
-        print(f"Files in /var/log:")
+        print("Files in /var/log:")
         for name in files:
             print(f"  {name}")
 

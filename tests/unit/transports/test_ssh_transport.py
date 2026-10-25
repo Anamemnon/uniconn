@@ -228,7 +228,7 @@ class TestSSHRunStream:
     async def test_run_success(self, asyncssh_mock, ssh_config):
         """Успешное выполнение команды."""
         conn = _make_conn()
-        cm, proc = _make_proc(stdout="hello", stderr="", returncode=0)
+        cm, _proc = _make_proc(stdout="hello", stderr="", returncode=0)
         conn.create_process = MagicMock(return_value=cm)
         asyncssh_mock.connect = AsyncMock(return_value=conn)
 

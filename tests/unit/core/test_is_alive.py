@@ -1,12 +1,11 @@
 # tests/unit/test_is_alive.py
 """Тесты для is_alive() / ping()"""
 
-import pytest
-import asyncio
 from datetime import datetime
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from pydantic import SecretStr
+import pytest
+
 from uniconn._config import ConnectionConfig
 from uniconn._connection import Connection
 from uniconn.result import Result

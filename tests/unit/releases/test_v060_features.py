@@ -10,8 +10,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from uniconn.cli import CliRunner
-
 from uniconn import (
     Connection,
     ConnectionConfig,
@@ -24,7 +22,7 @@ from uniconn import (
     cli,
     metrics_collector_hook,
 )
-from uniconn.exceptions import ConnectionError
+from uniconn.cli import CliRunner
 from uniconn.transports._ssh import SSHTransport
 
 

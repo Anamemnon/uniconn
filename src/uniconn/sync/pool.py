@@ -89,6 +89,7 @@ class SyncConnectionPool:
 
     def connect(self) -> None:
         """Открыть и удерживать соединения ко всем хостам пула (синхронно)."""
+        self._portal.reopen()
         self._run_coro(self._async_pool.connect())
 
     def close(self) -> None:

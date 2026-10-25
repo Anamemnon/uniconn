@@ -1,14 +1,15 @@
 # tests/integration/test_bmc.py
-import pytest
 from unittest.mock import patch
-from uniconn.result import Result
+
+import pytest
+
 
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_ipmi_power_status(mocker):
     """Тест IPMI транспорта"""
-    from uniconn.transports.bmc._ipmi import IPMITransport
     from uniconn._config import ConnectionConfig
+    from uniconn.transports.bmc._ipmi import IPMITransport
 
     config = ConnectionConfig(
         transport="ipmi",

@@ -2,6 +2,7 @@
 """Тесты для URIParser"""
 
 import pytest
+
 from uniconn._uri import URIParser
 
 

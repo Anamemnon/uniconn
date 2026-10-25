@@ -1,9 +1,5 @@
-# src/uniconn/transports/replay.py
-"""Контрактное тестирование, запись и воспроизведение сессий (ReplayTransport и Cassette Mode).
-
-Позволяет записывать реальные взаимодействия (SSH, IPMI, Serial, Telnet, Local)
-в детерминированные YAML/JSON-кассеты и прогонять тесты без доступа к оборудованию.
-"""
+# src/uniconn/transports/replay/proxy.py
+"""Прокси-транспорт и автономный ReplayTransport для записи и воспроизведения кассет."""
 
 from __future__ import annotations
 
@@ -11,422 +7,42 @@ import asyncio
 import base64
 import contextlib
 import hashlib
-import inspect
-import json
-import re
 from collections.abc import AsyncIterator, Sequence
-from datetime import UTC, datetime
-from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
+from typing import Any, cast
 
-import yaml
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import SecretStr
 
-from .._logging import SecretMaskingFilter
-from ..config.models import ConnectionConfig
-from ..exceptions import (
-    AuthenticationError,
-    BMCCapabilityError,
+from ..._logging import SecretMaskingFilter
+from ...config.models import ConnectionConfig
+from ...exceptions import (
     CapabilityNotSupportedError,
     CassetteError,
     CassetteMissError,
-    ConnectionError,
-    ExecutionError,
-    TimeoutError,
     UniconnError,
 )
-from ..result import Result
-from .base import (
+from ...result import Result
+from ..base import (
     BaseTransport,
     FileCapableTransport,
+    FileStat,
     ShellCapableTransport,
     supports_capability,
 )
-
-if TYPE_CHECKING:
-    from ..core.connection import Connection
-    from ..sync.connection import SyncConnection
-
-_YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
-_YAML_DUMPER = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
-
-_TEMP_PATH_RE = re.compile(r"/tmp/uniconn_[A-Za-z0-9_]+")
-_POSIX_MARKER_CMD_RE = re.compile(
-    r"^(.*);\s*echo\s+\"\\n(__UNICONN_[0-9a-f]+__)\$\?\"\s*$",
-    re.DOTALL,
+from .models import (
+    _ERROR_MAP,
+    _SUDO_WRAPPER_RE,
+    Cassette,
+    FsOperationName,
+    MatchField,
+    RecordedExecInteraction,
+    RecordedFsInteraction,
+    RecordedShellInteraction,
+    RecordedStreamInteraction,
+    RecordMode,
+    normalize_temp_paths,
 )
-_POSIX_MARKER_OUT_RE = re.compile(r"\r?\n?__UNICONN_[0-9a-f]+__(\d+)\r?\n?")
-_SUDO_WRAPPER_RE = re.compile(r"^sudo\s+-[Sn]\b")
-
-_ERROR_MAP: dict[str, type[Exception]] = {
-    "ConnectionError": ConnectionError,
-    "AuthenticationError": AuthenticationError,
-    "ExecutionError": ExecutionError,
-    "TimeoutError": TimeoutError,
-    "BMCCapabilityError": BMCCapabilityError,
-    "CapabilityNotSupportedError": CapabilityNotSupportedError,
-    "FileNotFoundError": FileNotFoundError,
-    "PermissionError": PermissionError,
-    "OSError": OSError,
-    "UniconnError": UniconnError,
-}
-
-
-def normalize_temp_paths(text: str) -> str:
-    """Нормализовать динамические пути временных директорий ``/tmp/uniconn_XXXXXX``."""
-    if not text:
-        return text
-    return _TEMP_PATH_RE.sub("/tmp/uniconn_<TEMP>", text)
-
-
-class RecordMode(StrEnum):
-    """Режим работы кассеты записи и воспроизведения."""
-
-    ONCE = "once"
-    NEW_EPISODES = "new_episodes"
-    NONE = "none"
-    ALL = "all"
-
-
-InteractionKind = Literal["exec", "stream", "fs", "shell"]
-MatchField = Literal["command", "cwd", "sudo"]
-CapabilityKind = Literal["exec", "stream", "file", "shell", "tunnel"]
-FsOperationName = Literal[
-    "read_file",
-    "write_file",
-    "exists",
-    "stat",
-    "listdir",
-    "mkdir",
-    "remove_file",
-    "chmod",
-    "upload",
-    "download",
-]
-
-
-class RecordedExecInteraction(BaseModel):
-    """Записанный вызов ``run()``, ``run_bytes()`` или ``ping()``."""
-
-    kind: Literal["exec"] = "exec"
-    command: str
-    cwd: str | None = None
-    env: dict[str, str] = Field(default_factory=dict)
-    sudo: bool = False
-    stdin_redacted: bool = False
-    exit_code: int = 0
-    stdout: str = ""
-    stderr: str = ""
-    stdout_base64: str | None = None
-    duration: float = 0.001
-    error_class: str | None = None
-    error_message: str | None = None
-
-
-class RecordedStreamInteraction(BaseModel):
-    """Записанный потоковый вызов ``stream()``."""
-
-    kind: Literal["stream"] = "stream"
-    command: str
-    cwd: str | None = None
-    lines: list[str] = Field(default_factory=list)
-    chunk_delay_ms: float = 0.0
-    error_class: str | None = None
-    error_message: str | None = None
-
-
-class RecordedFsInteraction(BaseModel):
-    """Записанная файловая операция ``FileCapableTransport``."""
-
-    kind: Literal["fs"] = "fs"
-    operation: FsOperationName
-    path: str
-    target_path: str | None = None
-    mode: int | None = None
-    result_bool: bool | None = None
-    result_stat: dict[str, Any] | None = None
-    result_list: list[str] = Field(default_factory=list)
-    content_utf8: str | None = None
-    content_base64: str | None = None
-    content_sha256: str | None = None
-    error_class: str | None = None
-    error_message: str | None = None
-
-
-class ShellDialogStep(BaseModel):
-    """Один шаг интерактивного обмена в PTY ``ShellSession`` или ``expect()``."""
-
-    expect_input: str
-    response_output: str
-    exit_code: int = 0
-
-
-class RecordedShellInteraction(BaseModel):
-    """Записанная интерактивная сессия ``open_shell()`` / ``expect()``."""
-
-    kind: Literal["shell"] = "shell"
-    term_type: str = "xterm"
-    term_size: tuple[int, int] = (80, 24)
-    steps: list[ShellDialogStep] = Field(default_factory=list)
-
-
-CassetteInteraction = Annotated[
-    RecordedExecInteraction
-    | RecordedStreamInteraction
-    | RecordedFsInteraction
-    | RecordedShellInteraction,
-    Field(discriminator="kind"),
-]
-
-
-class Cassette(BaseModel):
-    """Корневая модель кассеты взаимодействий (сериализуется в YAML или JSON)."""
-
-    version: str = "1.0"
-    recorded_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
-    transport: str = "ssh"
-    host: str | None = None
-    capabilities: list[CapabilityKind] = Field(
-        default_factory=lambda: ["exec", "stream", "file", "shell"]
-    )
-    interactions: list[CassetteInteraction] = Field(default_factory=list)
-
-    @classmethod
-    def load(cls, path: str | Path) -> Self:
-        """Загрузить кассету из YAML или JSON файла."""
-        file_path = Path(path)
-        if not file_path.is_file():
-            raise CassetteError(f"Cassette file not found: {file_path}")
-        raw_text = file_path.read_text(encoding="utf-8")
-        data = (
-            json.loads(raw_text)
-            if file_path.suffix.lower() == ".json"
-            else (yaml.load(raw_text, Loader=_YAML_LOADER) or {})
-        )
-        if not isinstance(data, dict):
-            raise CassetteError(f"Invalid cassette structure in {file_path}")
-        return cls.model_validate(data)
-
-    def save(self, path: str | Path) -> None:
-        """Сохранить кассету в YAML или JSON файл."""
-        file_path = Path(path)
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = self.model_dump(mode="json", exclude_none=True)
-        if file_path.suffix.lower() == ".json":
-            text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
-        else:
-            text = yaml.dump(
-                payload,
-                Dumper=_YAML_DUMPER,
-                allow_unicode=True,
-                sort_keys=False,
-                default_flow_style=False,
-            )
-        file_path.write_text(text, encoding="utf-8")
-
-
-class _ReplayStdin:
-    """Эмуляция stdin для ReplayShellProcess."""
-
-    def __init__(self, owner: ReplayShellProcess) -> None:
-        self._owner = owner
-
-    def write(self, data: str | bytes) -> None:
-        text = data.decode("utf-8", errors="replace") if isinstance(data, bytes) else data
-        self._owner._on_stdin_write(text)
-
-    async def drain(self) -> None:
-        return None
-
-
-class _ReplayStdout:
-    """Эмуляция stdout для ReplayShellProcess."""
-
-    def __init__(self, owner: ReplayShellProcess) -> None:
-        self._owner = owner
-
-    async def read(self, _n: int = 4096) -> str:
-        return await self._owner._on_stdout_read()
-
-
-class ReplayShellProcess:
-    """Эмуляция PTY-процесса для воспроизведения ``ShellSession`` и ``expect()``."""
-
-    def __init__(
-        self,
-        shell_interaction: RecordedShellInteraction,
-        exec_interactions: Sequence[RecordedExecInteraction],
-        *,
-        normalize_temp: bool = True,
-    ) -> None:
-        """Инициализировать эмулятор PTY-процесса из записанных шагов."""
-        self._shell_interaction = shell_interaction
-        self._exec_interactions = list(exec_interactions)
-        self._normalize_temp = normalize_temp
-        self._step_index = 0
-        self._out_queue: asyncio.Queue[str] = asyncio.Queue()
-        self.stdin = _ReplayStdin(self)
-        self.stdout = _ReplayStdout(self)
-        self.returncode: int | None = None
-        self.exit_status: int | None = None
-        self.term_size: tuple[int, int] = shell_interaction.term_size
-
-    def _norm(self, text: str) -> str:
-        return normalize_temp_paths(text) if self._normalize_temp else text
-
-    def _find_step(self, cmd: str) -> tuple[str, int]:
-        norm_cmd = self._norm(cmd.strip())
-        steps = self._shell_interaction.steps
-        # Сначала ищем с текущей позиции курсора
-        for idx in range(self._step_index, len(steps)):
-            step = steps[idx]
-            if self._norm(step.expect_input.strip()) == norm_cmd:
-                self._step_index = idx + 1
-                return step.response_output, step.exit_code
-        # Затем по всем шагам
-        for step in steps:
-            if self._norm(step.expect_input.strip()) == norm_cmd:
-                return step.response_output, step.exit_code
-        # Фолбэк на обычные exec-эпизоды кассеты
-        for exec_ep in self._exec_interactions:
-            if self._norm(exec_ep.command.strip()) == norm_cmd:
-                return exec_ep.stdout, exec_ep.exit_code
-        return "", 0
-
-    def _on_stdin_write(self, text: str) -> None:
-        stripped = text.strip()
-        if stripped == "export PS1=''; stty -echo":
-            return
-        if text == "\x03":
-            return
-
-        marker_match = _POSIX_MARKER_CMD_RE.match(stripped)
-        if marker_match is not None:
-            inner_cmd = marker_match.group(1)
-            marker_prefix = marker_match.group(2)
-            out_text, code = self._find_step(inner_cmd)
-            payload = f"{out_text}\n{marker_prefix}{code}\n"
-            self._out_queue.put_nowait(payload)
-            return
-
-        out_text, _code = self._find_step(stripped)
-        if out_text:
-            self._out_queue.put_nowait(out_text)
-        if self._step_index >= len(self._shell_interaction.steps):
-            self._out_queue.put_nowait("")
-
-    async def _on_stdout_read(self) -> str:
-        if self.returncode is not None and self._out_queue.empty():
-            return ""
-        chunk = await self._out_queue.get()
-        if chunk == "":
-            self.returncode = 0
-            self.exit_status = 0
-        return chunk
-
-    def set_term_size(self, cols: int, rows: int) -> None:
-        """Обновить размер виртуального терминала."""
-        self.term_size = (cols, rows)
-
-    def close(self) -> None:
-        """Закрыть виртуальный процесс."""
-        self.returncode = 0
-        self.exit_status = 0
-        self._out_queue.put_nowait("")
-
-
-class _RecordingShellProcessProxy:
-    """Прокси над реальным PTY-процессом для записи диалогов ``ShellSession`` в кассету."""
-
-    def __init__(
-        self,
-        real_proc: Any,
-        interaction: RecordedShellInteraction,
-        proxy: CassetteTransportProxy,
-    ) -> None:
-        self._real = real_proc
-        self._interaction = interaction
-        self._proxy = proxy
-        self._pending_cmd: str | None = None
-        self._accumulated_out: str = ""
-        self.stdin = self
-        self.stdout = self
-
-    @property
-    def returncode(self) -> int | None:
-        return getattr(self._real, "returncode", None)
-
-    @property
-    def exit_status(self) -> int | None:
-        return getattr(self._real, "exit_status", None)
-
-    def write(self, data: str | bytes) -> None:
-        text = data.decode("utf-8", errors="replace") if isinstance(data, bytes) else data
-        stripped = text.strip()
-        if stripped != "export PS1=''; stty -echo" and text != "\x03":
-            if self._pending_cmd is not None and self._accumulated_out:
-                self._flush_pending_step(0)
-            marker_match = _POSIX_MARKER_CMD_RE.match(stripped)
-            raw_cmd = marker_match.group(1) if marker_match else stripped
-            self._pending_cmd = self._proxy._sanitize_text(raw_cmd, normalize=True)
-            self._accumulated_out = ""
-        self._real.stdin.write(data)
-
-    async def drain(self) -> None:
-        drain_fn = getattr(self._real.stdin, "drain", None)
-        if callable(drain_fn):
-            res = drain_fn()
-            if inspect.isawaitable(res):
-                await res
-
-    def _flush_pending_step(self, exit_code: int) -> None:
-        if self._pending_cmd is None:
-            return
-        cleaned = _POSIX_MARKER_OUT_RE.sub("", self._accumulated_out)
-        cleaned = self._proxy._sanitize_text(cleaned, normalize=False)
-        self._interaction.steps.append(
-            ShellDialogStep(
-                expect_input=self._pending_cmd,
-                response_output=cleaned,
-                exit_code=exit_code,
-            )
-        )
-        self._pending_cmd = None
-        self._accumulated_out = ""
-        self._proxy.mark_dirty()
-
-    async def read(self, n: int = 4096) -> str | bytes:
-        read_fn = self._real.stdout.read
-        try:
-            res = read_fn(n)
-        except TypeError:
-            res = read_fn()
-        chunk = await res if inspect.isawaitable(res) else res
-        text = chunk.decode("utf-8", errors="replace") if isinstance(chunk, bytes) else (chunk or "")
-        if self._pending_cmd is not None:
-            self._accumulated_out += text
-            marker_match = _POSIX_MARKER_OUT_RE.search(self._accumulated_out)
-            if marker_match is not None:
-                code = int(marker_match.group(1))
-                self._flush_pending_step(code)
-            elif text == "":
-                self._flush_pending_step(0)
-        return chunk
-
-    def set_term_size(self, cols: int, rows: int) -> Any:
-        fn = getattr(self._real, "set_term_size", None)
-        if callable(fn):
-            return fn(cols, rows)
-        return None
-
-    def close(self) -> Any:
-        if self._pending_cmd is not None:
-            self._flush_pending_step(0)
-        fn = getattr(self._real, "close", None)
-        if callable(fn):
-            return fn()
-        return None
+from .shell_proxy import ReplayShellProcess, _RecordingShellProcessProxy
 
 
 class CassetteTransportProxy(BaseTransport):
@@ -723,6 +339,103 @@ class CassetteTransportProxy(BaseTransport):
         self._dirty = True
         return res
 
+    async def run_bytes(
+        self,
+        command: str,
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> bytes:
+        """Выполнить команду с бинарным выводом из кассеты или реального транспорта."""
+        if not self._connected:
+            await self.connect()
+
+        cwd = kwargs.get("cwd")
+        is_sudo = bool(_SUDO_WRAPPER_RE.match(command.strip()))
+        sensitive = bool(kwargs.get("sensitive", False))
+
+        if self._can_replay():
+            matched = self._match_exec(command, cwd, is_sudo)
+            if matched is not None:
+                self._raise_recorded_error(
+                    matched.error_class,
+                    matched.error_message,
+                    command=command,
+                    host=self.config.host,
+                )
+                if matched.stdout_base64 is not None:
+                    return base64.b64decode(matched.stdout_base64)
+                return matched.stdout.encode("utf-8")
+            if not self._can_record():
+                candidates = [
+                    it.command
+                    for it in self._cassette.interactions
+                    if isinstance(it, RecordedExecInteraction)
+                ]
+                raise CassetteMissError(
+                    f"No matching exec interaction in cassette for command: {command!r}",
+                    kind="exec",
+                    command=command,
+                    host=self.config.host,
+                    candidates=candidates,
+                )
+
+        real = await self._ensure_real_connected()
+        raw_env = kwargs.get("env") or {}
+        sanitized_env = {
+            str(k): self._sanitize_text(str(v))
+            for k, v in raw_env.items()
+        }
+        stdin_redacted = "input" in kwargs and kwargs["input"] is not None
+        sanitized_cmd = (
+            "***REDACTED***"
+            if sensitive
+            else self._sanitize_text(command, normalize=True)
+        )
+        sanitized_cwd = self._sanitize_text(str(cwd), normalize=True) if cwd else None
+
+        try:
+            raw_bytes = await real.run_bytes(command, timeout=timeout, **kwargs)
+        except Exception as exc:
+            self._cassette.interactions.append(
+                RecordedExecInteraction(
+                    command=sanitized_cmd,
+                    cwd=sanitized_cwd,
+                    env=sanitized_env,
+                    sudo=is_sudo,
+                    stdin_redacted=stdin_redacted,
+                    error_class=type(exc).__name__,
+                    error_message=self._sanitize_text(str(exc)),
+                )
+            )
+            self._dirty = True
+            raise
+
+        if sensitive:
+            rec_stdout = "***REDACTED***"
+            b64_out: str | None = None
+        else:
+            try:
+                rec_stdout = self._sanitize_text(raw_bytes.decode("utf-8"))
+                b64_out = None
+            except UnicodeDecodeError:
+                rec_stdout = ""
+                b64_out = base64.b64encode(raw_bytes).decode("ascii")
+
+        self._cassette.interactions.append(
+            RecordedExecInteraction(
+                command=sanitized_cmd,
+                cwd=sanitized_cwd,
+                env=sanitized_env,
+                sudo=is_sudo,
+                stdin_redacted=stdin_redacted,
+                exit_code=0,
+                stdout=rec_stdout,
+                stdout_base64=b64_out,
+            )
+        )
+        self._dirty = True
+        return raw_bytes
+
     async def stream(
         self,
         command: str,
@@ -988,7 +701,7 @@ class CassetteTransportProxy(BaseTransport):
         self._dirty = True
         return res
 
-    async def stat(self, remote_path: str) -> dict[str, Any]:
+    async def stat(self, remote_path: str) -> FileStat:
         """Получить stat-метаданные файла из кассеты или реального транспорта."""
         self._check_fs_supported("stat")
         if self._can_replay():
@@ -1000,7 +713,7 @@ class CassetteTransportProxy(BaseTransport):
                     command=f"stat {remote_path}",
                     host=self.config.host,
                 )
-                return dict(matched.result_stat or {})
+                return cast(FileStat, dict(matched.result_stat or {}))
             if not self._can_record():
                 self._raise_fs_miss("stat", remote_path)
 
@@ -1300,109 +1013,7 @@ class ReplayTransport(CassetteTransportProxy):
         return "replay"
 
 
-class CassetteContext:
-    """Асинхронный контекстный менеджер ``conn.use_cassette()``."""
-
-    def __init__(
-        self,
-        conn: Connection,
-        path: str | Path,
-        *,
-        mode: RecordMode | str = RecordMode.ONCE,
-        match_on: Sequence[MatchField] = ("command", "cwd", "sudo"),
-        normalize_temp: bool = True,
-        allow_playback_repeats: bool = True,
-        mask_secrets: bool = True,
-    ) -> None:
-        """Инициализировать контекстный менеджер кассеты."""
-        self._conn = conn
-        self._path = Path(path)
-        self._mode = RecordMode(mode)
-        self._match_on = match_on
-        self._normalize_temp = normalize_temp
-        self._allow_playback_repeats = allow_playback_repeats
-        self._mask_secrets = mask_secrets
-        self._orig_transport: BaseTransport | None = None
-        self._proxy: CassetteTransportProxy | None = None
-
-    async def __aenter__(self) -> Cassette:
-        """Подключить прокси кассеты к ``Connection``."""
-        self._orig_transport = self._conn.transport
-        exists = self._path.is_file()
-
-        if exists and self._mode != RecordMode.ALL:
-            cassette = Cassette.load(self._path)
-        else:
-            if self._mode == RecordMode.NONE and not exists:
-                raise CassetteError(
-                    f"Cassette file does not exist in RecordMode.NONE: {self._path}",
-                    host=self._conn.config.host,
-                )
-            caps: list[CapabilityKind] = ["exec", "stream"]
-            if supports_capability(self._orig_transport, FileCapableTransport):
-                caps.append("file")
-            if supports_capability(self._orig_transport, ShellCapableTransport):
-                caps.append("shell")
-            cassette = Cassette(
-                transport=self._orig_transport.name,
-                host=self._conn.config.host,
-                capabilities=caps,
-            )
-
-        self._proxy = CassetteTransportProxy(
-            config=self._conn.config,
-            cassette=cassette,
-            wrapped=self._orig_transport,
-            mode=self._mode,
-            cassette_exists=exists,
-            match_on=self._match_on,
-            normalize_temp=self._normalize_temp,
-            allow_playback_repeats=self._allow_playback_repeats,
-            mask_secrets=self._mask_secrets,
-        )
-        self._conn.swap_transport(self._proxy)
-        return cassette
-
-    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        """Сохранить кассету (если были записи) и восстановить исходный транспорт."""
-        try:
-            if self._proxy is not None and self._proxy.is_dirty:
-                self._proxy.cassette.save(self._path)
-        finally:
-            if self._orig_transport is not None:
-                self._conn.swap_transport(self._orig_transport)
-
-
-class SyncCassetteContext:
-    """Синхронный контекстный менеджер ``sync_conn.use_cassette()``."""
-
-    def __init__(self, async_ctx: CassetteContext, sync_conn: SyncConnection) -> None:
-        """Инициализировать синхронную обёртку над ``CassetteContext``."""
-        self._async_ctx = async_ctx
-        self._sync_conn = sync_conn
-
-    def __enter__(self) -> Cassette:
-        """Открыть контекст кассеты синхронно."""
-        return self._sync_conn._run_coro(self._async_ctx.__aenter__())
-
-    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        """Закрыть контекст кассеты и сохранить файл синхронно."""
-        self._sync_conn._run_coro(self._async_ctx.__aexit__(exc_type, exc_val, exc_tb))
-
-
 __all__ = [
-    "Cassette",
-    "CassetteContext",
-    "CassetteInteraction",
     "CassetteTransportProxy",
-    "RecordMode",
-    "RecordedExecInteraction",
-    "RecordedFsInteraction",
-    "RecordedShellInteraction",
-    "RecordedStreamInteraction",
-    "ReplayShellProcess",
     "ReplayTransport",
-    "ShellDialogStep",
-    "SyncCassetteContext",
-    "normalize_temp_paths",
 ]

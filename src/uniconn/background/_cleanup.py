@@ -10,7 +10,7 @@ import threading
 from collections.abc import Callable, Iterable
 from types import FrameType
 
-from .._connection import Connection
+from ..core.connection import Connection
 from ._session import ScreenSession
 
 logger = logging.getLogger(__name__)

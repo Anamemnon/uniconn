@@ -1,4 +1,4 @@
-# uniconn — LLM & AI Agent API Reference (v0.11.0)
+# uniconn — LLM & AI Agent API Reference (v0.11.1)
 
 > Universal async-first Python library (Python 3.11+) and CLI for executing commands, inspecting host facts, enforcing idempotent states, and managing files across SSH, Telnet, Serial/UART, IPMI BMC, and Local transports.
 
@@ -37,7 +37,7 @@
 
 ### `Connection` (Async) & `SyncConnection` (`conn.to_sync()`)
 ```python
-# Factories
+# Factories (available on both Connection and SyncConnection)
 conn = Connection.from_uri(
     uri: str,
     retry_attempts: int = 3,
@@ -50,8 +50,9 @@ conn = Connection.from_config(config: ConnectionConfig, ...)
 conn = Connection.from_dict(data: dict, ...)
 conns = Connection.from_file(path: str | Path, *, host: str | None = None, group: str | None = None)
 conn = Connection.from_inventory(path: str | Path, host: str)
+sync_conn = SyncConnection.from_uri(uri: str, ...)
 
-# Cloning
+# Cloning (available on both Connection and SyncConnection)
 conn2 = conn.copy(host=..., port=..., username=..., password=..., timeout=..., dry_run=...)
 conn2 = conn.with_overrides(**overrides)
 

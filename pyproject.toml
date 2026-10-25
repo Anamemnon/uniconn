@@ -1,6 +1,6 @@
 [project]
 name = "uniconn"
-version = "0.11.0"
+version = "0.11.1"
 description = "Universal library for remote command execution"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -89,6 +89,8 @@ markers = [
 
 [tool.pyright]
 pythonVersion = "3.11"
+venvPath = "."
+venv = ".venv"
 typeCheckingMode = "standard"
 include = ["src/uniconn"]
 exclude = [".venv", "tests"]
@@ -122,3 +124,7 @@ ignore = [
     "RUF003",
     "RUF012",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E501", "D", "B007", "B017", "N806", "SIM105", "SIM117"]
+"examples/**" = ["E501", "D"]

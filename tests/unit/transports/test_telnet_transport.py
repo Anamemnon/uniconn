@@ -1,14 +1,14 @@
 # tests/unit/test_telnet_transport.py
 """Тесты для TelnetTransport"""
 
-import pytest
 import asyncio
-from datetime import datetime
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from uniconn.transports._telnet import TelnetTransport
+import pytest
+
 from uniconn._config import ConnectionConfig
-from uniconn.exceptions import ConnectionError, AuthenticationError
+from uniconn.exceptions import ConnectionError
+from uniconn.transports._telnet import TelnetTransport
 
 
 @pytest.fixture
@@ -81,7 +81,7 @@ class TestTelnetConnect:
     @pytest.mark.asyncio
     async def test_connect_basic(self, telnet_config, mock_telnetlib):
         """Базовое подключение"""
-        telnetlib3_mock, reader, writer = mock_telnetlib
+        telnetlib3_mock, _reader, _writer = mock_telnetlib
 
         with patch("uniconn.transports._telnet.telnetlib3", telnetlib3_mock):
             transport = TelnetTransport(telnet_config)
@@ -162,7 +162,7 @@ class TestTelnetDisconnect:
     @pytest.mark.asyncio
     async def test_disconnect(self, telnet_config, mock_telnetlib):
         """Отключение"""
-        telnetlib3_mock, reader, writer = mock_telnetlib
+        telnetlib3_mock, _reader, writer = mock_telnetlib
 
         with patch("uniconn.transports._telnet.telnetlib3", telnetlib3_mock):
             transport = TelnetTransport(telnet_config)
@@ -179,7 +179,7 @@ class TestTelnetRun:
     @pytest.mark.asyncio
     async def test_run_basic_command(self, telnet_config, mock_telnetlib, mocker):
         """Выполнение базовой команды"""
-        telnetlib3_mock, reader, writer = mock_telnetlib
+        telnetlib3_mock, reader, _writer = mock_telnetlib
 
         # readline должен возвращать строки, пока не вернёт пустой
         lines_to_return = [b"$ ", b"hello\n", b"$ "]
@@ -220,7 +220,7 @@ class TestTelnetRun:
         """Таймаут чтения — uniconn TimeoutError, а не молчаливый exit_code=0"""
         from uniconn.exceptions import TimeoutError as UniconnTimeoutError
 
-        telnetlib3_mock, reader, writer = mock_telnetlib
+        telnetlib3_mock, reader, _writer = mock_telnetlib
 
         reader.readline = mocker.AsyncMock(
             side_effect=asyncio.TimeoutError
@@ -240,7 +240,7 @@ class TestTelnetStream:
     @pytest.mark.asyncio
     async def test_stream_basic(self, telnet_config, mock_telnetlib, mocker):
         """Базовый стриминг"""
-        telnetlib3_mock, reader, writer = mock_telnetlib
+        telnetlib3_mock, reader, _writer = mock_telnetlib
 
         lines_to_return = [b"line1\n", b"line2\n", b"$ "]
         call_idx = 0
@@ -282,7 +282,7 @@ class TestTelnetContextManager:
     @pytest.mark.asyncio
     async def test_context_manager(self, telnet_config, mock_telnetlib):
         """Контекстный менеджер"""
-        telnetlib3_mock, reader, writer = mock_telnetlib
+        telnetlib3_mock, _reader, _writer = mock_telnetlib
 
         with patch("uniconn.transports._telnet.telnetlib3", telnetlib3_mock):
             transport = TelnetTransport(telnet_config)

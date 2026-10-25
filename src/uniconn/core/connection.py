@@ -17,6 +17,7 @@ import shutil
 import tempfile
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, Self, runtime_checkable
 
@@ -24,7 +25,6 @@ from pydantic import SecretStr
 from tenacity import wait_exponential_jitter
 
 from .._logging import log_event
-from .._shell import ShellSession
 from ..config.inventory import InventoryLoader
 from ..config.models import ConnectionConfig
 from ..plugins._loader import TransportLoader
@@ -39,15 +39,23 @@ from ..services.provisioning import (
 )
 from ..services.templates import render_template as render_template
 from ..services.tunnels import TunnelService
-from ..transports.base import BaseTransport
+from ..shell.session import ShellSession
+from ..transports.base import BaseTransport, FileStat
 from .context import CwdContext, EnvContext, ExecutionContext, TempDirContext
 from .pipeline import (
+    CircuitBreakerMiddleware,
     CommandPipeline,
     CommandRequest,
+    ContextMiddleware,
+    DryRunMiddleware,
     HookCallback,
     HookEvent,
+    HookMiddleware,
+    ObservabilityMiddleware,
+    RateLimitMiddleware,
+    RetryMiddleware,
+    SudoMiddleware,
     format_command,
-    prepare_sudo_command,
 )
 from .resilience import CircuitBreaker, RateLimiter
 
@@ -58,6 +66,7 @@ if TYPE_CHECKING:
         StreamSourceSpec,
     )
     from ..sync.connection import SyncConnection
+    from ..transports.replay import CassetteContext
 
 logger = logging.getLogger(__name__)
 
@@ -554,10 +563,14 @@ class Connection:
         )
         transport_class = TransportLoader.get(new_config.transport)
         transport = transport_class(new_config)
-        return type(self)(
+        new_conn = type(self)(
             transport,
             new_config,
-            retry_attempts or self._retry_attempts,
+            (
+                self._retry_attempts
+                if retry_attempts is None
+                else retry_attempts
+            ),
             logger or self._logger,
             dry_run=self._dry_run if dry_run is None else dry_run,
             before_run=self._hooks["before_run"],
@@ -572,6 +585,30 @@ class Connection:
                 else circuit_breaker
             ),
         )
+        for obs in self._operation_observers:
+            attach_fn = getattr(obs, "_attach_connection", None)
+            if callable(attach_fn):
+                attach_fn(new_conn)
+            else:
+                new_conn.add_operation_observer(obs)
+
+        default_mw_types = (
+            ContextMiddleware,
+            SudoMiddleware,
+            HookMiddleware,
+            DryRunMiddleware,
+            ObservabilityMiddleware,
+            CircuitBreakerMiddleware,
+            RateLimitMiddleware,
+            RetryMiddleware,
+        )
+        existing_mw_types = tuple(type(m) for m in new_conn.pipeline.middlewares)
+        for mw in self._pipeline.middlewares:
+            if not isinstance(mw, default_mw_types) and not isinstance(
+                mw, existing_mw_types
+            ):
+                new_conn.pipeline.add_middleware(mw)
+        return new_conn
 
     def with_overrides(self, **overrides: Any) -> Self:
         """Создать копию подключения с переопределёнными параметрами."""
@@ -646,7 +683,7 @@ class Connection:
         normalize_temp: bool = True,
         allow_playback_repeats: bool = True,
         mask_secrets: bool = True,
-    ) -> Any:
+    ) -> CassetteContext:
         """Асинхронный контекстный менеджер записи и воспроизведения кассет взаимодействий."""
         from ..transports.replay import CassetteContext
 
@@ -730,36 +767,54 @@ class Connection:
         sudo: bool = False,
         sudo_user: str | None = None,
         sudo_password: str | SecretStr | None = None,
+        sensitive: bool = False,
+        dry_run: bool | None = None,
         **kwargs: Any,
     ) -> bytes:
-        """Выполнить команду и вернуть сырой байтовый вывод (``bytes``)."""
+        """Выполнить команду через конвейер ``CommandPipeline`` и вернуть сырой байтовый вывод (``bytes``)."""
         cmd_str = format_command(command)
-        self._context.apply_to_kwargs(kwargs)
-        exec_cmd, effective_input = prepare_sudo_command(
-            cmd_str,
+        effective_dry_run = self._dry_run if dry_run is None else dry_run
+        if effective_dry_run:
+            return b""
+        request = CommandRequest(
+            raw_command=command,
+            command=cmd_str,
+            exec_command=cmd_str,
+            timeout=timeout,
+            raise_on_error=raise_on_error,
+            input_data=input,
             sudo=sudo,
             sudo_user=sudo_user,
             sudo_password=sudo_password,
-            input_data=input,
-            config_options=self._config.options,
-            config_password=self._config.password,
+            sensitive=sensitive,
+            dry_run=effective_dry_run,
+            transport_kwargs=dict(kwargs),
         )
-        if effective_input is not None:
-            kwargs["input"] = effective_input
 
-        if self._dry_run:
-            return b""
+        async def _bytes_terminal_dispatch(req: CommandRequest) -> Result:
+            t0 = time.monotonic()
+            raw = await self._transport.run_bytes(
+                req.exec_command,
+                timeout=req.timeout,
+                raise_on_error=req.raise_on_error,
+                **req.transport_kwargs,
+            )
+            req.metadata["raw_bytes"] = raw
+            return Result(
+                exit_code=0,
+                stdout=raw.decode("utf-8", errors="replace"),
+                stderr="",
+                duration=time.monotonic() - t0,
+                command=req.command,
+                host=self._config.host,
+                sensitive=req.sensitive,
+            )
 
-        if not self._transport.is_connected:
-            await self._transport.connect()
-
-        effective_timeout = timeout or self._config.timeout
-        return await self._transport.run_bytes(
-            exec_cmd,
-            timeout=effective_timeout,
-            raise_on_error=raise_on_error,
-            **kwargs,
+        await self._pipeline.execute(
+            request,
+            terminal_handler=_bytes_terminal_dispatch,
         )
+        return bytes(request.metadata.get("raw_bytes", b""))
 
     async def run_commands(
         self,
@@ -977,7 +1032,7 @@ class Connection:
         """Изменить права доступа к файлу на удалённом хосте."""
         await self.files.chmod(remote_path, mode)
 
-    async def stat(self, remote_path: str | Path) -> dict[str, Any]:
+    async def stat(self, remote_path: str | Path) -> FileStat:
         """Получить информацию о файле на удалённом хосте."""
         return await self.files.stat(remote_path)
 
@@ -1035,7 +1090,7 @@ class Connection:
         remote_port: int = 80,
         local_host: str = "127.0.0.1",
         local_port: int = 0,
-    ) -> Any:
+    ) -> AbstractAsyncContextManager[int]:
         """Асинхронный контекстный менеджер прямого SSH-туннеля (Local Port Forwarding)."""
         return self.tunnels.forward_local_port(
             remote_host=remote_host,
@@ -1050,7 +1105,7 @@ class Connection:
         remote_port: int = 0,
         local_host: str = "127.0.0.1",
         local_port: int = 80,
-    ) -> Any:
+    ) -> AbstractAsyncContextManager[int]:
         """Асинхронный контекстный менеджер обратного SSH-туннеля (Remote Port Forwarding)."""
         return self.tunnels.forward_remote_port(
             remote_host=remote_host,
@@ -1146,16 +1201,21 @@ class Connection:
         **kwargs: Any,
     ) -> ShellSession:
         """Открыть интерактивную stateful PTY shell-сессию."""
-        for obs in self._operation_observers:
-            return await obs.observe_open_shell(
-                self,
-                self._raw_open_shell,
-                term_type=term_type,
-                term_size=term_size,
-                init_posix=init_posix,
-                **kwargs,
-            )
-        return await self._raw_open_shell(
+        handler: Callable[..., Awaitable[ShellSession]] = self._raw_open_shell
+        for obs in reversed(self._operation_observers):
+            prev_handler = handler
+
+            async def _step(
+                *a: Any,
+                _obs: Any = obs,
+                _nxt: Callable[..., Awaitable[ShellSession]] = prev_handler,
+                **kw: Any,
+            ) -> ShellSession:
+                return await _obs.observe_open_shell(self, _nxt, *a, **kw)
+
+            handler = _step
+
+        return await handler(
             term_type=term_type,
             term_size=term_size,
             init_posix=init_posix,

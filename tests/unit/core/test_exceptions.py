@@ -1,16 +1,15 @@
 # tests/unit/test_exceptions.py
 """Тесты для иерархии исключений"""
 
-import pytest
 
 from uniconn.exceptions import (
-    UniconnError,
-    ConnectionError,
     AuthenticationError,
+    BMCCapabilityError,
+    ConnectionError,
     ExecutionError,
     TimeoutError,
     TransportNotFoundError,
-    BMCCapabilityError,
+    UniconnError,
 )
 
 
