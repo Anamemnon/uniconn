@@ -19,7 +19,7 @@ from pydantic import SecretStr
 
 from ._config import ConnectionConfig
 from ._connection import Connection, _resolve_rate_limiter, format_command
-from ._facts import FactsDiffReport, HostFacts, diff_facts
+from ._facts import FactsDiffReport, FactSpec, HostFacts, diff_facts
 from .core.resilience import CircuitBreaker, RateLimiter
 from .pool.stream_mux import PoolStreamMultiplexer
 from .result import EnsureResult, PingResult, Result, SyncResult
@@ -501,10 +501,15 @@ class ConnectionPool:
         self,
         refresh: bool = False,
         timeout: float | None = None,
+        spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
     ) -> dict[str, HostFacts]:
         """Параллельно собрать системные факты (``HostFacts``) со всех хостов пула."""
         return await self._fan_out_dict(
-            lambda _key, conn: conn.gather_facts(refresh=refresh, timeout=timeout)
+            lambda _key, conn: conn.gather_facts(
+                refresh=refresh,
+                timeout=timeout,
+                spec=spec,
+            )
         )
 
     async def diff_facts(
@@ -514,9 +519,14 @@ class ConnectionPool:
         fields: Sequence[str] | None = None,
         refresh: bool = False,
         timeout: float | None = None,
+        spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
     ) -> FactsDiffReport:
         """Собрать системные факты со всех хостов пула и найти расхождения с эталоном."""
-        facts_map = await self.gather_facts(refresh=refresh, timeout=timeout)
+        facts_map = await self.gather_facts(
+            refresh=refresh,
+            timeout=timeout,
+            spec=spec,
+        )
         return diff_facts(
             facts_map,
             baseline_host=baseline_host,

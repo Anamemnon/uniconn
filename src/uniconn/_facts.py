@@ -4,11 +4,167 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
+import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal, Self
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class CustomCommandSpec(BaseModel):
+    """Спецификация пользовательской команды для сбора фактов."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    name: str
+    command: str
+    parse_json: bool = False
+    timeout: float | None = None
+
+
+class FileSourceSpec(BaseModel):
+    """Спецификация системного или конфигурационного файла для сбора фактов."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    name: str
+    path: str
+    max_bytes: int = 65536
+    parse_json: bool = False
+
+
+class ExternalToolSpec(BaseModel):
+    """Спецификация внешней диагностической утилиты (lshw, smartctl, sosreport и др.)."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    name: str
+    command: str
+    binary: str | None = None
+    output_mode: Literal["stdout", "json", "artifact"] = "stdout"
+    artifact_glob: str | None = None
+    local_dir: str | None = None
+    cleanup_remote: bool = True
+    timeout: float | None = 120.0
+
+    def resolved_binary(self) -> str:
+        """Определить имя исполняемого файла для проверки наличия на хосте."""
+        if self.binary:
+            return self.binary
+        parts = shlex.split(self.command)
+        if not parts:
+            return ""
+        # Пропускаем env/sudo префиксы, если они заданы напрямую в строке
+        for token in parts:
+            if token in ("sudo", "env") or "=" in token or token.startswith("-"):
+                continue
+            return token
+        return parts[0]
+
+
+class FactSpec(BaseModel):
+    """Декларативная спецификация источников данных для ``gather_facts``."""
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    include_builtin: bool = True
+    commands: list[CustomCommandSpec] = Field(default_factory=list)
+    files: list[FileSourceSpec] = Field(default_factory=list)
+    tools: list[ExternalToolSpec] = Field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Self:
+        """Создать ``FactSpec`` из словаря (поддерживает краткую и полную запись)."""
+        payload: dict[str, Any] = dict(data.get("facts", data))
+        raw_cmds = payload.get("commands", [])
+        cmds: list[CustomCommandSpec | dict[str, Any]] = []
+        if isinstance(raw_cmds, Mapping):
+            for k, v in raw_cmds.items():
+                if isinstance(v, str):
+                    cmds.append(CustomCommandSpec(name=str(k), command=v))
+                elif isinstance(v, Mapping):
+                    cmds.append({"name": str(k), **v})
+        elif isinstance(raw_cmds, Sequence):
+            cmds.extend(raw_cmds)
+
+        raw_files = payload.get("files", [])
+        files: list[FileSourceSpec | dict[str, Any]] = []
+        if isinstance(raw_files, Mapping):
+            for k, v in raw_files.items():
+                if isinstance(v, str):
+                    files.append(FileSourceSpec(name=str(k), path=v))
+                elif isinstance(v, Mapping):
+                    files.append({"name": str(k), **v})
+        elif isinstance(raw_files, Sequence):
+            files.extend(raw_files)
+
+        raw_tools = payload.get("tools", [])
+        tools: list[ExternalToolSpec | dict[str, Any]] = []
+        if isinstance(raw_tools, Mapping):
+            for k, v in raw_tools.items():
+                if isinstance(v, str):
+                    tools.append(ExternalToolSpec(name=str(k), command=v))
+                elif isinstance(v, Mapping):
+                    tools.append({"name": str(k), **v})
+        elif isinstance(raw_tools, Sequence):
+            tools.extend(raw_tools)
+
+        return cls(
+            include_builtin=bool(payload.get("include_builtin", True)),
+            commands=[
+                c if isinstance(c, CustomCommandSpec) else CustomCommandSpec(**c)
+                for c in cmds
+            ],
+            files=[
+                f if isinstance(f, FileSourceSpec) else FileSourceSpec(**f)
+                for f in files
+            ],
+            tools=[
+                t if isinstance(t, ExternalToolSpec) else ExternalToolSpec(**t)
+                for t in tools
+            ],
+        )
+
+    @classmethod
+    def from_file(cls, path: str | Path) -> Self:
+        """Загрузить ``FactSpec`` из YAML, JSON или TOML файла."""
+        filepath = Path(path)
+        content = filepath.read_text(encoding="utf-8")
+        suffix = filepath.suffix.lower()
+        if suffix in (".yaml", ".yml"):
+            import yaml
+
+            data = yaml.safe_load(content) or {}
+        elif suffix == ".json":
+            data = json.loads(content)
+        elif suffix == ".toml":
+            data = tomllib.loads(content)
+        else:
+            raise ValueError(
+                f"Unsupported FactSpec file format: {filepath.suffix}. "
+                "Use .yaml, .yml, .json or .toml"
+            )
+        if not isinstance(data, Mapping):
+            raise ValueError(f"FactSpec file {filepath} must contain a mapping")
+        return cls.from_dict(data)
+
+    @classmethod
+    def coerce(
+        cls, spec: FactSpec | Mapping[str, Any] | str | Path | None
+    ) -> FactSpec | None:
+        """Привести входной аргумент ``spec`` к экземпляру ``FactSpec``."""
+        if spec is None:
+            return None
+        if isinstance(spec, cls):
+            return spec
+        if isinstance(spec, (str, Path)):
+            return cls.from_file(spec)
+        if isinstance(spec, Mapping):
+            return cls.from_dict(spec)
+        raise TypeError(f"Unsupported spec type: {type(spec).__name__}")
 
 
 class DiskInfo(BaseModel):
@@ -48,6 +204,8 @@ class HostFacts(BaseModel):
     memory_available_bytes: int = 0
     disks: list[DiskInfo] = Field(default_factory=list)
     interfaces: list[NetworkInterface] = Field(default_factory=list)
+    custom: dict[str, Any] = Field(default_factory=dict)
+    tools: dict[str, Any] = Field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Сериализует системные факты в словарь JSON-совместимых типов."""
@@ -381,6 +539,10 @@ def _extract_fact_field(facts: HostFacts, field_name: str) -> Any:
     """Извлечь значение поля из ``HostFacts`` для сравнения (включая вычисляемые поля)."""
     if field_name == "memory_total_mb":
         return round(facts.memory_total_bytes / (1024 * 1024))
+    if field_name.startswith("custom."):
+        return facts.custom.get(field_name[7:])
+    if field_name.startswith("tools."):
+        return facts.tools.get(field_name[6:])
     return getattr(facts, field_name, None)
 
 
@@ -395,13 +557,22 @@ def diff_facts(
     Args:
         facts_map: Словарь ``{host: HostFacts}``.
         baseline_host: Имя эталонного хоста (по умолчанию — первый хост в ``facts_map``).
-        fields: Список проверяемых полей (по умолчанию ``DEFAULT_DIFF_FIELDS``).
+        fields: Список проверяемых полей (по умолчанию ``DEFAULT_DIFF_FIELDS`` + ``custom.*``).
 
     Returns:
         Экземпляр ``FactsDiffReport`` со списками синхронных и расходящихся хостов.
 
     """
-    checked = list(fields) if fields is not None else list(DEFAULT_DIFF_FIELDS)
+    if fields is not None:
+        checked = list(fields)
+    else:
+        checked = list(DEFAULT_DIFF_FIELDS)
+        for hf in facts_map.values():
+            for custom_key in hf.custom:
+                prefixed = f"custom.{custom_key}"
+                if prefixed not in checked:
+                    checked.append(prefixed)
+
     if not facts_map:
         return FactsDiffReport(baseline_host="", checked_fields=checked)
 
@@ -445,11 +616,16 @@ def diff_facts(
 __all__ = [
     "DEFAULT_DIFF_FIELDS",
     "FACT_COLLECTION_SCRIPT",
+    "CustomCommandSpec",
     "DiskInfo",
+    "ExternalToolSpec",
+    "FactSpec",
     "FactsDiffReport",
+    "FileSourceSpec",
     "HostFacts",
     "NetworkInterface",
     "diff_facts",
     "parse_facts_output",
 ]
+
 

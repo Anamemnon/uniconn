@@ -24,7 +24,7 @@ from pydantic import SecretStr
 from tenacity import wait_exponential_jitter
 
 from ._config import ConnectionConfig
-from ._facts import HostFacts
+from ._facts import FactSpec, HostFacts
 from ._logging import log_event
 from ._shell import ShellSession
 from .config.inventory import InventoryLoader
@@ -49,6 +49,11 @@ from .transports._base import BaseTransport
 
 if TYPE_CHECKING:
     from ._sync import SyncConnection
+    from .background._diagnostic import (
+        DiagnosticConfig,
+        DiagnosticSession,
+        StreamSourceSpec,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -942,9 +947,47 @@ class Connection:
         self,
         refresh: bool = False,
         timeout: float | None = None,
+        spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
     ) -> HostFacts:
-        """Собрать системные факты о целевом хосте за один батч-запрос."""
-        return await self._facts_collector.gather(refresh=refresh, timeout=timeout)
+        """Собрать системные факты о целевом хосте (базовые + декларативные источники ``FactSpec``)."""
+        return await self._facts_collector.gather(
+            refresh=refresh,
+            timeout=timeout,
+            spec=spec,
+        )
+
+    def diagnostic_session(
+        self,
+        config: DiagnosticConfig | Mapping[str, Any] | str | Path | None = None,
+        *,
+        spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
+        streams: Sequence[StreamSourceSpec | Mapping[str, Any] | str] | None = None,
+        local_dir: str | Path | None = None,
+        archive_path: str | Path | None = None,
+        archive_format: Literal["tar.gz", "zip", "none"] | None = None,
+        forward_to: Connection | str | None = None,
+        forward_remote_dir: str | None = None,
+        fsync_realtime: bool | None = None,
+        gather_pre_facts: bool | None = None,
+        gather_post_facts: bool | None = None,
+    ) -> DiagnosticSession:
+        """Открыть комплексную диагностическую сессию (слепки + фоновые потоки логов + архивация)."""
+        from .background._diagnostic import DiagnosticSession
+
+        return DiagnosticSession(
+            self,
+            config=config,
+            spec=spec,
+            streams=streams,
+            local_dir=local_dir,
+            archive_path=archive_path,
+            archive_format=archive_format,
+            forward_to=forward_to,
+            forward_remote_dir=forward_remote_dir,
+            fsync_realtime=fsync_realtime,
+            gather_pre_facts=gather_pre_facts,
+            gather_post_facts=gather_post_facts,
+        )
 
     async def ensure_package(
         self,

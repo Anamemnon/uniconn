@@ -8,8 +8,16 @@
 
 from ._cleanup import ScreenCleanupManager
 from ._config import LogConfig, LogRule, ScreenPoolConfig
+from ._diagnostic import (
+    DiagnosticConfig,
+    DiagnosticResult,
+    DiagnosticSession,
+    StreamSourceSpec,
+)
 from ._log_collector import ScreenLogCollector
 from ._log_pipeline import (
+    ArchiveHandler,
+    DirectStreamCollector,
     ForwardHandler,
     LocalFileHandler,
     LogHandler,
@@ -22,9 +30,13 @@ from ._pool import ScreenPool
 from ._session import ScreenSession
 
 __all__ = [
-    # Пул и сессии
+    # Пул, сессии и диагностика
     "ScreenPool",
     "ScreenSession",
+    "DiagnosticSession",
+    "DiagnosticConfig",
+    "DiagnosticResult",
+    "StreamSourceSpec",
     # Модели
     "LogEvent",
     "StatusEvent",
@@ -33,14 +45,17 @@ __all__ = [
     "LogRule",
     "LogConfig",
     "ScreenPoolConfig",
-    # Логи
+    # Логи и потоки
     "LogHandler",
     "LocalFileHandler",
     "ForwardHandler",
     "StreamHandler",
+    "ArchiveHandler",
     "NullHandler",
     "LogPipeline",
     "ScreenLogCollector",
+    "DirectStreamCollector",
     # Очистка
     "ScreenCleanupManager",
 ]
+

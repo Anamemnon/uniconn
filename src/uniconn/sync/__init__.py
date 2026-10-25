@@ -4,6 +4,7 @@
 from .._sync import (
     SyncConnection,
     SyncConnectionPool,
+    SyncDiagnosticSession,
     SyncFileOperationsService,
     SyncShellSession,
     SyncStateManagementService,
@@ -13,8 +14,10 @@ from .._sync import (
 __all__ = [
     "SyncConnection",
     "SyncConnectionPool",
+    "SyncDiagnosticSession",
     "SyncFileOperationsService",
     "SyncShellSession",
     "SyncStateManagementService",
     "SyncTunnelService",
 ]
+

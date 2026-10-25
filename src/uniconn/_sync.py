@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 from pydantic import SecretStr
 
 from ._connection import Connection
-from ._facts import FactsDiffReport, HostFacts
+from ._facts import FactsDiffReport, FactSpec, HostFacts
 from ._shell import ShellSession
 from .core.bridge import EventLoopPortal, SyncContextBridge
 from .core.context import CwdContext, EnvContext
@@ -30,6 +30,12 @@ from .services.provisioning import PkgManagerName, ServiceState
 
 if TYPE_CHECKING:
     from ._pool import ConnectionPool
+    from .background._diagnostic import (
+        DiagnosticConfig,
+        DiagnosticResult,
+        DiagnosticSession,
+        StreamSourceSpec,
+    )
 
 
 class SyncShellSession:
@@ -261,9 +267,12 @@ class SyncStateManagementService:
         *,
         refresh: bool = False,
         timeout: float | None = None,
+        spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
     ) -> HostFacts:
         """Собрать системные факты о хосте (синхронно)."""
-        return self._sync_conn.gather_facts(refresh=refresh, timeout=timeout)
+        return self._sync_conn.gather_facts(
+            refresh=refresh, timeout=timeout, spec=spec
+        )
 
     def ensure_package(
         self,
@@ -375,6 +384,67 @@ class SyncTunnelService:
                 local_port=local_port,
             ),
             cast_fn=int,
+        )
+
+
+class SyncDiagnosticSession:
+    """Синхронное отражение ``DiagnosticSession`` на базе ``EventLoopPortal``."""
+
+    def __init__(
+        self,
+        async_session: DiagnosticSession,
+        sync_conn: SyncConnection,
+    ) -> None:
+        self._async_session = async_session
+        self._sync_conn = sync_conn
+
+    @property
+    def workspace_dir(self) -> Path:
+        """Рабочая директория текущей диагностической сессии."""
+        return self._async_session.workspace_dir
+
+    @property
+    def pre_facts(self) -> HostFacts | None:
+        """Слепок системных фактов до начала теста."""
+        return self._async_session.pre_facts
+
+    @property
+    def post_facts(self) -> HostFacts | None:
+        """Слепок системных фактов после завершения теста."""
+        return self._async_session.post_facts
+
+    @property
+    def facts_diff(self) -> FactsDiffReport | None:
+        """Отчёт об изменениях системных фактов (pre vs post)."""
+        return self._async_session.facts_diff
+
+    @property
+    def result(self) -> DiagnosticResult | None:
+        """Итоговый результат и манифест диагностической сессии."""
+        return self._async_session.result
+
+    @property
+    def errors(self) -> list[str]:
+        """Список зафиксированных нефатальных ошибок сессии."""
+        return self._async_session.errors
+
+    def snapshot(self, label: str = "snapshot") -> HostFacts:
+        """Сделать промежуточный слепок ``HostFacts`` во время теста (синхронно)."""
+        return self._sync_conn._run_coro(self._async_session.snapshot(label=label))
+
+    def emit_custom_log(self, name: str, text: str) -> None:
+        """Записать пользовательскую строку в конвейер логов сессии (синхронно)."""
+        self._sync_conn._run_coro(self._async_session.emit_custom_log(name, text))
+
+    def __enter__(self) -> Self:
+        self._sync_conn._run_coro(self._async_session.__aenter__())
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+        return bool(
+            self._sync_conn._run_coro(
+                self._async_session.__aexit__(exc_type, exc_val, exc_tb)
+            )
         )
 
 
@@ -743,11 +813,50 @@ class SyncConnection:
         self,
         refresh: bool = False,
         timeout: float | None = None,
+        spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
     ) -> HostFacts:
         """Собрать системные факты о целевом хосте (синхронно)."""
         return self._run_coro(
-            self._async_conn.gather_facts(refresh=refresh, timeout=timeout)
+            self._async_conn.gather_facts(
+                refresh=refresh, timeout=timeout, spec=spec
+            )
         )
+
+    def diagnostic_session(
+        self,
+        config: DiagnosticConfig | Mapping[str, Any] | str | Path | None = None,
+        *,
+        spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
+        streams: Sequence[StreamSourceSpec | Mapping[str, Any] | str] | None = None,
+        local_dir: str | Path | None = None,
+        archive_path: str | Path | None = None,
+        archive_format: Literal["tar.gz", "zip", "none"] | None = None,
+        forward_to: SyncConnection | Connection | str | None = None,
+        forward_remote_dir: str | None = None,
+        fsync_realtime: bool | None = None,
+        gather_pre_facts: bool | None = None,
+        gather_post_facts: bool | None = None,
+    ) -> SyncDiagnosticSession:
+        """Открыть комплексную диагностическую сессию (синхронный контекстный менеджер)."""
+        async_fwd: Connection | str | None = (
+            forward_to._async_conn
+            if isinstance(forward_to, SyncConnection)
+            else forward_to
+        )
+        async_sess = self._async_conn.diagnostic_session(
+            config=config,
+            spec=spec,
+            streams=streams,
+            local_dir=local_dir,
+            archive_path=archive_path,
+            archive_format=archive_format,
+            forward_to=async_fwd,
+            forward_remote_dir=forward_remote_dir,
+            fsync_realtime=fsync_realtime,
+            gather_pre_facts=gather_pre_facts,
+            gather_post_facts=gather_post_facts,
+        )
+        return SyncDiagnosticSession(async_sess, self)
 
     def ensure_package(
         self,
@@ -1022,10 +1131,13 @@ class SyncConnectionPool:
         self,
         refresh: bool = False,
         timeout: float | None = None,
+        spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
     ) -> dict[str, HostFacts]:
         """Параллельно собрать системные факты (``HostFacts``) со всех хостов пула (синхронно)."""
         return self._run_coro(
-            self._async_pool.gather_facts(refresh=refresh, timeout=timeout)
+            self._async_pool.gather_facts(
+                refresh=refresh, timeout=timeout, spec=spec
+            )
         )
 
     def diff_facts(
@@ -1035,6 +1147,7 @@ class SyncConnectionPool:
         fields: Sequence[str] | None = None,
         refresh: bool = False,
         timeout: float | None = None,
+        spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
     ) -> FactsDiffReport:
         """Собрать системные факты со всех хостов пула и найти расхождения с эталоном (синхронно)."""
         return self._run_coro(
@@ -1043,6 +1156,7 @@ class SyncConnectionPool:
                 fields=fields,
                 refresh=refresh,
                 timeout=timeout,
+                spec=spec,
             )
         )
 

@@ -6,15 +6,15 @@ from __future__ import annotations
 import re
 import shlex
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from ..result import EnsureResult
 
 if TYPE_CHECKING:
     from .._connection import Connection
-    from .._facts import HostFacts
+    from .._facts import FactSpec, HostFacts
 
 PkgManagerName = Literal["auto", "apt", "dnf", "yum", "apk", "pacman", "zypper"]
 ServiceState = Literal["started", "stopped", "restarted", "reloaded"]
@@ -360,9 +360,12 @@ class StateManagementService:
         *,
         refresh: bool = False,
         timeout: float | None = None,
+        spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
     ) -> HostFacts:
         """Собрать системные факты о хосте (делегирует в ``conn.gather_facts``)."""
-        return await self._conn.gather_facts(refresh=refresh, timeout=timeout)
+        return await self._conn.gather_facts(
+            refresh=refresh, timeout=timeout, spec=spec
+        )
 
     async def resolve_pkg_manager(self, manager: PkgManagerName = "auto") -> str:
         """Определить пакетный менеджер хоста при ``manager='auto'``."""

@@ -11,7 +11,17 @@ from shlex import quote
 
 from ._config import ConnectionConfig
 from ._connection import Connection, render_template
-from ._facts import DiskInfo, FactsDiffReport, HostFacts, NetworkInterface, diff_facts
+from ._facts import (
+    CustomCommandSpec,
+    DiskInfo,
+    ExternalToolSpec,
+    FactsDiffReport,
+    FactSpec,
+    FileSourceSpec,
+    HostFacts,
+    NetworkInterface,
+    diff_facts,
+)
 from ._logging import (
     SecretMaskingFilter,
     bind_log_context,
@@ -30,12 +40,29 @@ from ._shell import ExpectStateMachine, PosixMarkerProtocol, ShellSession
 from ._sync import (
     SyncConnection,
     SyncConnectionPool,
+    SyncDiagnosticSession,
     SyncFileOperationsService,
     SyncShellSession,
     SyncStateManagementService,
     SyncTunnelService,
 )
-from .background import LogConfig, ScreenPool, ScreenResult, ScreenSession
+from .background import (
+    ArchiveHandler,
+    DiagnosticConfig,
+    DiagnosticResult,
+    DiagnosticSession,
+    DirectStreamCollector,
+    ForwardHandler,
+    LocalFileHandler,
+    LogConfig,
+    LogHandler,
+    LogPipeline,
+    ScreenPool,
+    ScreenResult,
+    ScreenSession,
+    StreamHandler,
+    StreamSourceSpec,
+)
 from .config import InventoryLoader
 from .core import (
     CircuitBreaker,
@@ -86,6 +113,7 @@ from .services import (
     AptStrategy,
     DirectorySynchronizer,
     DnfYumStrategy,
+    ExternalToolRunner,
     FactCollector,
     FileOperationsService,
     OpenRCStrategy,
@@ -132,6 +160,11 @@ __all__ = [
     "SyncResult",
     "EnsureResult",
     "HostFacts",
+    "FactSpec",
+    "CustomCommandSpec",
+    "FileSourceSpec",
+    "ExternalToolSpec",
+    "ExternalToolRunner",
     "FactsDiffReport",
     "diff_facts",
     "DiskInfo",
@@ -196,7 +229,19 @@ __all__ = [
     "MetricsCollector",
     "metrics_collector_hook",
     "structured_log_hook",
-    # Screen-сессии (background)
+    # Фоновые потоки, диагностические сессии и Screen-сессии (background)
+    "DiagnosticSession",
+    "SyncDiagnosticSession",
+    "DiagnosticConfig",
+    "DiagnosticResult",
+    "StreamSourceSpec",
+    "DirectStreamCollector",
+    "LogPipeline",
+    "LogHandler",
+    "LocalFileHandler",
+    "ForwardHandler",
+    "StreamHandler",
+    "ArchiveHandler",
     "ScreenPool",
     "ScreenSession",
     "ScreenResult",
@@ -227,3 +272,4 @@ __all__ = [
     "clear_log_context",
     "get_log_context",
 ]
+

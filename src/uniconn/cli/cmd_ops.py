@@ -170,6 +170,13 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                 help="Baseline host key for --diff comparison",
             ),
         ] = None,
+        spec: Annotated[
+            str | None,
+            Parameter(
+                name=["--spec", "-s"],
+                help="FactSpec file (.yaml/.json/.toml) with custom commands, files, and tools",
+            ),
+        ] = None,
         max_concurrent: Annotated[
             int,
             Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
@@ -193,7 +200,10 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                 pool = build_cli_pool(
                     cli_pkg, host_uris, inventory, group, max_concurrent, logger
                 )
-                facts_map = await pool.gather_facts()
+                if spec is not None:
+                    facts_map = await pool.gather_facts(spec=spec)
+                else:
+                    facts_map = await pool.gather_facts()
                 if diff:
                     report = diff_facts(facts_map, baseline_host=baseline)
                     if output_format == "json":
