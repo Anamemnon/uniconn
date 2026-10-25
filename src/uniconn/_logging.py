@@ -56,6 +56,27 @@ class SecretMaskingFilter(logging.Filter):
         (re.compile(r"://[^:]+:[^@]+@", re.IGNORECASE), "://***:***@"),
     ]
 
+    _MASTER_PATTERN = re.compile(
+        r"(?P<sudo_password>sudo_password[=:]\S+)"
+        r"|(?P<passphrase>passphrase[=:]\S+)"
+        r"|(?P<password>password[=:]\S+)"
+        r"|(?P<pass_short>pass[=:]\S+)"
+        r"|(?P<secret>secret[=:]\S+)"
+        r"|(?P<token>token[=:]\S+)"
+        r"|(?P<uri>://[^:\s]+:[^@\s]+@)",
+        re.IGNORECASE,
+    )
+
+    _MASK_REPLACEMENTS: dict[str, str] = {
+        "sudo_password": "sudo_password=***",
+        "passphrase": "passphrase=***",
+        "password": "password=***",
+        "pass_short": "pass=***",
+        "secret": "secret=***",
+        "token": "token=***",
+        "uri": "://***:***@",
+    }
+
     def __init__(self, name: str = "") -> None:
         """Инициализировать фильтр маскирования секретов."""
         super().__init__(name)
@@ -80,10 +101,17 @@ class SecretMaskingFilter(logging.Filter):
         return True
 
     @classmethod
+    def _replace_match(cls, match: re.Match[str]) -> str:
+        group_name = match.lastgroup
+        if group_name is not None:
+            return cls._MASK_REPLACEMENTS[group_name]
+        return "***"
+
+    @classmethod
     def _mask_string(cls, value: str) -> str:
-        for pattern, replacement in cls.PATTERNS:
-            value = pattern.sub(replacement, value)
-        return value
+        if not value or ("=" not in value and ":" not in value and "@" not in value):
+            return value
+        return cls._MASTER_PATTERN.sub(cls._replace_match, value)
 
     def _mask_value(self, value: Any) -> Any:
         if isinstance(value, SecretStr):
@@ -100,7 +128,10 @@ def _sanitize_value(
     sensitive_mode: bool = False,
     mask_patterns: bool = True,
 ) -> Any:
-    """Рекурсивно замаскировать секреты в значении поля структурированного лога."""
+    """Рекурсивно замаскировать секреты в значении поля структурированного лога (Copy-on-Write)."""
+    if value is None or isinstance(value, (int, float, bool)):
+        return value
+
     key_lower = key.lower()
     if key_lower in SENSITIVE_KEYS or isinstance(value, SecretStr):
         return "***REDACTED***"
@@ -112,21 +143,33 @@ def _sanitize_value(
         return SecretMaskingFilter._mask_string(value) if mask_patterns else value
 
     if isinstance(value, dict):
-        return {
-            str(k): _sanitize_value(
-                str(k), v, sensitive_mode=sensitive_mode, mask_patterns=mask_patterns
+        mutated_dict: dict[str, Any] | None = None
+        for k, v in value.items():
+            sk = str(k)
+            sv = _sanitize_value(
+                sk, v, sensitive_mode=sensitive_mode, mask_patterns=mask_patterns
             )
-            for k, v in value.items()
-        }
+            if mutated_dict is not None:
+                mutated_dict[sk] = sv
+            elif sv is not v or not isinstance(k, str):
+                mutated_dict = {str(orig_k): orig_v for orig_k, orig_v in value.items()}
+                mutated_dict[sk] = sv
+        return mutated_dict if mutated_dict is not None else value
 
     if isinstance(value, (list, tuple)):
-        sanitized_items = [
-            _sanitize_value(
+        mutated_list: list[Any] | None = None
+        for idx, item in enumerate(value):
+            s_item = _sanitize_value(
                 key, item, sensitive_mode=sensitive_mode, mask_patterns=mask_patterns
             )
-            for item in value
-        ]
-        return tuple(sanitized_items) if isinstance(value, tuple) else sanitized_items
+            if mutated_list is not None:
+                mutated_list.append(s_item)
+            elif s_item is not item:
+                mutated_list = list(value[:idx])
+                mutated_list.append(s_item)
+        if mutated_list is None:
+            return value
+        return tuple(mutated_list) if isinstance(value, tuple) else mutated_list
 
     return value
 

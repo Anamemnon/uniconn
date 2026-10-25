@@ -1,0 +1,382 @@
+# src/uniconn/sync/pool.py
+"""Синхронная обёртка над ``ConnectionPool`` на базе ``EventLoopPortal``."""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar
+
+from pydantic import SecretStr
+
+from ..core.bridge import EventLoopPortal
+from ..core.connection import Connection
+from ..core.resilience import CircuitBreaker, RateLimiter
+from ..result import EnsureResult, PingResult, Result, SyncResult
+from ..services.facts_models import FactsDiffReport, FactSpec, HostFacts
+from ..services.provisioning import PkgManagerName, ServiceState
+
+if TYPE_CHECKING:
+    from ..pool.connection_pool import ConnectionPool
+
+T = TypeVar("T")
+
+
+class SyncConnectionPool:
+    """Синхронная обёртка над ``ConnectionPool`` на базе ``EventLoopPortal``."""
+
+    def __init__(self, async_pool: ConnectionPool) -> None:
+        self._async_pool = async_pool
+        self._portal = EventLoopPortal(owner_name="SyncConnectionPool")
+
+    @property
+    def _closed(self) -> bool:
+        """Признак закрытия синхронного пула."""
+        return self._portal.closed
+
+    @property
+    def rate_limiter(self) -> RateLimiter | None:
+        """Общий ограничитель частоты команд пула (если настроен)."""
+        return self._async_pool.rate_limiter
+
+    @property
+    def circuit_breakers(self) -> dict[str, CircuitBreaker]:
+        """Словарь предохранителей ``CircuitBreaker`` по ключам хостов пула."""
+        return self._async_pool.circuit_breakers
+
+    def add_connection_initializer(
+        self, initializer: Callable[[Connection], None]
+    ) -> None:
+        """Зарегистрировать колбэк инициализации каждого соединения пула."""
+        self._async_pool.add_connection_initializer(initializer)
+
+    @classmethod
+    def from_file(
+        cls,
+        path: str | Path,
+        *,
+        group: str | None = None,
+        host: str | None = None,
+        max_concurrent: int = 10,
+        retry_attempts: int = 3,
+        logger: logging.Logger | None = None,
+        rate_limit: float | RateLimiter | None = None,
+        circuit_breaker: bool = False,
+        failure_threshold: int = 5,
+        recovery_timeout: float = 30.0,
+    ) -> Self:
+        """Создать синхронный пул подключений из JSON или YAML инвентарного файла."""
+        from ..pool.connection_pool import ConnectionPool
+
+        pool = ConnectionPool.from_file(
+            path,
+            group=group,
+            host=host,
+            max_concurrent=max_concurrent,
+            retry_attempts=retry_attempts,
+            logger=logger,
+            rate_limit=rate_limit,
+            circuit_breaker=circuit_breaker,
+            failure_threshold=failure_threshold,
+            recovery_timeout=recovery_timeout,
+        )
+        return cls(pool)
+
+    def _run_coro(self, coro: Any) -> Any:
+        """Выполнить корутину пула в фоновом event loop."""
+        return self._portal.call(coro)
+
+    def connect(self) -> None:
+        """Открыть и удерживать соединения ко всем хостам пула (синхронно)."""
+        self._run_coro(self._async_pool.connect())
+
+    def close(self) -> None:
+        """Закрыть все соединения пула и остановить фоновый event loop."""
+        cleanup = self._async_pool.close() if self._async_pool else None
+        self._portal.close(cleanup_coro=cleanup)
+
+    def __enter__(self) -> Self:
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
+
+    def map(
+        self,
+        command: str | Sequence[str],
+        timeout: float | None = None,
+        raise_on_error: bool = False,
+        **kwargs: Any,
+    ) -> list[Result]:
+        """Параллельно выполнить команду на всех хостах пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.map(
+                command,
+                timeout=timeout,
+                raise_on_error=raise_on_error,
+                **kwargs,
+            )
+        )
+
+    def map_safe(
+        self,
+        command: str | Sequence[str],
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Result | Exception]:
+        """Параллельно выполнить команду без выброса исключений (синхронно)."""
+        return self._run_coro(
+            self._async_pool.map_safe(command, timeout=timeout, **kwargs)
+        )
+
+    def map_with_callback(
+        self,
+        command: str | Sequence[str],
+        callback: Callable[[str, Result], None],
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Параллельно выполнить команду с вызовом callback по мере готовности (синхронно)."""
+        self._run_coro(
+            self._async_pool.map_with_callback(
+                command,
+                callback=callback,
+                timeout=timeout,
+                **kwargs,
+            )
+        )
+
+    def apply(
+        self,
+        func: Callable[[Connection], Awaitable[T]],
+    ) -> list[T]:
+        """Параллельно выполнить произвольную async-функцию ``func(conn)`` на всех хостах пула (синхронно)."""
+        return self._run_coro(self._async_pool.apply(func))
+
+    def upload(
+        self,
+        local_path: str | Path,
+        remote_path: str | Path,
+        recurse: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        """Параллельно загрузить файл или директорию на все хосты пула (синхронно)."""
+        self._run_coro(
+            self._async_pool.upload(
+                local_path,
+                remote_path,
+                recurse=recurse,
+                **kwargs,
+            )
+        )
+
+    def download(
+        self,
+        remote_path: str | Path,
+        local_path: str | Path,
+        recurse: bool = False,
+        **kwargs: Any,
+    ) -> dict[str, str]:
+        """Параллельно скачать файл или директорию со всех хостов пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.download(
+                remote_path,
+                local_path,
+                recurse=recurse,
+                **kwargs,
+            )
+        )
+
+    def sync_dir(
+        self,
+        local_dir: str | Path,
+        remote_dir: str | Path,
+        delete: bool = False,
+        exclude: Sequence[str] | None = None,
+        mtime_tolerance: float = 1.0,
+        dry_run: bool | None = None,
+    ) -> dict[str, SyncResult]:
+        """Параллельно синхронизировать директорию на всех хостах пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.sync_dir(
+                local_dir=local_dir,
+                remote_dir=remote_dir,
+                delete=delete,
+                exclude=exclude,
+                mtime_tolerance=mtime_tolerance,
+                dry_run=dry_run,
+            )
+        )
+
+    def write_template(
+        self,
+        remote_path: str | Path,
+        template_str_or_path: str | Path,
+        context: Mapping[str, Any] | None = None,
+        mode: int | None = 0o644,
+        encoding: str = "utf-8",
+        engine: Literal["auto", "string", "jinja2"] = "auto",
+    ) -> dict[str, str]:
+        """Параллельно отрендерить и записать шаблон на всех хостах пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.write_template(
+                remote_path=remote_path,
+                template_str_or_path=template_str_or_path,
+                context=context,
+                mode=mode,
+                encoding=encoding,
+                engine=engine,
+            )
+        )
+
+    def gather_facts(
+        self,
+        refresh: bool = False,
+        timeout: float | None = None,
+        spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
+    ) -> dict[str, HostFacts]:
+        """Параллельно собрать системные факты (``HostFacts``) со всех хостов пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.gather_facts(
+                refresh=refresh, timeout=timeout, spec=spec
+            )
+        )
+
+    def diff_facts(
+        self,
+        *,
+        baseline_host: str | None = None,
+        fields: Sequence[str] | None = None,
+        refresh: bool = False,
+        timeout: float | None = None,
+        spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
+    ) -> FactsDiffReport:
+        """Собрать системные факты со всех хостов пула и найти расхождения с эталоном (синхронно)."""
+        return self._run_coro(
+            self._async_pool.diff_facts(
+                baseline_host=baseline_host,
+                fields=fields,
+                refresh=refresh,
+                timeout=timeout,
+                spec=spec,
+            )
+        )
+
+    def ping(
+        self,
+        timeout: float | None = None,
+    ) -> dict[str, PingResult]:
+        """Параллельно проверить доступность всех хостов пула с измерением задержки (синхронно)."""
+        return self._run_coro(self._async_pool.ping(timeout=timeout))
+
+    def run_script(
+        self,
+        local_path: str | Path,
+        args: Sequence[str] | None = None,
+        *,
+        interpreter: str | None = None,
+        sudo: bool = False,
+        sudo_user: str | None = None,
+        sudo_password: str | SecretStr | None = None,
+        env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+        raise_on_error: bool = False,
+        sensitive: bool = False,
+        dry_run: bool | None = None,
+    ) -> dict[str, Result]:
+        """Параллельно загрузить, выполнить и удалить локальный скрипт на всех хостах пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.run_script(
+                local_path=local_path,
+                args=args,
+                interpreter=interpreter,
+                sudo=sudo,
+                sudo_user=sudo_user,
+                sudo_password=sudo_password,
+                env=env,
+                timeout=timeout,
+                raise_on_error=raise_on_error,
+                sensitive=sensitive,
+                dry_run=dry_run,
+            )
+        )
+
+    def ensure_package(
+        self,
+        package: str | Sequence[str],
+        state: Literal["present", "absent"] = "present",
+        manager: PkgManagerName = "auto",
+        update_cache: bool = False,
+        sudo: bool = True,
+        dry_run: bool | None = None,
+    ) -> dict[str, EnsureResult]:
+        """Параллельно проверить/установить/удалить пакет(ы) на всех хостах пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.ensure_package(
+                package=package,
+                state=state,
+                manager=manager,
+                update_cache=update_cache,
+                sudo=sudo,
+                dry_run=dry_run,
+            )
+        )
+
+    def ensure_service(
+        self,
+        service: str,
+        state: ServiceState = "started",
+        enabled: bool | None = None,
+        sudo: bool = True,
+        dry_run: bool | None = None,
+    ) -> dict[str, EnsureResult]:
+        """Параллельно привести состояние системного сервиса на всех хостах пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.ensure_service(
+                service=service,
+                state=state,
+                enabled=enabled,
+                sudo=sudo,
+                dry_run=dry_run,
+            )
+        )
+
+    def ensure_line(
+        self,
+        remote_path: str | Path,
+        line: str,
+        state: Literal["present", "absent"] = "present",
+        regex: str | None = None,
+        create: bool = True,
+        backup: bool = False,
+        mode: int | None = None,
+        encoding: str = "utf-8",
+        dry_run: bool | None = None,
+    ) -> dict[str, EnsureResult]:
+        """Параллельно обеспечить наличие или отсутствие строки в файле на всех хостах пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.ensure_line(
+                remote_path=remote_path,
+                line=line,
+                state=state,
+                regex=regex,
+                create=create,
+                backup=backup,
+                mode=mode,
+                encoding=encoding,
+                dry_run=dry_run,
+            )
+        )
+
+    def stream(
+        self,
+        command: str | Sequence[str],
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> Iterator[tuple[str, str]]:
+        """Синхронный генератор мульти-стриминга со всех хостов пула."""
+        return self._portal.iter_async(
+            self._async_pool.stream(command, timeout=timeout, **kwargs)
+        )

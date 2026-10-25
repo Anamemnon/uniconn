@@ -1,4 +1,4 @@
-"""HTTP dev-сервер и обработчики API для интерактивной панели uniconn v0.9.0."""
+"""HTTP dev-сервер и обработчики API для интерактивной панели uniconn v0.11.0."""
 
 from __future__ import annotations
 
@@ -303,7 +303,7 @@ def _run_demo_status() -> dict[str, Any]:
         else "Python 3.12"
     )
     return {
-        "version": "0.9.0",
+        "version": "0.11.0",
         "transports": ["ipmi", "local", "serial", "ssh", "telnet"],
         "local_uname": uname_out,
         "python_version": py_out,

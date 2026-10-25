@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Result:
     """Результат выполнения команды."""
 
@@ -94,7 +94,7 @@ class Result:
         return f"Result(exit_code={self.exit_code}, duration={self.duration:.2f}s)"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SyncResult:
     """Результат инкрементальной синхронизации директории (``sync_dir``)."""
 
@@ -125,7 +125,7 @@ class SyncResult:
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class EnsureResult:
     """Результат идемпотентной проверки или приведения состояния (``ensure_*``)."""
 
@@ -148,7 +148,7 @@ class EnsureResult:
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PingResult:
     """Результат проверки доступности хоста с измерением задержки (``ping``)."""
 

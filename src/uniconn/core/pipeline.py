@@ -13,6 +13,7 @@ import dataclasses
 import inspect
 import logging
 import shlex
+import sys
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -31,9 +32,12 @@ from ..result import Result
 from .resilience import CircuitBreaker, RateLimiter
 
 if TYPE_CHECKING:
-    from .._connection import Connection
+    from .connection import Connection
 
 HookEvent = Literal["before_run", "after_run", "on_error"]
+BeforeRunHook = Callable[..., Awaitable[None] | None]
+AfterRunHook = Callable[[Result], Awaitable[None] | None]
+OnErrorHook = Callable[..., Awaitable[None] | None]
 HookCallback = Callable[..., Any]
 
 
@@ -126,7 +130,7 @@ class ContextMiddleware:
 
     async def __call__(self, request: CommandRequest, call_next: NextHandler) -> Result:
         """Применить контекст рабочей директории и окружения перед передачей запроса."""
-        self._conn._context.apply_to_kwargs(request.transport_kwargs)
+        self._conn.context.apply_to_kwargs(request.transport_kwargs)
         return await call_next(request)
 
 
@@ -145,8 +149,8 @@ class SudoMiddleware:
             sudo_user=request.sudo_user,
             sudo_password=request.sudo_password,
             input_data=request.input_data,
-            config_options=self._conn._config.options,
-            config_password=self._conn._config.password,
+            config_options=self._conn.config.options,
+            config_password=self._conn.config.password,
         )
         request.exec_command = exec_cmd
         if effective_input is not None:
@@ -163,7 +167,7 @@ class HookMiddleware:
 
     async def invoke(self, event: HookEvent, *args: Any) -> None:
         """Вызвать зарегистрированные хуки для указанного события."""
-        for cb in self._conn._hooks.get(event, ()):
+        for cb in self._conn.get_hooks(event):
             res = cb(*args)
             if inspect.isawaitable(res):
                 await res
@@ -173,7 +177,7 @@ class HookMiddleware:
         await self.invoke(
             "before_run",
             request.command,
-            self._conn._config.host,
+            self._conn.config.host,
             request.transport_kwargs,
         )
         result = await call_next(request)
@@ -195,15 +199,15 @@ class DryRunMiddleware:
 
         log_cmd = "***SENSITIVE***" if request.sensitive else repr(request.command)
         with log_context(
-            host=self._conn._config.host,
+            host=self._conn.config.host,
             transport=self._conn.transport_name,
-            uri=self._conn._config.uri_safe,
+            uri=self._conn.config.uri_safe,
         ):
             log_event(
-                self._conn._logger,
+                self._conn.logger,
                 logging.INFO,
                 "command.dry_run",
-                f"[DRY-RUN] Skipping command: {log_cmd} on {self._conn._config.uri_safe}",
+                f"[DRY-RUN] Skipping command: {log_cmd} on {self._conn.config.uri_safe}",
                 command="***REDACTED***" if request.sensitive else request.command,
                 dry_run=True,
                 sensitive=request.sensitive,
@@ -214,7 +218,7 @@ class DryRunMiddleware:
                 stderr="",
                 duration=0.0,
                 command=request.command,
-                host=self._conn._config.host,
+                host=self._conn.config.host,
                 sensitive=request.sensitive,
             )
 
@@ -231,17 +235,17 @@ class ObservabilityMiddleware:
         """Залогировать выполнение команды, обработать ошибки и ``raise_on_error``."""
         log_cmd = "***SENSITIVE***" if request.sensitive else repr(request.command)
         with log_context(
-            host=self._conn._config.host,
+            host=self._conn.config.host,
             transport=self._conn.transport_name,
-            uri=self._conn._config.uri_safe,
+            uri=self._conn.config.uri_safe,
         ):
             try:
-                request.timeout = request.timeout or self._conn._config.timeout
+                request.timeout = request.timeout or self._conn.config.timeout
                 log_event(
-                    self._conn._logger,
+                    self._conn.logger,
                     logging.DEBUG,
                     "command.start",
-                    f"Running command: {log_cmd} on {self._conn._config.uri_safe}",
+                    f"Running command: {log_cmd} on {self._conn.config.uri_safe}",
                     command="***REDACTED***" if request.sensitive else request.command,
                     sudo=request.sudo,
                     timeout=request.timeout,
@@ -261,10 +265,10 @@ class ObservabilityMiddleware:
 
                 if isinstance(result, Result):
                     log_event(
-                        self._conn._logger,
+                        self._conn.logger,
                         logging.DEBUG,
                         "command.finish",
-                        f"Finished command: {log_cmd} on {self._conn._config.uri_safe} "
+                        f"Finished command: {log_cmd} on {self._conn.config.uri_safe} "
                         f"(exit_code={result.exit_code})",
                         command="***REDACTED***" if request.sensitive else request.command,
                         exit_code=result.exit_code,
@@ -280,10 +284,10 @@ class ObservabilityMiddleware:
 
             except BaseException as exc:
                 log_event(
-                    self._conn._logger,
+                    self._conn.logger,
                     logging.DEBUG,
                     "command.error",
-                    f"Command error: {log_cmd} on {self._conn._config.uri_safe} "
+                    f"Command error: {log_cmd} on {self._conn.config.uri_safe} "
                     f"({type(exc).__name__})",
                     command="***REDACTED***" if request.sensitive else request.command,
                     error_type=type(exc).__name__,
@@ -294,7 +298,7 @@ class ObservabilityMiddleware:
                     "on_error",
                     exc,
                     request.command,
-                    self._conn._config.host,
+                    self._conn.config.host,
                 )
                 raise
 
@@ -308,12 +312,12 @@ class CircuitBreakerMiddleware:
 
     async def __call__(self, request: CommandRequest, call_next: NextHandler) -> Result:
         """Проверить состояние цепи и обновить статистику успеха/сбоя."""
-        cb = getattr(self._conn, "_circuit_breaker", None)
+        cb = self._conn.circuit_breaker
         if not isinstance(cb, CircuitBreaker):
             return await call_next(request)
 
         cb.check_or_raise(
-            host=self._conn._config.host,
+            host=self._conn.config.host,
             command="***REDACTED***" if request.sensitive else request.command,
         )
         try:
@@ -340,7 +344,7 @@ class RateLimitMiddleware:
 
     async def __call__(self, request: CommandRequest, call_next: NextHandler) -> Result:
         """Дождаться токена ``RateLimiter`` перед передачей запроса в транспорт."""
-        rl = getattr(self._conn, "_rate_limiter", None)
+        rl = self._conn.rate_limiter
         if isinstance(rl, RateLimiter):
             await rl.acquire()
         return await call_next(request)
@@ -355,16 +359,15 @@ class RetryMiddleware:
 
     async def __call__(self, request: CommandRequest, call_next: NextHandler) -> Result:
         """Выполнить запрос с экспоненциальными повторными попытками при сбоях сети."""
-        import sys
-
         conn_mod = sys.modules.get("uniconn._connection")
         wait_fn = getattr(conn_mod, "wait_exponential_jitter", wait_exponential_jitter)
 
         log_cmd = "***SENSITIVE***" if request.sensitive else repr(request.command)
         result: Result | None = None
+        max_attempts = self._conn.retry_attempts
 
         async for attempt in AsyncRetrying(
-            stop=stop_after_attempt(self._conn._retry_attempts),
+            stop=stop_after_attempt(max_attempts),
             wait=wait_fn(initial=1, max=10),
             retry=retry_if_exception_type(
                 (ConnectionError, TimeoutError, builtins.TimeoutError)
@@ -373,8 +376,8 @@ class RetryMiddleware:
         ):
             with attempt:
                 try:
-                    if not self._conn._transport.is_connected:
-                        await self._conn._transport.connect()
+                    if not self._conn.transport.is_connected:
+                        await self._conn.transport.connect()
                     result = await call_next(request)
                 except (
                     ConnectionError,
@@ -383,14 +386,14 @@ class RetryMiddleware:
                 ) as retry_exc:
                     attempt_num = attempt.retry_state.attempt_number
                     log_event(
-                        self._conn._logger,
+                        self._conn.logger,
                         logging.WARNING,
                         "command.retry",
-                        f"Retry attempt {attempt_num}/{self._conn._retry_attempts} "
-                        f"for {log_cmd} on {self._conn._config.uri_safe}",
+                        f"Retry attempt {attempt_num}/{max_attempts} "
+                        f"for {log_cmd} on {self._conn.config.uri_safe}",
                         command="***REDACTED***" if request.sensitive else request.command,
                         attempt=attempt_num,
-                        max_attempts=self._conn._retry_attempts,
+                        max_attempts=max_attempts,
                         error_type=type(retry_exc).__name__,
                         error=str(retry_exc),
                         sensitive=request.sensitive,
@@ -401,15 +404,15 @@ class RetryMiddleware:
                             "command.retry",
                             {
                                 "retry.attempt": attempt_num,
-                                "retry.max_attempts": self._conn._retry_attempts,
+                                "retry.max_attempts": max_attempts,
                                 "exception.type": type(retry_exc).__name__,
                                 "exception.message": (
                                     "***REDACTED***" if request.sensitive else str(retry_exc)
                                 ),
                             },
                         )
-                    await self._conn._transport.disconnect()
-                    await self._conn._transport.connect()
+                    await self._conn.transport.disconnect()
+                    await self._conn.transport.connect()
                     raise
 
         assert result is not None
@@ -453,13 +456,17 @@ class CommandPipeline:
         return list(self._middlewares)
 
     def add_middleware(self, middleware: CommandMiddleware) -> None:
-        """Добавить пользовательский Middleware в конвейер."""
+        """Добавить пользовательский Middleware в конец конвейера."""
         self._middlewares.append(middleware)
+
+    def insert_middleware(self, index: int, middleware: CommandMiddleware) -> None:
+        """Вставить Middleware в указанную позицию конвейера."""
+        self._middlewares.insert(index, middleware)
 
     async def _terminal_dispatch(self, request: CommandRequest) -> Result:
         """Финальное звено пайплайна — вызов ``transport.run()``."""
         assert self._conn is not None
-        return await self._conn._transport.run(
+        return await self._conn.transport.run(
             request.exec_command,
             timeout=request.timeout,
             **request.transport_kwargs,
@@ -485,4 +492,3 @@ class CommandPipeline:
             handler = _step
 
         return await handler(request)
-

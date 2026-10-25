@@ -2,33 +2,32 @@
 
 ## Обзор проекта
 
-`uniconn` (`v0.9.0`) — универсальная async-first Python-библиотека (Python 3.11+) для выполнения команд, инспекции хостов, идемпотентного управления состоянием и синхронизации файлов через единый фасад `Connection`. Управление зависимостями осуществляется через `uv`.
+`uniconn` (`v0.11.0`) — универсальная async-first Python-библиотека (Python 3.11+) для выполнения команд, инспекции хостов, идемпотентного управления состоянием и синхронизации файлов через единый фасад `Connection`. Управление зависимостями осуществляется через `uv`.
 
 Для быстрого ознакомления с сигнатурами публичного API и URI-схемами используйте файл `llms.txt` в корне репозитория.
 
 ## Структура модулей (`src/uniconn/`)
 
-- `_connection.py` / `core/connection.py` — `Connection`: тонкий фасад, предоставляющий фабрики (`from_uri`, `from_config`, `from_dict`, `from_file`, `from_inventory`), доменные сервисы (`conn.files`, `conn.state`, `conn.tunnels`), конвейер выполнения (`conn.pipeline`) и удобные методы верхнего уровня (`run`, `run_bytes`, `run_commands`, `run_script`, `ping`, `stream`, `expect`, `open_shell`, `gather_facts`, `ensure_package`, `ensure_service`, `ensure_line`, `sync_dir`, `write_template`, `forward_local_port`, `forward_remote_port` и др.).
+- `core/connection.py` (реэкспорт в `_connection.py`) — `Connection` и `OperationObserver`: тонкий фасад, предоставляющий фабрики (`from_uri`, `from_config`, `from_dict`, `from_file`, `from_inventory`), доменные сервисы (`conn.files`, `conn.state`, `conn.tunnels`), конвейер выполнения (`conn.pipeline`) и удобные методы верхнего уровня (`run`, `run_bytes`, `run_commands`, `run_script`, `ping`, `stream`, `expect`, `open_shell`, `gather_facts`, `ensure_package`, `ensure_service`, `ensure_line`, `sync_dir`, `write_template`, `forward_local_port`, `forward_remote_port`, `use_cassette` и др.).
 - `core/` — ядро выполнения:
-  - `pipeline.py` — `CommandRequest`, `CommandPipeline` и цепочка `CommandMiddleware` (`ContextMiddleware`, `SudoMiddleware`, `HookMiddleware`, `DryRunMiddleware`, `ObservabilityMiddleware`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`, `RetryMiddleware`).
+  - `pipeline.py` — `CommandRequest`, `CommandPipeline`, типизированные хуки (`BeforeRunHook`, `AfterRunHook`, `OnErrorHook`) и цепочка `CommandMiddleware` (`ContextMiddleware`, `SudoMiddleware`, `HookMiddleware`, `DryRunMiddleware`, `ObservabilityMiddleware`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`, `RetryMiddleware`).
   - `resilience.py` — `CircuitBreaker`, `CircuitState` (`CLOSED` / `OPEN` / `HALF_OPEN`) и `RateLimiter` (async Token Bucket).
   - `context.py` — `ExecutionContext` и контекстные менеджеры `CwdContext`, `EnvContext`, `TempDirContext`.
   - `bridge.py` — `EventLoopPortal` (единый синглтон фонового event loop для синхронных вызовов) и `SyncContextBridge`.
 - `services/` — выделенные доменные сервисы:
   - `files.py` — `FileOperationsService` и `DirectorySynchronizer` (файловые операции, SFTP и дельта-синхронизация `sync_dir`).
   - `templates.py` — `TemplateEngine` и `render_template` (`string.Template` и `jinja2`).
-  - `facts.py` — `FactCollector`, `HostFacts`, `FactsDiffReport` и `diff_facts()` (сбор фактов и поиск расхождений между хостами).
+  - `facts.py` и `facts_models.py` (реэкспорт в `_facts.py`) — `FactCollector`, `HostFacts`, `FactsDiffReport` и `diff_facts()` (сбор фактов и поиск расхождений между хостами).
   - `provisioning.py` — `StateManagementService`, паттерн «Стратегия» для пакетных менеджеров (`PackageManagerStrategy`: `AptStrategy`, `ApkStrategy`, `DnfYumStrategy`, `PacmanStrategy`, `ZypperStrategy`) и менеджеров сервисов (`ServiceManagerStrategy`: `SystemdStrategy`, `OpenRCStrategy`, `SysVStrategy`).
   - `tunnels.py` — `TunnelService` (`forward_local_port`, `forward_remote_port`).
-- `config/` — `ConnectionConfig` и `InventoryLoader` (`config/inventory.py` — парсинг YAML/TOML/JSON инвентарей).
-- `transports/` — протоколы возможностей ISP (`CommandTransport`, `FileCapableTransport`, `ShellCapableTransport`, `TunnelCapableTransport`, `require_capability` в `_base.py`/`base.py`), декомпозированный пакет `transports/ssh/` (`OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`) и реализации `_ssh.py`, `_telnet.py`, `_serial.py`, `_local.py`, `bmc/_ipmi.py`.
-- `shell/` и `_shell.py` — `ShellSession` (`shell/session.py`), `PosixMarkerProtocol` (`shell/marker_protocol.py`), `ExpectStateMachine` (`shell/expect_engine.py`).
-- `sync/` и `_sync.py` — `SyncConnection`, `SyncShellSession`, `SyncConnectionPool` и синхронные обёртки доменных сервисов (`SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`) на базе `EventLoopPortal`.
-- `pool/` и `_pool.py` — `ConnectionPool` с единым движком конкурентного выполнения (`_fan_out_list`, `_fan_out_dict`), встроенными `RateLimiter` / пер-хостовыми `CircuitBreaker` и `PoolStreamMultiplexer` (`pool/stream_mux.py`).
-- `_session_pool.py` — `SSHSessionPool`: мультиплексинг SSH-каналов к одному хосту с адаптивным авто-понижением лимитов (`adaptive=True`), динамическим `resize()` (graceful drain), `health_check`, `check_health()`, `rate_limit` и `circuit_breaker`.
-- `background/` — `ScreenPool`, `ScreenSession`, `LogPipeline`: управление фоновыми задачами в GNU screen.
+- `config/` — `models.py` (`ConnectionConfig`), `uri.py` (`URIParser`) и `inventory.py` (`InventoryLoader` — парсинг YAML/TOML/JSON инвентарей).
+- `transports/` — протоколы возможностей ISP (`CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `TunnelCapableTransport`, `require_capability` в `base.py`), `replay.py` (`ReplayTransport`, `Cassette`, `CassetteContext`), декомпозированный пакет `transports/ssh/` (`OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`) и реализации `_ssh.py`, `_telnet.py`, `_serial.py`, `_local.py`, `bmc/_ipmi.py`.
+- `shell/` (реэкспорт в `_shell.py`) — `ShellSession` (`shell/session.py`), `PosixMarkerProtocol` (`shell/marker_protocol.py`), `ExpectStateMachine` (`shell/expect_engine.py`).
+- `sync/` (реэкспорт в `_sync.py`) — `connection.py` (`SyncConnection`), `shell.py` (`SyncShellSession`), `pool.py` (`SyncConnectionPool`) и `services.py` (`SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`, `SyncDiagnosticSession`) на базе `EventLoopPortal`.
+- `pool/` (реэкспорты в `_pool.py` и `_session_pool.py`) — `connection_pool.py` (`ConnectionPool` с `_fan_out_list` / `_fan_out_dict`), `session_pool.py` (`SSHSessionPool` с адаптивным авто-понижением лимитов и `resize()`) и `stream_mux.py` (`PoolStreamMultiplexer`).
+- `background/` — `ScreenPool`, `ScreenSession`, `LogPipeline`, `DiagnosticSession`: управление фоновыми задачами и диагностическими сессиями.
 - `cli/` — модульный CLI на базе `cyclopts` и `rich` (`app.py`, `renderers.py`, `cmd_exec.py`, `cmd_files.py`, `cmd_ops.py`, `cmd_screen.py`).
-- `result.py` (`Result`, `PingResult`, `SyncResult`, `EnsureResult`), `facts.py`, `hooks.py`, `_logging.py`, `exceptions.py` (`CircuitOpenError`), `py.typed`.
+- `result.py` (`Result`, `PingResult`, `SyncResult`, `EnsureResult`), `hooks.py`, `telemetry.py`, `_logging.py`, `exceptions.py` (`ConfigurationError`, `CircuitOpenError`, `CassetteError`), `py.typed`.
 
 ## Точка входа и веб-панель (`main.py` и `examples/dashboard/`)
 

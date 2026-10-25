@@ -23,8 +23,8 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 import yaml
 from pydantic import BaseModel, Field, SecretStr
 
-from .._config import ConnectionConfig
 from .._logging import SecretMaskingFilter
+from ..config.models import ConnectionConfig
 from ..exceptions import (
     AuthenticationError,
     BMCCapabilityError,
@@ -37,7 +37,7 @@ from ..exceptions import (
     UniconnError,
 )
 from ..result import Result
-from ._base import (
+from .base import (
     BaseTransport,
     FileCapableTransport,
     ShellCapableTransport,
@@ -45,8 +45,11 @@ from ._base import (
 )
 
 if TYPE_CHECKING:
-    from .._connection import Connection
-    from .._sync import SyncConnection
+    from ..core.connection import Connection
+    from ..sync.connection import SyncConnection
+
+_YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+_YAML_DUMPER = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
 
 _TEMP_PATH_RE = re.compile(r"/tmp/uniconn_[A-Za-z0-9_]+")
 _POSIX_MARKER_CMD_RE = re.compile(
@@ -199,7 +202,7 @@ class Cassette(BaseModel):
         data = (
             json.loads(raw_text)
             if file_path.suffix.lower() == ".json"
-            else (yaml.safe_load(raw_text) or {})
+            else (yaml.load(raw_text, Loader=_YAML_LOADER) or {})
         )
         if not isinstance(data, dict):
             raise CassetteError(f"Invalid cassette structure in {file_path}")
@@ -213,8 +216,9 @@ class Cassette(BaseModel):
         if file_path.suffix.lower() == ".json":
             text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
         else:
-            text = yaml.safe_dump(
+            text = yaml.dump(
                 payload,
+                Dumper=_YAML_DUMPER,
                 allow_unicode=True,
                 sort_keys=False,
                 default_flow_style=False,
@@ -1323,7 +1327,7 @@ class CassetteContext:
 
     async def __aenter__(self) -> Cassette:
         """Подключить прокси кассеты к ``Connection``."""
-        self._orig_transport = self._conn._transport
+        self._orig_transport = self._conn.transport
         exists = self._path.is_file()
 
         if exists and self._mode != RecordMode.ALL:
@@ -1356,7 +1360,7 @@ class CassetteContext:
             allow_playback_repeats=self._allow_playback_repeats,
             mask_secrets=self._mask_secrets,
         )
-        self._conn._transport = self._proxy
+        self._conn.swap_transport(self._proxy)
         return cassette
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
@@ -1366,7 +1370,7 @@ class CassetteContext:
                 self._proxy.cassette.save(self._path)
         finally:
             if self._orig_transport is not None:
-                self._conn._transport = self._orig_transport
+                self._conn.swap_transport(self._orig_transport)
 
 
 class SyncCassetteContext:

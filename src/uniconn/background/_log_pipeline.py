@@ -144,7 +144,7 @@ class LocalFileHandler(LogHandler):
             buffer = self._buffers.setdefault(session_id, [])
             buffer.extend(chunk)
             now = time.monotonic()
-            last = self._last_flush.get(session_id, 0.0)
+            last = self._last_flush.setdefault(session_id, now)
             if now - last >= self._periodic_interval:
                 self._write(session_id, buffer)
                 buffer.clear()
@@ -219,7 +219,7 @@ class ForwardHandler(LogHandler):
         buf = self._buffers.setdefault(session_id, [])
         buf.extend(chunk)
         now = time.monotonic()
-        last = self._last_flush.get(session_id, 0.0)
+        last = self._last_flush.setdefault(session_id, now)
         if now - last >= self._flush_interval:
             to_send = list(buf)
             buf.clear()
@@ -276,7 +276,12 @@ class ArchiveHandler(LogHandler):
 
     async def finalize(self) -> Path:
         """Упаковать все файлы из ``source_dir`` в итоговый архив."""
-        return self.build_archive(self._source_dir, self._archive_path, fmt=self._fmt)
+        return await asyncio.to_thread(
+            self.build_archive,
+            self._source_dir,
+            self._archive_path,
+            self._fmt,
+        )
 
     @staticmethod
     def build_archive(

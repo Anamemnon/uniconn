@@ -1,6 +1,6 @@
 [project]
 name = "uniconn"
-version = "0.9.0"
+version = "0.11.0"
 description = "Universal library for remote command execution"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -101,5 +101,24 @@ line-length = 120
 target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "N", "D", "UP", "B", "C4", "SIM"]
-ignore = ["D203", "D213"]
+select = ["E", "F", "W", "I", "N", "D", "UP", "B", "C4", "SIM", "ASYNC", "PIE", "PERF", "RUF"]
+ignore = [
+    "D100",
+    "D101",
+    "D102",
+    "D103",
+    "D104",
+    "D105",
+    "D107",
+    "D203",
+    "D213",
+    "ASYNC109",
+    "ASYNC230",
+    "ASYNC240",
+    "PERF203",
+    "PERF401",
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    "RUF012",
+]

@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .._facts import (
+from .facts_models import (
     DEFAULT_DIFF_FIELDS,
     FACT_COLLECTION_SCRIPT,
     CustomCommandSpec,
@@ -149,8 +149,8 @@ class FactCollector:
         if not refresh and resolved_spec is None and self.cached is not None:
             return self.cached
 
-        default_host = self._conn._config.host or "localhost"
-        if self._conn._dry_run:
+        default_host = self._conn.config.host or "localhost"
+        if self._conn.is_dry_run:
             facts = HostFacts(hostname=default_host)
             self.cached = facts
             return facts
@@ -238,8 +238,8 @@ __all__ = [
     "ExternalToolRunner",
     "ExternalToolSpec",
     "FactCollector",
-    "FactsDiffReport",
     "FactSpec",
+    "FactsDiffReport",
     "FileSourceSpec",
     "HostFacts",
     "NetworkInterface",

@@ -11,7 +11,7 @@ import re
 import shlex
 import time
 from collections.abc import Mapping, Sequence
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 from pydantic import SecretStr
 
@@ -19,6 +19,9 @@ from ..exceptions import ConnectionError, TimeoutError
 from ..result import Result
 from .expect_engine import ExpectStateMachine
 from .marker_protocol import PosixMarkerProtocol
+
+if TYPE_CHECKING:
+    from ..core.connection import OperationObserver
 
 
 class ShellSession:
@@ -34,6 +37,8 @@ class ShellSession:
         host: str | None = None,
         default_timeout: float = 30.0,
         session_uuid: str | None = None,
+        observers: Sequence[OperationObserver] | None = None,
+        conn: Any = None,
     ) -> None:
         """Инициализировать интерактивную shell-сессию."""
         self._proc = proc
@@ -46,6 +51,8 @@ class ShellSession:
         self._lock = asyncio.Lock()
         self._closed = False
         self._initialized = False
+        self._observers: list[OperationObserver] = list(observers or [])
+        self._conn = conn
 
     @property
     def is_alive(self) -> bool:
@@ -133,12 +140,11 @@ class ShellSession:
         """Очистить вывод от CRLF, возможного эха команды и лишнего перевода строки."""
         return PosixMarkerProtocol.clean_output(raw_output, command, wrapped_cmd)
 
-    async def execute(
+    async def _raw_execute(
         self,
         command: str | Sequence[str],
         timeout: float | None = None,
     ) -> Result:
-        """Выполнить команду в stateful shell-сессии и дождаться маркера завершения."""
         cmd_str = command if isinstance(command, str) else shlex.join(command)
         async with self._lock:
             if not self.is_alive:
@@ -157,13 +163,17 @@ class ShellSession:
             await self.send(wrapped_cmd)
 
             async def _read_until_marker() -> tuple[str, int]:
+                search_pos = 0
                 while True:
-                    match = self._marker_pattern.search(self._buffer)
+                    match = self._marker_pattern.search(self._buffer, search_pos)
                     if match is not None:
                         raw_out = self._buffer[: match.start()]
                         self._buffer = self._buffer[match.end() :].lstrip("\r\n")
                         code = int(match.group(1))
                         return raw_out, code
+
+                    # Оставляем перекрытие на длину маркера, чтобы не пропустить маркер на границе чанков
+                    search_pos = max(0, len(self._buffer) - 64)
 
                     if not self.is_alive:
                         self._closed = True
@@ -210,10 +220,22 @@ class ShellSession:
                 host=self._host,
             )
 
+    async def execute(
+        self,
+        command: str | Sequence[str],
+        timeout: float | None = None,
+    ) -> Result:
+        """Выполнить команду в stateful shell-сессии и дождаться маркера завершения."""
+        for obs in self._observers:
+            return await obs.observe_shell_execute(
+                self._conn, self._raw_execute, command, timeout=timeout
+            )
+        return await self._raw_execute(command, timeout=timeout)
+
     def _mark_closed(self) -> None:
         self._closed = True
 
-    async def expect(
+    async def _raw_expect(
         self,
         command: str | Sequence[str] | None = None,
         patterns: Mapping[str, str | SecretStr] | None = None,
@@ -223,7 +245,6 @@ class ShellSession:
         sensitive: bool = False,
         allow_eof: bool = True,
     ) -> Result:
-        """Выполнить интерактивный диалог по регулярным выражениям (``expect``)."""
         if command is None:
             cmd_str = ""
         elif isinstance(command, str):
@@ -299,6 +320,39 @@ class ShellSession:
                 host=self._host,
                 sensitive=sensitive,
             )
+
+    async def expect(
+        self,
+        command: str | Sequence[str] | None = None,
+        patterns: Mapping[str, str | SecretStr] | None = None,
+        final_prompt: str | None = None,
+        timeout: float | None = None,
+        line_ending: str = "\n",
+        sensitive: bool = False,
+        allow_eof: bool = True,
+    ) -> Result:
+        """Выполнить интерактивный диалог по регулярным выражениям (``expect``)."""
+        for obs in self._observers:
+            return await obs.observe_shell_expect(
+                self._conn,
+                self._raw_expect,
+                command=command,
+                patterns=patterns,
+                final_prompt=final_prompt,
+                timeout=timeout,
+                line_ending=line_ending,
+                sensitive=sensitive,
+                allow_eof=allow_eof,
+            )
+        return await self._raw_expect(
+            command=command,
+            patterns=patterns,
+            final_prompt=final_prompt,
+            timeout=timeout,
+            line_ending=line_ending,
+            sensitive=sensitive,
+            allow_eof=allow_eof,
+        )
 
     async def resize(self, cols: int, rows: int) -> None:
         """Изменить размер окна терминала PTY."""

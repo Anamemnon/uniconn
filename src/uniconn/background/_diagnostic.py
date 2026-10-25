@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -17,7 +18,8 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .._facts import FactsDiffReport, FactSpec, HostFacts, diff_facts
+from ..exceptions import ConfigurationError
+from ..services.facts_models import FactsDiffReport, FactSpec, HostFacts, diff_facts
 from ._log_pipeline import (
     ArchiveHandler,
     DirectStreamCollector,
@@ -117,18 +119,21 @@ class DiagnosticConfig(BaseModel):
         if suffix in (".yaml", ".yml"):
             import yaml
 
-            data = yaml.safe_load(content) or {}
+            loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+            data = yaml.load(content, Loader=loader) or {}
         elif suffix == ".json":
             data = json.loads(content)
         elif suffix == ".toml":
             data = tomllib.loads(content)
         else:
-            raise ValueError(
+            raise ConfigurationError(
                 f"Unsupported DiagnosticConfig file format: {filepath.suffix}. "
                 "Use .yaml, .yml, .json or .toml"
             )
         if not isinstance(data, Mapping):
-            raise ValueError(f"DiagnosticConfig file {filepath} must contain a mapping")
+            raise ConfigurationError(
+                f"DiagnosticConfig file {filepath} must contain a mapping"
+            )
         return cls.from_dict(data)
 
     @classmethod
@@ -324,7 +329,7 @@ class DiagnosticSession:
         now_dt = datetime.now(UTC)
         self._started_iso = now_dt.isoformat()
         ts_str = now_dt.strftime("%Y%m%d_%H%M%S")
-        host_str = self._conn._config.host or "localhost"
+        host_str = self._conn.config.host or "localhost"
         safe_host = _sanitize_name(host_str)
 
         base_dir = Path(self._config.local_dir)
@@ -528,7 +533,7 @@ class DiagnosticSession:
 
         finished_iso = datetime.now(UTC).isoformat()
         duration_sec = max(0.0, time.monotonic() - self._started_mono)
-        host_str = self._conn._config.host or "localhost"
+        host_str = self._conn.config.host or "localhost"
 
         resolved_archive: str | None = None
         if self._config.archive_format in ("tar.gz", "zip"):
@@ -572,10 +577,11 @@ class DiagnosticSession:
             "tar.gz",
             "zip",
         ):
-            ArchiveHandler.build_archive(
+            await asyncio.to_thread(
+                ArchiveHandler.build_archive,
                 self._workspace_dir,
                 resolved_archive,
-                fmt=self._config.archive_format,
+                self._config.archive_format,
             )
             fwd_conn = self._active_forward_conn()
             if fwd_conn is not None:

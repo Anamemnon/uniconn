@@ -1,6 +1,8 @@
 # src/uniconn/exceptions.py
 """Иерархия исключений библиотеки uniconn."""
 
+import builtins
+
 
 class UniconnError(Exception):
     """Базовое исключение библиотеки."""
@@ -13,8 +15,8 @@ class UniconnError(Exception):
         exit_code: int | None = None,
         stdout: str | None = None,
         stderr: str | None = None,
-        host: str | None = None
-    ):
+        host: str | None = None,
+    ) -> None:
         """Инициализировать исключение с контекстом выполнения команды."""
         super().__init__(message)
         self.command = command
@@ -33,64 +35,48 @@ class UniconnError(Exception):
         return " | ".join(parts)
 
 
-class ConnectionError(UniconnError):
-    """Ошибки подключения (сеть, auth, timeout)."""
+class ConfigurationError(UniconnError, ValueError):
+    """Ошибка валидации конфигурации, URI, инвентаря или спецификации фактов."""
 
-    pass
+
+class ConnectionError(UniconnError, builtins.ConnectionError):
+    """Ошибки подключения (сеть, auth, timeout)."""
 
 
 class ExecutionError(UniconnError):
     """Ошибки выполнения команды (non-zero exit code)."""
 
-    pass
 
-
-class TimeoutError(UniconnError):
-    """Таймаут операции (исключение uniconn, не путать со встроенным TimeoutError)."""
-
-    pass
+class TimeoutError(UniconnError, builtins.TimeoutError):
+    """Таймаут операции (совместим со встроенным builtins.TimeoutError)."""
 
 
 class TransportNotFoundError(UniconnError):
     """Транспорт не найден (не установлен extra)."""
 
-    pass
-
 
 class AuthenticationError(ConnectionError):
     """Ошибка аутентификации."""
-
-    pass
 
 
 class BMCCapabilityError(UniconnError):
     """BMC не поддерживает запрошенную операцию."""
 
-    pass
-
 
 class ScreenError(UniconnError):
     """Базовое исключение подсистемы screen-сессий."""
-
-    pass
 
 
 class ScreenNotFoundError(ScreenError):
     """GNU screen не установлен на удалённом хосте."""
 
-    pass
-
 
 class ScreenSessionExistsError(ScreenError):
     """Screen-сессия с таким именем уже существует на хосте."""
 
-    pass
-
 
 class ScreenPoolFullError(ScreenError):
     """Достигнут лимит одновременных сессий в пуле (max_screens)."""
-
-    pass
 
 
 class CapabilityNotSupportedError(UniconnError, NotImplementedError):
@@ -99,8 +85,6 @@ class CapabilityNotSupportedError(UniconnError, NotImplementedError):
     Наследуется одновременно от ``UniconnError`` и ``NotImplementedError`` для
     совместимости со стандартными проверками возможностей.
     """
-
-    pass
 
 
 class CircuitOpenError(ConnectionError):
@@ -121,8 +105,6 @@ class CircuitOpenError(ConnectionError):
 
 class CassetteError(UniconnError):
     """Базовое исключение подсистемы записи и воспроизведения кассет (Replay/Cassette)."""
-
-    pass
 
 
 class CassetteMissError(CassetteError):

@@ -1,5 +1,5 @@
 # src/uniconn/telemetry.py
-"""Интеграция с OpenTelemetry для сквозной трассировки операций uniconn (v0.10.0).
+"""Интеграция с OpenTelemetry для сквозной трассировки операций uniconn.
 
 Обеспечивает автоматическое создание span'ов для ``run()``, ``run_bytes()``,
 ``stream()``, файловых операций (``upload()``, ``download()``, ``read_file()``,
@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
-import functools
 import importlib
 import time
 from collections.abc import AsyncIterator, Iterator, Mapping
@@ -25,9 +24,9 @@ from .exceptions import ExecutionError
 from .result import Result, SyncResult
 
 if TYPE_CHECKING:
-    from ._connection import Connection
+    from .core.connection import Connection
 
-_CURRENT_SPAN_VAR: contextvars.ContextVar[ Any ] = contextvars.ContextVar(
+_CURRENT_SPAN_VAR: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "uniconn_current_span",
     default=None,
 )
@@ -50,7 +49,7 @@ class SpanProtocol(Protocol):
         ...
 
     def record_exception(self, exception: BaseException) -> Any:
-        """Зафиксировать исключение в span'е."""
+        """Зафиксировать исключение в span'а."""
         ...
 
     def set_status(self, status: Any, description: str | None = None) -> Any:
@@ -321,7 +320,12 @@ class OtelTracingHook:
             finally:
                 _CURRENT_SPAN_VAR.reset(token)
 
-    def _base_attrs(self, conn: Connection) -> dict[str, Any]:
+    def _base_attrs(self, conn: Any) -> dict[str, Any]:
+        if conn is None:
+            return {
+                "rpc.system": "uniconn",
+                "service.name": self.service_name,
+            }
         attrs: dict[str, Any] = {
             "rpc.system": "uniconn",
             "service.name": self.service_name,
@@ -332,326 +336,322 @@ class OtelTracingHook:
             attrs["server.port"] = conn.config.port
         return attrs
 
-    def _instrument_files(self, conn: Connection) -> None:
-        files_svc: Any = conn.files
-        if getattr(files_svc, "_otel_instrumented", False):
+    # ─── Методы протокола OperationObserver (без monkey-patching) ───
+
+    async def observe_upload(
+        self,
+        conn: Connection,
+        raw_fn: Any,
+        local_path: str | Path,
+        remote_path: str | Path,
+        recurse: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        """Обернуть операцию ``upload`` в OpenTelemetry span."""
+        if not self.trace_files:
+            await raw_fn(local_path, remote_path, recurse=recurse, **kwargs)
             return
-        files_svc._otel_instrumented = True
+        attrs = {
+            **self._base_attrs(conn),
+            "file.local_path": str(local_path),
+            "file.remote_path": str(remote_path),
+            "file.recurse": recurse,
+        }
+        with self._start_span("uniconn.upload", attributes=attrs) as span:
+            try:
+                await raw_fn(local_path, remote_path, recurse=recurse, **kwargs)
+                _set_span_status(span, ok=True)
+            except BaseException as exc:
+                span.record_exception(exc)
+                _set_span_status(span, ok=False, description=str(exc))
+                raise
 
-        orig_upload = files_svc.upload
-        orig_download = files_svc.download
-        orig_read_file = files_svc.read_file
-        orig_write_file = files_svc.write_file
-        orig_sync_dir = files_svc.sync_dir
-
-        @functools.wraps(orig_upload)
-        async def traced_upload(
-            local_path: str,
-            remote_path: str,
-            recurse: bool = False,
-            **kwargs: Any,
-        ) -> None:
-            attrs = {
-                **self._base_attrs(conn),
-                "file.local_path": str(local_path),
-                "file.remote_path": str(remote_path),
-                "file.recurse": recurse,
-            }
-            with self._start_span("uniconn.upload", attributes=attrs) as span:
-                try:
-                    await orig_upload(local_path, remote_path, recurse=recurse, **kwargs)
-                    _set_span_status(span, ok=True)
-                except BaseException as exc:
-                    span.record_exception(exc)
-                    _set_span_status(span, ok=False, description=str(exc))
-                    raise
-
-        @functools.wraps(orig_download)
-        async def traced_download(
-            remote_path: str,
-            local_path: str,
-            recurse: bool = False,
-            **kwargs: Any,
-        ) -> None:
-            attrs = {
-                **self._base_attrs(conn),
-                "file.remote_path": str(remote_path),
-                "file.local_path": str(local_path),
-                "file.recurse": recurse,
-            }
-            with self._start_span("uniconn.download", attributes=attrs) as span:
-                try:
-                    await orig_download(remote_path, local_path, recurse=recurse, **kwargs)
-                    _set_span_status(span, ok=True)
-                except BaseException as exc:
-                    span.record_exception(exc)
-                    _set_span_status(span, ok=False, description=str(exc))
-                    raise
-
-        @functools.wraps(orig_read_file)
-        async def traced_read_file(
-            remote_path: str,
-            encoding: str | None = "utf-8",
-        ) -> str | bytes:
-            attrs = {
-                **self._base_attrs(conn),
-                "file.remote_path": str(remote_path),
-            }
-            with self._start_span("uniconn.read_file", attributes=attrs) as span:
-                try:
-                    res = await orig_read_file(remote_path, encoding=encoding)
-                    size = len(res.encode("utf-8")) if isinstance(res, str) else len(res)
-                    span.set_attribute("file.bytes_transferred", size)
-                    _set_span_status(span, ok=True)
-                    return res
-                except BaseException as exc:
-                    span.record_exception(exc)
-                    _set_span_status(span, ok=False, description=str(exc))
-                    raise
-
-        @functools.wraps(orig_write_file)
-        async def traced_write_file(
-            remote_path: str,
-            content: str | bytes,
-            mode: int | None = None,
-            encoding: str = "utf-8",
-        ) -> None:
-            size = len(content.encode(encoding)) if isinstance(content, str) else len(content)
-            attrs = {
-                **self._base_attrs(conn),
-                "file.remote_path": str(remote_path),
-                "file.bytes_transferred": size,
-            }
-            with self._start_span("uniconn.write_file", attributes=attrs) as span:
-                try:
-                    await orig_write_file(
-                        remote_path,
-                        content,
-                        mode=mode,
-                        encoding=encoding,
-                    )
-                    _set_span_status(span, ok=True)
-                except BaseException as exc:
-                    span.record_exception(exc)
-                    _set_span_status(span, ok=False, description=str(exc))
-                    raise
-
-        @functools.wraps(orig_sync_dir)
-        async def traced_sync_dir(
-            local_dir: str | Path,
-            remote_dir: str | Path,
-            delete: bool = False,
-            exclude: Any = None,
-            mtime_tolerance: float = 1.0,
-            dry_run: bool | None = None,
-        ) -> SyncResult:
-            attrs = {
-                **self._base_attrs(conn),
-                "file.local_path": str(local_dir),
-                "file.remote_path": str(remote_dir),
-            }
-            with self._start_span("uniconn.sync_dir", attributes=attrs) as span:
-                try:
-                    res = await orig_sync_dir(
-                        local_dir=local_dir,
-                        remote_dir=remote_dir,
-                        delete=delete,
-                        exclude=exclude,
-                        mtime_tolerance=mtime_tolerance,
-                        dry_run=dry_run,
-                    )
-                    span.set_attribute("file.bytes_transferred", res.bytes_transferred)
-                    span.set_attribute("sync.uploaded_count", len(res.uploaded))
-                    span.set_attribute("sync.skipped_count", len(res.skipped))
-                    span.set_attribute("sync.deleted_count", len(res.deleted))
-                    _set_span_status(span, ok=True)
-                    return res
-                except BaseException as exc:
-                    span.record_exception(exc)
-                    _set_span_status(span, ok=False, description=str(exc))
-                    raise
-
-        files_svc.upload = traced_upload
-        files_svc.download = traced_download
-        files_svc.read_file = traced_read_file
-        files_svc.write_file = traced_write_file
-        files_svc.sync_dir = traced_sync_dir
-
-    def _instrument_shell_and_stream(self, conn: Connection) -> None:
-        conn_any: Any = conn
-        if getattr(conn_any, "_otel_shell_instrumented", False):
+    async def observe_download(
+        self,
+        conn: Connection,
+        raw_fn: Any,
+        remote_path: str | Path,
+        local_path: str | Path,
+        recurse: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        """Обернуть операцию ``download`` в OpenTelemetry span."""
+        if not self.trace_files:
+            await raw_fn(remote_path, local_path, recurse=recurse, **kwargs)
             return
-        conn_any._otel_shell_instrumented = True
+        attrs = {
+            **self._base_attrs(conn),
+            "file.remote_path": str(remote_path),
+            "file.local_path": str(local_path),
+            "file.recurse": recurse,
+        }
+        with self._start_span("uniconn.download", attributes=attrs) as span:
+            try:
+                await raw_fn(remote_path, local_path, recurse=recurse, **kwargs)
+                _set_span_status(span, ok=True)
+            except BaseException as exc:
+                span.record_exception(exc)
+                _set_span_status(span, ok=False, description=str(exc))
+                raise
 
-        orig_open_shell = conn.open_shell
-        orig_stream = conn.stream
+    async def observe_read_file(
+        self,
+        conn: Connection,
+        raw_fn: Any,
+        remote_path: str | Path,
+        encoding: str | None = "utf-8",
+    ) -> str | bytes:
+        """Обернуть операцию ``read_file`` в OpenTelemetry span."""
+        if not self.trace_files:
+            return await raw_fn(remote_path, encoding=encoding)
+        attrs = {
+            **self._base_attrs(conn),
+            "file.remote_path": str(remote_path),
+        }
+        with self._start_span("uniconn.read_file", attributes=attrs) as span:
+            try:
+                res = await raw_fn(remote_path, encoding=encoding)
+                size = len(res.encode("utf-8")) if isinstance(res, str) else len(res)
+                span.set_attribute("file.bytes_transferred", size)
+                _set_span_status(span, ok=True)
+                return res
+            except BaseException as exc:
+                span.record_exception(exc)
+                _set_span_status(span, ok=False, description=str(exc))
+                raise
 
-        @functools.wraps(orig_open_shell)
-        async def traced_open_shell(
-            term_type: str = "xterm",
-            term_size: tuple[int, int] = (80, 24),
-            init_posix: bool | None = None,
-            **kwargs: Any,
-        ) -> Any:
-            attrs = {
-                **self._base_attrs(conn),
-                "shell.term_type": term_type,
-                "shell.cols": term_size[0],
-                "shell.rows": term_size[1],
-            }
-            with self._start_span("uniconn.open_shell", attributes=attrs) as span:
-                try:
-                    session = await orig_open_shell(
-                        term_type=term_type,
-                        term_size=term_size,
-                        init_posix=init_posix,
-                        **kwargs,
-                    )
-                    _set_span_status(span, ok=True)
-                except BaseException as exc:
-                    span.record_exception(exc)
-                    _set_span_status(span, ok=False, description=str(exc))
-                    raise
-
-            self._wrap_shell_session(conn, session)
-            return session
-
-        @functools.wraps(orig_stream)
-        async def traced_stream(
-            command: Any,
-            timeout: float | None = None,
-            **kwargs: Any,
-        ) -> AsyncIterator[str]:
-            cmd_str = command if isinstance(command, str) else " ".join(command)
-            attrs = {
-                **self._base_attrs(conn),
-                "process.command_line": self._sanitize(cmd_str),
-            }
-            lines_count = 0
-            with self._start_span("uniconn.stream", attributes=attrs) as span:
-                try:
-                    async for line in orig_stream(command, timeout=timeout, **kwargs):
-                        lines_count += 1
-                        yield line
-                    span.set_attribute("stream.lines_count", lines_count)
-                    _set_span_status(span, ok=True)
-                except BaseException as exc:
-                    span.set_attribute("stream.lines_count", lines_count)
-                    span.record_exception(exc)
-                    _set_span_status(span, ok=False, description=str(exc))
-                    raise
-
-        if self.trace_shell:
-            conn_any.open_shell = traced_open_shell
-        conn_any.stream = traced_stream
-
-    def _wrap_shell_session(self, conn: Connection, session: Any) -> None:
-        if getattr(session, "_otel_instrumented", False):
+    async def observe_write_file(
+        self,
+        conn: Connection,
+        raw_fn: Any,
+        remote_path: str | Path,
+        content: str | bytes,
+        mode: int | None = None,
+        encoding: str = "utf-8",
+    ) -> None:
+        """Обернуть операцию ``write_file`` в OpenTelemetry span."""
+        if not self.trace_files:
+            await raw_fn(remote_path, content, mode=mode, encoding=encoding)
             return
-        session._otel_instrumented = True
+        size = len(content.encode(encoding)) if isinstance(content, str) else len(content)
+        attrs = {
+            **self._base_attrs(conn),
+            "file.remote_path": str(remote_path),
+            "file.bytes_transferred": size,
+        }
+        with self._start_span("uniconn.write_file", attributes=attrs) as span:
+            try:
+                await raw_fn(
+                    remote_path,
+                    content,
+                    mode=mode,
+                    encoding=encoding,
+                )
+                _set_span_status(span, ok=True)
+            except BaseException as exc:
+                span.record_exception(exc)
+                _set_span_status(span, ok=False, description=str(exc))
+                raise
 
-        orig_execute = session.execute
-        orig_expect = session.expect
-
-        @functools.wraps(orig_execute)
-        async def traced_execute(
-            command: Any,
-            timeout: float | None = None,
-        ) -> Result:
-            cmd_str = command if isinstance(command, str) else " ".join(command)
-            attrs = {
-                **self._base_attrs(conn),
-                "shell.command": self._sanitize(cmd_str),
-            }
-            with self._start_span("uniconn.shell.execute", attributes=attrs) as span:
-                try:
-                    res = await orig_execute(command, timeout=timeout)
-                    span.set_attribute("process.exit_code", res.exit_code)
-                    span.set_attribute("uniconn.ok", res.ok)
-                    _set_span_status(span, ok=res.ok)
-                    return res
-                except BaseException as exc:
-                    span.record_exception(exc)
-                    _set_span_status(span, ok=False, description=str(exc))
-                    raise
-
-        @functools.wraps(orig_expect)
-        async def traced_expect(
-            command: Any = None,
-            patterns: Any = None,
-            final_prompt: str | None = None,
-            timeout: float | None = None,
-            line_ending: str = "\n",
-            sensitive: bool = False,
-            allow_eof: bool = True,
-        ) -> Result:
-            raw_cmd = "" if command is None else (
-                command if isinstance(command, str) else " ".join(command)
+    async def observe_sync_dir(
+        self,
+        conn: Connection,
+        raw_fn: Any,
+        local_dir: str | Path,
+        remote_dir: str | Path,
+        delete: bool = False,
+        exclude: Any = None,
+        mtime_tolerance: float = 1.0,
+        dry_run: bool | None = None,
+    ) -> SyncResult:
+        """Обернуть операцию ``sync_dir`` в OpenTelemetry span."""
+        if not self.trace_files:
+            return await raw_fn(
+                local_dir=local_dir,
+                remote_dir=remote_dir,
+                delete=delete,
+                exclude=exclude,
+                mtime_tolerance=mtime_tolerance,
+                dry_run=dry_run,
             )
-            cmd_attr = "***REDACTED***" if sensitive else self._sanitize(raw_cmd)
-            attrs = {
-                **self._base_attrs(conn),
-                "shell.command": cmd_attr,
-                "uniconn.sensitive": sensitive,
-            }
-            with self._start_span("uniconn.shell.expect", attributes=attrs) as span:
-                try:
-                    res = await orig_expect(
-                        command=command,
-                        patterns=patterns,
-                        final_prompt=final_prompt,
-                        timeout=timeout,
-                        line_ending=line_ending,
-                        sensitive=sensitive,
-                        allow_eof=allow_eof,
-                    )
-                    span.set_attribute("process.exit_code", res.exit_code)
-                    _set_span_status(span, ok=res.ok)
-                    return res
-                except BaseException as exc:
-                    span.record_exception(exc)
-                    _set_span_status(span, ok=False, description=str(exc))
-                    raise
+        attrs = {
+            **self._base_attrs(conn),
+            "file.local_path": str(local_dir),
+            "file.remote_path": str(remote_dir),
+        }
+        with self._start_span("uniconn.sync_dir", attributes=attrs) as span:
+            try:
+                res = await raw_fn(
+                    local_dir=local_dir,
+                    remote_dir=remote_dir,
+                    delete=delete,
+                    exclude=exclude,
+                    mtime_tolerance=mtime_tolerance,
+                    dry_run=dry_run,
+                )
+                span.set_attribute("file.bytes_transferred", res.bytes_transferred)
+                span.set_attribute("sync.uploaded_count", len(res.uploaded))
+                span.set_attribute("sync.skipped_count", len(res.skipped))
+                span.set_attribute("sync.deleted_count", len(res.deleted))
+                _set_span_status(span, ok=True)
+                return res
+            except BaseException as exc:
+                span.record_exception(exc)
+                _set_span_status(span, ok=False, description=str(exc))
+                raise
 
-        session.execute = traced_execute
-        session.expect = traced_expect
+    async def observe_open_shell(
+        self,
+        conn: Connection,
+        raw_fn: Any,
+        term_type: str = "xterm",
+        term_size: tuple[int, int] = (80, 24),
+        init_posix: bool | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Обернуть открытие интерактивной оболочки ``open_shell`` в OpenTelemetry span."""
+        if not self.trace_shell:
+            return await raw_fn(
+                term_type=term_type,
+                term_size=term_size,
+                init_posix=init_posix,
+                **kwargs,
+            )
+        attrs = {
+            **self._base_attrs(conn),
+            "shell.term_type": term_type,
+            "shell.cols": term_size[0],
+            "shell.rows": term_size[1],
+        }
+        with self._start_span("uniconn.open_shell", attributes=attrs) as span:
+            try:
+                session = await raw_fn(
+                    term_type=term_type,
+                    term_size=term_size,
+                    init_posix=init_posix,
+                    **kwargs,
+                )
+                _set_span_status(span, ok=True)
+                return session
+            except BaseException as exc:
+                span.record_exception(exc)
+                _set_span_status(span, ok=False, description=str(exc))
+                raise
+
+    async def observe_stream(
+        self,
+        conn: Connection,
+        command: Any,
+        raw_gen: AsyncIterator[str],
+    ) -> AsyncIterator[str]:
+        """Обернуть потоковое чтение ``stream`` в OpenTelemetry span."""
+        cmd_str = command if isinstance(command, str) else " ".join(command)
+        attrs = {
+            **self._base_attrs(conn),
+            "process.command_line": self._sanitize(cmd_str),
+        }
+        lines_count = 0
+        with self._start_span("uniconn.stream", attributes=attrs) as span:
+            try:
+                async for line in raw_gen:
+                    lines_count += 1
+                    yield line
+                span.set_attribute("stream.lines_count", lines_count)
+                _set_span_status(span, ok=True)
+            except BaseException as exc:
+                span.set_attribute("stream.lines_count", lines_count)
+                span.record_exception(exc)
+                _set_span_status(span, ok=False, description=str(exc))
+                raise
+
+    async def observe_shell_execute(
+        self,
+        conn: Any,
+        raw_fn: Any,
+        command: Any,
+        timeout: float | None = None,
+    ) -> Result:
+        """Обернуть выполнение команды в ``ShellSession.execute`` в OpenTelemetry span."""
+        if not self.trace_shell:
+            return await raw_fn(command, timeout=timeout)
+        cmd_str = command if isinstance(command, str) else " ".join(command)
+        attrs = {
+            **self._base_attrs(conn),
+            "shell.command": self._sanitize(cmd_str),
+        }
+        with self._start_span("uniconn.shell.execute", attributes=attrs) as span:
+            try:
+                res = await raw_fn(command, timeout=timeout)
+                span.set_attribute("process.exit_code", res.exit_code)
+                span.set_attribute("uniconn.ok", res.ok)
+                _set_span_status(span, ok=res.ok)
+                return res
+            except BaseException as exc:
+                span.record_exception(exc)
+                _set_span_status(span, ok=False, description=str(exc))
+                raise
+
+    async def observe_shell_expect(
+        self,
+        conn: Any,
+        raw_fn: Any,
+        command: Any = None,
+        patterns: Any = None,
+        final_prompt: str | None = None,
+        timeout: float | None = None,
+        line_ending: str = "\n",
+        sensitive: bool = False,
+        allow_eof: bool = True,
+    ) -> Result:
+        """Обернуть диалог ``ShellSession.expect`` в OpenTelemetry span."""
+        if not self.trace_shell:
+            return await raw_fn(
+                command=command,
+                patterns=patterns,
+                final_prompt=final_prompt,
+                timeout=timeout,
+                line_ending=line_ending,
+                sensitive=sensitive,
+                allow_eof=allow_eof,
+            )
+        raw_cmd = "" if command is None else (
+            command if isinstance(command, str) else " ".join(command)
+        )
+        cmd_attr = "***REDACTED***" if sensitive else self._sanitize(raw_cmd)
+        attrs = {
+            **self._base_attrs(conn),
+            "shell.command": cmd_attr,
+            "uniconn.sensitive": sensitive,
+        }
+        with self._start_span("uniconn.shell.expect", attributes=attrs) as span:
+            try:
+                res = await raw_fn(
+                    command=command,
+                    patterns=patterns,
+                    final_prompt=final_prompt,
+                    timeout=timeout,
+                    line_ending=line_ending,
+                    sensitive=sensitive,
+                    allow_eof=allow_eof,
+                )
+                span.set_attribute("process.exit_code", res.exit_code)
+                _set_span_status(span, ok=res.ok)
+                return res
+            except BaseException as exc:
+                span.record_exception(exc)
+                _set_span_status(span, ok=False, description=str(exc))
+                raise
 
     def _attach_connection(self, conn: Connection) -> None:
-        if not any(isinstance(m, TracingMiddleware) for m in conn.pipeline._middlewares):
-            # Вставляем TracingMiddleware сразу после ContextMiddleware и SudoMiddleware,
-            # чтобы он оборачивал HookMiddleware, ObservabilityMiddleware и RetryMiddleware.
-            insert_idx = min(2, len(conn.pipeline._middlewares))
-            conn.pipeline._middlewares.insert(insert_idx, TracingMiddleware(conn, self))
-
-        if self.trace_files:
-            self._instrument_files(conn)
-        self._instrument_shell_and_stream(conn)
+        if not any(isinstance(m, TracingMiddleware) for m in conn.pipeline.middlewares):
+            insert_idx = min(2, len(conn.pipeline.middlewares))
+            conn.pipeline.insert_middleware(insert_idx, TracingMiddleware(conn, self))
+        conn.add_operation_observer(self)
 
     def _attach_pool(self, pool: Any) -> None:
-        if getattr(pool, "_otel_instrumented", False):
-            return
-        pool._otel_instrumented = True
-
-        if hasattr(pool, "_build_conn"):
-            orig_build_conn = pool._build_conn
-
-            @functools.wraps(orig_build_conn)
-            def traced_build_conn(*args: Any, **kwargs: Any) -> Connection:
-                conn = orig_build_conn(*args, **kwargs)
-                self._attach_connection(conn)
-                return conn
-
-            pool._build_conn = traced_build_conn
-
-        active_conns = getattr(pool, "_active_conns", None)
-        if isinstance(active_conns, dict):
-            for existing in active_conns.values():
-                if hasattr(existing, "pipeline"):
-                    self._attach_connection(existing)
-
-        for item in getattr(pool, "_uris", ()):
-            if hasattr(item, "pipeline"):
-                self._attach_connection(item)
+        add_init = getattr(pool, "add_connection_initializer", None)
+        if callable(add_init):
+            add_init(self._attach_connection)
 
     def attach(self, target: Any) -> Self:
         """Привязать сквозную OpenTelemetry-трассировку к ``Connection``, ``SyncConnection`` или пулу."""
@@ -659,7 +659,7 @@ class OtelTracingHook:
             self._attach_connection(target._async_conn)
         elif hasattr(target, "_async_pool"):
             self._attach_pool(target._async_pool)
-        elif hasattr(target, "_build_conn") or hasattr(target, "_get_connections"):
+        elif hasattr(target, "add_connection_initializer") or hasattr(target, "_build_conn"):
             self._attach_pool(target)
         elif hasattr(target, "pipeline"):
             self._attach_connection(target)

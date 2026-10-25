@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .._connection import Connection
+    from ..core.connection import Connection
 
 
 class TunnelService:
@@ -27,10 +27,10 @@ class TunnelService:
         local_port: int = 0,
     ) -> AsyncIterator[int]:
         """Асинхронный контекстный менеджер прямого SSH-туннеля (Local Port Forwarding)."""
-        if not self._conn._transport.is_connected:
-            await self._conn._transport.connect()
+        if not self._conn.transport.is_connected:
+            await self._conn.transport.connect()
 
-        async with self._conn._transport.forward_local_port(
+        async with self._conn.transport.forward_local_port(
             remote_host=remote_host,
             remote_port=remote_port,
             local_host=local_host,
@@ -47,10 +47,10 @@ class TunnelService:
         local_port: int = 80,
     ) -> AsyncIterator[int]:
         """Асинхронный контекстный менеджер обратного SSH-туннеля (Remote Port Forwarding)."""
-        if not self._conn._transport.is_connected:
-            await self._conn._transport.connect()
+        if not self._conn.transport.is_connected:
+            await self._conn.transport.connect()
 
-        async with self._conn._transport.forward_remote_port(
+        async with self._conn.transport.forward_remote_port(
             remote_host=remote_host,
             remote_port=remote_port,
             local_host=local_host,

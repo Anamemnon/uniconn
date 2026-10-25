@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING, Any, Literal
 from ..result import EnsureResult
 
 if TYPE_CHECKING:
-    from .._connection import Connection
-    from .._facts import FactSpec, HostFacts
+    from ..core.connection import Connection
+    from .facts_models import FactSpec, HostFacts
 
 PkgManagerName = Literal["auto", "apt", "dnf", "yum", "apk", "pacman", "zypper"]
 ServiceState = Literal["started", "stopped", "restarted", "reloaded"]
@@ -410,9 +410,9 @@ class StateManagementService:
         """Идемпотентно обеспечить наличие или отсутствие пакета(ов) на хосте."""
         pkgs = [package] if isinstance(package, str) else [str(p) for p in package]
         target_str = ", ".join(pkgs)
-        is_dry_run = self._conn._dry_run if dry_run is None else dry_run
+        is_dry_run = self._conn.is_dry_run if dry_run is None else dry_run
 
-        if self._conn._dry_run:
+        if self._conn.is_dry_run:
             return EnsureResult(
                 target=target_str,
                 state=state,
@@ -485,8 +485,8 @@ class StateManagementService:
         manager: Literal["auto", "systemd", "openrc", "sysv"] = "auto",
     ) -> EnsureResult:
         """Идемпотентно управлять состоянием системного сервиса."""
-        is_dry_run = self._conn._dry_run if dry_run is None else dry_run
-        if self._conn._dry_run:
+        is_dry_run = self._conn.is_dry_run if dry_run is None else dry_run
+        if self._conn.is_dry_run:
             return EnsureResult(
                 target=service,
                 state=state,
@@ -584,9 +584,9 @@ class StateManagementService:
         """Идемпотентно обеспечить наличие, замену или отсутствие строки в файле."""
         path_str = str(remote_path)
         clean_line = line.rstrip("\r\n")
-        is_dry_run = self._conn._dry_run if dry_run is None else dry_run
+        is_dry_run = self._conn.is_dry_run if dry_run is None else dry_run
 
-        if self._conn._dry_run:
+        if self._conn.is_dry_run:
             return EnsureResult(
                 target=path_str,
                 state=state,

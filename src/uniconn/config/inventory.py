@@ -118,6 +118,8 @@ class InventoryLoader:
         group: str | None = None,
     ) -> list[dict[str, Any]]:
         """Прочитать файл ``.yaml``/``.yml``/``.json`` и вернуть список конфигураций хостов."""
+        from ..exceptions import ConfigurationError
+
         filepath = Path(path)
         content = filepath.read_text(encoding="utf-8")
 
@@ -125,13 +127,14 @@ class InventoryLoader:
             try:
                 import yaml
 
-                raw_data = yaml.safe_load(content)
+                loader_cls = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+                raw_data = yaml.load(content, Loader=loader_cls)
             except ImportError:
                 raise ImportError("PyYAML not installed. Run: pip install pyyaml") from None
         elif filepath.suffix == ".json":
             raw_data = json.loads(content)
         else:
-            raise ValueError(
+            raise ConfigurationError(
                 f"Unsupported file format: {filepath.suffix}. Use .json, .yaml or .yml"
             )
 

@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from .._pool import ConnectionPool, PoolTarget
+    from .connection_pool import ConnectionPool, PoolTarget
 
 
 class PoolStreamMultiplexer:

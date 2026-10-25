@@ -57,10 +57,9 @@ class ExpectStateMachine:
         matched_indices: set[int] = set()
 
         while True:
-            tail = accumulated[cursor:]
             candidates: list[tuple[bool, int, int, int, re.Match[str], str]] = []
             for idx, (pat_re, resp_text) in enumerate(self.compiled_patterns):
-                m = pat_re.search(tail)
+                m = pat_re.search(accumulated, cursor)
                 if m is not None:
                     candidates.append(
                         (
@@ -76,16 +75,16 @@ class ExpectStateMachine:
                 candidates.sort(key=lambda item: item[:4])
                 _, _, _, win_idx, win_m, win_resp = candidates[0]
                 if win_idx not in matched_indices or self.final_re is not None:
-                    cursor += win_m.end()
+                    cursor = win_m.end()
                     matched_indices.add(win_idx)
                     if win_resp:
                         await send_fn(win_resp)
                     continue
 
             if self.final_re is not None:
-                m_final = self.final_re.search(tail)
+                m_final = self.final_re.search(accumulated, cursor)
                 if m_final is not None:
-                    out_end = cursor + m_final.end()
+                    out_end = m_final.end()
                     return accumulated[:out_end], accumulated[out_end:]
 
             all_patterns_done = bool(self.compiled_patterns) and len(
@@ -126,7 +125,7 @@ class ExpectStateMachine:
                     )
                     or (
                         self.final_re is not None
-                        and self.final_re.search(accumulated[cursor:])
+                        and self.final_re.search(accumulated, cursor) is not None
                     )
                 ):
                     return accumulated, ""

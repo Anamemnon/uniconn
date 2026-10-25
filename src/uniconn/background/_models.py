@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LogEvent:
     """Событие лога — одна строка вывода screen-сессии."""
 
@@ -12,7 +12,7 @@ class LogEvent:
     timestamp: datetime = field(default_factory=datetime.now)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class StatusEvent:
     """Событие статуса screen-сессии (результат опроса)."""
 
@@ -22,7 +22,7 @@ class StatusEvent:
     exit_code: int | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ScreenResult:
     """Итоговый результат завершившейся screen-сессии."""
 
