@@ -17,7 +17,7 @@
 - **Domain Services (`uniconn.services`)**: `FileOperationsService`, `DirectorySynchronizer`, `TemplateEngine`, `StateManagementService`, `FactCollector`, `TunnelService`, `SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`
 - **Strategies (`uniconn.services.provisioning`)**: `PackageManagerStrategy`, `AptStrategy`, `ApkStrategy`, `DnfYumStrategy`, `PacmanStrategy`, `ZypperStrategy`, `ServiceManagerStrategy`, `SystemdStrategy`, `OpenRCStrategy`, `SysVStrategy`
 - **Middleware Pipeline & Context (`uniconn.core`)**: `CommandRequest`, `CommandPipeline`, `CommandMiddleware`, `ContextMiddleware`, `SudoMiddleware`, `HookMiddleware`, `DryRunMiddleware`, `ObservabilityMiddleware`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`, `RetryMiddleware`, `TracingMiddleware`, `ExecutionContext`, `EventLoopPortal`, `SyncContextBridge`, `InventoryLoader`
-- **Transport Protocols, Replay/Cassette & Helpers (`uniconn.transports`)**: `BaseTransport`, `CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `ShellStdinProtocol`, `ShellStdoutProtocol`, `TunnelCapableTransport`, `require_capability`, `supports_capability`, `ReplayTransport`, `CassetteTransportProxy`, `Cassette`, `CassetteContext`, `SyncCassetteContext`, `RecordMode`, `RecordedExecInteraction`, `RecordedStreamInteraction`, `RecordedFsInteraction`, `RecordedShellInteraction`, `ShellDialogStep`, `ReplayShellProcess`, `normalize_temp_paths`, `OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`
+- **Transport Protocols, Replay/Cassette & Helpers (`uniconn.transports` / `uniconn.pytest_plugin`)**: `BaseTransport`, `CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `ShellStdinProtocol`, `ShellStdoutProtocol`, `TunnelCapableTransport`, `require_capability`, `supports_capability`, `ReplayTransport`, `CassetteTransportProxy`, `Cassette`, `CassetteContext`, `SyncCassetteContext`, `UniconnCassetteFixture`, `RecordMode`, `RecordedExecInteraction`, `RecordedStreamInteraction`, `RecordedFsInteraction`, `RecordedShellInteraction`, `ShellDialogStep`, `ReplayShellProcess`, `normalize_temp_paths`, `OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`
 - **Pools**: `ConnectionPool`, `SyncConnectionPool`, `PoolStreamMultiplexer`, `SSHSessionPool`
 - **Interactive PTY Shell (`uniconn.shell`)**: `ShellSession`, `SyncShellSession`, `PosixMarkerProtocol`, `ExpectStateMachine`
 - **Background Diagnostics, Streaming Logs & GNU Screen (`uniconn.background`)**: `DiagnosticSession`, `SyncDiagnosticSession`, `DiagnosticConfig`, `DiagnosticResult`, `StreamSourceSpec`, `DirectStreamCollector`, `LogPipeline`, `LogHandler`, `LocalFileHandler`, `ForwardHandler`, `StreamHandler`, `ArchiveHandler`, `ScreenPool`, `ScreenSession`, `ScreenResult`, `LogConfig`
@@ -254,4 +254,48 @@ metrics.attach(conn)  # registers after_run and on_error
 
 otel = otel_tracing_hook(service_name="uniconn", record_output=False, mask_secrets=True)
 otel.attach(conn)     # instruments run(), upload(), download(), read_file(), write_file(), sync_dir(), open_shell(), stream()
+```
+
+### Pytest Plugin & Cassette Testing (`uniconn.pytest_plugin`)
+```python
+# In pytest tests:
+import pytest
+from uniconn import Connection
+
+# 1. Automatic cassette record/replay via marker:
+@pytest.mark.uniconn_cassette  # auto-names to cassettes/<test_file>/<test_name>.yaml
+async def test_fleet_inspection():
+    conn = Connection.from_uri("ssh://node-01")  # automatically wrapped in CassetteTransportProxy
+    res = await conn.run("uptime")
+    assert res.ok
+
+# 2. Explicit cassette fixture usage:
+@pytest.mark.uniconn_cassette("edge_node.yaml", mode="once")
+async def test_custom_cassette(uniconn_cassette):
+    conn = Connection.from_uri("ssh://node-01")
+    async with uniconn_cassette.use(conn) as cass:
+        await conn.run("hostname")
+    assert cass.total_interactions == 1
+
+# 3. Direct replay connection without real network:
+async def test_replay_flow(uniconn_cassette):
+    replay_conn = uniconn_cassette.connection("fixtures/cassettes/edge_node.yaml")
+    res = await replay_conn.run("hostname")
+    assert res.ok
+```
+
+### CLI Cassette Commands
+```bash
+# Record commands/scripts into cassette:
+uniconn record ssh://user@host -c ./cassettes/node.yaml -- uptime
+uniconn record ssh://user@host -c ./cassettes/node.yaml --mode all --sanitize-ip -- script.sh
+
+# Replay commands from cassette without network:
+uniconn replay ./cassettes/node.yaml -- uptime
+uniconn replay ./cassettes/node.yaml  # prints cassette metadata and interaction summary
+
+# Manage, sanitize, and verify cassettes:
+uniconn cassette info ./cassettes/node.yaml [--format json]
+uniconn cassette sanitize ./cassettes/node.yaml [--output clean.yaml] [--redact-ip] [--redact-tokens]
+uniconn cassette verify ./cassettes/node.yaml
 ```

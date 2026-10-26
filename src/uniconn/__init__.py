@@ -94,6 +94,7 @@ from .hooks import (
     structured_log_hook,
 )
 from .pool import ConnectionPool, PoolStreamMultiplexer, SSHSessionPool
+from .pytest_plugin import UniconnCassetteFixture
 from .result import EnsureResult, PingResult, Result, SyncResult
 from .services import (
     ApkStrategy,
@@ -312,6 +313,7 @@ __all__ = [
     "TunnelCapableTransport",
     "TunnelService",
     "URIParser",
+    "UniconnCassetteFixture",
     "UniconnError",
     "ZypperStrategy",
     "allowlist_hook",

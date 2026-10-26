@@ -7,6 +7,7 @@ import sys
 from typing import Annotated, Any
 
 from .._logging import configure_logging
+from .cmd_cassette import register_cassette_commands
 from .cmd_exec import register_exec_commands
 from .cmd_files import register_file_commands
 from .cmd_ops import register_ops_commands
@@ -58,6 +59,7 @@ def create_cli_app() -> Any:
     register_file_commands(app, console, renderer)
     register_ops_commands(app, console, renderer)
     register_screen_commands(app, console, renderer)
+    register_cassette_commands(app, console, renderer)
     return app
 
 

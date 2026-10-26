@@ -64,6 +64,9 @@ serial = "uniconn.transports._serial:SerialTransport"
 ipmi = "uniconn.transports.bmc._ipmi:IPMITransport"
 replay = "uniconn.transports.replay:ReplayTransport"
 
+[project.entry-points.pytest11]
+uniconn = "uniconn.pytest_plugin"
+
 [project.scripts]
 uniconn = "uniconn.cli:main"
 

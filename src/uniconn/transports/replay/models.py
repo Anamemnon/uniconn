@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -28,6 +30,10 @@ _YAML_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 _YAML_DUMPER = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
 
 _TEMP_PATH_RE = re.compile(r"/tmp/uniconn_[A-Za-z0-9_]+")
+_IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+_TOKEN_RE = re.compile(
+    r"(?i)\b(?:bearer\s+[a-zA-Z0-9_\-\.]{8,}|(?:ghp|glpat|token|password|secret|api[_-]?key)[=:\s]+[a-zA-Z0-9_\-\.]{6,})"
+)
 _POSIX_MARKER_CMD_RE = re.compile(
     r"^(.*);\s*echo\s+\"\\n(__UNICONN_[0-9a-f]+__)\$\?\"\s*$",
     re.DOTALL,
@@ -200,6 +206,124 @@ class Cassette(BaseModel):
                 default_flow_style=False,
             )
         file_path.write_text(text, encoding="utf-8")
+
+    @property
+    def total_interactions(self) -> int:
+        """Общее количество записанных взаимодействий."""
+        return len(self.interactions)
+
+    @property
+    def exec_count(self) -> int:
+        """Количество вызовов команд (exec)."""
+        return sum(1 for it in self.interactions if it.kind == "exec")
+
+    @property
+    def stream_count(self) -> int:
+        """Количество потоковых вызовов (stream)."""
+        return sum(1 for it in self.interactions if it.kind == "stream")
+
+    @property
+    def fs_count(self) -> int:
+        """Количество файловых операций (fs)."""
+        return sum(1 for it in self.interactions if it.kind == "fs")
+
+    @property
+    def shell_count(self) -> int:
+        """Количество интерактивных shell-сессий."""
+        return sum(1 for it in self.interactions if it.kind == "shell")
+
+    def sanitize(
+        self,
+        *,
+        redact_ips: bool = False,
+        redact_tokens: bool = True,
+        custom_patterns: Mapping[str | re.Pattern[str], str] | None = None,
+    ) -> int:
+        """Санитизировать конфиденциальные данные (IP, токены, секреты) во всех взаимодействиях кассеты.
+
+        Возвращает суммарное количество произведённых замен.
+        """
+        rules: list[tuple[re.Pattern[str], str]] = []
+        if redact_tokens:
+            rules.append((_TOKEN_RE, "<REDACTED_SECRET>"))
+        if redact_ips:
+            rules.append((_IPV4_RE, "<IP_REDACTED>"))
+        if custom_patterns:
+            for pat, repl in custom_patterns.items():
+                compiled = re.compile(pat) if isinstance(pat, str) else pat
+                rules.append((compiled, repl))
+
+        if not rules:
+            return 0
+
+        replacements = 0
+
+        def _sub(text: str | None) -> str | None:
+            nonlocal replacements
+            if not text:
+                return text
+            res = text
+            for pat, repl in rules:
+                res, n = pat.subn(repl, res)
+                replacements += n
+            return res
+
+        if self.host and redact_ips:
+            self.host = _sub(self.host)
+
+        for it in self.interactions:
+            if isinstance(it, RecordedExecInteraction):
+                it.command = _sub(it.command) or ""
+                it.stdout = _sub(it.stdout) or ""
+                it.stderr = _sub(it.stderr) or ""
+                if it.cwd:
+                    it.cwd = _sub(it.cwd)
+                if it.env:
+                    it.env = {k: (_sub(v) or "") for k, v in it.env.items()}
+            elif isinstance(it, RecordedStreamInteraction):
+                it.command = _sub(it.command) or ""
+                if it.cwd:
+                    it.cwd = _sub(it.cwd)
+                it.lines = [(_sub(line) or "") for line in it.lines]
+            elif isinstance(it, RecordedFsInteraction):
+                it.path = _sub(it.path) or ""
+                if it.target_path:
+                    it.target_path = _sub(it.target_path)
+                if it.content_utf8:
+                    it.content_utf8 = _sub(it.content_utf8)
+                if it.result_list:
+                    it.result_list = [(_sub(item) or "") for item in it.result_list]
+            elif isinstance(it, RecordedShellInteraction):
+                for step in it.steps:
+                    step.expect_input = _sub(step.expect_input) or ""
+                    step.response_output = _sub(step.response_output) or ""
+
+        return replacements
+
+    def verify(self) -> list[str]:
+        """Проверить целостность кассеты и соответствие схеме взаимодействий.
+
+        Возвращает список ошибок (пустой, если кассета полностью корректна).
+        """
+        errors: list[str] = []
+        if not self.transport:
+            errors.append("Cassette has no transport specified.")
+        for idx, it in enumerate(self.interactions):
+            if isinstance(it, RecordedExecInteraction):
+                if it.stdout_base64:
+                    try:
+                        base64.b64decode(it.stdout_base64)
+                    except Exception as exc:
+                        errors.append(f"Interaction #{idx} (exec): invalid stdout_base64 ({exc})")
+            elif isinstance(it, RecordedFsInteraction):
+                if it.content_base64:
+                    try:
+                        base64.b64decode(it.content_base64)
+                    except Exception as exc:
+                        errors.append(f"Interaction #{idx} (fs): invalid content_base64 ({exc})")
+            elif isinstance(it, RecordedShellInteraction) and not isinstance(it.steps, list):
+                errors.append(f"Interaction #{idx} (shell): steps must be a list")
+        return errors
 
 
 __all__ = [

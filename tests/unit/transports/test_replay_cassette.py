@@ -52,7 +52,7 @@ class TestCassetteRecordAndReplayModes:
         conn = Connection.from_uri("local://")
 
         async with conn.use_cassette(cassette_file, mode="once") as cassette:
-            res = await conn.run("echo 'hello cassette'")
+            res = await conn.run("echo hello cassette")
             assert res.ok
             assert res.text == "hello cassette"
             assert len(cassette.interactions) == 1
@@ -62,7 +62,7 @@ class TestCassetteRecordAndReplayModes:
         # Подменяем метод реального транспорта на падающий мок — во втором прогоне он не должен вызываться
         conn._transport.run = AsyncMock(side_effect=AssertionError("Real transport called!"))
         async with conn.use_cassette(cassette_file, mode="once"):
-            replayed = await conn.run("echo 'hello cassette'")
+            replayed = await conn.run("echo hello cassette")
             assert replayed.ok
             assert replayed.text == "hello cassette"
 
