@@ -67,7 +67,84 @@ class URIParser:
         if transport == "replay":
             return cls._parse_replay(parsed)
 
+        if transport in ("docker", "podman"):
+            return cls._parse_container(parsed, transport)
+
+        if transport == "kubectl":
+            return cls._parse_kubectl(parsed)
+
         return cls._parse_network(parsed, transport)
+
+    @classmethod
+    def _parse_container(cls, parsed: ParseResult, transport: str) -> ConnectionConfig:
+        """Парсинг docker:// и podman:// URI с сохранением регистра имени контейнера."""
+        from .models import ConnectionConfig
+
+        options = cls._parse_options(parsed.query)
+        if transport == "podman":
+            options.setdefault("runtime", "podman")
+
+        netloc = parsed.netloc
+        username: str | None = None
+        host_part = netloc
+        if "@" in netloc:
+            raw_user, host_part = netloc.rsplit("@", 1)
+            if ":" in raw_user:
+                raw_user, _ = raw_user.split(":", 1)
+            username = unquote(raw_user) if raw_user else None
+
+        port: int | None = None
+        if ":" in host_part:
+            maybe_host, maybe_port = host_part.rsplit(":", 1)
+            if maybe_port.isdigit():
+                host_part = maybe_host
+                port = int(maybe_port)
+
+        container_name = unquote(host_part) or unquote(parsed.path.strip("/"))
+        if not container_name and "container" in options:
+            container_name = str(options.pop("container"))
+
+        if parsed.path and parsed.path != "/" and unquote(host_part):
+            options.setdefault("workdir", unquote(parsed.path))
+
+        return ConnectionConfig(
+            transport=transport,
+            host=container_name or None,
+            port=port,
+            username=username,
+            password=None,
+            options=options,
+        )
+
+    @classmethod
+    def _parse_kubectl(cls, parsed: ParseResult) -> ConnectionConfig:
+        """Парсинг kubectl://[namespace/]pod_name[?container=...&context=...&kubeconfig=...]."""
+        from .models import ConnectionConfig
+
+        options = cls._parse_options(parsed.query)
+        netloc = unquote(parsed.netloc)
+        path_trimmed = unquote(parsed.path.strip("/"))
+
+        if path_trimmed:
+            # Формат kubectl://namespace/pod_name
+            if netloc and "namespace" not in options:
+                options["namespace"] = netloc
+            pod_name = path_trimmed.split("/", 1)[0]
+        else:
+            # Формат kubectl://pod_name?namespace=default
+            pod_name = netloc
+
+        if not pod_name and "pod" in options:
+            pod_name = str(options.pop("pod"))
+
+        return ConnectionConfig(
+            transport="kubectl",
+            host=pod_name or None,
+            port=None,
+            username=None,
+            password=None,
+            options=options,
+        )
 
     @classmethod
     def _parse_replay(cls, parsed: ParseResult) -> ConnectionConfig:
@@ -233,6 +310,15 @@ class URIParser:
                 query = "&".join(f"{k}={v}" for k, v in options.items())
                 return f"serial://{device}?{query}"
             return f"serial://{device}"
+
+        if transport == "kubectl":
+            opts = dict(options) if options else {}
+            ns = opts.pop("namespace", None)
+            target = f"{ns}/{host or ''}" if ns else (host or "")
+            if opts:
+                query = "&".join(f"{k}={v}" for k, v in opts.items())
+                return f"kubectl://{target}?{query}"
+            return f"kubectl://{target}"
 
         auth = ""
         if username and password:

@@ -1,6 +1,6 @@
 # Реализованные возможности и архитектура библиотеки uniconn
 
-> **Версия**: v0.12.0 | **550+ unit-тестов** | 6 транспортов (`ssh`, `telnet`, `serial`, `local`, `ipmi`, `replay`) | Модульный CLI (`cyclopts` + `rich`) | Интерактивная веб-панель (`examples/dashboard/`) | PEP 561 (`py.typed`)
+> **Версия**: v0.13.0 | **570+ unit-тестов** | 9 транспортов (`ssh`, `telnet`, `serial`, `local`, `ipmi`, `replay`, `docker`, `podman`, `kubectl`) | Модульный CLI (`cyclopts` + `rich`) | Интерактивная веб-панель (`examples/dashboard/`) | PEP 561 (`py.typed`)
 >
 > **Для ИИ-агентов**: этот файл (`FEATURES.md`) является полным каталогом реализованных фич и архитектурных решений библиотеки `uniconn`. **Не загружайте его в контекст при каждом запросе** — используйте `llms.txt` для быстрого обзора сигнатур API, а к `FEATURES.md` обращайтесь только по требованию (on-demand), когда нужно сверить наличие конкретной функциональности или обновить список возможностей после релиза.
 >
@@ -10,7 +10,7 @@
 
 | Область | Статус | Детали |
 |---------|--------|--------|
-| Транспорты | ✅ 6/6 | SSH (`~/.ssh/config`, цепочки Jump-хостов `SSHJumpChainManager`, `ProxyCommand`), Telnet, Serial/UART, Local, IPMI, Replay (`replay://`, `Cassette`, `CassetteTransportProxy`) |
+| Транспорты | ✅ 9/9 | SSH (`~/.ssh/config`, `SSHJumpChainManager`, `ProxyCommand`), Docker (`docker://`), Podman (`podman://`), Kubernetes (`kubectl://`), Telnet, Serial/UART, Local, IPMI, Replay (`replay://`) |
 | Протоколы ISP | ✅ `transports.base` | `CommandTransport`, `FileCapableTransport`, `ShellCapableTransport`, `TunnelCapableTransport`, `require_capability()` |
 | Конвейер команд | ✅ `CommandPipeline` | Цепочка `CommandMiddleware`: `Context`, `Sudo`, `Hook`, `DryRun`, `Observability`, `CircuitBreaker`, `RateLimit`, `Retry` (`conn.pipeline`) |
 | Отказоустойчивость (`v0.9.0`) | ✅ `CircuitBreaker` + `RateLimiter` | Состояния `CLOSED` → `OPEN` → `HALF_OPEN` (`CircuitOpenError`), Token Bucket `RateLimiter` на уровне `Connection`, `ConnectionPool` и `SSHSessionPool` |

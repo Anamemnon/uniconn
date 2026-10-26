@@ -12,6 +12,8 @@
     - IPMITransport: IPMI BMC через pyghmi
 """
 
+from ._docker import DockerTransport, PodmanTransport
+from ._kubectl import KubectlTransport
 from ._local import LocalTransport
 from .base import BaseTransport
 from .replay import (
@@ -35,7 +37,10 @@ __all__ = [
     "Cassette",
     "CassetteContext",
     "CassetteTransportProxy",
+    "DockerTransport",
+    "KubectlTransport",
     "LocalTransport",
+    "PodmanTransport",
     "RecordMode",
     "RecordedExecInteraction",
     "RecordedFsInteraction",

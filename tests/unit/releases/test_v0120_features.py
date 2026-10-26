@@ -32,8 +32,8 @@ from uniconn.cli import main as cli_main
 class TestSecretResolverAndConfig:
     """Tests for SecretResolver across env://, file://, ConnectionConfig, URIParser, and InventoryLoader."""
 
-    def test_version_is_0120(self) -> None:
-        assert uniconn.__version__ == "0.12.0"
+    def test_version_is_at_least_0120(self) -> None:
+        assert tuple(int(x) for x in uniconn.__version__.split(".")) >= (0, 12, 0)
 
     def test_resolve_env_success_and_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("UNICONN_TEST_SECRET", "s3cr3t_val")

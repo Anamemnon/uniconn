@@ -1,6 +1,6 @@
-# uniconn — LLM & AI Agent API Reference (v0.12.0)
+# uniconn — LLM & AI Agent API Reference (v0.13.0)
 
-> Universal async-first Python library (Python 3.11+) and CLI for executing commands, inspecting host facts, enforcing idempotent states, and managing files across SSH, Telnet, Serial/UART, IPMI BMC, Replay, and Local transports.
+> Universal async-first Python library (Python 3.11+) and CLI for executing commands, inspecting host facts, enforcing idempotent states, and managing files across SSH, Telnet, Serial/UART, IPMI BMC, Docker/Podman, Kubernetes (`kubectl`), Replay, and Local transports.
 
 ## Quick Facts & Commands
 - Package manager: `uv`
@@ -17,7 +17,7 @@
 - **Domain Services (`uniconn.services`)**: `FileOperationsService`, `DirectorySynchronizer`, `TemplateEngine`, `StateManagementService`, `FactCollector`, `TunnelService`, `SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`
 - **Strategies (`uniconn.services.provisioning`)**: `PackageManagerStrategy`, `AptStrategy`, `ApkStrategy`, `DnfYumStrategy`, `PacmanStrategy`, `ZypperStrategy`, `ServiceManagerStrategy`, `SystemdStrategy`, `OpenRCStrategy`, `SysVStrategy`
 - **Middleware Pipeline & Context (`uniconn.core`)**: `CommandRequest`, `CommandPipeline`, `CommandMiddleware`, `ContextMiddleware`, `SudoMiddleware`, `HookMiddleware`, `DryRunMiddleware`, `ObservabilityMiddleware`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`, `RetryMiddleware`, `TracingMiddleware`, `ExecutionContext`, `EventLoopPortal`, `SyncContextBridge`, `InventoryLoader`
-- **Transport Protocols, Replay/Cassette & Helpers (`uniconn.transports` / `uniconn.pytest_plugin`)**: `BaseTransport`, `CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `ShellStdinProtocol`, `ShellStdoutProtocol`, `TunnelCapableTransport`, `require_capability`, `supports_capability`, `ReplayTransport`, `CassetteTransportProxy`, `Cassette`, `CassetteDiffReport`, `InteractionDiff`, `CassetteContext`, `SyncCassetteContext`, `UniconnCassetteFixture`, `RecordMode`, `RecordedExecInteraction`, `RecordedStreamInteraction`, `RecordedFsInteraction`, `RecordedShellInteraction`, `ShellDialogStep`, `ReplayShellProcess`, `normalize_temp_paths`, `OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`
+- **Transport Protocols, Container/K8s, Replay/Cassette & Helpers (`uniconn.transports` / `uniconn.pytest_plugin`)**: `BaseTransport`, `CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `ShellStdinProtocol`, `ShellStdoutProtocol`, `TunnelCapableTransport`, `require_capability`, `supports_capability`, `DockerTransport`, `PodmanTransport`, `KubectlTransport`, `LocalTransport`, `ReplayTransport`, `CassetteTransportProxy`, `Cassette`, `CassetteDiffReport`, `InteractionDiff`, `CassetteContext`, `SyncCassetteContext`, `UniconnCassetteFixture`, `RecordMode`, `RecordedExecInteraction`, `RecordedStreamInteraction`, `RecordedFsInteraction`, `RecordedShellInteraction`, `ShellDialogStep`, `ReplayShellProcess`, `normalize_temp_paths`, `OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`
 - **Pools**: `ConnectionPool`, `SyncConnectionPool`, `PoolStreamMultiplexer`, `SSHSessionPool`
 - **Interactive PTY Shell (`uniconn.shell`)**: `ShellSession`, `SyncShellSession`, `PosixMarkerProtocol`, `ExpectStateMachine`
 - **Background Diagnostics, Streaming Logs & GNU Screen (`uniconn.background`)**: `DiagnosticSession`, `SyncDiagnosticSession`, `DiagnosticConfig`, `DiagnosticResult`, `StreamSourceSpec`, `DirectStreamCollector`, `LogPipeline`, `LogHandler`, `LocalFileHandler`, `ForwardHandler`, `StreamHandler`, `ArchiveHandler`, `ScreenPool`, `ScreenSession`, `ScreenResult`, `LogConfig`
@@ -27,12 +27,15 @@
 
 ## URI Schemes & Secret Resolution (`SecretResolver`)
 - `ssh://[user[:password]@]host[:22][?key_file=...&password=env://SSH_PASS&known_hosts=strict&keepalive=30&ssh_config=true&use_agent=true&proxy=jump1,jump2&proxy_command=...&rate_limit=10&circuit_breaker_threshold=5&circuit_breaker_timeout=30]`
+- `docker://[user@]container_name_or_id[?runtime=docker|podman&context=...&docker_host=...&workdir=/app&shell=/bin/sh]`
+- `podman://[user@]container_name_or_id[?workdir=/app&shell=/bin/sh]`
+- `kubectl://[namespace/]pod_name[?container=app&context=prod&kubeconfig=/path/to/config&namespace=default&workdir=/app]`
 - `local://[?timeout=30&rate_limit=10&circuit_breaker_threshold=5]`
 - `telnet://[user[:password]@]host[:23][?term_type=vt100]`
 - `serial:///dev/ttyUSB0[?baudrate=115200&parity=N&stopbits=1]`
 - `ipmi://admin:password@bmc-host[:623]`
 - `replay://host[?cassette=path/to/cassette.yaml&mode=none&normalize_temp=true&allow_playback_repeats=true]`
-- **Secret URI References (`v0.12.0`)**: `password`, `options["passphrase"]`, `options["sudo_password"]`, `options["key_file"]`, and arbitrary values in `InventoryLoader` (YAML/TOML/JSON) support `env://VAR_NAME[?default=fallback]` and `file:///path/to/secret[?default=fallback]`. Missing secrets without `?default=` raise `ConfigurationError`.
+- **Secret URI References (`v0.12.0+`)**: `password`, `options["passphrase"]`, `options["sudo_password"]`, `options["key_file"]`, and arbitrary values in `InventoryLoader` (YAML/TOML/JSON) support `env://VAR_NAME[?default=fallback]` and `file:///path/to/secret[?default=fallback]`. Missing secrets without `?default=` raise `ConfigurationError`.
 
 ## Core API Signatures
 

@@ -2,7 +2,7 @@
 
 ## Обзор проекта
 
-`uniconn` (`v0.12.0`) — универсальная async-first Python-библиотека (Python 3.11+) для выполнения команд, инспекции хостов, идемпотентного управления состоянием и синхронизации файлов через единый фасад `Connection`. Управление зависимостями осуществляется через `uv`.
+`uniconn` (`v0.13.0`) — универсальная async-first Python-библиотека (Python 3.11+) для выполнения команд, инспекции хостов, идемпотентного управления состоянием и синхронизации файлов через единый фасад `Connection`. Управление зависимостями осуществляется через `uv`.
 
 Для быстрого ознакомления с сигнатурами публичного API и URI-схемами используйте файл `llms.txt` в корне репозитория.
 
@@ -21,7 +21,7 @@
   - `provisioning.py` — `StateManagementService` (`ensure_package`, `ensure_service`, `ensure_line`, `ensure_file`, `ensure_directory` с расчётом unified diff при `dry_run=True`), паттерн «Стратегия» для пакетных менеджеров (`PackageManagerStrategy`: `AptStrategy`, `ApkStrategy`, `DnfYumStrategy`, `PacmanStrategy`, `ZypperStrategy`) и менеджеров сервисов (`ServiceManagerStrategy`: `SystemdStrategy`, `OpenRCStrategy`, `SysVStrategy`).
   - `tunnels.py` — `TunnelService` (`forward_local_port`, `forward_remote_port`).
 - `config/` — `models.py` (`ConnectionConfig`), `secrets.py` (`SecretResolver` для `env://` и `file://` с `?default=`), `uri.py` (`URIParser`) и `inventory.py` (`InventoryLoader` — парсинг YAML/TOML/JSON инвентарей).
-- `transports/` — протоколы возможностей ISP (`CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `TunnelCapableTransport`, `require_capability` в `base.py`), декомпозированный пакет `transports/replay/` (`ReplayTransport`, `Cassette`, `CassetteDiffReport`, `InteractionDiff`, `CassetteContext`, `CassetteTransportProxy`), декомпозированный пакет `transports/ssh/` (`OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`) и реализации `_ssh.py`, `_telnet.py`, `_serial.py`, `_local.py`, `bmc/_ipmi.py`.
+- `transports/` — протоколы возможностей ISP (`CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `TunnelCapableTransport`, `require_capability` в `base.py`), декомпозированный пакет `transports/replay/` (`ReplayTransport`, `Cassette`, `CassetteDiffReport`, `InteractionDiff`, `CassetteContext`, `CassetteTransportProxy`), декомпозированный пакет `transports/ssh/` (`OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`) и реализации `_ssh.py`, `_telnet.py`, `_serial.py`, `_local.py`, `_docker.py` (`DockerTransport`, `PodmanTransport`), `_kubectl.py` (`KubectlTransport`), `bmc/_ipmi.py`.
 - `shell/` (реэкспорт в `_shell.py`) — `ShellSession` (`shell/session.py`), `PosixMarkerProtocol` (`shell/marker_protocol.py`), `ExpectStateMachine` (`shell/expect_engine.py`).
 - `sync/` (реэкспорт в `_sync.py`) — `connection.py` (`SyncConnection`), `shell.py` (`SyncShellSession`), `pool.py` (`SyncConnectionPool`) и `services.py` (`SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`, `SyncDiagnosticSession`) на базе `EventLoopPortal`.
 - `pool/` (реэкспорты в `_pool.py` и `_session_pool.py`) — `connection_pool.py` (`ConnectionPool` с `_fan_out_list` / `_fan_out_dict` и `use_cassette`), `session_pool.py` (`SSHSessionPool` с адаптивным авто-понижением лимитов и `resize()`) и `stream_mux.py` (`PoolStreamMultiplexer`).

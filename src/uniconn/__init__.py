@@ -139,6 +139,9 @@ from .sync import (
     SyncStateManagementService,
     SyncTunnelService,
 )
+from .transports._docker import DockerTransport, PodmanTransport
+from .transports._kubectl import KubectlTransport
+from .transports._local import LocalTransport
 from .transports.base import (
     BaseTransport,
     CommandTransport,
@@ -171,7 +174,7 @@ from .transports.replay import (
 )
 from .transports.ssh import OpenSSHConfigParser, SFTPClientAdapter, SSHJumpChainManager
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 
 def __getattr__(name: str) -> Any:
@@ -222,6 +225,7 @@ __all__ = [
     "DirectorySynchronizer",
     "DiskInfo",
     "DnfYumStrategy",
+    "DockerTransport",
     "DryRunMiddleware",
     "EnsureResult",
     "EventLoopPortal",
@@ -245,7 +249,9 @@ __all__ = [
     "InMemoryTracer",
     "InteractionDiff",
     "InventoryLoader",
+    "KubectlTransport",
     "LocalFileHandler",
+    "LocalTransport",
     "LogConfig",
     "LogHandler",
     "LogPipeline",
@@ -260,6 +266,7 @@ __all__ = [
     "PackageManagerStrategy",
     "PacmanStrategy",
     "PingResult",
+    "PodmanTransport",
     "PoolStreamMultiplexer",
     "PosixMarkerProtocol",
     "RateLimitMiddleware",
