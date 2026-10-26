@@ -228,3 +228,58 @@ class TestCassetteSanitizationAndVerification:
         errors = corrupted_cass.verify()
         assert len(errors) == 1
         assert "invalid stdout_base64" in errors[0]
+
+
+class TestPytestPluginFixturesAndAutoMarker:
+    """Интеграция с pytest: инъекция фикстур и маркер @pytest.mark.uniconn_cassette."""
+
+    def test_pytest_fixtures_injected(
+        self,
+        uniconn_cassette: UniconnCassetteFixture,
+        uniconn_record_mode: RecordMode,
+    ) -> None:
+        assert isinstance(uniconn_cassette, UniconnCassetteFixture)
+        assert uniconn_record_mode == RecordMode.ONCE
+        assert uniconn_cassette.path.name == "test_pytest_fixtures_injected.yaml"
+
+    def test_marker_auto_wrap_does_not_double_wrap_sync_connection(
+        self,
+        request: pytest.FixtureRequest,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        from uniconn.pytest_plugin import _uniconn_marker_auto_cassette
+        from uniconn.transports.replay.proxy import CassetteTransportProxy
+
+        cass_file = tmp_path / "auto_sync.yaml"
+        marker = MagicMock()
+        marker.args = (str(cass_file), "once")
+        marker.kwargs = {"auto_wrap": True, "sanitize_ips": True}
+
+        fake_req = MagicMock()
+        fake_req.node.get_closest_marker.return_value = marker
+        fake_req.config.getoption.return_value = None
+        fake_req.path = tmp_path / "test_sample.py"
+
+        gen = _uniconn_marker_auto_cassette.__wrapped__(fake_req, monkeypatch)
+        next(gen)
+        try:
+            sync_conn = SyncConnection.from_uri("local://10.20.30.40")
+            assert isinstance(sync_conn._async_conn.transport, CassetteTransportProxy)
+            # Убеждаемся, что внутренний транспорт НЕ обёрнут повторно в CassetteTransportProxy
+            assert not isinstance(
+                sync_conn._async_conn.transport._wrapped,
+                CassetteTransportProxy,
+            )
+            res = sync_conn.run("echo marker-ok")
+            assert res.text == "marker-ok"
+            sync_conn.close()
+        finally:
+            with pytest.raises(StopIteration):
+                next(gen)
+
+        assert cass_file.is_file()
+        saved = Cassette.load(cass_file)
+        assert saved.host == "<IP_REDACTED>"
+        assert saved.exec_count == 1
+

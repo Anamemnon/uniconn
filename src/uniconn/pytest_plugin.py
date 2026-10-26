@@ -12,9 +12,15 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import pytest
+if TYPE_CHECKING:
+    import pytest
+else:
+    try:
+        import pytest
+    except ImportError:
+        pytest = None
 
 from .core.connection import Connection
 from .sync.connection import SyncConnection
@@ -258,6 +264,11 @@ if pytest is not None:
         orig_sync_from_uri = SyncConnection.from_uri
 
         def _wrap_connection(conn: Connection) -> Connection:
+            if (
+                isinstance(conn.transport, CassetteTransportProxy)
+                or conn.config.transport == "replay"
+            ):
+                return conn
             exists = cassette_path.is_file()
             if exists and cassette_mode != RecordMode.ALL:
                 loaded_cassette = Cassette.load(cassette_path)
