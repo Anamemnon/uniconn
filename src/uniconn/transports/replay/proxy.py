@@ -236,6 +236,25 @@ class CassetteTransportProxy(BaseTransport):
             return matched_repeat
         return None
 
+    async def ping(self, timeout: float | None = None) -> bool:
+        """Проверить доступность транспорта в режиме записи или воспроизведения кассеты."""
+        if not self._connected:
+            await self.connect()
+
+        if self._can_replay():
+            matched = self._match_exec("echo ping", None, False)
+            if matched is not None:
+                if matched.error_class:
+                    return False
+                return matched.exit_code == 0
+            if not self._can_record():
+                return True
+
+        if self._wrapped is not None:
+            real = await self._ensure_real_connected()
+            return await real.ping(timeout=timeout)
+        return self._connected
+
     async def run(
         self,
         command: str,

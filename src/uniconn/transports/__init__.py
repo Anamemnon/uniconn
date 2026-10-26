@@ -16,6 +16,7 @@ from ._docker import DockerTransport, PodmanTransport
 from ._kubectl import KubectlTransport
 from ._local import LocalTransport
 from .base import BaseTransport
+from .bmc import IPMITransport, RedfishTransport
 from .replay import (
     Cassette,
     CassetteContext,
@@ -38,6 +39,7 @@ __all__ = [
     "CassetteContext",
     "CassetteTransportProxy",
     "DockerTransport",
+    "IPMITransport",
     "KubectlTransport",
     "LocalTransport",
     "PodmanTransport",
@@ -46,6 +48,7 @@ __all__ = [
     "RecordedFsInteraction",
     "RecordedShellInteraction",
     "RecordedStreamInteraction",
+    "RedfishTransport",
     "ReplayShellProcess",
     "ReplayTransport",
     "ShellDialogStep",

@@ -24,6 +24,7 @@ from .facts_models import (
     NetworkInterface,
     diff_facts,
     parse_facts_output,
+    parse_redfish_facts,
 )
 
 if TYPE_CHECKING:
@@ -137,6 +138,19 @@ class FactCollector:
         self.cached: HostFacts | None = None
         self._tool_runner = ExternalToolRunner(conn)
 
+    def _is_redfish_connection(self) -> bool:
+        """Проверить, является ли целевое соединение Redfish BMC (включая Cassette/Replay)."""
+        if self._conn.config.transport == "redfish":
+            return True
+        tr = self._conn.transport
+        if getattr(tr, "name", "") == "redfish":
+            return True
+        wrapped = getattr(tr, "_wrapped", None) or getattr(tr, "_inner", None)
+        if getattr(wrapped, "name", "") == "redfish":
+            return True
+        cassette = getattr(tr, "cassette", None)
+        return getattr(cassette, "transport", "") == "redfish"
+
     async def gather(
         self,
         refresh: bool = False,
@@ -159,12 +173,20 @@ class FactCollector:
             True if resolved_spec is None else resolved_spec.include_builtin
         )
         if include_builtin:
-            res = await self._conn.run(
-                FACT_COLLECTION_SCRIPT,
-                timeout=timeout,
-                raise_on_error=False,
-            )
-            facts = parse_facts_output(res.stdout, default_host=default_host)
+            if self._is_redfish_connection():
+                res = await self._conn.run(
+                    "inventory",
+                    timeout=timeout,
+                    raise_on_error=False,
+                )
+                facts = parse_redfish_facts(res.stdout, default_host=default_host)
+            else:
+                res = await self._conn.run(
+                    FACT_COLLECTION_SCRIPT,
+                    timeout=timeout,
+                    raise_on_error=False,
+                )
+                facts = parse_facts_output(res.stdout, default_host=default_host)
         else:
             facts = HostFacts(hostname=default_host)
 
@@ -246,5 +268,6 @@ __all__ = [
     "NetworkInterface",
     "diff_facts",
     "parse_facts_output",
+    "parse_redfish_facts",
 ]
 

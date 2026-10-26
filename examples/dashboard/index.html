@@ -468,6 +468,10 @@
               <tr><td class="mono">telnet://</td><td>run, stream, open_shell (IAC NAWS), expect</td><td class="num status-text status-ok">READY</td></tr>
               <tr><td class="mono">serial://</td><td>UART run, stream, open_shell, expect (baudrate/parity)</td><td class="num status-text status-ok">READY</td></tr>
               <tr><td class="mono">ipmi://</td><td>power, sensors, SEL, SOL console</td><td class="num status-text status-ok">READY</td></tr>
+              <tr><td class="mono">redfish://</td><td>DMTF Redfish REST (niquests HTTP/2+3, Session/Basic Auth, telemetry)</td><td class="num status-text status-ok">READY</td></tr>
+              <tr><td class="mono">docker://, podman://</td><td>Container exec, cp, tar stream, PTY shell</td><td class="num status-text status-ok">READY</td></tr>
+              <tr><td class="mono">kubectl://</td><td>Pod exec, cp, PTY shell, port-forward tunnels</td><td class="num status-text status-ok">READY</td></tr>
+              <tr><td class="mono">replay://</td><td>Deterministic Cassette VCR record &amp; replay</td><td class="num status-text status-ok">READY</td></tr>
             </tbody>
           </table>
 
@@ -799,8 +803,9 @@
             </div>
             <div class="preset-bar" style="margin-bottom: 0;">
               <button type="button" class="btn ghost" onclick="loadUriPreset('ssh')">SSH + Jump</button>
-              <button type="button" class="btn ghost" onclick="loadUriPreset('serial')">Serial UART</button>
+              <button type="button" class="btn ghost" onclick="loadUriPreset('redfish')">Redfish BMC</button>
               <button type="button" class="btn ghost" onclick="loadUriPreset('ipmi')">IPMI BMC</button>
+              <button type="button" class="btn ghost" onclick="loadUriPreset('serial')">Serial UART</button>
               <button type="button" class="btn ghost" onclick="loadUriPreset('telnet')">Telnet</button>
             </div>
           </div>
@@ -810,9 +815,13 @@
               <label for="ub-transport">Transport Scheme</label>
               <select id="ub-transport" onchange="buildUriLive()">
                 <option value="ssh">ssh:// (AsyncSSH + SFTP + PTY)</option>
+                <option value="redfish">redfish:// (DMTF Redfish BMC + niquests HTTP/2)</option>
+                <option value="ipmi">ipmi:// (BMC Power / Sensors / SOL)</option>
+                <option value="docker">docker:// (Container Exec + File Copy + PTY)</option>
+                <option value="podman">podman:// (Rootless Container Exec + PTY)</option>
+                <option value="kubectl">kubectl:// (K8s Pod Exec + Port-Forward)</option>
                 <option value="serial">serial:// (UART / pyserial-asyncio)</option>
                 <option value="telnet">telnet:// (RFC 854 + IAC NAWS)</option>
-                <option value="ipmi">ipmi:// (BMC Power / Sensors / SOL)</option>
                 <option value="local">local:// (Subprocess + PTY)</option>
               </select>
             </div>
@@ -1541,6 +1550,17 @@
         k2.value = '';
         v2.value = '';
         cmd.value = 'chassis power status';
+      } else if (kind === 'redfish') {
+        tr.value = 'redfish';
+        host.value = 'bmc-r760.rack1.internal';
+        port.value = '443';
+        user.value = 'admin';
+        pass.value = 'calvinSecret!';
+        k1.value = 'verify_ssl';
+        v1.value = 'false';
+        k2.value = 'system_id';
+        v2.value = 'System.Embedded.1';
+        cmd.value = 'sensors';
       } else if (kind === 'telnet') {
         tr.value = 'telnet';
         host.value = 'core-switch-01.lab';

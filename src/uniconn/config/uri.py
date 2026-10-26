@@ -7,6 +7,10 @@
     - serial:///dev/ttyUSB0?baudrate=9600&parity=N
     - local://[?option=value]
     - ipmi://[user[:password]@]host[:port]
+    - redfish://[user[:password]@]host[:port][?verify_ssl=false&system_id=1]
+    - docker://[user@]container[/workdir]
+    - podman://[user@]container[/workdir]
+    - kubectl://[namespace/]pod[?container=name&context=ctx]
     - replay:///path/to/cassette.yaml
 
 Логин и пароль при парсинге подвергаются percent-decoding (unquote),
@@ -33,6 +37,7 @@ class URIParser:
         "ssh": 22,
         "telnet": 23,
         "ipmi": 623,
+        "redfish": 443,
     }
 
     @classmethod
@@ -167,16 +172,21 @@ class URIParser:
 
     @classmethod
     def _parse_network(cls, parsed: ParseResult, transport: str) -> ConnectionConfig:
-        """Парсинг сетевых транспортов (ssh, telnet, ipmi)."""
+        """Парсинг сетевых транспортов (ssh, telnet, ipmi, redfish)."""
         from pydantic import SecretStr
 
         from .models import ConnectionConfig
 
+        options = cls._parse_options(parsed.query)
         port = parsed.port
         if port is None and transport in cls.DEFAULT_PORTS:
-            port = cls.DEFAULT_PORTS[transport]
-
-        options = cls._parse_options(parsed.query)
+            if (
+                transport == "redfish"
+                and str(options.get("scheme", "https")).lower() == "http"
+            ):
+                port = 80
+            else:
+                port = cls.DEFAULT_PORTS[transport]
         key_file = str(options.pop("key_file")) if "key_file" in options else None
         raw_passphrase = options.pop("passphrase", None)
         passphrase = (

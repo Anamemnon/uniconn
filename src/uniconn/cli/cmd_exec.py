@@ -44,6 +44,11 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
             "telnet": ("Telnet protocol", "telnetlib3"),
             "serial": ("Serial/UART ports", "pyserial-asyncio"),
             "ipmi": ("IPMI BMC management", "pyghmi"),
+            "redfish": ("DMTF Redfish BMC REST API", "niquests"),
+            "docker": ("Docker container exec/cp", "docker CLI"),
+            "podman": ("Podman container exec/cp", "podman CLI"),
+            "kubectl": ("Kubernetes pod exec/cp/port-forward", "kubectl CLI"),
+            "replay": ("Deterministic cassette replay", "-"),
         }
 
         available = TransportLoader.list_available()
@@ -59,7 +64,7 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
 
         console.print(table)
         console.print("\n[dim]To install additional transports:[/dim]")
-        console.print("[dim]  pip install uniconn[ssh,telnet,serial,bmc][/dim]")
+        console.print("[dim]  pip install uniconn[ssh,telnet,serial,bmc,redfish][/dim]")
 
     @app.command
     def run(

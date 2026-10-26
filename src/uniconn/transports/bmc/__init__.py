@@ -6,10 +6,13 @@
 
 Доступные транспорты:
     - IPMITransport: IPMI через pyghmi
+    - RedfishTransport: DMTF Redfish REST API через niquests.AsyncSession
 """
 
 from ._ipmi import IPMITransport
+from ._redfish import RedfishTransport
 
 __all__ = [
     "IPMITransport",
+    "RedfishTransport",
 ]

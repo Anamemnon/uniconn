@@ -1,6 +1,6 @@
 [project]
 name = "uniconn"
-version = "0.13.0"
+version = "0.14.0"
 description = "Universal library for remote command execution"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -26,6 +26,7 @@ dependencies = [
     "telnetlib3>=5.0",         # Telnet transport
     "pyserial-asyncio>=0.6",   # Serial/UART transport
     "pyghmi>=1.6",             # BMC/IPMI transport
+    "niquests>=3.10",          # Async HTTP/2 & HTTP/3 client for Redfish BMC
     "cyclopts>=5.0",           # Type-driven CLI interface
     "rich>=15.0",              # CLI formatting
     "pyyaml>=6.0",             # YAML support for from_file() and ScreenPool
@@ -38,7 +39,7 @@ dependencies = [
 ssh = ["asyncssh>=2.24"]
 telnet = ["telnetlib3>=5.0"]
 serial = ["pyserial-asyncio>=0.6"]
-bmc = ["pyghmi>=1.6"]
+bmc = ["pyghmi>=1.6", "niquests>=3.10"]
 cli = ["cyclopts>=5.0", "rich>=15.0"]
 otel = ["opentelemetry-api>=1.25"]
 dev = [
@@ -62,6 +63,7 @@ ssh = "uniconn.transports._ssh:SSHTransport"
 telnet = "uniconn.transports._telnet:TelnetTransport"
 serial = "uniconn.transports._serial:SerialTransport"
 ipmi = "uniconn.transports.bmc._ipmi:IPMITransport"
+redfish = "uniconn.transports.bmc._redfish:RedfishTransport"
 replay = "uniconn.transports.replay:ReplayTransport"
 docker = "uniconn.transports._docker:DockerTransport"
 podman = "uniconn.transports._docker:PodmanTransport"

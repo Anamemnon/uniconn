@@ -544,6 +544,78 @@ def parse_facts_output(raw_stdout: str, default_host: str | None = None) -> Host
     )
 
 
+def parse_redfish_facts(
+    raw_stdout: str, default_host: str | None = None
+) -> HostFacts:
+    """Преобразует JSON-вывод команды ``inventory`` транспорта ``redfish`` в ``HostFacts``."""
+    inv: dict[str, Any] = {}
+    if raw_stdout.strip():
+        try:
+            loaded = json.loads(raw_stdout)
+            if isinstance(loaded, dict):
+                inv = loaded
+        except ValueError:
+            pass
+
+    manufacturer = str(inv.get("manufacturer") or "").strip()
+    model = str(inv.get("model") or "Redfish Server").strip()
+    has_vendor = bool(manufacturer and manufacturer != "Unknown")
+    distro = f"{manufacturer} {model}".strip() if has_vendor else (model or "Redfish BMC")
+
+    bios_ver = str(inv.get("bios_version") or "").strip()
+    bmc_ver = str(inv.get("bmc_firmware_version") or "").strip()
+    kernel = bmc_ver or bios_ver or "Unknown"
+
+    proc_sum = inv.get("processor_summary")
+    if not isinstance(proc_sum, dict):
+        proc_sum = {}
+    arch = str(proc_sum.get("arch") or "x86_64")
+    try:
+        cpu_count = max(1, int(proc_sum.get("count") or 1))
+    except (ValueError, TypeError):
+        cpu_count = 1
+
+    mem_sum = inv.get("memory_summary")
+    if not isinstance(mem_sum, dict):
+        mem_sum = {}
+    try:
+        mem_gib = float(mem_sum.get("total_system_memory_gib") or 0.0)
+    except (ValueError, TypeError):
+        mem_gib = 0.0
+    mem_bytes = int(mem_gib * (1024**3))
+
+    hostname = str(inv.get("hostname") or default_host or "localhost")
+
+    interfaces: list[NetworkInterface] = []
+    for raw_if in inv.get("interfaces") or []:
+        if isinstance(raw_if, dict) and raw_if.get("name"):
+            interfaces.append(
+                NetworkInterface(
+                    name=str(raw_if["name"]),
+                    mac=str(raw_if.get("mac") or ""),
+                    ipv4=[str(x) for x in (raw_if.get("ipv4") or [])],
+                    ipv6=[str(x) for x in (raw_if.get("ipv6") or [])],
+                    state=str(raw_if.get("state") or "UNKNOWN"),
+                    mtu=int(raw_if.get("mtu") or 1500),
+                )
+            )
+
+    return HostFacts(
+        os_family="BMC",
+        distro=distro,
+        kernel=kernel,
+        arch=arch,
+        hostname=hostname,
+        uptime_seconds=0.0,
+        cpu_count=cpu_count,
+        memory_total_bytes=mem_bytes,
+        memory_available_bytes=mem_bytes,
+        disks=[],
+        interfaces=interfaces,
+        custom={"redfish": inv} if inv else {},
+    )
+
+
 DEFAULT_DIFF_FIELDS: tuple[str, ...] = (
     "os_family",
     "distro",
@@ -584,7 +656,13 @@ def _extract_fact_field(facts: HostFacts, field_name: str) -> Any:
     if field_name == "memory_total_mb":
         return round(facts.memory_total_bytes / (1024 * 1024))
     if field_name.startswith("custom."):
-        return facts.custom.get(field_name[7:])
+        path = field_name[7:]
+        if "." in path:
+            top, sub = path.split(".", 1)
+            nested = facts.custom.get(top)
+            if isinstance(nested, Mapping):
+                return nested.get(sub)
+        return facts.custom.get(path)
     if field_name.startswith("tools."):
         return facts.tools.get(field_name[6:])
     return getattr(facts, field_name, None)
@@ -662,4 +740,5 @@ __all__ = [
     "NetworkInterface",
     "diff_facts",
     "parse_facts_output",
+    "parse_redfish_facts",
 ]

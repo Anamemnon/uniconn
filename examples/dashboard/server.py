@@ -1,4 +1,4 @@
-"""HTTP dev-сервер и обработчики API для интерактивной панели uniconn v0.11.1."""
+"""HTTP dev-сервер и обработчики API для интерактивной панели uniconn v0.14.0."""
 
 from __future__ import annotations
 
@@ -303,8 +303,19 @@ def _run_demo_status() -> dict[str, Any]:
         else "Python 3.12"
     )
     return {
-        "version": "0.11.0",
-        "transports": ["ipmi", "local", "serial", "ssh", "telnet"],
+        "version": "0.14.0",
+        "transports": [
+            "docker",
+            "ipmi",
+            "kubectl",
+            "local",
+            "podman",
+            "redfish",
+            "replay",
+            "serial",
+            "ssh",
+            "telnet",
+        ],
         "local_uname": uname_out,
         "python_version": py_out,
         "shell_demo": {
@@ -741,7 +752,7 @@ def _build_and_validate_uri(payload: dict[str, Any]) -> dict[str, Any]:
     sample_cmd = str(payload.get("command", "systemctl status nginx")).strip() or "uptime"
 
     try:
-        from uniconn._uri import URIParser
+        from uniconn.config.uri import URIParser
 
         if mode == "parse" and raw_uri:
             built_uri = raw_uri

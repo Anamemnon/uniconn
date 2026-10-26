@@ -53,7 +53,8 @@ class TestContainerAndKubectlURIParsing:
     """Tests for URIParser with docker://, podman://, and kubectl:// schemes."""
 
     def test_version_is_0130(self) -> None:
-        assert uniconn.__version__ == "0.13.0"
+        parts = tuple(int(x) for x in uniconn.__version__.split(".")[:2])
+        assert parts >= (0, 13)
 
     def test_parse_docker_uri_preserves_case_and_options(self) -> None:
         cfg = URIParser.parse("docker://root@MyAppContainer/var/www?runtime=docker&context=remote-ctx")

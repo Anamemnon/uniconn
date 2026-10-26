@@ -1,6 +1,6 @@
 # Реализованные возможности и архитектура библиотеки uniconn
 
-> **Версия**: v0.13.0 | **570+ unit-тестов** | 9 транспортов (`ssh`, `telnet`, `serial`, `local`, `ipmi`, `replay`, `docker`, `podman`, `kubectl`) | Модульный CLI (`cyclopts` + `rich`) | Интерактивная веб-панель (`examples/dashboard/`) | PEP 561 (`py.typed`)
+> **Версия**: v0.14.0 | **600+ unit-тестов** | 10 транспортов (`ssh`, `telnet`, `serial`, `local`, `ipmi`, `redfish`, `replay`, `docker`, `podman`, `kubectl`) | Модульный CLI (`cyclopts` + `rich`) | Интерактивная веб-панель (`examples/dashboard/`) | PEP 561 (`py.typed`)
 >
 > **Для ИИ-агентов**: этот файл (`FEATURES.md`) является полным каталогом реализованных фич и архитектурных решений библиотеки `uniconn`. **Не загружайте его в контекст при каждом запросе** — используйте `llms.txt` для быстрого обзора сигнатур API, а к `FEATURES.md` обращайтесь только по требованию (on-demand), когда нужно сверить наличие конкретной функциональности или обновить список возможностей после релиза.
 >
@@ -10,7 +10,7 @@
 
 | Область | Статус | Детали |
 |---------|--------|--------|
-| Транспорты | ✅ 9/9 | SSH (`~/.ssh/config`, `SSHJumpChainManager`, `ProxyCommand`), Docker (`docker://`), Podman (`podman://`), Kubernetes (`kubectl://`), Telnet, Serial/UART, Local, IPMI, Replay (`replay://`) |
+| Транспорты | ✅ 10/10 | SSH (`~/.ssh/config`, `SSHJumpChainManager`, `ProxyCommand`), Docker (`docker://`), Podman (`podman://`), Kubernetes (`kubectl://`), Telnet, Serial/UART, Local, IPMI (`ipmi://`), Redfish BMC (`redfish://` на `niquests`), Replay (`replay://`) |
 | Протоколы ISP | ✅ `transports.base` | `CommandTransport`, `FileCapableTransport`, `ShellCapableTransport`, `TunnelCapableTransport`, `require_capability()` |
 | Конвейер команд | ✅ `CommandPipeline` | Цепочка `CommandMiddleware`: `Context`, `Sudo`, `Hook`, `DryRun`, `Observability`, `CircuitBreaker`, `RateLimit`, `Retry` (`conn.pipeline`) |
 | Отказоустойчивость (`v0.9.0`) | ✅ `CircuitBreaker` + `RateLimiter` | Состояния `CLOSED` → `OPEN` → `HALF_OPEN` (`CircuitOpenError`), Token Bucket `RateLimiter` на уровне `Connection`, `ConnectionPool` и `SSHSessionPool` |
@@ -236,7 +236,6 @@
 | `arun()` с префиксом `a` | Выбрана async-first архитектура: базовый `run()` уже асинхронный, синхронный доступ — через `.to_sync()` |
 | `paramiko` | Используется нативный асинхронный `asyncssh` |
 | `typing_extensions` | Не требуется на Python 3.11+ (`Self` и современные типы доступны в стандартном `typing`) |
-| Redfish-транспорт | Исключён из проекта для сохранения компактного ядра (управление BMC реализовано через `IPMITransport`) |
 | CI/CD (GitHub Actions, PyPI) | Не входит в контур репозитория |
 | Прямая зависимость от `prometheus_client` | Решается без утяжеления ядра через встроенный `MetricsCollector` и `structured_log_hook` в `uniconn.hooks` |
 | Интерактивный GUI OS Keyring | Серверные и контейнерные окружения автоматизации не используют десктопный Keyring |
@@ -253,6 +252,6 @@
 | SSH & SFTP | `asyncssh>=2.24` |
 | Telnet | `telnetlib3>=5.0` |
 | Serial / UART | `pyserial-asyncio>=0.6` |
-| BMC / IPMI | `pyghmi>=1.6` |
+| BMC (IPMI & Redfish) | `pyghmi>=1.6`, `niquests>=3.10` |
 | CLI | `cyclopts>=5.0`, `rich>=15.0` |
 | Dev & QA | `pytest>=8.0`, `pytest-asyncio>=1.0`, `pytest-mock>=3.14`, `pytest-cov>=6.0`, `pyright>=1.1.400`, `ruff>=0.15`, `testcontainers>=4.10` |

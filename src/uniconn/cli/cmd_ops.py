@@ -103,7 +103,10 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
 
     @app.command
     def bmc(
-        uri: Annotated[str, Parameter(help="BMC URI (ipmi://admin:pass@bmc)")],
+        uri: Annotated[
+            str,
+            Parameter(help="BMC URI (redfish://admin:pass@bmc or ipmi://admin:pass@bmc)"),
+        ],
         operation: Annotated[str, Parameter(help="Operation")],
         *,
         timeout: Annotated[

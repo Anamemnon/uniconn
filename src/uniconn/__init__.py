@@ -155,6 +155,7 @@ from .transports.base import (
     require_capability,
     supports_capability,
 )
+from .transports.bmc import IPMITransport, RedfishTransport
 from .transports.replay import (
     Cassette,
     CassetteContext,
@@ -174,7 +175,7 @@ from .transports.replay import (
 )
 from .transports.ssh import OpenSSHConfigParser, SFTPClientAdapter, SSHJumpChainManager
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 
 
 def __getattr__(name: str) -> Any:
@@ -246,6 +247,7 @@ __all__ = [
     "HookEvent",
     "HookMiddleware",
     "HostFacts",
+    "IPMITransport",
     "InMemoryTracer",
     "InteractionDiff",
     "InventoryLoader",
@@ -277,6 +279,7 @@ __all__ = [
     "RecordedShellInteraction",
     "RecordedSpan",
     "RecordedStreamInteraction",
+    "RedfishTransport",
     "ReplayShellProcess",
     "ReplayTransport",
     "Result",

@@ -3,7 +3,7 @@ import logging
 from importlib.metadata import entry_points
 
 from ..exceptions import TransportNotFoundError
-from ..transports._base import BaseTransport
+from ..transports.base import BaseTransport
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,7 @@ class TransportLoader:
             "docker": ("..transports._docker", "DockerTransport"),
             "podman": ("..transports._docker", "PodmanTransport"),
             "kubectl": ("..transports._kubectl", "KubectlTransport"),
+            "redfish": ("..transports.bmc._redfish", "RedfishTransport"),
         }
         if transport_name in builtin_fallbacks and transport_name not in eps.names:
             from importlib import import_module
@@ -73,7 +74,7 @@ class TransportLoader:
         """Список доступных транспортов."""
         eps = entry_points(group="uniconn.transports")
         names = list(eps.names)
-        for builtin_name in ("replay", "docker", "podman", "kubectl"):
+        for builtin_name in ("replay", "docker", "podman", "kubectl", "redfish"):
             if builtin_name not in names:
                 names.append(builtin_name)
         return names

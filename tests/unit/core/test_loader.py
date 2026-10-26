@@ -51,11 +51,10 @@ class TestTransportLoaderList:
     """Тесты list_available/clear_cache."""
 
     def test_list_available(self):
-        """Список содержит встроенные транспорты (redfish удалён)."""
+        """Список содержит встроенные транспорты (включая redfish)."""
         available = TransportLoader.list_available()
-        for name in ("local", "ssh", "telnet", "serial", "ipmi"):
+        for name in ("local", "ssh", "telnet", "serial", "ipmi", "redfish"):
             assert name in available
-        assert "redfish" not in available
 
     def test_clear_cache(self):
         """clear_cache очищает кэш."""
