@@ -3,6 +3,8 @@
 
 from .inventory import InventoryLoader
 from .models import ConnectionConfig
+from .secrets import SecretResolver
 from .uri import URIParser
 
-__all__ = ["ConnectionConfig", "InventoryLoader", "URIParser"]
+__all__ = ["ConnectionConfig", "InventoryLoader", "SecretResolver", "URIParser"]
+

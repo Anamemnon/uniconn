@@ -37,7 +37,7 @@ from .background import (
     StreamHandler,
     StreamSourceSpec,
 )
-from .config import ConnectionConfig, InventoryLoader, URIParser
+from .config import ConnectionConfig, InventoryLoader, SecretResolver, URIParser
 from .core import (
     CircuitBreaker,
     CircuitBreakerMiddleware,
@@ -155,7 +155,9 @@ from .transports.base import (
 from .transports.replay import (
     Cassette,
     CassetteContext,
+    CassetteDiffReport,
     CassetteTransportProxy,
+    InteractionDiff,
     RecordedExecInteraction,
     RecordedFsInteraction,
     RecordedShellInteraction,
@@ -169,7 +171,7 @@ from .transports.replay import (
 )
 from .transports.ssh import OpenSSHConfigParser, SFTPClientAdapter, SSHJumpChainManager
 
-__version__ = "0.11.1"
+__version__ = "0.12.0"
 
 
 def __getattr__(name: str) -> Any:
@@ -194,6 +196,7 @@ __all__ = [
     "CapabilityNotSupportedError",
     "Cassette",
     "CassetteContext",
+    "CassetteDiffReport",
     "CassetteError",
     "CassetteMissError",
     "CassetteTransportProxy",
@@ -240,6 +243,7 @@ __all__ = [
     "HookMiddleware",
     "HostFacts",
     "InMemoryTracer",
+    "InteractionDiff",
     "InventoryLoader",
     "LocalFileHandler",
     "LogConfig",
@@ -281,6 +285,7 @@ __all__ = [
     "ScreenSession",
     "ScreenSessionExistsError",
     "SecretMaskingFilter",
+    "SecretResolver",
     "ServiceManagerStrategy",
     "ShellCapableTransport",
     "ShellDialogStep",
@@ -338,3 +343,4 @@ __all__ = [
     "supports_capability",
     "unbind_log_context",
 ]
+

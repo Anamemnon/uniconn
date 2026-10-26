@@ -107,7 +107,9 @@ class InventoryLoader:
                 raise KeyError(f"Host {host!r} not found in inventory")
             entries = filtered_by_host
 
-        return entries
+        from .secrets import SecretResolver
+
+        return [SecretResolver.resolve_mapping(entry) for entry in entries]
 
     @classmethod
     def load_file(
@@ -117,7 +119,7 @@ class InventoryLoader:
         host: str | None = None,
         group: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Прочитать файл ``.yaml``/``.yml``/``.json`` и вернуть список конфигураций хостов."""
+        """Прочитать файл ``.yaml``/``.yml``/``.json``/``.toml`` и вернуть список конфигураций хостов."""
         from ..exceptions import ConfigurationError
 
         filepath = Path(path)
@@ -133,9 +135,14 @@ class InventoryLoader:
                 raise ImportError("PyYAML not installed. Run: pip install pyyaml") from None
         elif filepath.suffix == ".json":
             raw_data = json.loads(content)
+        elif filepath.suffix == ".toml":
+            import tomllib
+
+            raw_data = tomllib.loads(content)
         else:
             raise ConfigurationError(
-                f"Unsupported file format: {filepath.suffix}. Use .json, .yaml or .yml"
+                f"Unsupported file format: {filepath.suffix}. Use .json, .yaml, .yml or .toml"
             )
 
         return cls.parse_data(raw_data, host=host, group=group)
+

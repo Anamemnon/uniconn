@@ -354,4 +354,126 @@ def register_cassette_commands(app: Any, console: Any, renderer: CLIOutputRender
             )
             sys.exit(1)
 
+    @cassette_app.command(name="diff")
+    def cassette_diff(
+        left: Annotated[str, Parameter(help="Path to baseline (left) cassette file")],
+        right: Annotated[str, Parameter(help="Path to candidate (right) cassette file")],
+        output_format: Annotated[
+            str,
+            Parameter(name=["--format", "-f"], help="Output format: table, json"),
+        ] = "table",
+        fail_on_diff: Annotated[
+            bool,
+            Parameter(
+                name=["--fail-on-diff"],
+                negative="",
+                help="Exit with code 1 if differences are found",
+            ),
+        ] = False,
+    ) -> None:
+        """Compare two cassettes and display interaction, exit code, and output differences."""
+        left_path = Path(left)
+        right_path = Path(right)
+        for p in (left_path, right_path):
+            if not p.is_file():
+                console.print(f"[red]ERROR:[/red] Cassette file not found: {p}")
+                sys.exit(1)
+
+        left_cass = Cassette.load(left_path)
+        right_cass = Cassette.load(right_path)
+        report = left_cass.diff(right_cass)
+
+        if output_format == "json":
+            print(json.dumps(report.to_dict(), indent=2, ensure_ascii=False))
+        else:
+            border = "yellow" if report.has_changes else "green"
+            status_label = (
+                "[bold yellow]DIFFERENCES FOUND[/bold yellow]"
+                if report.has_changes
+                else "[bold green]IDENTICAL[/bold green]"
+            )
+            console.print(
+                Panel(
+                    f"{status_label}\n"
+                    f"[dim]Baseline:[/dim] {left_path} ({report.left_host or 'unknown'}, "
+                    f"{report.left_count} steps)\n"
+                    f"[dim]Candidate:[/dim] {right_path} ({report.right_host or 'unknown'}, "
+                    f"{report.right_count} steps)\n"
+                    f"[dim]Summary:[/dim] identical={report.identical_count}, "
+                    f"modified={report.modified_count}, added={report.added_count}, "
+                    f"removed={report.removed_count}",
+                    title="Cassette Diff Summary",
+                    border_style=border,
+                )
+            )
+            if report.interactions:
+                diff_table = Table(
+                    title="Interaction Comparison",
+                    box=box.ROUNDED,
+                    show_header=True,
+                    header_style="bold cyan",
+                )
+                diff_table.add_column("#", style="dim", width=4)
+                diff_table.add_column("Status", width=10)
+                diff_table.add_column("Kind", style="magenta", width=8)
+                diff_table.add_column("Command / Operation", style="white")
+                diff_table.add_column("Exit Code", width=12)
+                diff_table.add_column("Delta", style="yellow", width=10)
+
+                for item in report.interactions:
+                    st_map = {
+                        "identical": "[green]identical[/green]",
+                        "modified": "[yellow]modified[/yellow]",
+                        "added": "[cyan]+added[/cyan]",
+                        "removed": "[red]-removed[/red]",
+                    }
+                    if item.command_changed and item.left_command and item.right_command:
+                        cmd_col = f"{item.left_command} -> {item.right_command}"
+                    else:
+                        cmd_col = item.right_command or item.left_command or "-"
+
+                    if item.exit_code_changed:
+                        ec_col = f"[red]{item.left_exit_code} -> {item.right_exit_code}[/red]"
+                    else:
+                        ec_val = (
+                            item.right_exit_code
+                            if item.right_exit_code is not None
+                            else item.left_exit_code
+                        )
+                        ec_col = str(ec_val) if ec_val is not None else "-"
+
+                    delta_ms = item.duration_delta * 1000.0
+                    delta_col = f"{delta_ms:+.1f}ms"
+                    diff_table.add_row(
+                        str(item.index + 1),
+                        st_map.get(item.status, item.status),
+                        item.kind,
+                        cmd_col,
+                        ec_col,
+                        delta_col,
+                    )
+                console.print(diff_table)
+
+                for item in report.interactions:
+                    if item.stdout_diff:
+                        console.print(
+                            Panel(
+                                item.stdout_diff.rstrip("\n"),
+                                title=f"Step #{item.index + 1} stdout diff",
+                                border_style="yellow",
+                            )
+                        )
+                    if item.stderr_diff:
+                        console.print(
+                            Panel(
+                                item.stderr_diff.rstrip("\n"),
+                                title=f"Step #{item.index + 1} stderr diff",
+                                border_style="red",
+                            )
+                        )
+
+        if fail_on_diff and report.has_changes:
+            sys.exit(1)
+
     app.command(cassette_app)
+

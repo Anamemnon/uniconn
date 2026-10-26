@@ -1,6 +1,6 @@
-# uniconn — LLM & AI Agent API Reference (v0.11.1)
+# uniconn — LLM & AI Agent API Reference (v0.12.0)
 
-> Universal async-first Python library (Python 3.11+) and CLI for executing commands, inspecting host facts, enforcing idempotent states, and managing files across SSH, Telnet, Serial/UART, IPMI BMC, and Local transports.
+> Universal async-first Python library (Python 3.11+) and CLI for executing commands, inspecting host facts, enforcing idempotent states, and managing files across SSH, Telnet, Serial/UART, IPMI BMC, Replay, and Local transports.
 
 ## Quick Facts & Commands
 - Package manager: `uv`
@@ -12,12 +12,12 @@
 - Documentation & Feature Matrix: `AGENTS.md` (architecture & rules), `FEATURES.md` (full catalog of implemented features — consult on-demand only)
 
 ## Public Exports (`from uniconn import ...`)
-- **Core & Facade**: `Connection`, `SyncConnection`, `ConnectionConfig`, `URIParser`, `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `HostFacts`, `FactSpec`, `CustomCommandSpec`, `FileSourceSpec`, `ExternalToolSpec`, `ExternalToolRunner`, `FactsDiffReport`, `DiskInfo`, `NetworkInterface`, `diff_facts`, `render_template`, `OperationObserver`, `BeforeRunHook`, `AfterRunHook`, `OnErrorHook`, `HookCallback`, `HookEvent`
+- **Core & Facade**: `Connection`, `SyncConnection`, `ConnectionConfig`, `SecretResolver`, `URIParser`, `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `HostFacts`, `FactSpec`, `CustomCommandSpec`, `FileSourceSpec`, `ExternalToolSpec`, `ExternalToolRunner`, `FactsDiffReport`, `DiskInfo`, `NetworkInterface`, `diff_facts`, `render_template`, `OperationObserver`, `BeforeRunHook`, `AfterRunHook`, `OnErrorHook`, `HookCallback`, `HookEvent`
 - **Resilience (`uniconn.core.resilience`)**: `CircuitBreaker`, `CircuitState`, `RateLimiter`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`
 - **Domain Services (`uniconn.services`)**: `FileOperationsService`, `DirectorySynchronizer`, `TemplateEngine`, `StateManagementService`, `FactCollector`, `TunnelService`, `SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`
 - **Strategies (`uniconn.services.provisioning`)**: `PackageManagerStrategy`, `AptStrategy`, `ApkStrategy`, `DnfYumStrategy`, `PacmanStrategy`, `ZypperStrategy`, `ServiceManagerStrategy`, `SystemdStrategy`, `OpenRCStrategy`, `SysVStrategy`
 - **Middleware Pipeline & Context (`uniconn.core`)**: `CommandRequest`, `CommandPipeline`, `CommandMiddleware`, `ContextMiddleware`, `SudoMiddleware`, `HookMiddleware`, `DryRunMiddleware`, `ObservabilityMiddleware`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`, `RetryMiddleware`, `TracingMiddleware`, `ExecutionContext`, `EventLoopPortal`, `SyncContextBridge`, `InventoryLoader`
-- **Transport Protocols, Replay/Cassette & Helpers (`uniconn.transports` / `uniconn.pytest_plugin`)**: `BaseTransport`, `CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `ShellStdinProtocol`, `ShellStdoutProtocol`, `TunnelCapableTransport`, `require_capability`, `supports_capability`, `ReplayTransport`, `CassetteTransportProxy`, `Cassette`, `CassetteContext`, `SyncCassetteContext`, `UniconnCassetteFixture`, `RecordMode`, `RecordedExecInteraction`, `RecordedStreamInteraction`, `RecordedFsInteraction`, `RecordedShellInteraction`, `ShellDialogStep`, `ReplayShellProcess`, `normalize_temp_paths`, `OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`
+- **Transport Protocols, Replay/Cassette & Helpers (`uniconn.transports` / `uniconn.pytest_plugin`)**: `BaseTransport`, `CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `ShellStdinProtocol`, `ShellStdoutProtocol`, `TunnelCapableTransport`, `require_capability`, `supports_capability`, `ReplayTransport`, `CassetteTransportProxy`, `Cassette`, `CassetteDiffReport`, `InteractionDiff`, `CassetteContext`, `SyncCassetteContext`, `UniconnCassetteFixture`, `RecordMode`, `RecordedExecInteraction`, `RecordedStreamInteraction`, `RecordedFsInteraction`, `RecordedShellInteraction`, `ShellDialogStep`, `ReplayShellProcess`, `normalize_temp_paths`, `OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`
 - **Pools**: `ConnectionPool`, `SyncConnectionPool`, `PoolStreamMultiplexer`, `SSHSessionPool`
 - **Interactive PTY Shell (`uniconn.shell`)**: `ShellSession`, `SyncShellSession`, `PosixMarkerProtocol`, `ExpectStateMachine`
 - **Background Diagnostics, Streaming Logs & GNU Screen (`uniconn.background`)**: `DiagnosticSession`, `SyncDiagnosticSession`, `DiagnosticConfig`, `DiagnosticResult`, `StreamSourceSpec`, `DirectStreamCollector`, `LogPipeline`, `LogHandler`, `LocalFileHandler`, `ForwardHandler`, `StreamHandler`, `ArchiveHandler`, `ScreenPool`, `ScreenSession`, `ScreenResult`, `LogConfig`
@@ -25,13 +25,14 @@
 - **Logging (`structlog` + `stdlib`)**: `configure_logging`, `get_struct_logger`, `log_context`, `bind_log_context`, `unbind_log_context`, `clear_log_context`, `get_log_context`, `get_logger`, `setup_file_logging`, `SecretMaskingFilter`
 - **Exceptions**: `UniconnError`, `ConfigurationError`, `ConnectionError`, `CircuitOpenError`, `CassetteError`, `CassetteMissError`, `AuthenticationError`, `ExecutionError`, `TimeoutError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `ScreenError`, `ScreenNotFoundError`, `ScreenSessionExistsError`, `ScreenPoolFullError`
 
-## URI Schemes
-- `ssh://[user[:password]@]host[:22][?key_file=...&known_hosts=strict&keepalive=30&ssh_config=true&use_agent=true&proxy=jump1,jump2&proxy_command=...&rate_limit=10&circuit_breaker_threshold=5&circuit_breaker_timeout=30]`
+## URI Schemes & Secret Resolution (`SecretResolver`)
+- `ssh://[user[:password]@]host[:22][?key_file=...&password=env://SSH_PASS&known_hosts=strict&keepalive=30&ssh_config=true&use_agent=true&proxy=jump1,jump2&proxy_command=...&rate_limit=10&circuit_breaker_threshold=5&circuit_breaker_timeout=30]`
 - `local://[?timeout=30&rate_limit=10&circuit_breaker_threshold=5]`
 - `telnet://[user[:password]@]host[:23][?term_type=vt100]`
 - `serial:///dev/ttyUSB0[?baudrate=115200&parity=N&stopbits=1]`
 - `ipmi://admin:password@bmc-host[:623]`
 - `replay://host[?cassette=path/to/cassette.yaml&mode=none&normalize_temp=true&allow_playback_repeats=true]`
+- **Secret URI References (`v0.12.0`)**: `password`, `options["passphrase"]`, `options["sudo_password"]`, `options["key_file"]`, and arbitrary values in `InventoryLoader` (YAML/TOML/JSON) support `env://VAR_NAME[?default=fallback]` and `file:///path/to/secret[?default=fallback]`. Missing secrets without `?default=` raise `ConfigurationError`.
 
 ## Core API Signatures
 
@@ -75,7 +76,7 @@ script_res: Result = await conn.run_script(
     script_path: str | Path,
     args: Sequence[str] = (),
     *,
-    interpreter: str | None = None,
+    interpreter: str | None,
     sudo: bool = False,
     timeout: float | None = None,
     raise_on_error: bool = False,
@@ -105,9 +106,36 @@ async with conn.diagnostic_session(
 ) as diag:
     await diag.emit_custom_log("stress", "Starting stress-ng workload")
     await diag.snapshot("mid_load")
+
+# Idempotent State Management & Unified Diff (v0.8.0 / v0.12.0)
 pkg_res: EnsureResult = await conn.ensure_package(package, state="present", manager="auto", update_cache=False, sudo=True, dry_run=None)
 svc_res: EnsureResult = await conn.ensure_service(service, state="started", enabled=None, sudo=True, dry_run=None)
 line_res: EnsureResult = await conn.ensure_line(remote_path, line, state="present", regex=None, create=True, backup=False, mode=None, dry_run=None)
+file_res: EnsureResult = await conn.ensure_file(
+    remote_path: str,
+    *,
+    state: Literal["present", "absent", "link"] = "present",
+    content: str | bytes | None = None,
+    target: str | None = None,
+    mode: int | None = None,
+    owner: str | None = None,
+    group: str | None = None,
+    backup: bool = False,
+    validate: str | None = None,  # e.g. "nginx -t -c %s"
+    sudo: bool = False,
+    dry_run: bool | None = None,
+)
+dir_res: EnsureResult = await conn.ensure_directory(
+    remote_path: str,
+    *,
+    state: Literal["present", "absent"] = "present",
+    mode: int | None = None,
+    owner: str | None = None,
+    group: str | None = None,
+    recurse: bool = False,
+    sudo: bool = False,
+    dry_run: bool | None = None,
+)
 
 # Declarative Expect (SSH, Telnet, Serial/UART, Local)
 res: Result = await conn.expect(
@@ -132,7 +160,7 @@ async with conn.cd("/var/www"), conn.env(APP_ENV="prod"):
 async with conn.temp_dir(prefix="uniconn_") as tmp_path:
     await conn.write_file(f"{tmp_path}/data.txt", "hello")
 
-# Contract Testing & Cassette Recording/Replay (v0.10.0)
+# Contract Testing & Cassette Recording/Replay (v0.10.0 / v0.12.0)
 async with conn.use_cassette(
     "tests/cassettes/host_facts.yaml",
     mode="once",                  # "once" | "new_episodes" | "none" | "all"
@@ -142,6 +170,8 @@ async with conn.use_cassette(
     mask_secrets=True,
 ) as cassette:
     facts = await conn.gather_facts()
+
+diff_report: CassetteDiffReport = cassette.diff(other_cassette)
 
 # Lifecycle Hooks
 conn.add_hook("before_run", callback)  # callback(command_str, host, kwargs)
@@ -170,13 +200,14 @@ async with await conn.open_shell(term_type="xterm", term_size=(80, 24), init_pos
     await shell.resize(120, 40)
 ```
 
-### `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `HostFacts` & `FactsDiffReport`
+### `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `HostFacts`, `FactsDiffReport` & `CassetteDiffReport`
 - `Result`: `exit_code: int`, `stdout: str`, `stderr: str`, `duration: float`, `command: str`, `host: str | None`, `ok: bool`, `text: str` (`stdout.strip()`), `lines: list[str]`, `sensitive: bool`, `result.json() -> Any`, `result.raise_for_status() -> Self`, `result.to_dict() -> dict`
 - `PingResult`: `host: str`, `alive: bool`, `latency_ms: float`, `transport: str`, `error: str | None`, `bool(ping_res) == ping_res.alive`, `ping_res.to_dict() -> dict`
 - `SyncResult`: `uploaded: list[str]`, `skipped: list[str]`, `deleted: list[str]`, `bytes_transferred: int`, `duration: float`, `dry_run: bool`, `total_checked: int`, `sync_res.to_dict() -> dict`
-- `EnsureResult`: `target: str`, `state: str`, `changed: bool`, `ok: bool`, `details: str`, `dry_run: bool`, `ensure_res.to_dict() -> dict`
+- `EnsureResult`: `target: str`, `state: str`, `changed: bool`, `ok: bool`, `details: str`, `dry_run: bool`, `diff: str | None = None`, `ensure_res.to_dict() -> dict`
 - `HostFacts`: `os_family: str`, `distro: str`, `kernel: str`, `arch: str`, `hostname: str`, `uptime_seconds: float`, `cpu_count: int`, `memory_total_bytes: int`, `memory_available_bytes: int`, `disks: list[DiskInfo]`, `interfaces: list[NetworkInterface]`, `facts.to_dict() -> dict`
 - `FactsDiffReport`: `baseline_host: str`, `hosts_checked: int`, `is_homogeneous: bool`, `mismatches: dict[str, dict[str, Any]]`, `facts: dict[str, HostFacts]`, `report.to_dict() -> dict`
+- `CassetteDiffReport`: `left_target: str`, `right_target: str`, `is_identical: bool`, `left_total: int`, `right_total: int`, `added_interactions: list[str]`, `removed_interactions: list[str]`, `modified_interactions: list[InteractionDiff]`, `report.to_dict() -> dict`
 
 ### `ConnectionPool` & `SyncConnectionPool` (`pool.to_sync()`)
 ```python
@@ -192,13 +223,17 @@ pool = ConnectionPool(
 pool = ConnectionPool.from_file("inventory.yaml", group="web", max_concurrent=10, rate_limit=20.0, circuit_breaker=True)
 
 async with pool:  # Keeps connections open across multiple pool operations
-    results: list[Result] = await pool.map("uptime", sudo=True)
+    # Fleet cassette recording/replay: directory per host (<dir>/<host>.yaml) or single shared file (.yaml/.yml/.json)
+    async with pool.use_cassette("tests/cassettes/fleet_dir", mode="once") as cassettes_by_host:
+        results: list[Result] = await pool.map("uptime", sudo=True)
     safe_map: dict[str, Result | Exception] = await pool.map_safe("uptime")
     ping_map: dict[str, PingResult] = await pool.ping(timeout=5.0)
     script_map: dict[str, Result | Exception] = await pool.run_script("./check.sh", args=["--fast"])
     facts_map: dict[str, HostFacts] = await pool.gather_facts()
     diff_rep: FactsDiffReport = await pool.diff_facts(baseline=None)
     line_map: dict[str, EnsureResult] = await pool.ensure_line("/etc/hosts", "10.0.0.5 db.internal")
+    file_map: dict[str, EnsureResult] = await pool.ensure_file("/etc/app.conf", content="port=8080\n", mode=0o644)
+    dir_map: dict[str, EnsureResult] = await pool.ensure_directory("/var/lib/app", mode=0o755)
     async for host, line in pool.stream("journalctl -f -n 5"):
         print(host, line)
     await pool.upload("./app.conf", "/etc/app/app.conf")
@@ -208,7 +243,8 @@ async with pool:  # Keeps connections open across multiple pool operations
     custom = await pool.apply(lambda c: c.run("hostname"))
 
 with pool.to_sync() as sync_pool:
-    ping_map = sync_pool.ping()
+    with sync_pool.use_cassette("tests/cassettes/fleet_dir", mode="once") as cassettes_by_host:
+        ping_map = sync_pool.ping()
     diff_rep = sync_pool.diff_facts()
     for host, line in sync_pool.stream("tail -n 5 /var/log/syslog"):
         print(host, line)
@@ -294,8 +330,9 @@ uniconn record ssh://user@host -c ./cassettes/node.yaml --mode all --sanitize-ip
 uniconn replay ./cassettes/node.yaml -- uptime
 uniconn replay ./cassettes/node.yaml  # prints cassette metadata and interaction summary
 
-# Manage, sanitize, and verify cassettes:
+# Manage, sanitize, verify, and diff cassettes:
 uniconn cassette info ./cassettes/node.yaml [--format json]
 uniconn cassette sanitize ./cassettes/node.yaml [--output clean.yaml] [--redact-ip] [--redact-tokens]
 uniconn cassette verify ./cassettes/node.yaml
+uniconn cassette diff ./cassettes/baseline.yaml ./cassettes/candidate.yaml [--format table|json] [--fail-on-diff]
 ```

@@ -3,13 +3,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Self, cast
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, computed_field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, computed_field, model_validator
+
+from .secrets import SecretResolver
 
 
 class ConnectionConfig(BaseModel):
-    """Конфигурация подключения."""
+    """Конфигурация подключения с автоматическим разрешением секретов (``env://``, ``file://``)."""
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
@@ -23,6 +26,14 @@ class ConnectionConfig(BaseModel):
     ssh_config: str | bool | None = None
     timeout: float = 30.0
     options: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_secret_references(cls, data: Any) -> Any:
+        """Разрешить ссылки ``env://`` и ``file://`` во всех полях конфигурации."""
+        if isinstance(data, Mapping):
+            return SecretResolver.resolve_mapping(data)
+        return data
 
     @computed_field
     @property
@@ -41,3 +52,4 @@ class ConnectionConfig(BaseModel):
 
 
 __all__ = ["ConnectionConfig"]
+

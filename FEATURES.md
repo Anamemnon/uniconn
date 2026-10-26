@@ -1,6 +1,6 @@
 # Реализованные возможности и архитектура библиотеки uniconn
 
-> **Версия**: v0.9.0 | **475 unit-тестов** | 34 файла тестов (6 пакетов в `tests/unit/`) | 5 транспортов | Модульный CLI (`cyclopts` + `rich`) | Интерактивная веб-панель (`examples/dashboard/`) | PEP 561 (`py.typed`)
+> **Версия**: v0.12.0 | **550+ unit-тестов** | 6 транспортов (`ssh`, `telnet`, `serial`, `local`, `ipmi`, `replay`) | Модульный CLI (`cyclopts` + `rich`) | Интерактивная веб-панель (`examples/dashboard/`) | PEP 561 (`py.typed`)
 >
 > **Для ИИ-агентов**: этот файл (`FEATURES.md`) является полным каталогом реализованных фич и архитектурных решений библиотеки `uniconn`. **Не загружайте его в контекст при каждом запросе** — используйте `llms.txt` для быстрого обзора сигнатур API, а к `FEATURES.md` обращайтесь только по требованию (on-demand), когда нужно сверить наличие конкретной функциональности или обновить список возможностей после релиза.
 >
@@ -10,7 +10,7 @@
 
 | Область | Статус | Детали |
 |---------|--------|--------|
-| Транспорты | ✅ 5/5 | SSH (`~/.ssh/config`, цепочки Jump-хостов `SSHJumpChainManager`, `ProxyCommand`), Telnet, Serial/UART, Local, IPMI |
+| Транспорты | ✅ 6/6 | SSH (`~/.ssh/config`, цепочки Jump-хостов `SSHJumpChainManager`, `ProxyCommand`), Telnet, Serial/UART, Local, IPMI, Replay (`replay://`, `Cassette`, `CassetteTransportProxy`) |
 | Протоколы ISP | ✅ `transports.base` | `CommandTransport`, `FileCapableTransport`, `ShellCapableTransport`, `TunnelCapableTransport`, `require_capability()` |
 | Конвейер команд | ✅ `CommandPipeline` | Цепочка `CommandMiddleware`: `Context`, `Sudo`, `Hook`, `DryRun`, `Observability`, `CircuitBreaker`, `RateLimit`, `Retry` (`conn.pipeline`) |
 | Отказоустойчивость (`v0.9.0`) | ✅ `CircuitBreaker` + `RateLimiter` | Состояния `CLOSED` → `OPEN` → `HALF_OPEN` (`CircuitOpenError`), Token Bucket `RateLimiter` на уровне `Connection`, `ConnectionPool` и `SSHSessionPool` |
@@ -19,21 +19,22 @@
 | Screen-сессии | ✅ `ScreenPool` | Долгоживущие команды в GNU screen, `LogPipeline`, `ScreenSession`, многоуровневый cleanup |
 | PTY Shell & Expect | ✅ `ShellSession` + `expect()` | Stateful сессии (`open_shell`, `execute`, `SyncShellSession`) для SSH, Local, Telnet, Serial + декларативный `expect()` (`ExpectStateMachine`) |
 | Инспекция и сравнение | ✅ `gather_facts()` + `diff_facts()` | `FactCollector` → `HostFacts` + детектор конфигурационного дрейфа `diff_facts()` (`FactsDiffReport`, `uniconn facts --diff`) |
-| Идемпотентность | ✅ `ensure_*` (`EnsureResult`) | `ensure_package` (`apt`/`apk`/`dnf`/`yum`/`pacman`/`zypper`), `ensure_service` (`systemd`/`openrc`/`sysv`), `ensure_line` |
+| Идемпотентность (`v0.12.0`) | ✅ `ensure_*` (`EnsureResult` + `diff`) | `ensure_package` (`apt`/`apk`/`dnf`/`yum`/`pacman`/`zypper`), `ensure_service` (`systemd`/`openrc`/`sysv`), `ensure_line`, `ensure_file` (`content`, `link`, `mode`, `owner`, `group`, `validate`), `ensure_directory` (`recurse`), расчёт unified diff при `dry_run=True` |
+| Запись/реплей кассет (`v0.12.0`) | ✅ `Cassette` + `pytest_plugin` | `conn.use_cassette()`, `pool.use_cassette()`, `Cassette.diff()` (`CassetteDiffReport`), `uniconn.pytest_plugin`, CLI `record`, `replay`, `cassette info/sanitize/verify/diff` |
 | Синхронизация и шаблоны | ✅ `sync_dir` & `write_template` | Дельта-синхронизация директорий (`SyncResult`, `delete`, `exclude`) и рендеринг шаблонов (`jinja2` / `string.Template`) |
 | Выполнение скриптов | ✅ `run_script()` / `exec-script` | Автозагрузка локального скрипта в `temp_dir`, `chmod 0o700`, запуск с аргументами/интерпретатором и гарантированная очистка |
 | SSH-туннелирование | ✅ `TunnelService` | Контекстные менеджеры `forward_local_port` (`-L`) и `forward_remote_port` (`-R`) в async и sync режимах |
 | API (Async + Sync) | ✅ Полный паритет | `Connection` ↔ `SyncConnection`, `ConnectionPool` ↔ `SyncConnectionPool`, `ShellSession` ↔ `SyncShellSession` на базе `EventLoopPortal` |
-| Фабрики и инвентарь | ✅ 5 методов + `InventoryLoader` | `from_uri`, `from_config`, `from_dict`, `from_file` (YAML/TOML/JSON с `host=`, `group=`, `defaults`), `from_inventory` |
+| Фабрики, инвентарь и секреты | ✅ `InventoryLoader` + `SecretResolver` | `from_uri`, `from_config`, `from_dict`, `from_file` (YAML/TOML/JSON), `from_inventory`, разрешение `env://` и `file://` с `?default=` |
 | Клонирование | ✅ 2 метода | `copy()`, `with_overrides()` |
-| Пул подключений | ✅ `ConnectionPool` | `async with pool:`, `to_sync()`, `from_file`, `map`, `map_safe`, `map_with_callback`, `ping`, `run_script`, `stream` (`PoolStreamMultiplexer`), `upload`, `download`, `sync_dir`, `write_template`, `gather_facts`, `diff_facts`, `ensure_line`, `apply` |
+| Пул подключений | ✅ `ConnectionPool` | `async with pool:`, `to_sync()`, `from_file`, `use_cassette`, `map`, `map_safe`, `map_with_callback`, `ping`, `run_script`, `stream` (`PoolStreamMultiplexer`), `upload`, `download`, `sync_dir`, `write_template`, `gather_facts`, `diff_facts`, `ensure_line`, `ensure_file`, `ensure_directory`, `apply` |
 | Health check & Latency | ✅ `is_alive()` + `ping()` | `is_alive() -> bool` и `ping() -> PingResult` (замер `latency_ms`) для всех транспортов и пулов + `uniconn ping` |
-| Retry & Hooks | ✅ `tenacity` + `uniconn.hooks` | Exponential backoff + jitter, `before_run`/`after_run`/`on_error`, `audit_log_hook`, `structured_log_hook`, `allowlist_hook`, `blocklist_hook`, `metrics_collector_hook`, `dry_run` |
+| Retry & Hooks | ✅ `tenacity` + `uniconn.hooks` | Exponential backoff + jitter, `before_run`/`after_run`/`on_error`, `audit_log_hook`, `structured_log_hook`, `allowlist_hook`, `blocklist_hook`, `metrics_collector_hook`, `otel_tracing_hook`, `dry_run` |
 | Логирование | ✅ `structlog` + `stdlib` | JSONL/Console (`configure_logging`), `contextvars` (`log_context`), метрики для Grafana/ClickHouse/InfluxDB, `SecretMaskingFilter` |
-| Security | ✅ `SecretStr` + `sudo` | `passphrase`, `sudo` через `stdin`, `sensitive=True`, `shlex.join`/`quote`, `allowlist_hook`/`blocklist_hook` |
-| CLI | ✅ `cyclopts` + `rich` | Модульный CLI (`src/uniconn/cli/`): `run`, `run-multi`, `stream-multi`, `exec-script`, `ping`, `expect`, `upload`, `download`, `sync-dir`, `template`, `facts` (`--diff`), `ensure-package`, `ensure-service`, `ensure-line`, `tunnel`, `bmc`, `shell`, `transports`, `screen-*`, `version` |
-| Веб-панель (Dashboard) | ✅ `examples/dashboard/` | Интерактивный веб-интерфейс и HTTP API (`python3 main.py --serve` на порту `3000`) с 5 рабочими вкладками и песочницами (`v0.7.0`–`v0.9.0`) |
-| Тесты | ✅ 475 unit | 34 тестовых модуля в `tests/unit/`, 0 failed, 0 warnings (`error::RuntimeWarning`) |
+| Security | ✅ `SecretStr` + `SecretResolver` | `env://`, `file://`, `passphrase`, `sudo` через `stdin`, `sensitive=True`, `shlex.join`/`quote`, `allowlist_hook`/`blocklist_hook` |
+| CLI | ✅ `cyclopts` + `rich` | Модульный CLI (`src/uniconn/cli/`): `run`, `run-multi`, `stream-multi`, `exec-script`, `ping`, `expect`, `upload`, `download`, `sync-dir`, `template`, `facts` (`--diff`), `ensure-package`, `ensure-service`, `ensure-line`, `tunnel`, `bmc`, `shell`, `transports`, `screen-*`, `record`, `replay`, `cassette *`, `version` |
+| Веб-панель (Dashboard) | ✅ `examples/dashboard/` | Интерактивный веб-интерфейс и HTTP API (`python3 main.py --serve` на порту `3000`) с 5 рабочими вкладками и песочницами |
+| Тесты | ✅ 550+ unit | 38 тестовых модулей в `tests/unit/`, 0 failed, 0 warnings (`error::RuntimeWarning`) |
 | Linting & Types | ✅ `ruff` + `pyright` | Лимит строки 120 символов (0 ошибок `ruff`), `pyright` в режиме `standard` (0 ошибок) + `py.typed` (PEP 561) |
 | AI Agent Docs | ✅ Настроено | `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.claude/skills/`, `.cursor/rules/`, `llms.txt`, `FEATURES.md` |
 | CI/CD | ❌ | GitHub Actions не настроены (осознанно исключено) |

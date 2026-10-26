@@ -746,6 +746,60 @@ class SyncConnection:
             dry_run=dry_run,
         )
 
+    def ensure_file(
+        self,
+        remote_path: str | Path,
+        *,
+        state: Literal["present", "absent", "link"] = "present",
+        content: str | bytes | None = None,
+        target: str | Path | None = None,
+        mode: int | str | None = None,
+        owner: str | None = None,
+        group: str | None = None,
+        validate: str | None = None,
+        encoding: str = "utf-8",
+        sudo: bool = False,
+        dry_run: bool | None = None,
+    ) -> EnsureResult:
+        """Идемпотентно управлять файлом или символической ссылкой на хосте (синхронно)."""
+        return self.state.ensure_file(
+            remote_path,
+            state=state,
+            content=content,
+            target=target,
+            mode=mode,
+            owner=owner,
+            group=group,
+            validate=validate,
+            encoding=encoding,
+            sudo=sudo,
+            dry_run=dry_run,
+        )
+
+    def ensure_directory(
+        self,
+        remote_path: str | Path,
+        *,
+        state: Literal["present", "absent"] = "present",
+        mode: int | str | None = None,
+        owner: str | None = None,
+        group: str | None = None,
+        recurse: bool = False,
+        sudo: bool = False,
+        dry_run: bool | None = None,
+    ) -> EnsureResult:
+        """Идемпотентно обеспечить наличие или отсутствие директории, её прав и владельца (синхронно)."""
+        return self.state.ensure_directory(
+            remote_path,
+            state=state,
+            mode=mode,
+            owner=owner,
+            group=group,
+            recurse=recurse,
+            sudo=sudo,
+            dry_run=dry_run,
+        )
+
     def use_cassette(
         self,
         path: str | Path,

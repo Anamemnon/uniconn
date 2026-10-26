@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar
 
 from pydantic import SecretStr
 
-from ..core.bridge import EventLoopPortal
+from ..core.bridge import EventLoopPortal, SyncContextBridge
 from ..core.connection import Connection
 from ..core.resilience import CircuitBreaker, RateLimiter
 from ..result import EnsureResult, PingResult, Result, SyncResult
@@ -371,6 +371,92 @@ class SyncConnectionPool:
             )
         )
 
+    def ensure_file(
+        self,
+        remote_path: str | Path,
+        *,
+        state: Literal["present", "absent", "link"] = "present",
+        content: str | bytes | None = None,
+        target: str | Path | None = None,
+        mode: int | str | None = None,
+        owner: str | None = None,
+        group: str | None = None,
+        validate: str | None = None,
+        encoding: str = "utf-8",
+        sudo: bool = False,
+        dry_run: bool | None = None,
+    ) -> dict[str, EnsureResult]:
+        """Параллельно обеспечить состояние файла или симлинка на всех хостах пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.ensure_file(
+                remote_path,
+                state=state,
+                content=content,
+                target=target,
+                mode=mode,
+                owner=owner,
+                group=group,
+                validate=validate,
+                encoding=encoding,
+                sudo=sudo,
+                dry_run=dry_run,
+            )
+        )
+
+    def ensure_directory(
+        self,
+        remote_path: str | Path,
+        *,
+        state: Literal["present", "absent"] = "present",
+        mode: int | str | None = None,
+        owner: str | None = None,
+        group: str | None = None,
+        recurse: bool = False,
+        sudo: bool = False,
+        dry_run: bool | None = None,
+    ) -> dict[str, EnsureResult]:
+        """Параллельно обеспечить состояние директории на всех хостах пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.ensure_directory(
+                remote_path,
+                state=state,
+                mode=mode,
+                owner=owner,
+                group=group,
+                recurse=recurse,
+                sudo=sudo,
+                dry_run=dry_run,
+            )
+        )
+
+    def use_cassette(
+        self,
+        path: str | Path,
+        *,
+        mode: Any = "once",
+        match_on: Sequence[Literal["command", "cwd", "sudo"]] = (
+            "command",
+            "cwd",
+            "sudo",
+        ),
+        normalize_temp: bool = True,
+        allow_playback_repeats: bool = True,
+        mask_secrets: bool = True,
+    ) -> SyncContextBridge[dict[str, Any]]:
+        """Синхронный контекстный менеджер записи/воспроизведения кассет для всего пула хостов."""
+        self._portal.reopen()
+        return SyncContextBridge(
+            self._portal,
+            self._async_pool.use_cassette(
+                path,
+                mode=mode,
+                match_on=match_on,
+                normalize_temp=normalize_temp,
+                allow_playback_repeats=allow_playback_repeats,
+                mask_secrets=mask_secrets,
+            ),
+        )
+
     def stream(
         self,
         command: str | Sequence[str],
@@ -381,3 +467,4 @@ class SyncConnectionPool:
         return self._portal.iter_async(
             self._async_pool.stream(command, timeout=timeout, **kwargs)
         )
+

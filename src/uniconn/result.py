@@ -135,6 +135,7 @@ class EnsureResult:
     ok: bool = True
     details: str = ""
     dry_run: bool = False
+    diff: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Преобразовать отчёт идемпотентной проверки в сериализуемый словарь."""
@@ -145,7 +146,9 @@ class EnsureResult:
             "ok": self.ok,
             "details": self.details,
             "dry_run": self.dry_run,
+            "diff": self.diff,
         }
+
 
 
 @dataclass(frozen=True, slots=True)

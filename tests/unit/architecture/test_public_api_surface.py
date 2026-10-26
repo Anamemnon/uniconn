@@ -41,6 +41,6 @@ def test_canonical_modules_match_backward_compat_reexports() -> None:
     assert ReexportedSyncConn is CanonicalSyncConn
 
 
-def test_version_is_bumped_to_0111() -> None:
-    """Версия библиотеки должна быть 0.11.1."""
-    assert uniconn.__version__ == "0.11.1"
+def test_version_is_bumped_to_0120() -> None:
+    """Версия библиотеки должна быть 0.12.0."""
+    assert uniconn.__version__ == "0.12.0"

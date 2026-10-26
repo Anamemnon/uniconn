@@ -53,6 +53,7 @@ class ConnectionPool:
         self._logger = logger or logging.getLogger(__name__)
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._active_conns: dict[int, Connection] = {}
+        self._cassette_conns: dict[int, Connection] = {}
         self._is_entered = False
         self._stream_mux = PoolStreamMultiplexer(self)
         self._rate_limiter = _resolve_rate_limiter(rate_limit, {})
@@ -567,6 +568,10 @@ class ConnectionPool:
                     res = await self._active_conns[idx].ping(timeout=timeout)
                     results[key] = res
                     return
+                if idx in self._cassette_conns:
+                    res = await self._cassette_conns[idx].ping(timeout=timeout)
+                    results[key] = res
+                    return
 
                 conn = self._build_conn(target, with_defaults=True)
                 try:
@@ -682,6 +687,202 @@ class ConnectionPool:
             )
         )
 
+    async def ensure_file(
+        self,
+        remote_path: str | Path,
+        *,
+        state: Literal["present", "absent", "link"] = "present",
+        content: str | bytes | None = None,
+        target: str | Path | None = None,
+        mode: int | str | None = None,
+        owner: str | None = None,
+        group: str | None = None,
+        validate: str | None = None,
+        encoding: str = "utf-8",
+        sudo: bool = False,
+        dry_run: bool | None = None,
+    ) -> dict[str, EnsureResult]:
+        """Параллельно обеспечить состояние файла или симлинка на всех хостах пула."""
+        return await self._fan_out_dict(
+            lambda _key, conn: conn.ensure_file(
+                remote_path,
+                state=state,
+                content=content,
+                target=target,
+                mode=mode,
+                owner=owner,
+                group=group,
+                validate=validate,
+                encoding=encoding,
+                sudo=sudo,
+                dry_run=dry_run,
+            )
+        )
+
+    async def ensure_directory(
+        self,
+        remote_path: str | Path,
+        *,
+        state: Literal["present", "absent"] = "present",
+        mode: int | str | None = None,
+        owner: str | None = None,
+        group: str | None = None,
+        recurse: bool = False,
+        sudo: bool = False,
+        dry_run: bool | None = None,
+    ) -> dict[str, EnsureResult]:
+        """Параллельно обеспечить состояние директории на всех хостах пула."""
+        return await self._fan_out_dict(
+            lambda _key, conn: conn.ensure_directory(
+                remote_path,
+                state=state,
+                mode=mode,
+                owner=owner,
+                group=group,
+                recurse=recurse,
+                sudo=sudo,
+                dry_run=dry_run,
+            )
+        )
+
+    @contextlib.asynccontextmanager
+    async def use_cassette(
+        self,
+        path: str | Path,
+        *,
+        mode: Any = "once",
+        match_on: Sequence[Literal["command", "cwd", "sudo"]] = (
+            "command",
+            "cwd",
+            "sudo",
+        ),
+        normalize_temp: bool = True,
+        allow_playback_repeats: bool = True,
+        mask_secrets: bool = True,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Асинхронный контекстный менеджер записи/воспроизведения кассет для всего пула хостов.
+
+        Если ``path`` оканчивается на ``.yaml``, ``.yml`` или ``.json`` — используется
+        единый общий файл кассеты для всех хостов пула. Иначе ``path`` трактуется
+        как директория, в которой для каждого хоста создаётся файл ``<dir>/<host>.yaml``.
+        """
+        import re as _re
+
+        from ..exceptions import CassetteError
+        from ..transports.replay.models import Cassette, RecordMode
+        from ..transports.replay.proxy import CassetteTransportProxy
+
+        target_path = Path(path)
+        rec_mode = RecordMode(mode)
+        is_single_file = target_path.suffix.lower() in (".yaml", ".yml", ".json")
+
+        conns_by_idx: dict[int, Connection] = {}
+        keys_by_idx: dict[int, str] = {}
+        for idx, target in enumerate(self._uris):
+            key = self._target_key(target)
+            keys_by_idx[idx] = key
+            if self._is_entered and idx in self._active_conns:
+                conns_by_idx[idx] = self._active_conns[idx]
+            else:
+                conn = self._build_conn(target, with_defaults=True)
+                conns_by_idx[idx] = conn
+                self._cassette_conns[idx] = conn
+
+        try:
+            if not is_single_file:
+                used_names: set[str] = set()
+                async with contextlib.AsyncExitStack() as stack:
+                    cassettes: dict[str, Cassette] = {}
+                    for idx, conn in conns_by_idx.items():
+                        key = keys_by_idx[idx]
+                        raw_host = key.split("://", 1)[-1]
+                        safe_name = (
+                            _re.sub(r"[^a-zA-Z0-9._-]+", "_", raw_host).strip("_")
+                            or f"host_{idx}"
+                        )
+                        if safe_name in used_names:
+                            safe_name = f"{safe_name}_{idx}"
+                        used_names.add(safe_name)
+                        host_file = target_path / f"{safe_name}.yaml"
+                        cass = await stack.enter_async_context(
+                            conn.use_cassette(
+                                host_file,
+                                mode=rec_mode,
+                                match_on=match_on,
+                                normalize_temp=normalize_temp,
+                                allow_playback_repeats=allow_playback_repeats,
+                                mask_secrets=mask_secrets,
+                            )
+                        )
+                        cassettes[key] = cass
+                    yield cassettes
+            else:
+                exists = target_path.is_file()
+                if exists and rec_mode != RecordMode.ALL:
+                    shared_cass = Cassette.load(target_path)
+                else:
+                    if rec_mode == RecordMode.NONE and not exists:
+                        raise CassetteError(
+                            f"Cassette file does not exist in RecordMode.NONE: {target_path}"
+                        )
+                    shared_cass = Cassette(
+                        transport="pool",
+                        host="pool",
+                        capabilities=["exec", "stream", "file", "shell"],
+                    )
+
+                base_interactions = [
+                    it.model_copy(deep=True) for it in shared_cass.interactions
+                ]
+                base_len = len(base_interactions)
+                orig_transports: dict[int, Any] = {}
+                proxies: dict[int, CassetteTransportProxy] = {}
+                cassettes = {}
+
+                for idx, conn in conns_by_idx.items():
+                    key = keys_by_idx[idx]
+                    orig = conn.transport
+                    orig_transports[idx] = orig
+                    host_cass = Cassette(
+                        transport=orig.name,
+                        host=conn.config.host or key,
+                        capabilities=list(shared_cass.capabilities),
+                        interactions=[
+                            it.model_copy(deep=True) for it in base_interactions
+                        ],
+                    )
+                    proxy = CassetteTransportProxy(
+                        config=conn.config,
+                        cassette=host_cass,
+                        wrapped=orig,
+                        mode=rec_mode,
+                        cassette_exists=exists,
+                        match_on=match_on,
+                        normalize_temp=normalize_temp,
+                        allow_playback_repeats=allow_playback_repeats,
+                        mask_secrets=mask_secrets,
+                    )
+                    conn.swap_transport(proxy)
+                    proxies[idx] = proxy
+                    cassettes[key] = host_cass
+
+                try:
+                    yield cassettes
+                finally:
+                    any_dirty = False
+                    new_items: list[Any] = []
+                    for idx, conn in conns_by_idx.items():
+                        proxy = proxies[idx]
+                        if proxy.is_dirty:
+                            any_dirty = True
+                            new_items.extend(proxy.cassette.interactions[base_len:])
+                        conn.swap_transport(orig_transports[idx])
+                    if any_dirty:
+                        shared_cass.interactions = [*base_interactions, *new_items]
+                        shared_cass.save(target_path)
+        finally:
+            self._cassette_conns.clear()
+
     def stream(
         self,
         command: str | Sequence[str],
@@ -696,3 +897,4 @@ class ConnectionPool:
         from ..sync.pool import SyncConnectionPool
 
         return SyncConnectionPool(self)
+

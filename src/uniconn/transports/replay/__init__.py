@@ -5,8 +5,10 @@ from .context import CassetteContext, SyncCassetteContext
 from .models import (
     CapabilityKind,
     Cassette,
+    CassetteDiffReport,
     CassetteInteraction,
     FsOperationName,
+    InteractionDiff,
     InteractionKind,
     MatchField,
     RecordedExecInteraction,
@@ -24,9 +26,11 @@ __all__ = [
     "CapabilityKind",
     "Cassette",
     "CassetteContext",
+    "CassetteDiffReport",
     "CassetteInteraction",
     "CassetteTransportProxy",
     "FsOperationName",
+    "InteractionDiff",
     "InteractionKind",
     "MatchField",
     "RecordMode",
@@ -40,3 +44,4 @@ __all__ = [
     "SyncCassetteContext",
     "normalize_temp_paths",
 ]
+
