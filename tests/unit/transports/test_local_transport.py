@@ -2,6 +2,7 @@
 """Тесты для LocalTransport"""
 
 import asyncio
+import sys
 
 import pytest
 
@@ -80,18 +81,9 @@ async def test_local_run_timeout(local_transport):
     """Таймаут выполнения команды"""
     await local_transport.connect()
 
-    # На Windows 'sleep' — это отдельная программа, не shell builtin.
-    # Используем ping для имитации задержки. Короткая задержка: kill()
-    # завершает cmd.exe, но дочерний ping доживает до конца, удерживая
-    # пайпы — с длинной задержкой тест ждал бы полное время команды.
-    import sys
-    if sys.platform == "win32":
-        cmd = "ping -n 2 127.0.0.1 >nul"
-    else:
-        cmd = "sleep 10"
-
+    cmd = [sys.executable, "-c", "import time; time.sleep(1)"]
     with pytest.raises(asyncio.TimeoutError):
-        await local_transport.run(cmd, timeout=0.1)
+        await local_transport.run(cmd, timeout=0.05)
 
     await local_transport.disconnect()
 
@@ -101,20 +93,9 @@ async def test_local_run_with_env(local_transport):
     """Команда с переменными окружения"""
     await local_transport.connect()
 
-    # Windows использует cmd.exe, Linux — sh/bash
-    import sys
-    if sys.platform == "win32":
-        result = await local_transport.run(
-            "echo %MY_VAR%",
-            env={"MY_VAR": "test_value"}
-        )
-        assert "test_value" in result.stdout.strip()
-    else:
-        result = await local_transport.run(
-            "echo $MY_VAR",
-            env={"MY_VAR": "test_value"}
-        )
-        assert "test_value" in result.stdout.strip()
+    cmd = [sys.executable, "-c", "import os; print(os.environ['MY_VAR'])"]
+    result = await local_transport.run(cmd, env={"MY_VAR": "test_value"})
+    assert "test_value" in result.stdout.strip()
 
     await local_transport.disconnect()
 
@@ -179,22 +160,16 @@ async def test_local_run_with_timeout_parameter(local_transport):
     await local_transport.disconnect()
 
 
+@pytest.mark.posix_only
 @pytest.mark.asyncio
-async def test_local_open_shell_dynamic_default_shell(local_transport):
-    """LocalTransport.open_shell() динамически выбирает шелл (cmd/powershell на Windows, /bin/sh на POSIX)."""
-    import sys
-
+async def test_local_open_shell_default_posix(local_transport):
+    """LocalTransport.open_shell() на POSIX запускает /bin/sh."""
     await local_transport.connect()
     shell_proc = await local_transport.open_shell()
     try:
         assert shell_proc is not None
         assert shell_proc._proc is not None
-        if sys.platform == "win32":
-            # На Windows должен запускаться cmd.exe или powershell.exe, но не /bin/sh
-            cmd_line = shell_proc.shell.lower()
-            assert "cmd.exe" in cmd_line or "powershell" in cmd_line or "cmd" in cmd_line
-        else:
-            assert shell_proc.shell == "/bin/sh"
+        assert shell_proc.shell == "/bin/sh"
         assert shell_proc.returncode is None
     finally:
         shell_proc.terminate()
@@ -202,28 +177,46 @@ async def test_local_open_shell_dynamic_default_shell(local_transport):
         await local_transport.disconnect()
 
 
-def test_local_prepare_cmd_for_platform():
-    """LocalTransport._prepare_cmd_for_platform учитывает различия экранирования POSIX и Windows."""
-    import sys
+@pytest.mark.windows_only
+@pytest.mark.asyncio
+async def test_local_open_shell_default_windows(local_transport):
+    """LocalTransport.open_shell() на Windows запускает cmd.exe или powershell.exe."""
+    await local_transport.connect()
+    shell_proc = await local_transport.open_shell()
+    try:
+        assert shell_proc is not None
+        assert shell_proc._proc is not None
+        cmd_line = shell_proc.shell.lower()
+        assert "cmd.exe" in cmd_line or "powershell" in cmd_line or "cmd" in cmd_line
+        assert shell_proc.returncode is None
+    finally:
+        shell_proc.terminate()
+        await shell_proc.wait_closed()
+        await local_transport.disconnect()
 
-    # Последовательность аргументов
+
+def test_local_prepare_cmd_for_windows(monkeypatch: pytest.MonkeyPatch):
+    """LocalTransport._prepare_cmd_for_platform экранирует под Windows."""
+    monkeypatch.setattr(sys, "platform", "win32")
+
     seq_cmd = ["python", "-c", "import sys; print(sys.argv[1])", "hello world"]
     prepared_seq = LocalTransport._prepare_cmd_for_platform(seq_cmd)
-    if sys.platform == "win32":
-        assert '"hello world"' in prepared_seq
-    else:
-        assert "'hello world'" in prepared_seq
+    assert '"hello world"' in prepared_seq
 
-    # Команда echo со строковыми аргументами
     echo_seq = ["echo", "first item"]
-    prepared_echo = LocalTransport._prepare_cmd_for_platform(echo_seq)
-    if sys.platform == "win32":
-        assert prepared_echo == "echo first item"
+    assert LocalTransport._prepare_cmd_for_platform(echo_seq) == "echo first item"
 
-    # POSIX shlex-строка с одинарными кавычками на Windows
     posix_quoted_str = "python3 -c 'import sys; print(sys.argv[1])' 'arg with spaces'"
     prepared_str = LocalTransport._prepare_cmd_for_platform(posix_quoted_str)
-    if sys.platform == "win32":
-        assert '"arg with spaces"' in prepared_str
-        assert "'" not in prepared_str
+    assert '"arg with spaces"' in prepared_str
+    assert "'" not in prepared_str
+
+
+def test_local_prepare_cmd_for_posix(monkeypatch: pytest.MonkeyPatch):
+    """LocalTransport._prepare_cmd_for_platform экранирует под POSIX."""
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    seq_cmd = ["python", "-c", "import sys; print(sys.argv[1])", "hello world"]
+    prepared_seq = LocalTransport._prepare_cmd_for_platform(seq_cmd)
+    assert "'hello world'" in prepared_seq
 

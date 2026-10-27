@@ -1,9 +1,26 @@
-# tests/conftest.py
+import sys
 from datetime import datetime
 
 import pytest
 
 from uniconn.result import Result
+
+posix_only = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX filesystem or environment capabilities required",
+)
+windows_only = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Windows environment capabilities required",
+)
+
+
+def pytest_runtest_setup(item: pytest.Item) -> None:
+    """Автоматический skip тестов с маркерами posix_only и windows_only."""
+    if item.get_closest_marker("posix_only") and sys.platform == "win32":
+        pytest.skip("POSIX filesystem or environment capabilities required")
+    if item.get_closest_marker("windows_only") and sys.platform != "win32":
+        pytest.skip("Windows environment capabilities required")
 
 # pytest-mock фикстура 'mocker' предоставляется автоматически плагином pytest-mock
 

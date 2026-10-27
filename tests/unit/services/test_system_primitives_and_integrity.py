@@ -14,18 +14,27 @@ from uniconn import Connection, FileTransferError, Result
 
 @pytest.mark.asyncio
 async def test_write_file_atomic_local(tmp_path: Path) -> None:
-    """write_file(..., atomic=True) на local-транспорте записывает файл атомарно и выставляет права."""
+    """write_file(..., atomic=True) на local-транспорте записывает файл атомарно."""
     target = tmp_path / "config.conf"
     target.write_text("old-data\n", encoding="utf-8")
 
     async with Connection.from_uri("local://localhost") as conn:
-        await conn.write_file(target, "new-atomic-data\n", mode=0o640, atomic=True)
+        await conn.write_file(target, "new-atomic-data\n", atomic=True)
 
     assert target.read_text(encoding="utf-8") == "new-atomic-data\n"
-    assert (target.stat().st_mode & 0o777) == 0o640
     # Временных файлов в директории остаться не должно
     leftovers = [p.name for p in tmp_path.iterdir() if p.name.startswith(".uniconn_tmp_")]
     assert leftovers == []
+
+
+@pytest.mark.posix_only
+@pytest.mark.asyncio
+async def test_write_file_atomic_local_posix_permissions(tmp_path: Path) -> None:
+    """write_file(..., atomic=True) выставляет права на POSIX-файловой системе."""
+    target = tmp_path / "config_posix.conf"
+    async with Connection.from_uri("local://localhost") as conn:
+        await conn.write_file(target, "posix-data\n", mode=0o640, atomic=True)
+    assert (target.stat().st_mode & 0o777) == 0o640
 
 
 @pytest.mark.asyncio
@@ -65,11 +74,25 @@ async def test_write_template_atomic_local(tmp_path: Path) -> None:
             target,
             "port = ${port}\n",
             context={"port": 8080},
-            mode=0o600,
             atomic=True,
         )
     assert rendered == "port = 8080\n"
     assert target.read_text(encoding="utf-8") == "port = 8080\n"
+
+
+@pytest.mark.posix_only
+@pytest.mark.asyncio
+async def test_write_template_atomic_local_posix_permissions(tmp_path: Path) -> None:
+    """write_template(..., atomic=True) выставляет права на POSIX-файловой системе."""
+    target = tmp_path / "app_posix.ini"
+    async with Connection.from_uri("local://localhost") as conn:
+        await conn.write_template(
+            target,
+            "port = ${port}\n",
+            context={"port": 8080},
+            mode=0o600,
+            atomic=True,
+        )
     assert (target.stat().st_mode & 0o777) == 0o600
 
 
@@ -78,9 +101,23 @@ async def test_ensure_file_atomic(tmp_path: Path) -> None:
     """ensure_file(..., atomic=True) идемпотентно обновляет файл через атомарную замену."""
     target = tmp_path / "service.conf"
     async with Connection.from_uri("local://localhost") as conn:
-        res1 = await conn.ensure_file(target, content="enabled=1\n", mode=0o644, atomic=True)
+        res1 = await conn.ensure_file(target, content="enabled=1\n", atomic=True)
         assert res1.changed is True
         assert target.read_text(encoding="utf-8") == "enabled=1\n"
+
+        res2 = await conn.ensure_file(target, content="enabled=1\n", atomic=True)
+        assert res2.changed is False
+
+
+@pytest.mark.posix_only
+@pytest.mark.asyncio
+async def test_ensure_file_atomic_posix_mode(tmp_path: Path) -> None:
+    """ensure_file(..., atomic=True) выставляет права на POSIX-файловой системе."""
+    target = tmp_path / "service_posix.conf"
+    async with Connection.from_uri("local://localhost") as conn:
+        res1 = await conn.ensure_file(target, content="enabled=1\n", mode=0o644, atomic=True)
+        assert res1.changed is True
+        assert (target.stat().st_mode & 0o777) == 0o644
 
         res2 = await conn.ensure_file(target, content="enabled=1\n", mode=0o644, atomic=True)
         assert res2.changed is False
@@ -247,7 +284,6 @@ async def test_ensure_authorized_key_local_and_diff(tmp_path: Path, mocker: pyte
         auth_file = fake_home / ".ssh" / "authorized_keys"
         assert auth_file.exists()
         assert key1 in auth_file.read_text(encoding="utf-8")
-        assert (auth_file.stat().st_mode & 0o777) == 0o600
 
         # Идемпотентный повтор
         r2 = await conn.ensure_authorized_key("alice", key1)
@@ -264,6 +300,22 @@ async def test_ensure_authorized_key_local_and_diff(tmp_path: Path, mocker: pyte
         r4 = await conn.ensure_authorized_key("alice", key2, state="absent")
         assert r4.changed is True
         assert key2 not in auth_file.read_text(encoding="utf-8")
+
+
+@pytest.mark.posix_only
+@pytest.mark.asyncio
+async def test_ensure_authorized_key_posix_permissions(tmp_path: Path, mocker: pytest.MonkeyPatch) -> None:
+    """ensure_authorized_key выставляет права 0o600 на ~/.ssh/authorized_keys в POSIX."""
+    fake_home = tmp_path / "home_bob"
+    fake_home.mkdir()
+    key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI TestKey bob@laptop"
+    async with Connection.from_uri("local://localhost") as conn:
+        mocker.patch.object(conn.state, "_resolve_user_home", new=AsyncMock(return_value=str(fake_home)))
+        mocker.patch.object(conn.state, "_apply_owner_group", new=AsyncMock())
+        await conn.ensure_authorized_key("bob", key)
+        auth_file = fake_home / ".ssh" / "authorized_keys"
+        assert auth_file.exists()
+        assert (auth_file.stat().st_mode & 0o777) == 0o600
 
 
 @pytest.mark.asyncio

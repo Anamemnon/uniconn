@@ -93,6 +93,8 @@ filterwarnings = [
 markers = [
     "integration: marks tests as integration tests",
     "slow: marks tests as slow running",
+    "posix_only: marks tests requiring POSIX filesystem or environment capabilities",
+    "windows_only: marks tests requiring Windows environment capabilities",
 ]
 
 [tool.pyright]

@@ -259,14 +259,20 @@ class TestCassetteDiffAndPoolCassette:
 class TestEnsureFileDirectoryAndUnifiedDiff:
     """Tests for ensure_file, ensure_directory, and unified diff calculation on dry_run=True."""
 
-    async def test_ensure_file_present_idempotent_mode_validate_and_dry_run_diff(self, tmp_path: Path) -> None:
+    async def test_ensure_file_present_idempotent_validate_and_dry_run_diff(self, tmp_path: Path) -> None:
         target = tmp_path / "app.conf"
+        val_cmd = (
+            f'"{sys.executable}" -c "import sys; sys.exit(0 if \'port=8080\' in open(sys.argv[1]).read() else 1)" %s'
+        )
+        bad_val_cmd = (
+            f'"{sys.executable}" -c "import sys; sys.exit(0 if \'port=\' in open(sys.argv[1]).read() else 1)" %s'
+        )
+
         async with Connection.from_uri("local://") as conn:
             # 1. Dry-run creation computes unified diff without creating file
             dry_res = await conn.ensure_file(
                 str(target),
                 content="port=8080\nworkers=4\n",
-                mode=0o640 if sys.platform != "win32" else None,
                 dry_run=True,
             )
             assert dry_res.ok is True
@@ -276,16 +282,10 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             assert "+port=8080" in dry_res.diff
             assert not target.exists()
 
-            # 2. Create file with content, mode, and validation command
-            val_cmd = (
-                f'"{sys.executable}" -c "import sys; sys.exit(0 if \'port=8080\' in open(sys.argv[1]).read() else 1)" %s'
-                if sys.platform == "win32"
-                else "grep -q 'port=8080' %s"
-            )
+            # 2. Create file with content and validation command
             res1 = await conn.ensure_file(
                 str(target),
                 content="port=8080\nworkers=4\n",
-                mode=0o640 if sys.platform != "win32" else None,
                 validate=val_cmd,
             )
             assert res1.ok is True
@@ -293,14 +293,11 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             assert res1.diff is not None
             assert "+port=8080" in res1.diff
             assert target.read_text(encoding="utf-8") == "port=8080\nworkers=4\n"
-            if sys.platform != "win32":
-                assert (target.stat().st_mode & 0o777) == 0o640
 
             # 3. Second call is idempotent (changed=False, diff=None)
             res2 = await conn.ensure_file(
                 str(target),
                 content="port=8080\nworkers=4\n",
-                mode=0o640 if sys.platform != "win32" else None,
             )
             assert res2.ok is True
             assert res2.changed is False
@@ -320,11 +317,6 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             assert target.read_text(encoding="utf-8") == "port=8080\nworkers=4\n"
 
             # 5. Failed validation leaves original file untouched
-            bad_val_cmd = (
-                f'"{sys.executable}" -c "import sys; sys.exit(0 if \'port=\' in open(sys.argv[1]).read() else 1)" %s'
-                if sys.platform == "win32"
-                else "grep -q 'port=' %s"
-            )
             bad_val = await conn.ensure_file(
                 str(target),
                 content="invalid_config\n",
@@ -343,10 +335,16 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             assert "-port=8080" in rm_res.diff
             assert not target.exists()
 
-    @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="Symlinks on Windows require Developer Mode or elevated privileges",
-    )
+    @pytest.mark.posix_only
+    async def test_ensure_file_posix_permissions(self, tmp_path: Path) -> None:
+        """Проверка выставления прав доступа (mode=0o640) на POSIX-файловой системе."""
+        target = tmp_path / "app_secure.conf"
+        async with Connection.from_uri("local://") as conn:
+            res = await conn.ensure_file(str(target), content="port=8080\n", mode=0o640)
+            assert res.ok is True
+            assert (target.stat().st_mode & 0o777) == 0o640
+
+    @pytest.mark.posix_only
     async def test_ensure_file_symlink(self, tmp_path: Path) -> None:
         src = tmp_path / "target.txt"
         src.write_text("hello link\n", encoding="utf-8")
@@ -372,9 +370,7 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
 
         async with Connection.from_uri("local://") as conn:
             # Dry-run directory creation
-            dry_dir = await conn.ensure_directory(
-                str(dir_path), mode=0o750 if sys.platform != "win32" else None, dry_run=True
-            )
+            dry_dir = await conn.ensure_directory(str(dir_path), dry_run=True)
             assert dry_dir.changed is True
             assert dry_dir.dry_run is True
             assert dry_dir.diff is not None
@@ -382,19 +378,13 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             assert not dir_path.exists()
 
             # Real directory creation
-            dir_res = await conn.ensure_directory(
-                str(dir_path), mode=0o750 if sys.platform != "win32" else None
-            )
+            dir_res = await conn.ensure_directory(str(dir_path))
             assert dir_res.ok is True
             assert dir_res.changed is True
             assert dir_path.is_dir()
-            if sys.platform != "win32":
-                assert (dir_path.stat().st_mode & 0o777) == 0o750
 
             # Idempotent check
-            dir_res2 = await conn.ensure_directory(
-                str(dir_path), mode=0o750 if sys.platform != "win32" else None
-            )
+            dir_res2 = await conn.ensure_directory(str(dir_path))
             assert dir_res2.ok is True
             assert dir_res2.changed is False
 
@@ -418,6 +408,17 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             assert rm_dir.ok is True
             assert rm_dir.changed is True
             assert not dir_path.exists()
+
+    @pytest.mark.posix_only
+    async def test_ensure_directory_posix_permissions(self, tmp_path: Path) -> None:
+        """Проверка выставления прав доступа (mode=0o750) на POSIX-директории."""
+        dir_path = tmp_path / "nested_posix" / "service_dir"
+        async with Connection.from_uri("local://") as conn:
+            dir_res = await conn.ensure_directory(str(dir_path), mode=0o750)
+            assert dir_res.ok is True
+            assert dir_res.changed is True
+            assert dir_path.is_dir()
+            assert (dir_path.stat().st_mode & 0o777) == 0o750
 
     def test_sync_connection_and_pool_ensure_file_directory_parity(self, tmp_path: Path) -> None:
         sync_file = tmp_path / "sync_dir" / "hello.txt"

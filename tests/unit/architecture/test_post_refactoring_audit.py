@@ -263,6 +263,7 @@ async def test_connection_copy_preserves_observers_retry_zero_and_middlewares() 
     await cloned.close()
 
 
+@pytest.mark.posix_only
 @pytest.mark.asyncio
 async def test_gather_facts_custom_only_does_not_pollute_builtin_cache(tmp_path: Path) -> None:
     """Вызов gather_facts с include_builtin=False не затирает кэш встроенных системных фактов."""
