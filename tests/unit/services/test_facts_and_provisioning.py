@@ -13,6 +13,9 @@ from uniconn import (
     ConnectionPool,
     DiskInfo,
     EnsureResult,
+    FactCollector,
+    FactSpec,
+    FileSourceSpec,
     HostFacts,
     NetworkInterface,
     Result,
@@ -172,6 +175,29 @@ class TestHostFactsParsingAndCollection:
         async with Connection.from_uri("local://?host=dry-node", dry_run=True) as conn:
             facts = await conn.gather_facts()
             assert facts.os_family == "Unknown"
+
+    @pytest.mark.asyncio
+    async def test_fact_collector_spec_files_native_read(self, tmp_path: Path) -> None:
+        """FactCollector считывает файлы из spec.files нативно через conn.read_file без shell head."""
+        sample_file = tmp_path / "app_version.txt"
+        sample_file.write_text("v2.5.1-custom\n", encoding="utf-8")
+
+        json_file = tmp_path / "metadata.json"
+        json_file.write_text('{"env": "production", "tier": 1}\n', encoding="utf-8")
+
+        async with Connection.from_uri("local://") as conn:
+            spec = FactSpec(
+                files=[
+                    FileSourceSpec(name="version", path=str(sample_file), max_bytes=6),
+                    FileSourceSpec(name="meta", path=str(json_file), parse_json=True),
+                ]
+            )
+            collector = FactCollector(conn)
+            facts = HostFacts(hostname="test-host")
+            await collector._collect_spec_sources(facts, spec, default_timeout=5.0)
+
+            assert facts.custom["version"] == "v2.5.1"
+            assert facts.custom["meta"] == {"env": "production", "tier": 1}
 
 
 class TestIdempotentEnsureMethods:

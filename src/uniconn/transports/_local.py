@@ -3,11 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import codecs
 import contextlib
 import os
+import shlex
+import shutil
+import subprocess
 import sys
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +52,7 @@ class _LocalShellProcess:
         self,
         proc: asyncio.subprocess.Process,
         term_size: tuple[int, int] = (80, 24),
+        shell: str = "",
     ) -> None:
         assert proc.stdin is not None
         assert proc.stdout is not None
@@ -55,6 +60,7 @@ class _LocalShellProcess:
         self.stdin = _LocalShellStdin(proc.stdin)
         self.stdout = _LocalShellStdout(proc.stdout)
         self.term_size = term_size
+        self.shell = shell
         self.terminated = False
         self.closed = False
 
@@ -86,6 +92,66 @@ class _LocalShellProcess:
         self.close()
 
 
+def _resolve_default_shell(requested: str | None = None) -> str:
+    """Определить подходящий системный шелл (cmd.exe/powershell.exe на Windows, /bin/sh на POSIX)."""
+    if sys.platform != "win32":
+        return requested or "/bin/sh"
+
+    default = (
+        os.environ.get("COMSPEC")
+        or shutil.which("cmd.exe")
+        or shutil.which("powershell.exe")
+        or "cmd.exe"
+    )
+    if not requested or requested == "/bin/sh":
+        return default
+    if Path(requested).exists() or shutil.which(requested) is not None:
+        return requested
+    return default
+
+
+def _apply_windows_polyfills(parts: list[str]) -> str | None:
+    """Эмулировать стандартные POSIX-команды на Windows через Python или встроенные утилиты."""
+    if not parts:
+        return None
+
+    first = parts[0].lower()
+    if first == "echo":
+        return "echo " + " ".join(p.strip("'\"") for p in parts[1:])
+
+    if first == "cat" and len(parts) == 1 and shutil.which("cat") is None:
+        return (
+            f'"{sys.executable}" -c '
+            '"import sys, shutil; shutil.copyfileobj(sys.stdin.buffer, sys.stdout.buffer)"'
+        )
+
+    if first == "printf" and shutil.which("printf") is None:
+        raw_arg = parts[1] if len(parts) > 1 else ""
+        try:
+            decoded = codecs.decode(raw_arg, "unicode_escape")
+        except Exception:
+            decoded = raw_arg
+        return f'"{sys.executable}" -c "import sys; sys.stdout.write({decoded!r})"'
+
+    if first == "tail" and shutil.which("tail") is None:
+        n = 10
+        for i, p in enumerate(parts):
+            if p == "-n" and i + 1 < len(parts):
+                with contextlib.suppress(ValueError):
+                    n = int(parts[i + 1])
+        target_file = parts[-1]
+        return (
+            f'"{sys.executable}" -c '
+            f'"import sys; lines = open(sys.argv[1], encoding=\'utf-8\', errors=\'replace\').readlines(); '
+            f'sys.stdout.write(\'\'.join(lines[-{n}:]))" {subprocess.list2cmdline([target_file])}'
+        )
+
+    if first == "python3" and shutil.which("python3") is None:
+        parts[0] = sys.executable
+
+    return None
+
+
 class LocalTransport(BaseTransport):
     """Выполнение команд локально через subprocess."""
 
@@ -113,14 +179,57 @@ class LocalTransport(BaseTransport):
         """Для локального транспорта всегда True (нет сетевого подключения)."""
         return self._connected
 
+    @staticmethod
+    def _prepare_cmd_for_platform(command: str | Sequence[str]) -> str:
+        """Адаптировать экранирование аргументов (POSIX shlex vs Windows CommandLineToArgvW)."""
+        if sys.platform != "win32":
+            if isinstance(command, (list, tuple)):
+                return shlex.join([str(c) for c in command])
+            return str(command)
+
+        # Обработка на платформе Windows
+        if isinstance(command, (list, tuple)):
+            parts = [str(c) for c in command]
+            polyfilled = _apply_windows_polyfills(parts)
+            return polyfilled if polyfilled is not None else subprocess.list2cmdline(parts)
+
+        if not isinstance(command, str):
+            return str(command)
+
+        cmd_stripped = command.strip()
+        # Быстрый путь для echo с кавычками
+        if cmd_stripped.lower().startswith("echo "):
+            rest = cmd_stripped[5:].strip()
+            if (rest.startswith("'") and rest.endswith("'")) or (rest.startswith('"') and rest.endswith('"')):
+                return f"echo {rest[1:-1]}"
+
+        # Токенизация команд с POSIX-кавычками или полифиллами
+        needs_tokenization = (
+            "'" in command
+            or any(cmd_stripped.lower().startswith(f"{cmd} ") for cmd in ("cat", "printf", "tail"))
+            or cmd_stripped.lower() == "cat"
+        )
+        if needs_tokenization:
+            try:
+                parts = shlex.split(command, posix=True)
+                if parts:
+                    polyfilled = _apply_windows_polyfills(parts)
+                    return polyfilled if polyfilled is not None else subprocess.list2cmdline(parts)
+            except ValueError:
+                pass
+
+        return command
+
     async def _exec_raw(
         self,
-        command: str,
+        command: str | Sequence[str],
         timeout: float | None = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> tuple[int, bytes, bytes, float]:
         """Запустить процесс и вернуть сырые байты (exit_code, stdout, stderr, duration)."""
         start_time = time.monotonic()
+        raw_cmd_str = command if isinstance(command, str) else " ".join(str(c) for c in command)
+        cmd_to_exec = self._prepare_cmd_for_platform(command)
 
         env = kwargs.get("env")
         final_env: dict[str, str] | None = None
@@ -136,10 +245,9 @@ class LocalTransport(BaseTransport):
 
         creation_flags = 0
         if sys.platform == "win32":
-            import subprocess
             creation_flags = subprocess.CREATE_NO_WINDOW
 
-        proc_kwargs: dict = {
+        proc_kwargs: dict[str, Any] = {
             "stdout": asyncio.subprocess.PIPE,
             "stderr": asyncio.subprocess.PIPE,
             "env": final_env,
@@ -149,7 +257,7 @@ class LocalTransport(BaseTransport):
         if stdin_bytes is not None:
             proc_kwargs["stdin"] = asyncio.subprocess.PIPE
 
-        proc = await asyncio.create_subprocess_shell(command, **proc_kwargs)
+        proc = await asyncio.create_subprocess_shell(cmd_to_exec, **proc_kwargs)
 
         try:
             comm_coro = (
@@ -166,7 +274,7 @@ class LocalTransport(BaseTransport):
             await proc.wait()
             raise TimeoutError(
                 f"Local command timed out after {timeout}s",
-                command=command,
+                command=raw_cmd_str,
                 host="localhost",
             ) from exc
         finally:
@@ -180,10 +288,11 @@ class LocalTransport(BaseTransport):
 
     async def run(
         self,
-        command: str,
+        command: str | Sequence[str],
         timeout: float | None = None,
-        **kwargs
+        **kwargs: Any,
     ) -> Result:
+        cmd_str = command if isinstance(command, str) else " ".join(str(c) for c in command)
         exit_code, stdout, stderr, duration = await self._exec_raw(
             command, timeout=timeout, **kwargs
         )
@@ -192,25 +301,26 @@ class LocalTransport(BaseTransport):
             stdout=stdout.decode("utf-8", errors="replace") if stdout else "",
             stderr=stderr.decode("utf-8", errors="replace") if stderr else "",
             duration=duration,
-            command=command,
-            host="localhost"
+            command=cmd_str,
+            host="localhost",
         )
 
     async def run_bytes(
         self,
-        command: str,
+        command: str | Sequence[str],
         timeout: float | None = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> bytes:
         """Выполнить команду локально и вернуть сырой байтовый stdout."""
         raise_on_error = kwargs.pop("raise_on_error", False)
+        cmd_str = command if isinstance(command, str) else " ".join(str(c) for c in command)
         exit_code, stdout, stderr, _ = await self._exec_raw(
             command, timeout=timeout, **kwargs
         )
         if raise_on_error and exit_code != 0:
             raise ExecutionError(
                 f"Command failed with exit code {exit_code}",
-                command=command,
+                command=cmd_str,
                 exit_code=exit_code,
                 stdout=stdout.decode("utf-8", errors="replace"),
                 stderr=stderr.decode("utf-8", errors="replace"),
@@ -362,14 +472,15 @@ class LocalTransport(BaseTransport):
         term_size: tuple[int, int] = (80, 24),
         **kwargs: Any,
     ) -> _LocalShellProcess:
-        """Открыть интерактивную stateful shell-сессию локально (``/bin/sh``)."""
+        """Открыть интерактивную stateful shell-сессию локально."""
         if not self._connected:
             raise ConnectionError(
                 "Local transport is not connected. Call connect() first",
                 host="localhost",
             )
 
-        shell_bin = kwargs.pop("shell", "/bin/sh")
+        shell_bin = _resolve_default_shell(kwargs.pop("shell", None))
+
         env = {
             **os.environ,
             "TERM": term_type,
@@ -383,26 +494,27 @@ class LocalTransport(BaseTransport):
             stderr=asyncio.subprocess.STDOUT,
             env=env,
         )
-        wrapped = _LocalShellProcess(proc, term_size=term_size)
+        wrapped = _LocalShellProcess(proc, term_size=term_size, shell=shell_bin)
         self._shell_procs.append(wrapped)
         return wrapped
 
     async def stream(
         self,
-        command: str,
+        command: str | Sequence[str],
         timeout: float | None = None,
-        **kwargs
+        **kwargs: Any,
     ) -> AsyncIterator[str]:
+        cmd_to_exec = self._prepare_cmd_for_platform(command)
         proc = await asyncio.create_subprocess_shell(
-            command,
+            cmd_to_exec,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            **kwargs
+            **kwargs,
         )
         try:
             if proc.stdout is not None:
                 async for line in proc.stdout:
-                    yield line.decode().rstrip()
+                    yield line.decode("utf-8", errors="replace").rstrip()
             await proc.wait()
         finally:
             if proc.returncode is None:

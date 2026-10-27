@@ -177,3 +177,53 @@ async def test_local_run_with_timeout_parameter(local_transport):
     assert result.duration < 5.0
 
     await local_transport.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_local_open_shell_dynamic_default_shell(local_transport):
+    """LocalTransport.open_shell() динамически выбирает шелл (cmd/powershell на Windows, /bin/sh на POSIX)."""
+    import sys
+
+    await local_transport.connect()
+    shell_proc = await local_transport.open_shell()
+    try:
+        assert shell_proc is not None
+        assert shell_proc._proc is not None
+        if sys.platform == "win32":
+            # На Windows должен запускаться cmd.exe или powershell.exe, но не /bin/sh
+            cmd_line = shell_proc.shell.lower()
+            assert "cmd.exe" in cmd_line or "powershell" in cmd_line or "cmd" in cmd_line
+        else:
+            assert shell_proc.shell == "/bin/sh"
+        assert shell_proc.returncode is None
+    finally:
+        shell_proc.terminate()
+        await shell_proc.wait_closed()
+        await local_transport.disconnect()
+
+
+def test_local_prepare_cmd_for_platform():
+    """LocalTransport._prepare_cmd_for_platform учитывает различия экранирования POSIX и Windows."""
+    import sys
+
+    # Последовательность аргументов
+    seq_cmd = ["python", "-c", "import sys; print(sys.argv[1])", "hello world"]
+    prepared_seq = LocalTransport._prepare_cmd_for_platform(seq_cmd)
+    if sys.platform == "win32":
+        assert '"hello world"' in prepared_seq
+    else:
+        assert "'hello world'" in prepared_seq
+
+    # Команда echo со строковыми аргументами
+    echo_seq = ["echo", "first item"]
+    prepared_echo = LocalTransport._prepare_cmd_for_platform(echo_seq)
+    if sys.platform == "win32":
+        assert prepared_echo == "echo first item"
+
+    # POSIX shlex-строка с одинарными кавычками на Windows
+    posix_quoted_str = "python3 -c 'import sys; print(sys.argv[1])' 'arg with spaces'"
+    prepared_str = LocalTransport._prepare_cmd_for_platform(posix_quoted_str)
+    if sys.platform == "win32":
+        assert '"arg with spaces"' in prepared_str
+        assert "'" not in prepared_str
+

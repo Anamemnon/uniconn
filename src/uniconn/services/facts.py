@@ -202,6 +202,39 @@ class FactCollector:
             self.cached = facts
         return facts
 
+    @staticmethod
+    def _parse_custom_value(raw: str, parse_json: bool) -> Any:
+        """Безопасно преобразовать JSON-строку или вернуть сырое текстовое значение."""
+        if parse_json and raw:
+            with contextlib.suppress(ValueError):
+                return json.loads(raw)
+        return raw
+
+    async def _read_file_source(
+        self,
+        file_spec: FileSourceSpec,
+        default_timeout: float | None = None,
+    ) -> str:
+        """Прочитать содержимое файла с ограничением по байтам и безопасным fallback."""
+        max_bytes = int(file_spec.max_bytes)
+        try:
+            content = await self._conn.read_file(file_spec.path, encoding="utf-8")
+            if isinstance(content, str):
+                return content[:max_bytes].strip()
+            if isinstance(content, bytes):
+                return content[:max_bytes].decode("utf-8", errors="replace").strip()
+        except Exception:
+            pass
+
+        # Fallback через shell-команду head -c (для совместимости с моками или хостами без SFTP)
+        try:
+            q_path = shlex.quote(file_spec.path)
+            cmd = f"head -c {max_bytes} {q_path} 2>/dev/null || true"
+            res = await self._conn.run(cmd, timeout=default_timeout, raise_on_error=False)
+            return res.stdout.strip()
+        except Exception:
+            return ""
+
     async def _collect_spec_sources(
         self,
         facts: HostFacts,
@@ -211,39 +244,17 @@ class FactCollector:
     ) -> None:
         """Собрать пользовательские команды, файлы и внешние утилиты по ``FactSpec``."""
         for cmd_spec in spec.commands:
-            eff_timeout = (
-                cmd_spec.timeout if cmd_spec.timeout is not None else default_timeout
-            )
+            eff_timeout = cmd_spec.timeout if cmd_spec.timeout is not None else default_timeout
             res = await self._conn.run(
                 cmd_spec.command,
                 timeout=eff_timeout,
                 raise_on_error=False,
             )
-            raw_out = res.stdout.strip()
-            if cmd_spec.parse_json and raw_out:
-                try:
-                    facts.custom[cmd_spec.name] = json.loads(raw_out)
-                    continue
-                except ValueError:
-                    pass
-            facts.custom[cmd_spec.name] = raw_out
+            facts.custom[cmd_spec.name] = self._parse_custom_value(res.stdout.strip(), cmd_spec.parse_json)
 
         for file_spec in spec.files:
-            q_path = shlex.quote(file_spec.path)
-            cmd = f"head -c {int(file_spec.max_bytes)} {q_path} 2>/dev/null || true"
-            res = await self._conn.run(
-                cmd,
-                timeout=default_timeout,
-                raise_on_error=False,
-            )
-            raw_file = res.stdout.strip()
-            if file_spec.parse_json and raw_file:
-                try:
-                    facts.custom[file_spec.name] = json.loads(raw_file)
-                    continue
-                except ValueError:
-                    pass
-            facts.custom[file_spec.name] = raw_file
+            raw_file = await self._read_file_source(file_spec, default_timeout=default_timeout)
+            facts.custom[file_spec.name] = self._parse_custom_value(raw_file, file_spec.parse_json)
 
         for tool_spec in spec.tools:
             facts.tools[tool_spec.name] = await self._tool_runner.run_tool(
