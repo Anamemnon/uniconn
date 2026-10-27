@@ -79,13 +79,13 @@ groups:
 """
 
 TEST_SUITES_META: list[dict[str, Any]] = [
-    {"id": "all", "label": "All Unit Tests", "path": "tests/unit", "count": 458},
-    {"id": "core", "label": "Core & Logging", "path": "tests/unit/core", "count": 186},
-    {"id": "transports", "label": "Transports & SFTP", "path": "tests/unit/transports", "count": 104},
-    {"id": "pools", "label": "Connection & SSH Pools", "path": "tests/unit/pools", "count": 28},
+    {"id": "all", "label": "All Unit Tests", "path": "tests/unit", "count": 607},
+    {"id": "core", "label": "Core & Logging", "path": "tests/unit/core", "count": 265},
+    {"id": "services", "label": "Domain Services & Provisioning", "path": "tests/unit/services", "count": 60},
+    {"id": "transports", "label": "Transports & SFTP", "path": "tests/unit/transports", "count": 165},
+    {"id": "pools", "label": "Connection & SSH Pools", "path": "tests/unit/pools", "count": 34},
     {"id": "screen", "label": "GNU Screen & LogPipeline", "path": "tests/unit/screen", "count": 30},
-    {"id": "cli", "label": "CLI & Web Dashboard", "path": "tests/unit/cli", "count": 41},
-    {"id": "releases", "label": "Release Acceptance (v0.3–v0.9)", "path": "tests/unit/releases", "count": 85},
+    {"id": "cli", "label": "CLI & Web Dashboard", "path": "tests/unit/cli", "count": 49},
 ]
 
 

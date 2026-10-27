@@ -18,13 +18,14 @@ description: Обязательные правила запуска тестов
    uv run pytest -m "not integration" -q --tb=short --lf | tail -n 30
    ```
 2. **Каждая новая фича или багфикс требует новых тестов**:
-   - Размещайте новые тесты в соответствующем тематическом пакете внутри `tests/unit/`:
-     - `tests/unit/core/` — `Connection`, `SyncConnection`, `Result`, `ShellSession`, URI/конфиги, `structlog`-логирование и хуки.
-     - `tests/unit/transports/` — `SSHTransport`, `TelnetTransport`, `SerialTransport`, `LocalTransport`, `IPMITransport`, SFTP.
-     - `tests/unit/pools/` — `ConnectionPool`, `SSHSessionPool`.
-     - `tests/unit/screen/` — `ScreenPool`, `ScreenSession`, `LogPipeline`, cleanup.
-     - `tests/unit/cli/` — команды CLI (`cyclopts` + `rich`).
-     - `tests/unit/releases/` — сквозные тесты функциональности конкретных релизов (`test_v0*_features.py`).
+   - Размещайте новые тесты строго по доменным пакетам внутри `tests/unit/` (зеркало `src/uniconn/`, не создавайте версионные файлы вида `test_v0*_features.py`):
+     - `tests/unit/core/` — `Connection`, `SyncConnection`, `Result`, `ShellSession`, `wait_for_*`, `CircuitBreaker`, `RateLimiter`, `SecretResolver`, URI/конфиги, `structlog`-логирование и хуки.
+     - `tests/unit/services/` — `FileOperationsService`, `checksum`, `sync_dir`, `write_template`, `FactCollector`, `StateManagementService` и примитивы `ensure_*`.
+     - `tests/unit/transports/` — `SSH`, `Telnet`, `Serial`, `Local`, `IPMI`, `Redfish`, `Docker`, `Podman`, `Kubectl`, `Replay`/`Cassette`, SFTP.
+     - `tests/unit/pools/` — `ConnectionPool` (включая батчинг и `select()`), `SSHSessionPool`.
+     - `tests/unit/screen/` — `ScreenPool`, `ScreenSession`, `LogPipeline`, `DiagnosticSession`, cleanup.
+     - `tests/unit/cli/` — команды CLI (`cyclopts` + `rich`) и веб-дашборд.
+     - `tests/unit/architecture/` — архитектурные инварианты и публичный контракт API.
    - При добавлении метода/контекстного менеджера в `Connection` необходимо добавить unit-тесты как для асинхронного `Connection`, так и для синхронного `SyncConnection`.
    - Покрывайте не только «счастливый путь» (happy path), но и граничные случаи: ошибки сети/таймауты, `dry_run=True`, `sensitive=True` (проверка отсутствия утечки секретов в `repr`, `to_dict()` и логах).
 3. **Нулевая терпимость к `RuntimeWarning` (утечкам корутин)**:

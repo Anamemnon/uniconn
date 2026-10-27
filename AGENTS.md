@@ -2,32 +2,32 @@
 
 ## Обзор проекта
 
-`uniconn` (`v0.14.0`) — универсальная async-first Python-библиотека (Python 3.11+) для выполнения команд, инспекции хостов, идемпотентного управления состоянием и синхронизации файлов через единый фасад `Connection`. Управление зависимостями осуществляется через `uv`.
+`uniconn` (`v0.16.0`) — универсальная async-first Python-библиотека (Python 3.11+) для выполнения команд, инспекции хостов, идемпотентного управления состоянием и синхронизации файлов через единый фасад `Connection`. Управление зависимостями осуществляется через `uv`.
 
 Для быстрого ознакомления с сигнатурами публичного API и URI-схемами используйте файл `llms.txt` в корне репозитория.
 
 ## Структура модулей (`src/uniconn/`)
 
-- `core/connection.py` (реэкспорт в `_connection.py`) — `Connection` и `OperationObserver`: тонкий фасад, предоставляющий фабрики (`from_uri`, `from_config`, `from_dict`, `from_file`, `from_inventory`), доменные сервисы (`conn.files`, `conn.state`, `conn.tunnels`), конвейер выполнения (`conn.pipeline`) и удобные методы верхнего уровня (`run`, `run_bytes`, `run_commands`, `run_script`, `ping`, `stream`, `expect`, `open_shell`, `gather_facts`, `ensure_package`, `ensure_service`, `ensure_line`, `ensure_file`, `ensure_directory`, `sync_dir`, `write_template`, `forward_local_port`, `forward_remote_port`, `use_cassette` и др.).
+- `core/connection.py` (реэкспорт в `_connection.py`) — `Connection` и `OperationObserver`: тонкий фасад, предоставляющий фабрики (`from_uri`, `from_config`, `from_dict`, `from_file`, `from_inventory`), доменные сервисы (`conn.files`, `conn.state`, `conn.tunnels`), конвейер выполнения (`conn.pipeline`) и удобные методы верхнего уровня (`run`, `run_bytes`, `run_commands`, `run_script`, `ping`, `wait_for_connection`, `wait_for_port`, `wait_for_path`, `stream`, `expect`, `open_shell`, `gather_facts`, `checksum`, `ensure_package`, `ensure_service`, `ensure_line`, `ensure_file`, `ensure_directory`, `ensure_user`, `ensure_authorized_key`, `ensure_systemd_unit`, `ensure_sysctl`, `sync_dir`, `write_template`, `forward_local_port`, `forward_remote_port`, `use_cassette` и др.).
 - `core/` — ядро выполнения:
   - `pipeline.py` — `CommandRequest`, `CommandPipeline`, типизированные хуки (`BeforeRunHook`, `AfterRunHook`, `OnErrorHook`) и цепочка `CommandMiddleware` (`ContextMiddleware`, `SudoMiddleware`, `HookMiddleware`, `DryRunMiddleware`, `ObservabilityMiddleware`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`, `RetryMiddleware`).
   - `resilience.py` — `CircuitBreaker`, `CircuitState` (`CLOSED` / `OPEN` / `HALF_OPEN`) и `RateLimiter` (async Token Bucket).
   - `context.py` — `ExecutionContext` и контекстные менеджеры `CwdContext`, `EnvContext`, `TempDirContext`.
   - `bridge.py` — `EventLoopPortal` (единый синглтон фонового event loop для синхронных вызовов) и `SyncContextBridge`.
 - `services/` — выделенные доменные сервисы:
-  - `files.py` — `FileOperationsService` и `DirectorySynchronizer` (файловые операции, SFTP и дельта-синхронизация `sync_dir`).
+  - `files.py` — `FileOperationsService` и `DirectorySynchronizer` (файловые операции, атомарная запись `atomic=True`, контроль хешей `checksum()` / `verify=True`, SFTP и дельта-синхронизация `sync_dir`).
   - `templates.py` — `TemplateEngine` и `render_template` (`string.Template` и `jinja2`).
   - `facts.py` и `facts_models.py` (реэкспорт в `_facts.py`) — `FactCollector`, `HostFacts`, `FactsDiffReport` и `diff_facts()` (сбор фактов и поиск расхождений между хостами).
-  - `provisioning.py` — `StateManagementService` (`ensure_package`, `ensure_service`, `ensure_line`, `ensure_file`, `ensure_directory` с расчётом unified diff при `dry_run=True`), паттерн «Стратегия» для пакетных менеджеров (`PackageManagerStrategy`: `AptStrategy`, `ApkStrategy`, `DnfYumStrategy`, `PacmanStrategy`, `ZypperStrategy`) и менеджеров сервисов (`ServiceManagerStrategy`: `SystemdStrategy`, `OpenRCStrategy`, `SysVStrategy`).
+  - `provisioning.py` — `StateManagementService` (`ensure_package`, `ensure_service`, `ensure_line`, `ensure_file`, `ensure_directory`, `ensure_user`, `ensure_authorized_key`, `ensure_systemd_unit`, `ensure_sysctl` с расчётом unified diff при `dry_run=True`), паттерн «Стратегия» для пакетных менеджеров (`PackageManagerStrategy`: `AptStrategy`, `ApkStrategy`, `DnfYumStrategy`, `PacmanStrategy`, `ZypperStrategy`) и менеджеров сервисов (`ServiceManagerStrategy`: `SystemdStrategy`, `OpenRCStrategy`, `SysVStrategy`).
   - `tunnels.py` — `TunnelService` (`forward_local_port`, `forward_remote_port`).
 - `config/` — `models.py` (`ConnectionConfig`), `secrets.py` (`SecretResolver` для `env://` и `file://` с `?default=`), `uri.py` (`URIParser`) и `inventory.py` (`InventoryLoader` — парсинг YAML/TOML/JSON инвентарей).
 - `transports/` — протоколы возможностей ISP (`CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `TunnelCapableTransport`, `require_capability` в `base.py`), декомпозированный пакет `transports/replay/` (`ReplayTransport`, `Cassette`, `CassetteDiffReport`, `InteractionDiff`, `CassetteContext`, `CassetteTransportProxy`), декомпозированный пакет `transports/ssh/` (`OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`) и реализации `_ssh.py`, `_telnet.py`, `_serial.py`, `_local.py`, `_docker.py` (`DockerTransport`, `PodmanTransport`), `_kubectl.py` (`KubectlTransport`), `bmc/_ipmi.py` (`IPMITransport`), `bmc/_redfish.py` (`RedfishTransport` на базе `niquests`).
 - `shell/` (реэкспорт в `_shell.py`) — `ShellSession` (`shell/session.py`), `PosixMarkerProtocol` (`shell/marker_protocol.py`), `ExpectStateMachine` (`shell/expect_engine.py`).
 - `sync/` (реэкспорт в `_sync.py`) — `connection.py` (`SyncConnection`), `shell.py` (`SyncShellSession`), `pool.py` (`SyncConnectionPool`) и `services.py` (`SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`, `SyncDiagnosticSession`) на базе `EventLoopPortal`.
-- `pool/` (реэкспорты в `_pool.py` и `_session_pool.py`) — `connection_pool.py` (`ConnectionPool` с `_fan_out_list` / `_fan_out_dict` и `use_cassette`), `session_pool.py` (`SSHSessionPool` с адаптивным авто-понижением лимитов и `resize()`) и `stream_mux.py` (`PoolStreamMultiplexer`).
+- `pool/` (реэкспорты в `_pool.py` и `_session_pool.py`) — `connection_pool.py` (`ConnectionPool` с `_fan_out_list` / `_fan_out_dict`, батчевой раскаткой `batch_size` / `max_fail_ratio`, `select()` и `use_cassette`), `session_pool.py` (`SSHSessionPool` с адаптивным авто-понижением лимитов и `resize()`) и `stream_mux.py` (`PoolStreamMultiplexer`).
 - `background/` — `ScreenPool`, `ScreenSession`, `LogPipeline`, `DiagnosticSession`: управление фоновыми задачами и диагностическими сессиями.
 - `cli/` — модульный CLI на базе `cyclopts` и `rich` (`app.py`, `renderers.py`, `cmd_exec.py`, `cmd_files.py`, `cmd_ops.py`, `cmd_screen.py`, `cmd_cassette.py`).
-- `result.py` (`Result`, `PingResult`, `SyncResult`, `EnsureResult`), `hooks.py`, `telemetry.py`, `pytest_plugin.py`, `_logging.py`, `exceptions.py` (`ConfigurationError`, `CircuitOpenError`, `CassetteError`), `py.typed`.
+- `result.py` (`Result`, `PingResult`, `SyncResult`, `EnsureResult`), `hooks.py`, `telemetry.py`, `pytest_plugin.py`, `_logging.py`, `exceptions.py` (`ConfigurationError`, `CircuitOpenError`, `BatchAbortedError`, `CassetteError`), `py.typed`.
 
 ## Точка входа и веб-панель (`main.py` и `examples/dashboard/`)
 
@@ -36,13 +36,14 @@
 
 ## Структура тестов (`tests/`)
 
-Unit-тесты (`tests/unit/`, 34 модуля, 475 тестов) сгруппированы по тематическим пакетам:
-- `tests/unit/core/` — базовые абстракции (`Connection`, `SyncConnection`, `Result`, `ShellSession`, URI, конфиги, плагины, исключения, `structlog`-логирование).
-- `tests/unit/transports/` — тесты транспортов (`SSH`, `Telnet`, `Serial`, `Local`, `IPMI`, `BaseTransport`) и SFTP.
-- `tests/unit/pools/` — `ConnectionPool` и `SSHSessionPool`.
-- `tests/unit/screen/` — `ScreenPool`, `ScreenSession`, `LogPipeline`, `ScreenConfig`, cleanup.
+Unit-тесты (`tests/unit/`, 40 модулей, 607 тестов) сгруппированы строго по доменным пакетам (зеркало `src/uniconn/`):
+- `tests/unit/core/` — базовые абстракции (`Connection`, `SyncConnection`, `Result`, `ShellSession`, `ExpectStateMachine`, `PosixMarkerProtocol`, `wait_for_*`, `CircuitBreaker`, `RateLimiter`, `SecretResolver`, URI, конфиги, хуки, плагины, исключения, `structlog`-логирование и OpenTelemetry).
+- `tests/unit/services/` — доменные сервисы (`FileOperationsService`, `checksum`, `atomic=True`, `sync_dir`, `write_template`, `FactCollector`, `diff_facts`, `StateManagementService` и системные примитивы `ensure_*`).
+- `tests/unit/transports/` — тесты транспортов (`SSH`, `Telnet`, `Serial`, `Local`, `IPMI`, `Redfish`, `Docker`, `Podman`, `Kubectl`, `Replay`/`Cassette`, `BaseTransport`), SFTP и `pytest_plugin`.
+- `tests/unit/pools/` — `ConnectionPool` (включая батчинг `batch_size`/`max_fail_ratio`, `BatchAbortedError` и `select()`) и `SSHSessionPool`.
+- `tests/unit/screen/` — `ScreenPool`, `ScreenSession`, `LogPipeline`, `DiagnosticSession`, `ScreenConfig`, cleanup.
 - `tests/unit/cli/` — CLI-команды (`cyclopts` + `rich`), фоновые screen-команды и интерактивная веб-панель (`examples/dashboard/`).
-- `tests/unit/releases/` — приёмочные наборы тестов по релизам (`v0.3.0` – `v0.9.0`).
+- `tests/unit/architecture/` — архитектурные инварианты и чистота публичного API (`__all__`).
 - `tests/integration/` — интеграционные тесты с Docker/testcontainers.
 
 ## Архитектурные инварианты и правила тестирования для ИИ-агентов
