@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -314,7 +315,7 @@ async def test_ssh_and_local_timeout_wrapped_in_domain_timeout_error() -> None:
     local_t = LocalTransport(ConnectionConfig(transport="local"))
     await local_t.connect()
     with pytest.raises(TimeoutError):
-        await local_t.run("sleep 2", timeout=0.05)
+        await local_t.run([sys.executable, "-c", "import time; time.sleep(2)"], timeout=0.05)
     await local_t.disconnect()
 
     ssh_t = SSHTransport(ConnectionConfig(transport="ssh", host="127.0.0.1"))

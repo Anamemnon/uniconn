@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -265,7 +266,7 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             dry_res = await conn.ensure_file(
                 str(target),
                 content="port=8080\nworkers=4\n",
-                mode=0o640,
+                mode=0o640 if sys.platform != "win32" else None,
                 dry_run=True,
             )
             assert dry_res.ok is True
@@ -276,24 +277,30 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             assert not target.exists()
 
             # 2. Create file with content, mode, and validation command
+            val_cmd = (
+                f'"{sys.executable}" -c "import sys; sys.exit(0 if \'port=8080\' in open(sys.argv[1]).read() else 1)" %s'
+                if sys.platform == "win32"
+                else "grep -q 'port=8080' %s"
+            )
             res1 = await conn.ensure_file(
                 str(target),
                 content="port=8080\nworkers=4\n",
-                mode=0o640,
-                validate="grep -q 'port=8080' %s",
+                mode=0o640 if sys.platform != "win32" else None,
+                validate=val_cmd,
             )
             assert res1.ok is True
             assert res1.changed is True
             assert res1.diff is not None
             assert "+port=8080" in res1.diff
             assert target.read_text(encoding="utf-8") == "port=8080\nworkers=4\n"
-            assert (target.stat().st_mode & 0o777) == 0o640
+            if sys.platform != "win32":
+                assert (target.stat().st_mode & 0o777) == 0o640
 
             # 3. Second call is idempotent (changed=False, diff=None)
             res2 = await conn.ensure_file(
                 str(target),
                 content="port=8080\nworkers=4\n",
-                mode=0o640,
+                mode=0o640 if sys.platform != "win32" else None,
             )
             assert res2.ok is True
             assert res2.changed is False
@@ -313,10 +320,15 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             assert target.read_text(encoding="utf-8") == "port=8080\nworkers=4\n"
 
             # 5. Failed validation leaves original file untouched
+            bad_val_cmd = (
+                f'"{sys.executable}" -c "import sys; sys.exit(0 if \'port=\' in open(sys.argv[1]).read() else 1)" %s'
+                if sys.platform == "win32"
+                else "grep -q 'port=' %s"
+            )
             bad_val = await conn.ensure_file(
                 str(target),
                 content="invalid_config\n",
-                validate="grep -q 'port=' %s",
+                validate=bad_val_cmd,
             )
             assert bad_val.ok is False
             assert bad_val.changed is False
@@ -331,6 +343,10 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             assert "-port=8080" in rm_res.diff
             assert not target.exists()
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Symlinks on Windows require Developer Mode or elevated privileges",
+    )
     async def test_ensure_file_symlink(self, tmp_path: Path) -> None:
         src = tmp_path / "target.txt"
         src.write_text("hello link\n", encoding="utf-8")
@@ -356,7 +372,9 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
 
         async with Connection.from_uri("local://") as conn:
             # Dry-run directory creation
-            dry_dir = await conn.ensure_directory(str(dir_path), mode=0o750, dry_run=True)
+            dry_dir = await conn.ensure_directory(
+                str(dir_path), mode=0o750 if sys.platform != "win32" else None, dry_run=True
+            )
             assert dry_dir.changed is True
             assert dry_dir.dry_run is True
             assert dry_dir.diff is not None
@@ -364,14 +382,19 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             assert not dir_path.exists()
 
             # Real directory creation
-            dir_res = await conn.ensure_directory(str(dir_path), mode=0o750)
+            dir_res = await conn.ensure_directory(
+                str(dir_path), mode=0o750 if sys.platform != "win32" else None
+            )
             assert dir_res.ok is True
             assert dir_res.changed is True
             assert dir_path.is_dir()
-            assert (dir_path.stat().st_mode & 0o777) == 0o750
+            if sys.platform != "win32":
+                assert (dir_path.stat().st_mode & 0o777) == 0o750
 
             # Idempotent check
-            dir_res2 = await conn.ensure_directory(str(dir_path), mode=0o750)
+            dir_res2 = await conn.ensure_directory(
+                str(dir_path), mode=0o750 if sys.platform != "win32" else None
+            )
             assert dir_res2.ok is True
             assert dir_res2.changed is False
 

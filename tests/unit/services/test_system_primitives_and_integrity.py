@@ -486,7 +486,7 @@ async def test_connection_pool_and_sync_pool_v0150_methods(tmp_path: Path) -> No
     from uniconn import ConnectionPool
 
     sample = tmp_path / "pool_check.txt"
-    sample.write_text("pool-data\n", encoding="utf-8")
+    sample.write_text("pool-data\n", encoding="utf-8", newline="\n")
     expected_sha = hashlib.sha256(b"pool-data\n").hexdigest()
 
     async with ConnectionPool(["local://localhost"]) as pool:

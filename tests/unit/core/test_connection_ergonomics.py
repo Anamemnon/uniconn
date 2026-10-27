@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -36,7 +37,7 @@ async def test_connection_run_list_command_local():
     """Connection.run() принимает список аргументов и безопасно экранирует спецсимволы."""
     async with Connection.from_uri("local://") as conn:
         res = await conn.run(
-            ["python3", "-c", "import sys; print(sys.argv[1])", "arg with spaces & $HOME"]
+            [sys.executable, "-c", "import sys; print(sys.argv[1])", "arg with spaces & $HOME"]
         )
         assert res.ok
         assert res.stdout.strip() == "arg with spaces & $HOME"
@@ -62,7 +63,7 @@ async def test_connection_stream_list_command():
     """Connection.stream() принимает команду в виде списка аргументов."""
     async with Connection.from_uri("local://") as conn:
         lines = []
-        async for line in conn.stream(["python3", "-c", "print('line 1'); print('line 2')"]):
+        async for line in conn.stream([sys.executable, "-c", "print('line 1'); print('line 2')"]):
             lines.append(line.strip())
         assert lines == ["line 1", "line 2"]
 
