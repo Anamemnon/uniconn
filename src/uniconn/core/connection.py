@@ -977,20 +977,28 @@ class Connection:
         local_path: str | Path,
         remote_path: str | Path,
         recurse: bool = False,
+        *,
+        verify: bool = False,
         **kwargs: Any,
     ) -> None:
         """Загрузить файл или директорию на удалённый хост."""
-        await self.files.upload(local_path, remote_path, recurse=recurse, **kwargs)
+        await self.files.upload(
+            local_path, remote_path, recurse=recurse, verify=verify, **kwargs
+        )
 
     async def download(
         self,
         remote_path: str | Path,
         local_path: str | Path,
         recurse: bool = False,
+        *,
+        verify: bool = False,
         **kwargs: Any,
     ) -> None:
         """Скачать файл или директорию с удалённого хоста."""
-        await self.files.download(remote_path, local_path, recurse=recurse, **kwargs)
+        await self.files.download(
+            remote_path, local_path, recurse=recurse, verify=verify, **kwargs
+        )
 
     async def read_file(
         self,
@@ -1006,10 +1014,24 @@ class Connection:
         content: str | bytes,
         mode: int | None = None,
         encoding: str = "utf-8",
+        *,
+        atomic: bool = False,
     ) -> None:
         """Записать строку или байты из памяти в файл на хосте."""
         await self.files.write_file(
-            remote_path, content, mode=mode, encoding=encoding
+            remote_path, content, mode=mode, encoding=encoding, atomic=atomic
+        )
+
+    async def checksum(
+        self,
+        remote_path: str | Path,
+        algorithm: Literal["sha256", "sha1", "md5"] = "sha256",
+        *,
+        sudo: bool = False,
+    ) -> str:
+        """Вычислить контрольную сумму файла на хосте (``sha256``, ``sha1`` или ``md5``)."""
+        return await self.files.checksum(
+            remote_path, algorithm=algorithm, sudo=sudo
         )
 
     async def exists(self, remote_path: str | Path) -> bool:
@@ -1052,6 +1074,8 @@ class Connection:
         mode: int | None = 0o644,
         encoding: str = "utf-8",
         engine: Literal["auto", "string", "jinja2"] = "auto",
+        *,
+        atomic: bool = False,
     ) -> str:
         """Отрендерить шаблон конфигурации и записать его на хост."""
         return await self.files.write_template(
@@ -1061,6 +1085,7 @@ class Connection:
             mode=mode,
             encoding=encoding,
             engine=engine,
+            atomic=atomic,
         )
 
     async def sync_dir(
@@ -1343,6 +1368,7 @@ class Connection:
         group: str | None = None,
         validate: str | None = None,
         encoding: str = "utf-8",
+        atomic: bool = False,
         sudo: bool = False,
         dry_run: bool | None = None,
     ) -> EnsureResult:
@@ -1357,6 +1383,7 @@ class Connection:
             group=group,
             validate=validate,
             encoding=encoding,
+            atomic=atomic,
             sudo=sudo,
             dry_run=dry_run,
         )
@@ -1381,6 +1408,102 @@ class Connection:
             owner=owner,
             group=group,
             recurse=recurse,
+            sudo=sudo,
+            dry_run=dry_run,
+        )
+
+    async def ensure_user(
+        self,
+        username: str,
+        *,
+        state: Literal["present", "absent"] = "present",
+        uid: int | None = None,
+        group: str | None = None,
+        groups: Sequence[str] | None = None,
+        shell: str | None = None,
+        home: str | None = None,
+        create_home: bool = True,
+        system: bool = False,
+        sudo: bool = True,
+        dry_run: bool | None = None,
+    ) -> EnsureResult:
+        """Идемпотентно управлять системным пользователем и его группами."""
+        return await self.state.ensure_user(
+            username,
+            state=state,
+            uid=uid,
+            group=group,
+            groups=groups,
+            shell=shell,
+            home=home,
+            create_home=create_home,
+            system=system,
+            sudo=sudo,
+            dry_run=dry_run,
+        )
+
+    async def ensure_authorized_key(
+        self,
+        user: str,
+        key: str,
+        *,
+        state: Literal["present", "absent"] = "present",
+        exclusive: bool = False,
+        sudo: bool = False,
+        dry_run: bool | None = None,
+    ) -> EnsureResult:
+        """Идемпотентно управлять SSH-ключами в ``~/.ssh/authorized_keys``."""
+        return await self.state.ensure_authorized_key(
+            user,
+            key,
+            state=state,
+            exclusive=exclusive,
+            sudo=sudo,
+            dry_run=dry_run,
+        )
+
+    async def ensure_systemd_unit(
+        self,
+        name: str,
+        *,
+        content: str | None = None,
+        state: Literal["present", "absent", "started", "stopped", "restarted"] = "present",
+        enabled: bool | None = None,
+        unit_dir: str = "/etc/systemd/system",
+        daemon_reload: bool = True,
+        sudo: bool = True,
+        dry_run: bool | None = None,
+    ) -> EnsureResult:
+        """Идемпотентно управлять unit-файлом systemd с вызовом ``daemon-reload`` при изменениях."""
+        return await self.state.ensure_systemd_unit(
+            name,
+            content=content,
+            state=state,
+            enabled=enabled,
+            unit_dir=unit_dir,
+            daemon_reload=daemon_reload,
+            sudo=sudo,
+            dry_run=dry_run,
+        )
+
+    async def ensure_sysctl(
+        self,
+        name: str,
+        value: str | int,
+        *,
+        state: Literal["present", "absent"] = "present",
+        config_file: str = "/etc/sysctl.d/99-uniconn.conf",
+        reload: bool = True,
+        sudo: bool = True,
+        dry_run: bool | None = None,
+    ) -> EnsureResult:
+        """Идемпотентно управлять параметром ядра ``sysctl`` и применять его на лету."""
+        return await self.state.ensure_sysctl(
+            name,
+            value,
+            state=state,
+            config_file=config_file,
+            reload=reload,
             sudo=sudo,
             dry_run=dry_run,
         )

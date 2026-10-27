@@ -410,3 +410,351 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                 renderer.print_error_and_exit(e, title="Tail Stream Error")
 
         asyncio.run(_execute())
+
+    def _render_ensure_results(
+        title: str,
+        results_map: dict[str, Any],
+        output_format: str,
+    ) -> None:
+        if output_format == "json":
+            payload = {k: v.to_dict() for k, v in results_map.items()}
+            console.print(json.dumps(payload, indent=2))
+            return
+
+        table = Table(
+            title=f"{title} ({len(results_map)} host(s))",
+            box=box.ROUNDED,
+            show_header=True,
+            header_style="bold cyan",
+        )
+        table.add_column("Host", style="cyan")
+        table.add_column("Resource", style="magenta")
+        table.add_column("State")
+        table.add_column("Changed", style="bold")
+        table.add_column("Details")
+
+        for host_key, er in results_map.items():
+            changed_str = "[yellow]CHANGED[/yellow]" if er.changed else "[green]OK[/green]"
+            table.add_row(
+                host_key,
+                er.target,
+                er.state,
+                changed_str,
+                er.details or "-",
+            )
+        console.print(table)
+        for host_key, er in results_map.items():
+            if er.diff:
+                console.print(
+                    Panel(
+                        er.diff.rstrip(),
+                        title=f"Diff ({host_key}: {er.target})",
+                        border_style="yellow",
+                    )
+                )
+
+    @app.command(name="ensure-user")
+    def ensure_user_cmd(
+        username: Annotated[str, Parameter(help="Target system username")],
+        *uris: Annotated[str, Parameter(help="Target connection URIs")],
+        state: Annotated[
+            str,
+            Parameter(name=["--state", "-s"], help="Desired state: present, absent"),
+        ] = "present",
+        uid: Annotated[
+            int | None, Parameter(name="--uid", help="Explicit numeric UID")
+        ] = None,
+        groups: Annotated[
+            str | None,
+            Parameter(name="--groups", help="Comma-separated supplementary groups"),
+        ] = None,
+        shell: Annotated[
+            str | None, Parameter(name="--shell", help="Login shell path")
+        ] = None,
+        home: Annotated[
+            str | None, Parameter(name="--home", help="Home directory path")
+        ] = None,
+        create_home: Annotated[
+            bool,
+            Parameter(name="--create-home", help="Create home directory when adding user"),
+        ] = True,
+        system: Annotated[
+            bool,
+            Parameter(name="--system", negative="", help="Create as a system account"),
+        ] = False,
+        sudo: Annotated[
+            bool,
+            Parameter(name="--sudo", negative="", help="Execute with sudo privileges"),
+        ] = False,
+        dry_run: Annotated[
+            bool,
+            Parameter(name="--dry-run", negative="", help="Check without applying changes"),
+        ] = False,
+        inventory: Annotated[
+            str | None,
+            Parameter(name=["--inventory", "-i"], help="Inventory file (.yaml/.json)"),
+        ] = None,
+        group: Annotated[
+            str | None,
+            Parameter(name=["--group", "-g"], help="Host group name in inventory"),
+        ] = None,
+        max_concurrent: Annotated[
+            int,
+            Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
+        ] = 10,
+        output_format: Annotated[
+            str,
+            Parameter(name=["--format", "-f"], help="Output format: table, json"),
+        ] = "table",
+        verbose: Annotated[
+            bool, Parameter(name=["--verbose", "-v"], negative="", help="Verbose output")
+        ] = False,
+    ) -> None:
+        """Idempotently ensure a user account and its attributes across hosts."""
+        host_uris = list(uris)
+        if not host_uris and not inventory:
+            host_uris = ["local://"]
+        group_list = [g.strip() for g in groups.split(",") if g.strip()] if groups else None
+
+        async def _execute() -> None:
+            logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
+            try:
+                pool = build_cli_pool(
+                    cli_pkg, host_uris, inventory, group, max_concurrent, logger
+                )
+                res_map = await pool.ensure_user(
+                    username,
+                    state=state,
+                    uid=uid,
+                    groups=group_list,
+                    shell=shell,
+                    home=home,
+                    create_home=create_home,
+                    system=system,
+                    sudo=sudo,
+                    dry_run=dry_run,
+                )
+                _render_ensure_results("Ensure User Report", res_map, output_format)
+            except Exception as e:
+                renderer.print_error_and_exit(e, title="Ensure User Error")
+
+        asyncio.run(_execute())
+
+    @app.command(name="ensure-authorized-key")
+    def ensure_authorized_key_cmd(
+        user: Annotated[str, Parameter(help="Target system username")],
+        key: Annotated[str, Parameter(help="SSH public key string")],
+        *uris: Annotated[str, Parameter(help="Target connection URIs")],
+        state: Annotated[
+            str,
+            Parameter(name=["--state", "-s"], help="Desired state: present, absent"),
+        ] = "present",
+        sudo: Annotated[
+            bool,
+            Parameter(name="--sudo", negative="", help="Execute with sudo privileges"),
+        ] = False,
+        dry_run: Annotated[
+            bool,
+            Parameter(name="--dry-run", negative="", help="Check without applying changes"),
+        ] = False,
+        inventory: Annotated[
+            str | None,
+            Parameter(name=["--inventory", "-i"], help="Inventory file (.yaml/.json)"),
+        ] = None,
+        group: Annotated[
+            str | None,
+            Parameter(name=["--group", "-g"], help="Host group name in inventory"),
+        ] = None,
+        max_concurrent: Annotated[
+            int,
+            Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
+        ] = 10,
+        output_format: Annotated[
+            str,
+            Parameter(name=["--format", "-f"], help="Output format: table, json"),
+        ] = "table",
+        verbose: Annotated[
+            bool, Parameter(name=["--verbose", "-v"], negative="", help="Verbose output")
+        ] = False,
+    ) -> None:
+        """Idempotently manage an SSH public key in ~/.ssh/authorized_keys across hosts."""
+        host_uris = list(uris)
+        if not host_uris and not inventory:
+            host_uris = ["local://"]
+
+        async def _execute() -> None:
+            logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
+            try:
+                pool = build_cli_pool(
+                    cli_pkg, host_uris, inventory, group, max_concurrent, logger
+                )
+                res_map = await pool.ensure_authorized_key(
+                    user,
+                    key,
+                    state=state,
+                    sudo=sudo,
+                    dry_run=dry_run,
+                )
+                _render_ensure_results(
+                    "Ensure Authorized Key Report", res_map, output_format
+                )
+            except Exception as e:
+                renderer.print_error_and_exit(e, title="Ensure Authorized Key Error")
+
+        asyncio.run(_execute())
+
+    @app.command(name="ensure-unit")
+    def ensure_unit_cmd(
+        name: Annotated[str, Parameter(help="Systemd unit name (e.g. myapp.service)")],
+        *uris: Annotated[str, Parameter(help="Target connection URIs")],
+        content: Annotated[
+            str | None,
+            Parameter(name=["--content", "-c"], help="Inline unit file content"),
+        ] = None,
+        unit_file: Annotated[
+            str | None,
+            Parameter(name="--file", help="Local path to systemd unit file"),
+        ] = None,
+        state: Annotated[
+            str,
+            Parameter(
+                name=["--state", "-s"],
+                help="Desired state: started, stopped, restarted, absent",
+            ),
+        ] = "started",
+        enabled: Annotated[
+            bool,
+            Parameter(name="--enabled", help="Enable unit on boot"),
+        ] = True,
+        sudo: Annotated[
+            bool,
+            Parameter(name="--sudo", negative="", help="Execute with sudo privileges"),
+        ] = False,
+        dry_run: Annotated[
+            bool,
+            Parameter(name="--dry-run", negative="", help="Check without applying changes"),
+        ] = False,
+        inventory: Annotated[
+            str | None,
+            Parameter(name=["--inventory", "-i"], help="Inventory file (.yaml/.json)"),
+        ] = None,
+        group: Annotated[
+            str | None,
+            Parameter(name=["--group", "-g"], help="Host group name in inventory"),
+        ] = None,
+        max_concurrent: Annotated[
+            int,
+            Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
+        ] = 10,
+        output_format: Annotated[
+            str,
+            Parameter(name=["--format", "-f"], help="Output format: table, json"),
+        ] = "table",
+        verbose: Annotated[
+            bool, Parameter(name=["--verbose", "-v"], negative="", help="Verbose output")
+        ] = False,
+    ) -> None:
+        """Idempotently deploy a systemd unit file, reload daemon if changed, and manage state."""
+        host_uris = list(uris)
+        if not host_uris and not inventory:
+            host_uris = ["local://"]
+
+        async def _execute() -> None:
+            logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
+            try:
+                from pathlib import Path
+
+                unit_content = content
+                if unit_file:
+                    unit_content = Path(unit_file).read_text(encoding="utf-8")
+                pool = build_cli_pool(
+                    cli_pkg, host_uris, inventory, group, max_concurrent, logger
+                )
+                res_map = await pool.ensure_systemd_unit(
+                    name,
+                    content=unit_content,
+                    state=state,
+                    enabled=enabled,
+                    sudo=sudo,
+                    dry_run=dry_run,
+                )
+                _render_ensure_results("Ensure Systemd Unit Report", res_map, output_format)
+            except Exception as e:
+                renderer.print_error_and_exit(e, title="Ensure Systemd Unit Error")
+
+        asyncio.run(_execute())
+
+    @app.command(name="ensure-sysctl")
+    def ensure_sysctl_cmd(
+        key: Annotated[str, Parameter(help="Kernel sysctl parameter name")],
+        value: Annotated[str, Parameter(help="Desired sysctl parameter value")],
+        *uris: Annotated[str, Parameter(help="Target connection URIs")],
+        state: Annotated[
+            str,
+            Parameter(name=["--state", "-s"], help="Desired state: present, absent"),
+        ] = "present",
+        reload: Annotated[
+            bool,
+            Parameter(name="--reload", help="Apply sysctl setting immediately via sysctl -w"),
+        ] = True,
+        config_file: Annotated[
+            str,
+            Parameter(
+                name="--config-file",
+                help="Sysctl persistence file path",
+            ),
+        ] = "/etc/sysctl.d/99-uniconn.conf",
+        sudo: Annotated[
+            bool,
+            Parameter(name="--sudo", negative="", help="Execute with sudo privileges"),
+        ] = False,
+        dry_run: Annotated[
+            bool,
+            Parameter(name="--dry-run", negative="", help="Check without applying changes"),
+        ] = False,
+        inventory: Annotated[
+            str | None,
+            Parameter(name=["--inventory", "-i"], help="Inventory file (.yaml/.json)"),
+        ] = None,
+        group: Annotated[
+            str | None,
+            Parameter(name=["--group", "-g"], help="Host group name in inventory"),
+        ] = None,
+        max_concurrent: Annotated[
+            int,
+            Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
+        ] = 10,
+        output_format: Annotated[
+            str,
+            Parameter(name=["--format", "-f"], help="Output format: table, json"),
+        ] = "table",
+        verbose: Annotated[
+            bool, Parameter(name=["--verbose", "-v"], negative="", help="Verbose output")
+        ] = False,
+    ) -> None:
+        """Idempotently set a runtime and persistent kernel sysctl parameter across hosts."""
+        host_uris = list(uris)
+        if not host_uris and not inventory:
+            host_uris = ["local://"]
+
+        async def _execute() -> None:
+            logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
+            try:
+                pool = build_cli_pool(
+                    cli_pkg, host_uris, inventory, group, max_concurrent, logger
+                )
+                res_map = await pool.ensure_sysctl(
+                    key,
+                    value,
+                    state=state,
+                    config_file=config_file,
+                    reload=reload,
+                    sudo=sudo,
+                    dry_run=dry_run,
+                )
+                _render_ensure_results("Ensure Sysctl Report", res_map, output_format)
+            except Exception as e:
+                renderer.print_error_and_exit(e, title="Ensure Sysctl Error")
+
+        asyncio.run(_execute())
+

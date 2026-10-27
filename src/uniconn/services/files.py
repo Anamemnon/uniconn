@@ -5,14 +5,18 @@ from __future__ import annotations
 
 import contextlib
 import fnmatch
+import hashlib
 import os
+import posixpath
 import re
+import shlex
 import time
+import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from ..exceptions import ExecutionError
+from ..exceptions import ExecutionError, FileTransferError
 from ..result import SyncResult
 from ..transports.base import FileStat
 from .templates import TemplateEngine
@@ -21,6 +25,19 @@ if TYPE_CHECKING:
     from ..core.connection import Connection
 
 STREAM_UPLOAD_THRESHOLD = 4 * 1024 * 1024  # 4 МБ
+ChecksumAlgorithm = Literal["sha256", "sha1", "md5"]
+_SUPPORTED_CHECKSUMS: frozenset[str] = frozenset(("sha256", "sha1", "md5"))
+
+
+def _local_file_digest(path: str | Path, algorithm: ChecksumAlgorithm = "sha256") -> str:
+    """Потоково вычислить контрольную сумму локального файла."""
+    if algorithm not in _SUPPORTED_CHECKSUMS:
+        raise ValueError(f"Unsupported checksum algorithm: {algorithm!r}")
+    hasher = hashlib.new(algorithm)
+    with Path(path).open("rb") as fp:
+        while chunk := fp.read(65536):
+            hasher.update(chunk)
+    return hasher.hexdigest().lower()
 
 
 def _compile_exclude_regex(patterns: Sequence[str]) -> re.Pattern[str] | None:
@@ -243,9 +260,11 @@ class FileOperationsService:
         local_path: str | Path,
         remote_path: str | Path,
         recurse: bool = False,
+        *,
+        verify: bool = False,
         **kwargs: Any,
     ) -> None:
-        """Загрузить файл или директорию на удалённый хост."""
+        """Загрузить файл или директорию на удалённый хост (с опциональной проверкой SHA-256)."""
         handler = self._raw_upload
         for obs in reversed(self._conn.operation_observers):
             prev_fn = handler
@@ -271,6 +290,15 @@ class FileOperationsService:
             handler = _step
 
         await handler(local_path, remote_path, recurse=recurse, **kwargs)
+        if verify and not recurse and not self._conn.is_dry_run:
+            local_digest = _local_file_digest(local_path, "sha256")
+            remote_digest = await self.checksum(remote_path, algorithm="sha256")
+            if local_digest != remote_digest:
+                raise FileTransferError(
+                    f"Checksum mismatch after upload of {local_path} -> {remote_path}: "
+                    f"local={local_digest}, remote={remote_digest}",
+                    host=self._conn.config.host,
+                )
 
     async def _raw_download(
         self,
@@ -290,9 +318,11 @@ class FileOperationsService:
         remote_path: str | Path,
         local_path: str | Path,
         recurse: bool = False,
+        *,
+        verify: bool = False,
         **kwargs: Any,
     ) -> None:
-        """Скачать файл или директорию с удалённого хоста."""
+        """Скачать файл или директорию с удалённого хоста (с опциональной проверкой SHA-256)."""
         handler = self._raw_download
         for obs in reversed(self._conn.operation_observers):
             prev_fn = handler
@@ -318,6 +348,15 @@ class FileOperationsService:
             handler = _step
 
         await handler(remote_path, local_path, recurse=recurse, **kwargs)
+        if verify and not recurse and not self._conn.is_dry_run:
+            remote_digest = await self.checksum(remote_path, algorithm="sha256")
+            local_digest = _local_file_digest(local_path, "sha256")
+            if local_digest != remote_digest:
+                raise FileTransferError(
+                    f"Checksum mismatch after download of {remote_path} -> {local_path}: "
+                    f"remote={remote_digest}, local={local_digest}",
+                    host=self._conn.config.host,
+                )
 
     async def _raw_read_file(
         self,
@@ -365,6 +404,8 @@ class FileOperationsService:
         content: str | bytes,
         mode: int | None = None,
         encoding: str = "utf-8",
+        *,
+        atomic: bool = False,
     ) -> None:
         if self._conn.is_dry_run:
             self._conn.logger.info(
@@ -375,7 +416,38 @@ class FileOperationsService:
         await self._ensure_connected()
         effective_path = self._conn.context.resolve_path(remote_path)
         data = content.encode(encoding) if isinstance(content, str) else bytes(content)
-        await self._conn.transport.write_file(effective_path, data, mode=mode)
+
+        if not atomic:
+            await self._conn.transport.write_file(effective_path, data, mode=mode)
+            return
+
+        if self._conn.transport_name == "local":
+            target_p = Path(effective_path)
+            target_p.parent.mkdir(parents=True, exist_ok=True)
+            staged_local = target_p.parent / f".uniconn_tmp_{uuid.uuid4().hex[:12]}"
+            try:
+                await self._conn.transport.write_file(str(staged_local), data, mode=mode)
+                os.replace(staged_local, target_p)
+            except Exception:
+                with contextlib.suppress(OSError):
+                    staged_local.unlink(missing_ok=True)
+                raise
+            return
+
+        parent_dir = posixpath.dirname(effective_path.rstrip("/")) or "."
+        tmp_name = f".uniconn_tmp_{uuid.uuid4().hex[:12]}"
+        staged_remote = f"/{tmp_name}" if parent_dir == "/" else f"{parent_dir}/{tmp_name}"
+        try:
+            await self._conn.transport.write_file(staged_remote, data, mode=mode)
+            await self._conn.run(
+                f"mv -f {shlex.quote(staged_remote)} {shlex.quote(effective_path)}",
+                raise_on_error=True,
+                dry_run=False,
+            )
+        except Exception:
+            with contextlib.suppress(Exception):
+                await self._conn.transport.remove_file(staged_remote)
+            raise
 
     async def write_file(
         self,
@@ -383,9 +455,23 @@ class FileOperationsService:
         content: str | bytes,
         mode: int | None = None,
         encoding: str = "utf-8",
+        *,
+        atomic: bool = False,
     ) -> None:
-        """Записать строку или байты из памяти в файл на хосте."""
-        handler = self._raw_write_file
+        """Записать строку или байты из памяти в файл на хосте (опционально атомарно)."""
+
+        async def _base_write(
+            r_path: str | Path,
+            c_data: str | bytes,
+            *,
+            mode: int | None = None,
+            encoding: str = "utf-8",
+        ) -> None:
+            await self._raw_write_file(
+                r_path, c_data, mode=mode, encoding=encoding, atomic=atomic
+            )
+
+        handler = _base_write
         for obs in reversed(self._conn.operation_observers):
             prev_fn = handler
 
@@ -411,6 +497,47 @@ class FileOperationsService:
 
         await handler(
             remote_path, content, mode=mode, encoding=encoding
+        )
+
+    async def checksum(
+        self,
+        remote_path: str | Path,
+        algorithm: ChecksumAlgorithm = "sha256",
+        *,
+        sudo: bool = False,
+    ) -> str:
+        """Вычислить контрольную сумму файла на хосте (``sha256``, ``sha1`` или ``md5``)."""
+        if algorithm not in _SUPPORTED_CHECKSUMS:
+            raise ValueError(
+                f"Unsupported checksum algorithm: {algorithm!r}. "
+                f"Expected one of {sorted(_SUPPORTED_CHECKSUMS)}"
+            )
+        effective_path = self._conn.context.resolve_path(remote_path)
+        if self._conn.transport_name == "local" and not sudo:
+            return _local_file_digest(effective_path, algorithm)
+
+        cmd = f"{algorithm}sum {shlex.quote(effective_path)}"
+        res = await self._conn.run(
+            cmd,
+            sudo=sudo,
+            raise_on_error=False,
+            dry_run=False,
+        )
+        if res.ok and res.stdout.strip():
+            return res.stdout.strip().split()[0].lower()
+
+        if not sudo:
+            raw = await self.read_file(remote_path, encoding=None)
+            raw_bytes = raw.encode("utf-8") if isinstance(raw, str) else bytes(raw)
+            return hashlib.new(algorithm, raw_bytes).hexdigest().lower()
+
+        raise ExecutionError(
+            res.stderr.strip() or f"Failed to calculate {algorithm} checksum for {effective_path}",
+            command=res.command,
+            exit_code=res.exit_code,
+            stdout=res.stdout,
+            stderr=res.stderr,
+            host=self._conn.config.host,
         )
 
     async def exists(self, remote_path: str | Path) -> bool:
@@ -487,6 +614,8 @@ class FileOperationsService:
         mode: int | None = 0o644,
         encoding: str = "utf-8",
         engine: Literal["auto", "string", "jinja2"] = "auto",
+        *,
+        atomic: bool = False,
     ) -> str:
         """Отрендерить шаблон конфигурации и записать его на хост."""
         rendered = TemplateEngine.render(
@@ -499,6 +628,7 @@ class FileOperationsService:
             rendered,
             mode=mode,
             encoding=encoding,
+            atomic=atomic,
         )
         return rendered
 

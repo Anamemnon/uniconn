@@ -47,7 +47,7 @@ Unit-тесты (`tests/unit/`, 34 модуля, 475 тестов) сгрупп�
 
 ## Архитектурные инварианты и правила тестирования для ИИ-агентов
 
-Подробный навык тестирования и обеспечения стабильности описан в `.claude/skills/testing-and-stability/SKILL.md` и `.cursor/rules/testing-and-stability.mdc`.
+Подробный навык тестирования и обеспечения стабильности описан в `.claude/skills/testing-and-stability/SKILL.md` и `.cursor/rules/testing-and-stability.mdc`, а принципы чистого и минималистичного проектирования (`ub-mode`) — в `.claude/skills/ub-mode/SKILL.md` и `.cursor/rules/ub-mode.mdc`.
 
 1. **Async + Sync паритет**: Любой новый публичный метод или контекстный менеджер в `Connection` обязан иметь синхронное отражение в `SyncConnection`.
 2. **Экспорт API**: Все публичные классы и функции должны быть экспортированы в `src/uniconn/__init__.py` (`__all__`) и отражены в `llms.txt`.

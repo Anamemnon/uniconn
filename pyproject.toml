@@ -1,6 +1,6 @@
 [project]
 name = "uniconn"
-version = "0.14.0"
+version = "0.15.0"
 description = "Universal library for remote command execution"
 requires-python = ">=3.11"
 license = {text = "MIT"}

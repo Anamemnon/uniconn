@@ -37,6 +37,14 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                 help="Upload directory recursively",
             ),
         ] = False,
+        verify: Annotated[
+            bool,
+            Parameter(
+                name="--verify",
+                negative="",
+                help="Verify SHA-256 checksum after upload",
+            ),
+        ] = False,
         max_concurrent: Annotated[
             int,
             Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
@@ -62,7 +70,9 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                     cli_pkg, host_uris, inventory, group, max_concurrent, logger
                 )
                 target_labels = [pool._target_key(t) for t in pool._uris]
-                await pool.upload(local_path, remote_path, recurse=recurse)
+                await pool.upload(
+                    local_path, remote_path, recurse=recurse, **({"verify": True} if verify else {})
+                )
 
                 if output_format == "json":
                     console.print(
@@ -108,6 +118,14 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                 help="Download directory recursively",
             ),
         ] = False,
+        verify: Annotated[
+            bool,
+            Parameter(
+                name="--verify",
+                negative="",
+                help="Verify SHA-256 checksum after download",
+            ),
+        ] = False,
         max_concurrent: Annotated[
             int,
             Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
@@ -132,7 +150,9 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                 pool = build_cli_pool(
                     cli_pkg, host_uris, inventory, group, max_concurrent, logger
                 )
-                saved = await pool.download(remote_path, local_path, recurse=recurse)
+                saved = await pool.download(
+                    remote_path, local_path, recurse=recurse, **({"verify": True} if verify else {})
+                )
 
                 if output_format == "json":
                     console.print(
@@ -285,6 +305,14 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                 help="File permissions in octal (e.g., 0644)",
             ),
         ] = "0644",
+        atomic: Annotated[
+            bool,
+            Parameter(
+                name="--atomic",
+                negative="",
+                help="Stage template to temporary file and rename atomically",
+            ),
+        ] = False,
         inventory: Annotated[
             str | None,
             Parameter(name=["--inventory", "-i"], help="Inventory file (.yaml/.json)"),
@@ -336,6 +364,7 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                     context=ctx,
                     mode=mode_int,
                     engine=eng_val,
+                    **({"atomic": True} if atomic else {}),
                 )
 
                 if output_format == "json":
@@ -358,5 +387,87 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                     )
             except Exception as e:
                 renderer.print_error_and_exit(e, title="Template Error")
+
+        asyncio.run(_execute())
+
+    @app.command(name="checksum")
+    def checksum_cmd(
+        remote_path: Annotated[str, Parameter(help="Remote file path to hash")],
+        *uris: Annotated[str, Parameter(help="Target connection URIs")],
+        algorithm: Annotated[
+            str,
+            Parameter(
+                name=["--algorithm", "-a"],
+                help="Hash algorithm: sha256, sha1, md5",
+            ),
+        ] = "sha256",
+        sudo: Annotated[
+            bool,
+            Parameter(name="--sudo", negative="", help="Run checksum with sudo"),
+        ] = False,
+        inventory: Annotated[
+            str | None,
+            Parameter(name=["--inventory", "-i"], help="Inventory file (.yaml/.json)"),
+        ] = None,
+        group: Annotated[
+            str | None,
+            Parameter(name=["--group", "-g"], help="Host group name in inventory"),
+        ] = None,
+        max_concurrent: Annotated[
+            int,
+            Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
+        ] = 10,
+        output_format: Annotated[
+            str,
+            Parameter(name=["--format", "-f"], help="Output format: table, json"),
+        ] = "table",
+        verbose: Annotated[
+            bool, Parameter(name=["--verbose", "-v"], negative="", help="Verbose output")
+        ] = False,
+    ) -> None:
+        """Compute cryptographic checksum (sha256, sha1, md5) of a remote file across hosts."""
+        host_uris = list(uris)
+        if not host_uris and not inventory:
+            host_uris = ["local://"]
+
+        alg_val: Any = algorithm if algorithm in ("sha256", "sha1", "md5") else "sha256"
+
+        async def _execute() -> None:
+            logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
+            try:
+                pool = build_cli_pool(
+                    cli_pkg, host_uris, inventory, group, max_concurrent, logger
+                )
+                digests = await pool.checksum(
+                    remote_path, algorithm=alg_val, sudo=sudo
+                )
+                if output_format == "json":
+                    console.print(
+                        json.dumps(
+                            {
+                                "action": "checksum",
+                                "remote_path": remote_path,
+                                "algorithm": alg_val,
+                                "checksums": digests,
+                            },
+                            indent=2,
+                        )
+                    )
+                    return
+
+                table = Table(
+                    title=f"File Checksum ({alg_val}): {remote_path}",
+                    box=box.ROUNDED,
+                    show_header=True,
+                    header_style="bold cyan",
+                )
+                table.add_column("Host", style="cyan")
+                table.add_column("Algorithm", style="magenta")
+                table.add_column("Digest", style="green")
+                for host_key, digest in digests.items():
+                    table.add_row(host_key, alg_val, digest)
+                console.print(table)
+            except Exception as e:
+                renderer.print_error_and_exit(e, title="Checksum Error")
 
         asyncio.run(_execute())

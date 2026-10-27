@@ -161,6 +161,8 @@ class SyncConnectionPool:
         local_path: str | Path,
         remote_path: str | Path,
         recurse: bool = False,
+        *,
+        verify: bool = False,
         **kwargs: Any,
     ) -> None:
         """Параллельно загрузить файл или директорию на все хосты пула (синхронно)."""
@@ -169,6 +171,7 @@ class SyncConnectionPool:
                 local_path,
                 remote_path,
                 recurse=recurse,
+                verify=verify,
                 **kwargs,
             )
         )
@@ -178,6 +181,8 @@ class SyncConnectionPool:
         remote_path: str | Path,
         local_path: str | Path,
         recurse: bool = False,
+        *,
+        verify: bool = False,
         **kwargs: Any,
     ) -> dict[str, str]:
         """Параллельно скачать файл или директорию со всех хостов пула (синхронно)."""
@@ -186,7 +191,22 @@ class SyncConnectionPool:
                 remote_path,
                 local_path,
                 recurse=recurse,
+                verify=verify,
                 **kwargs,
+            )
+        )
+
+    def checksum(
+        self,
+        remote_path: str | Path,
+        algorithm: Literal["sha256", "sha1", "md5"] = "sha256",
+        *,
+        sudo: bool = False,
+    ) -> dict[str, str]:
+        """Параллельно вычислить контрольную сумму файла на всех хостах пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.checksum(
+                remote_path, algorithm=algorithm, sudo=sudo
             )
         )
 
@@ -219,6 +239,8 @@ class SyncConnectionPool:
         mode: int | None = 0o644,
         encoding: str = "utf-8",
         engine: Literal["auto", "string", "jinja2"] = "auto",
+        *,
+        atomic: bool = False,
     ) -> dict[str, str]:
         """Параллельно отрендерить и записать шаблон на всех хостах пула (синхронно)."""
         return self._run_coro(
@@ -229,6 +251,7 @@ class SyncConnectionPool:
                 mode=mode,
                 encoding=encoding,
                 engine=engine,
+                atomic=atomic,
             )
         )
 
@@ -383,6 +406,7 @@ class SyncConnectionPool:
         group: str | None = None,
         validate: str | None = None,
         encoding: str = "utf-8",
+        atomic: bool = False,
         sudo: bool = False,
         dry_run: bool | None = None,
     ) -> dict[str, EnsureResult]:
@@ -398,6 +422,7 @@ class SyncConnectionPool:
                 group=group,
                 validate=validate,
                 encoding=encoding,
+                atomic=atomic,
                 sudo=sudo,
                 dry_run=dry_run,
             )
@@ -424,6 +449,110 @@ class SyncConnectionPool:
                 owner=owner,
                 group=group,
                 recurse=recurse,
+                sudo=sudo,
+                dry_run=dry_run,
+            )
+        )
+
+    def ensure_user(
+        self,
+        username: str,
+        *,
+        state: Literal["present", "absent"] = "present",
+        uid: int | None = None,
+        group: str | None = None,
+        groups: Sequence[str] | None = None,
+        shell: str | None = None,
+        home: str | None = None,
+        create_home: bool = True,
+        system: bool = False,
+        sudo: bool = True,
+        dry_run: bool | None = None,
+    ) -> dict[str, EnsureResult]:
+        """Параллельно обеспечить состояние пользователя на всех хостах пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.ensure_user(
+                username,
+                state=state,
+                uid=uid,
+                group=group,
+                groups=groups,
+                shell=shell,
+                home=home,
+                create_home=create_home,
+                system=system,
+                sudo=sudo,
+                dry_run=dry_run,
+            )
+        )
+
+    def ensure_authorized_key(
+        self,
+        user: str,
+        key: str,
+        *,
+        state: Literal["present", "absent"] = "present",
+        exclusive: bool = False,
+        sudo: bool = False,
+        dry_run: bool | None = None,
+    ) -> dict[str, EnsureResult]:
+        """Параллельно управлять SSH-ключами пользователя на всех хостах пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.ensure_authorized_key(
+                user,
+                key,
+                state=state,
+                exclusive=exclusive,
+                sudo=sudo,
+                dry_run=dry_run,
+            )
+        )
+
+    def ensure_systemd_unit(
+        self,
+        name: str,
+        *,
+        content: str | None = None,
+        state: Literal["present", "absent", "started", "stopped", "restarted"] = "present",
+        enabled: bool | None = None,
+        unit_dir: str = "/etc/systemd/system",
+        daemon_reload: bool = True,
+        sudo: bool = True,
+        dry_run: bool | None = None,
+    ) -> dict[str, EnsureResult]:
+        """Параллельно управлять unit-файлом systemd на всех хостах пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.ensure_systemd_unit(
+                name,
+                content=content,
+                state=state,
+                enabled=enabled,
+                unit_dir=unit_dir,
+                daemon_reload=daemon_reload,
+                sudo=sudo,
+                dry_run=dry_run,
+            )
+        )
+
+    def ensure_sysctl(
+        self,
+        name: str,
+        value: str | int,
+        *,
+        state: Literal["present", "absent"] = "present",
+        config_file: str = "/etc/sysctl.d/99-uniconn.conf",
+        reload: bool = True,
+        sudo: bool = True,
+        dry_run: bool | None = None,
+    ) -> dict[str, EnsureResult]:
+        """Параллельно управлять параметром ядра ``sysctl`` на всех хостах пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.ensure_sysctl(
+                name,
+                value,
+                state=state,
+                config_file=config_file,
+                reload=reload,
                 sudo=sudo,
                 dry_run=dry_run,
             )

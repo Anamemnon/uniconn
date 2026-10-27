@@ -420,6 +420,8 @@ class ConnectionPool:
         local_path: str | Path,
         remote_path: str | Path,
         recurse: bool = False,
+        *,
+        verify: bool = False,
         **kwargs: Any,
     ) -> None:
         """Параллельно загрузить файл или директорию на все хосты пула."""
@@ -428,6 +430,7 @@ class ConnectionPool:
                 str(local_path),
                 str(remote_path),
                 recurse=recurse,
+                **({"verify": True} if verify else {}),
                 **kwargs,
             )
         )
@@ -437,6 +440,8 @@ class ConnectionPool:
         remote_path: str | Path,
         local_path: str | Path,
         recurse: bool = False,
+        *,
+        verify: bool = False,
         **kwargs: Any,
     ) -> dict[str, str]:
         """Параллельно скачать файл или директорию со всех хостов пула."""
@@ -463,11 +468,28 @@ class ConnectionPool:
                 str(remote_path),
                 dest,
                 recurse=recurse,
+                **({"verify": True} if verify else {}),
                 **kwargs,
             )
             return dest
 
         return await self._fan_out_dict(_dl_worker)
+
+    async def checksum(
+        self,
+        remote_path: str | Path,
+        algorithm: Literal["sha256", "sha1", "md5"] = "sha256",
+        *,
+        sudo: bool = False,
+    ) -> dict[str, str]:
+        """Параллельно вычислить контрольную сумму удалённого файла на всех хостах пула."""
+        return await self._fan_out_dict(
+            lambda _key, conn: conn.checksum(
+                remote_path,
+                algorithm=algorithm,
+                sudo=sudo,
+            )
+        )
 
     async def apply(
         self,
@@ -505,6 +527,8 @@ class ConnectionPool:
         mode: int | None = 0o644,
         encoding: str = "utf-8",
         engine: Literal["auto", "string", "jinja2"] = "auto",
+        *,
+        atomic: bool = False,
     ) -> dict[str, str]:
         """Параллельно отрендерить и записать шаблон конфигурации на всех хостах пула."""
         return await self._fan_out_dict(
@@ -515,6 +539,7 @@ class ConnectionPool:
                 mode=mode,
                 encoding=encoding,
                 engine=engine,
+                atomic=atomic,
             )
         )
 
@@ -700,6 +725,7 @@ class ConnectionPool:
         validate: str | None = None,
         encoding: str = "utf-8",
         sudo: bool = False,
+        atomic: bool = False,
         dry_run: bool | None = None,
     ) -> dict[str, EnsureResult]:
         """Параллельно обеспечить состояние файла или симлинка на всех хостах пула."""
@@ -715,6 +741,7 @@ class ConnectionPool:
                 validate=validate,
                 encoding=encoding,
                 sudo=sudo,
+                atomic=atomic,
                 dry_run=dry_run,
             )
         )
@@ -740,6 +767,112 @@ class ConnectionPool:
                 owner=owner,
                 group=group,
                 recurse=recurse,
+                sudo=sudo,
+                dry_run=dry_run,
+            )
+        )
+
+    async def ensure_user(
+        self,
+        username: str,
+        *,
+        state: Literal["present", "absent"] = "present",
+        uid: int | None = None,
+        group: str | None = None,
+        groups: Sequence[str] | None = None,
+        shell: str | None = None,
+        home: str | None = None,
+        create_home: bool = True,
+        system: bool = False,
+        sudo: bool = True,
+        dry_run: bool | None = None,
+    ) -> dict[str, EnsureResult]:
+        """Параллельно обеспечить состояние системного пользователя на всех хостах пула."""
+        return await self._fan_out_dict(
+            lambda _key, conn: conn.ensure_user(
+                username,
+                state=state,
+                uid=uid,
+                group=group,
+                groups=groups,
+                shell=shell,
+                home=home,
+                create_home=create_home,
+                system=system,
+                sudo=sudo,
+                dry_run=dry_run,
+            )
+        )
+
+    async def ensure_authorized_key(
+        self,
+        user: str,
+        key: str,
+        *,
+        state: Literal["present", "absent"] = "present",
+        exclusive: bool = False,
+        sudo: bool = False,
+        dry_run: bool | None = None,
+    ) -> dict[str, EnsureResult]:
+        """Параллельно обеспечить наличие или отсутствие SSH-ключа на всех хостах пула."""
+        return await self._fan_out_dict(
+            lambda _key, conn: conn.ensure_authorized_key(
+                user,
+                key,
+                state=state,
+                exclusive=exclusive,
+                sudo=sudo,
+                dry_run=dry_run,
+            )
+        )
+
+    async def ensure_systemd_unit(
+        self,
+        name: str,
+        *,
+        content: str | None = None,
+        state: Literal[
+            "present", "absent", "started", "stopped", "restarted"
+        ] = "present",
+        enabled: bool | None = None,
+        unit_dir: str = "/etc/systemd/system",
+        daemon_reload: bool = True,
+        sudo: bool = True,
+        dry_run: bool | None = None,
+    ) -> dict[str, EnsureResult]:
+        """Параллельно обеспечить состояние systemd unit-файла и сервиса на всех хостах пула."""
+        return await self._fan_out_dict(
+            lambda _key, conn: conn.ensure_systemd_unit(
+                name,
+                content=content,
+                state=state,
+                enabled=enabled,
+                unit_dir=unit_dir,
+                daemon_reload=daemon_reload,
+                sudo=sudo,
+                dry_run=dry_run,
+            )
+        )
+
+    async def ensure_sysctl(
+        self,
+        name: str,
+        value: str | int,
+        *,
+        state: Literal["present", "absent"] = "present",
+        config_file: str = "/etc/sysctl.d/99-uniconn.conf",
+        reload: bool = True,
+        sudo: bool = True,
+        dry_run: bool | None = None,
+    ) -> dict[str, EnsureResult]:
+        """Параллельно обеспечить значение параметра ядра sysctl на всех хостах пула."""
+        return await self._fan_out_dict(
+            lambda _key, conn: conn.ensure_sysctl(
+                name,
+                value,
+                state=state,
+                config_file=config_file,
+                reload=reload,
                 sudo=sudo,
                 dry_run=dry_run,
             )

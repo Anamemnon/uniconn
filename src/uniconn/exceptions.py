@@ -47,6 +47,10 @@ class ExecutionError(UniconnError):
     """Ошибки выполнения команды (non-zero exit code)."""
 
 
+class FileTransferError(UniconnError):
+    """Ошибка передачи файла или несовпадения контрольной суммы (verify=True)."""
+
+
 class TimeoutError(UniconnError, builtins.TimeoutError):
     """Таймаут операции (совместим со встроенным builtins.TimeoutError)."""
 

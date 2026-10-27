@@ -69,6 +69,7 @@ from .exceptions import (
     ConfigurationError,
     ConnectionError,
     ExecutionError,
+    FileTransferError,
     ScreenError,
     ScreenNotFoundError,
     ScreenPoolFullError,
@@ -175,7 +176,7 @@ from .transports.replay import (
 )
 from .transports.ssh import OpenSSHConfigParser, SFTPClientAdapter, SSHJumpChainManager
 
-__version__ = "0.14.0"
+__version__ = "0.15.0"
 
 
 def __getattr__(name: str) -> Any:
@@ -242,6 +243,7 @@ __all__ = [
     "FileOperationsService",
     "FileSourceSpec",
     "FileStat",
+    "FileTransferError",
     "ForwardHandler",
     "HookCallback",
     "HookEvent",
