@@ -127,3 +127,26 @@ class CassetteMissError(CassetteError):
         super().__init__(message, command=command, host=host)
         self.kind = kind
         self.candidates: list[str] = candidates or []
+
+
+class BatchAbortedError(UniconnError):
+    """Раскатка по батчам в ConnectionPool прервана из-за превышения порога ошибок max_fail_ratio."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        batch_index: int = 0,
+        fail_ratio: float = 0.0,
+        max_fail_ratio: float = 0.0,
+        completed_results: dict[str, object] | None = None,
+        failed_hosts: dict[str, object] | None = None,
+    ) -> None:
+        """Инициализировать ошибку прерывания батчевой раскатки с частичными результатами."""
+        super().__init__(message)
+        self.batch_index = batch_index
+        self.fail_ratio = fail_ratio
+        self.max_fail_ratio = max_fail_ratio
+        self.completed_results: dict[str, object] = dict(completed_results or {})
+        self.failed_hosts: dict[str, object] = dict(failed_hosts or {})
+

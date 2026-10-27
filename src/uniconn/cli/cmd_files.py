@@ -49,6 +49,17 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
             int,
             Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
         ] = 10,
+        batch_size: Annotated[
+            int | None,
+            Parameter(name="--batch-size", help="Rollout wave/batch size"),
+        ] = None,
+        max_fail_ratio: Annotated[
+            float,
+            Parameter(
+                name="--max-fail-ratio",
+                help="Maximum allowed failure ratio per batch (0.0..1.0)",
+            ),
+        ] = 0.0,
         output_format: Annotated[
             str,
             Parameter(name=["--format", "-f"], help="Output format: table, json"),
@@ -67,7 +78,14 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
             logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
             try:
                 pool = build_cli_pool(
-                    cli_pkg, host_uris, inventory, group, max_concurrent, logger
+                    cli_pkg,
+                    host_uris,
+                    inventory,
+                    group,
+                    max_concurrent,
+                    logger,
+                    batch_size=batch_size,
+                    max_fail_ratio=max_fail_ratio,
                 )
                 target_labels = [pool._target_key(t) for t in pool._uris]
                 await pool.upload(
@@ -130,6 +148,17 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
             int,
             Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
         ] = 10,
+        batch_size: Annotated[
+            int | None,
+            Parameter(name="--batch-size", help="Rollout wave/batch size"),
+        ] = None,
+        max_fail_ratio: Annotated[
+            float,
+            Parameter(
+                name="--max-fail-ratio",
+                help="Maximum allowed failure ratio per batch (0.0..1.0)",
+            ),
+        ] = 0.0,
         output_format: Annotated[
             str,
             Parameter(name=["--format", "-f"], help="Output format: table, json"),
@@ -148,7 +177,14 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
             logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
             try:
                 pool = build_cli_pool(
-                    cli_pkg, host_uris, inventory, group, max_concurrent, logger
+                    cli_pkg,
+                    host_uris,
+                    inventory,
+                    group,
+                    max_concurrent,
+                    logger,
+                    batch_size=batch_size,
+                    max_fail_ratio=max_fail_ratio,
                 )
                 saved = await pool.download(
                     remote_path, local_path, recurse=recurse, **({"verify": True} if verify else {})
@@ -216,6 +252,17 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
             int,
             Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
         ] = 10,
+        batch_size: Annotated[
+            int | None,
+            Parameter(name="--batch-size", help="Rollout wave/batch size"),
+        ] = None,
+        max_fail_ratio: Annotated[
+            float,
+            Parameter(
+                name="--max-fail-ratio",
+                help="Maximum allowed failure ratio per batch (0.0..1.0)",
+            ),
+        ] = 0.0,
         output_format: Annotated[
             str,
             Parameter(name=["--format", "-f"], help="Output format: table, json"),
@@ -234,7 +281,14 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
             logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
             try:
                 pool = build_cli_pool(
-                    cli_pkg, host_uris, inventory, group, max_concurrent, logger
+                    cli_pkg,
+                    host_uris,
+                    inventory,
+                    group,
+                    max_concurrent,
+                    logger,
+                    batch_size=batch_size,
+                    max_fail_ratio=max_fail_ratio,
                 )
                 results = await pool.sync_dir(
                     local_dir=local_dir,
@@ -325,6 +379,17 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
             int,
             Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
         ] = 10,
+        batch_size: Annotated[
+            int | None,
+            Parameter(name="--batch-size", help="Rollout wave/batch size"),
+        ] = None,
+        max_fail_ratio: Annotated[
+            float,
+            Parameter(
+                name="--max-fail-ratio",
+                help="Maximum allowed failure ratio per batch (0.0..1.0)",
+            ),
+        ] = 0.0,
         output_format: Annotated[
             str,
             Parameter(name=["--format", "-f"], help="Output format: panel, json"),
@@ -356,7 +421,14 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
             logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
             try:
                 pool = build_cli_pool(
-                    cli_pkg, host_uris, inventory, group, max_concurrent, logger
+                    cli_pkg,
+                    host_uris,
+                    inventory,
+                    group,
+                    max_concurrent,
+                    logger,
+                    batch_size=batch_size,
+                    max_fail_ratio=max_fail_ratio,
                 )
                 rendered_map = await pool.write_template(
                     remote_path=remote_path,

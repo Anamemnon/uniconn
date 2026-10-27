@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import shlex
 import shutil
@@ -911,6 +913,226 @@ class Connection:
                 transport=transport,
                 error=str(exc),
             )
+
+    async def wait_for_connection(
+        self,
+        timeout: float = 120.0,
+        interval: float = 2.0,
+        delay: float = 0.0,
+    ) -> PingResult:
+        """Ожидать восстановления доступности хоста (например, после ``reboot``).
+
+        Повторяет ``ping()`` с интервалом ``interval`` секунд до успешного ответа
+        или истечения ``timeout`` (при таймауте выбрасывает ``TimeoutError``).
+        """
+        from ..exceptions import TimeoutError as UniconnTimeoutError
+
+        if self._dry_run:
+            return await self.ping(timeout=timeout)
+
+        start = time.monotonic()
+        deadline = start + timeout
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+        last_res: PingResult | None = None
+        while True:
+            remaining = deadline - time.monotonic()
+            probe_timeout = max(0.5, min(interval * 2.0, max(0.5, remaining)))
+            try:
+                if not self._transport.is_connected:
+                    with contextlib.suppress(Exception):
+                        await self._transport.disconnect()
+                last_res = await self.ping(timeout=probe_timeout)
+                if last_res.alive:
+                    return last_res
+            except Exception as exc:
+                last_res = PingResult(
+                    host=self._config.host or "localhost",
+                    alive=False,
+                    latency_ms=0.0,
+                    transport=self.transport_name,
+                    error=str(exc),
+                )
+
+            now = time.monotonic()
+            if now >= deadline:
+                break
+            await asyncio.sleep(min(interval, deadline - now))
+
+        err_detail = last_res.error if last_res and last_res.error else "host unreachable"
+        raise UniconnTimeoutError(
+            f"Timed out in wait_for_connection after {timeout:.2f}s ({err_detail})",
+            host=self._config.host,
+        )
+
+    async def wait_for_port(
+        self,
+        port: int,
+        *,
+        host: str | None = None,
+        state: Literal["open", "closed"] = "open",
+        check_from: Literal["remote", "local"] = "remote",
+        timeout: float = 60.0,
+        interval: float = 1.0,
+        delay: float = 0.0,
+    ) -> float:
+        """Ожидать открытия (``open``) или закрытия (``closed``) TCP-порта.
+
+        Параметр ``check_from`` задаёт точку проверки:
+        - ``"remote"`` (по умолчанию): проверка выполняется изнутри целевого хоста;
+        - ``"local"``: прямое TCP-подключение с локальной управляющей машины.
+        Возвращает время ожидания в секундах (``float``).
+        """
+        from ..exceptions import TimeoutError as UniconnTimeoutError
+
+        if self._dry_run:
+            return 0.0
+
+        start = time.monotonic()
+        deadline = start + timeout
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+        if host is not None:
+            target_host = host
+        elif check_from == "local":
+            target_host = self._config.host or "127.0.0.1"
+        else:
+            target_host = "127.0.0.1"
+
+        port_num = int(port)
+
+        while True:
+            is_open = False
+            if check_from == "local":
+                probe_timeout = max(0.2, min(2.0, interval))
+                try:
+                    _reader, writer = await asyncio.wait_for(
+                        asyncio.open_connection(target_host, port_num),
+                        timeout=probe_timeout,
+                    )
+                    writer.close()
+                    with contextlib.suppress(Exception):
+                        await writer.wait_closed()
+                    is_open = True
+                except Exception:
+                    is_open = False
+            else:
+                q_host = shlex.quote(target_host)
+                probe_cmd = (
+                    f"python3 -c 'import socket,sys; s=socket.socket(); s.settimeout(1.5); "
+                    f"sys.exit(0 if s.connect_ex(({target_host!r},{port_num}))==0 else 1)' 2>/dev/null "
+                    f"|| nc -z -w 2 {q_host} {port_num} 2>/dev/null "
+                    f"|| (echo >/dev/tcp/{q_host}/{port_num}) >/dev/null 2>&1"
+                )
+                with contextlib.suppress(Exception):
+                    res = await self.run(probe_cmd, raise_on_error=False, dry_run=False)
+                    is_open = res.ok
+
+            if (state == "open" and is_open) or (state == "closed" and not is_open):
+                return time.monotonic() - start
+
+            now = time.monotonic()
+            if now >= deadline:
+                break
+            await asyncio.sleep(min(interval, deadline - now))
+
+        raise UniconnTimeoutError(
+            f"Timed out in wait_for_port({target_host}:{port_num}, state={state!r}, "
+            f"check_from={check_from!r}) after {timeout:.2f}s",
+            host=self._config.host,
+        )
+
+    async def wait_for_path(
+        self,
+        remote_path: str | Path,
+        *,
+        state: Literal["present", "absent"] = "present",
+        content_regex: str | None = None,
+        timeout: float = 60.0,
+        interval: float = 1.0,
+        delay: float = 0.0,
+        sudo: bool = False,
+    ) -> float:
+        """Ожидать появления (``present``) или удаления (``absent``) файла/директории/сокета.
+
+        Если задан ``content_regex`` при ``state="present"``, дополнительно проверяет,
+        что содержимое файла соответствует регулярному выражению.
+        Возвращает время ожидания в секундах (``float``).
+        """
+        import re as _re
+
+        from ..exceptions import TimeoutError as UniconnTimeoutError
+
+        if self._dry_run:
+            return 0.0
+
+        start = time.monotonic()
+        deadline = start + timeout
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+        path_str = str(remote_path)
+        q_path = shlex.quote(path_str)
+        compiled_re = _re.compile(content_regex) if content_regex is not None else None
+
+        while True:
+            exists = False
+            with contextlib.suppress(Exception):
+                if sudo:
+                    chk = await self.run(
+                        f"test -e {q_path}",
+                        sudo=True,
+                        raise_on_error=False,
+                        dry_run=False,
+                    )
+                    exists = chk.ok
+                else:
+                    try:
+                        exists = await self.exists(path_str)
+                    except Exception:
+                        chk = await self.run(
+                            f"test -e {q_path}",
+                            raise_on_error=False,
+                            dry_run=False,
+                        )
+                        exists = chk.ok
+
+            if state == "absent" and not exists:
+                return time.monotonic() - start
+
+            if state == "present" and exists:
+                if compiled_re is None:
+                    return time.monotonic() - start
+                text_content: str | None = None
+                with contextlib.suppress(Exception):
+                    if sudo:
+                        cat_res = await self.run(
+                            f"cat {q_path}",
+                            sudo=True,
+                            raise_on_error=False,
+                            dry_run=False,
+                        )
+                        if cat_res.ok:
+                            text_content = cat_res.stdout
+                    else:
+                        raw = await self.read_file(path_str, encoding="utf-8")
+                        text_content = (
+                            raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace")
+                        )
+                if text_content is not None and compiled_re.search(text_content):
+                    return time.monotonic() - start
+
+            now = time.monotonic()
+            if now >= deadline:
+                break
+            await asyncio.sleep(min(interval, deadline - now))
+
+        raise UniconnTimeoutError(
+            f"Timed out in wait_for_path({path_str!r}, state={state!r}) after {timeout:.2f}s",
+            host=self._config.host,
+        )
 
     async def run_script(
         self,

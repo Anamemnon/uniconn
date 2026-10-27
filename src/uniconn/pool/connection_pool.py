@@ -46,6 +46,9 @@ class ConnectionPool:
         circuit_breaker: bool = False,
         failure_threshold: int = 5,
         recovery_timeout: float = 30.0,
+        *,
+        batch_size: int | None = None,
+        max_fail_ratio: float = 0.0,
     ) -> None:
         self._uris = list(uris)
         self._max_concurrent = max_concurrent
@@ -55,6 +58,9 @@ class ConnectionPool:
         self._active_conns: dict[int, Connection] = {}
         self._cassette_conns: dict[int, Connection] = {}
         self._is_entered = False
+        self._owns_active_conns = True
+        self._batch_size = batch_size
+        self._max_fail_ratio = max_fail_ratio
         self._stream_mux = PoolStreamMultiplexer(self)
         self._rate_limiter = _resolve_rate_limiter(rate_limit, {})
         self._circuit_breaker_enabled = circuit_breaker
@@ -121,6 +127,8 @@ class ConnectionPool:
         circuit_breaker: bool = False,
         failure_threshold: int = 5,
         recovery_timeout: float = 30.0,
+        batch_size: int | None = None,
+        max_fail_ratio: float = 0.0,
     ) -> Self:
         """Создать пул подключений из JSON или YAML инвентарного файла."""
         conns = Connection.from_file(
@@ -139,7 +147,74 @@ class ConnectionPool:
             circuit_breaker=circuit_breaker,
             failure_threshold=failure_threshold,
             recovery_timeout=recovery_timeout,
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
         )
+
+    def select(
+        self,
+        hosts: Sequence[str] | Callable[[str], bool] | None = None,
+        *,
+        predicate: Callable[[str, Connection], bool] | None = None,
+    ) -> ConnectionPool:
+        """Выбрать подмножество хостов из пула с сохранением открытых сессий и лимитов."""
+        host_filter_fn: Callable[[str], bool] | None = None
+        host_set: set[str] | None = None
+        if callable(hosts):
+            host_filter_fn = hosts
+        elif hosts is not None:
+            host_set = set(hosts)
+
+        selected_uris: list[PoolTarget] = []
+        selected_active: dict[int, Connection] = {}
+
+        for old_idx, target in enumerate(self._uris):
+            key = self._target_key(target)
+            conn_obj = (
+                self._active_conns[old_idx]
+                if (self._is_entered and old_idx in self._active_conns)
+                else self._build_conn(target, with_defaults=True)
+            )
+            short_host = conn_obj.config.host or key.split("://", 1)[-1]
+
+            matched = True
+            if host_set is not None:
+                matched = (
+                    key in host_set
+                    or short_host in host_set
+                    or key.split("://", 1)[-1] in host_set
+                )
+            if matched and host_filter_fn is not None:
+                matched = bool(host_filter_fn(key) or host_filter_fn(short_host))
+            if matched and predicate is not None:
+                matched = bool(predicate(key, conn_obj))
+
+            if matched:
+                new_idx = len(selected_uris)
+                selected_uris.append(target)
+                if self._is_entered and old_idx in self._active_conns:
+                    selected_active[new_idx] = self._active_conns[old_idx]
+
+        sub_pool = ConnectionPool(
+            selected_uris,
+            max_concurrent=self._max_concurrent,
+            retry_attempts=self._retry_attempts,
+            logger=self._logger,
+            rate_limit=self._rate_limiter,
+            circuit_breaker=self._circuit_breaker_enabled,
+            failure_threshold=self._failure_threshold,
+            recovery_timeout=self._recovery_timeout,
+            batch_size=self._batch_size,
+            max_fail_ratio=self._max_fail_ratio,
+        )
+        sub_pool._semaphore = self._semaphore
+        sub_pool._circuit_breakers = self._circuit_breakers
+        sub_pool._conn_initializers = list(self._conn_initializers)
+        if self._is_entered:
+            sub_pool._active_conns = selected_active
+            sub_pool._is_entered = True
+            sub_pool._owns_active_conns = False
+        return sub_pool
 
     @staticmethod
     def _target_key(target: PoolTarget) -> str:
@@ -235,14 +310,113 @@ class ConnectionPool:
                 cb.record_failure()
             raise
 
+    @staticmethod
+    def _is_failed_outcome(val: Any) -> bool:
+        """Определить, является ли результат выполнения на хосте неуспешным для батчевой раскатки."""
+        if isinstance(val, BaseException):
+            return True
+        if isinstance(val, Result | EnsureResult):
+            return not val.ok
+        if isinstance(val, PingResult):
+            return not val.alive
+        return False
+
+    async def _execute_in_batches(
+        self,
+        worker: Callable[[str, Connection], Awaitable[T]],
+        *,
+        with_defaults: bool = True,
+        log_errors: bool = False,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
+    ) -> list[tuple[str, T]]:
+        """Выполнить задачи последовательными волнами ``batch_size`` с контролем ``max_fail_ratio``."""
+        from ..exceptions import BatchAbortedError
+
+        eff_batch = self._batch_size if batch_size is None else batch_size
+        eff_ratio = self._max_fail_ratio if max_fail_ratio is None else max_fail_ratio
+        if eff_batch is None or eff_batch <= 0:
+            eff_batch = max(1, len(self._uris))
+
+        items = list(enumerate(self._uris))
+        batches = [
+            items[i : i + eff_batch] for i in range(0, len(items), eff_batch)
+        ]
+        completed_results: dict[str, Any] = {}
+        ordered_pairs: list[tuple[str, T]] = []
+
+        async def _run_batch_item(
+            idx: int, target: PoolTarget
+        ) -> tuple[str, Any, bool]:
+            key = self._target_key(target)
+            async with self._semaphore:
+                try:
+                    async with self._use_conn(
+                        idx, target, with_defaults=with_defaults
+                    ) as conn:
+                        val = await worker(key, conn)
+                        return key, val, False
+                except Exception as exc:
+                    if log_errors:
+                        self._logger.error(f"Failed to execute on {key}: {exc}")
+                    return key, exc, True
+
+        for batch_idx, batch_items in enumerate(batches):
+            outcomes = await asyncio.gather(
+                *(_run_batch_item(idx, target) for idx, target in batch_items)
+            )
+            batch_failures: dict[str, Any] = {}
+            first_exc: Exception | None = None
+
+            for key, outcome, is_exc in outcomes:
+                if is_exc:
+                    batch_failures[key] = outcome
+                    if first_exc is None and isinstance(outcome, Exception):
+                        first_exc = outcome
+                else:
+                    completed_results[key] = outcome
+                    ordered_pairs.append((key, outcome))
+                    if self._is_failed_outcome(outcome):
+                        batch_failures[key] = outcome
+
+            if batch_items and batch_failures:
+                fail_ratio = len(batch_failures) / len(batch_items)
+                if fail_ratio > eff_ratio:
+                    raise BatchAbortedError(
+                        f"Batch {batch_idx} aborted: fail_ratio={fail_ratio:.2f} "
+                        f"exceeded max_fail_ratio={eff_ratio:.2f} "
+                        f"({len(batch_failures)}/{len(batch_items)} failed)",
+                        batch_index=batch_idx,
+                        fail_ratio=fail_ratio,
+                        max_fail_ratio=eff_ratio,
+                        completed_results=completed_results,
+                        failed_hosts=batch_failures,
+                    )
+            if first_exc is not None:
+                raise first_exc
+
+        return ordered_pairs
+
     async def _fan_out_list(
         self,
         worker: Callable[[Connection], Awaitable[T]],
         *,
         with_defaults: bool = True,
         log_errors: bool = False,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
     ) -> list[T]:
         """Выполнить ``worker(conn)`` параллельно на всех хостах и вернуть список в порядке пула."""
+        eff_batch = self._batch_size if batch_size is None else batch_size
+        if eff_batch is not None or max_fail_ratio is not None:
+            pairs = await self._execute_in_batches(
+                lambda _key, conn: worker(conn),
+                with_defaults=with_defaults,
+                log_errors=log_errors,
+                batch_size=batch_size,
+                max_fail_ratio=max_fail_ratio,
+            )
+            return [val for _key, val in pairs]
 
         async def _run_one(idx: int, target: PoolTarget) -> T:
             async with self._semaphore:
@@ -277,8 +451,20 @@ class ConnectionPool:
         worker: Callable[[str, Connection], Awaitable[T]],
         *,
         with_defaults: bool = True,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
     ) -> dict[str, T]:
         """Выполнить ``worker(key, conn)`` параллельно на всех хостах и вернуть словарь ``{key: T}``."""
+        eff_batch = self._batch_size if batch_size is None else batch_size
+        if eff_batch is not None or max_fail_ratio is not None:
+            pairs = await self._execute_in_batches(
+                worker,
+                with_defaults=with_defaults,
+                batch_size=batch_size,
+                max_fail_ratio=max_fail_ratio,
+            )
+            return dict(pairs)
+
         results: dict[str, T] = {}
 
         async def _run_one(idx: int, target: PoolTarget) -> None:
@@ -311,12 +497,17 @@ class ConnectionPool:
                 for idx, target in enumerate(self._uris):
                     tg.create_task(_open_one(idx, target))
             self._is_entered = True
+            self._owns_active_conns = True
         except* Exception:
             await self.close()
             raise
 
     async def close(self) -> None:
         """Закрыть все удерживаемые пулом соединения."""
+        if not self._owns_active_conns:
+            self._active_conns.clear()
+            self._is_entered = False
+            return
         conns = list(self._active_conns.values())
         self._active_conns.clear()
         self._is_entered = False
@@ -336,6 +527,9 @@ class ConnectionPool:
         command: str | Sequence[str],
         timeout: float | None = None,
         raise_on_error: bool = False,
+        *,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
         **kwargs: Any,
     ) -> list[Result]:
         """Выполнить команду на всех хостах пула."""
@@ -348,6 +542,8 @@ class ConnectionPool:
             ),
             with_defaults=True,
             log_errors=True,
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
         )
 
     async def map_with_callback(
@@ -422,6 +618,8 @@ class ConnectionPool:
         recurse: bool = False,
         *,
         verify: bool = False,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
         **kwargs: Any,
     ) -> None:
         """Параллельно загрузить файл или директорию на все хосты пула."""
@@ -432,7 +630,9 @@ class ConnectionPool:
                 recurse=recurse,
                 **({"verify": True} if verify else {}),
                 **kwargs,
-            )
+            ),
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
         )
 
     async def download(
@@ -442,6 +642,8 @@ class ConnectionPool:
         recurse: bool = False,
         *,
         verify: bool = False,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
         **kwargs: Any,
     ) -> dict[str, str]:
         """Параллельно скачать файл или директорию со всех хостов пула."""
@@ -473,7 +675,11 @@ class ConnectionPool:
             )
             return dest
 
-        return await self._fan_out_dict(_dl_worker)
+        return await self._fan_out_dict(
+            _dl_worker,
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
+        )
 
     async def checksum(
         self,
@@ -481,6 +687,8 @@ class ConnectionPool:
         algorithm: Literal["sha256", "sha1", "md5"] = "sha256",
         *,
         sudo: bool = False,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
     ) -> dict[str, str]:
         """Параллельно вычислить контрольную сумму удалённого файла на всех хостах пула."""
         return await self._fan_out_dict(
@@ -488,15 +696,24 @@ class ConnectionPool:
                 remote_path,
                 algorithm=algorithm,
                 sudo=sudo,
-            )
+            ),
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
         )
 
     async def apply(
         self,
         func: Callable[[Connection], Awaitable[T]],
+        *,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
     ) -> list[T]:
         """Параллельно выполнить произвольную async-функцию ``func(conn)`` на всех хостах пула."""
-        return await self._fan_out_list(func)
+        return await self._fan_out_list(
+            func,
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
+        )
 
     async def sync_dir(
         self,
@@ -506,6 +723,9 @@ class ConnectionPool:
         exclude: Sequence[str] | None = None,
         mtime_tolerance: float = 1.0,
         dry_run: bool | None = None,
+        *,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
     ) -> dict[str, SyncResult]:
         """Параллельно синхронизировать директорию на всех хостах пула."""
         return await self._fan_out_dict(
@@ -516,7 +736,9 @@ class ConnectionPool:
                 exclude=exclude,
                 mtime_tolerance=mtime_tolerance,
                 dry_run=dry_run,
-            )
+            ),
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
         )
 
     async def write_template(
@@ -529,6 +751,8 @@ class ConnectionPool:
         engine: Literal["auto", "string", "jinja2"] = "auto",
         *,
         atomic: bool = False,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
     ) -> dict[str, str]:
         """Параллельно отрендерить и записать шаблон конфигурации на всех хостах пула."""
         return await self._fan_out_dict(
@@ -540,7 +764,9 @@ class ConnectionPool:
                 encoding=encoding,
                 engine=engine,
                 atomic=atomic,
-            )
+            ),
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
         )
 
     async def gather_facts(
@@ -548,6 +774,9 @@ class ConnectionPool:
         refresh: bool = False,
         timeout: float | None = None,
         spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
+        *,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
     ) -> dict[str, HostFacts]:
         """Параллельно собрать системные факты (``HostFacts``) со всех хостов пула."""
         return await self._fan_out_dict(
@@ -555,7 +784,9 @@ class ConnectionPool:
                 refresh=refresh,
                 timeout=timeout,
                 spec=spec,
-            )
+            ),
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
         )
 
     async def diff_facts(
@@ -611,6 +842,100 @@ class ConnectionPool:
 
         return results
 
+    async def wait_for_connection(
+        self,
+        timeout: float = 120.0,
+        interval: float = 2.0,
+        delay: float = 0.0,
+    ) -> dict[str, PingResult]:
+        """Параллельно ожидать восстановления доступности всех хостов пула."""
+        results: dict[str, PingResult] = {}
+
+        async def _wait_one(idx: int, target: PoolTarget) -> None:
+            key = self._target_key(target)
+            async with self._semaphore:
+                if self._is_entered and idx in self._active_conns:
+                    results[key] = await self._active_conns[idx].wait_for_connection(
+                        timeout=timeout, interval=interval, delay=delay
+                    )
+                    return
+                if idx in self._cassette_conns:
+                    results[key] = await self._cassette_conns[idx].wait_for_connection(
+                        timeout=timeout, interval=interval, delay=delay
+                    )
+                    return
+
+                conn = self._build_conn(target, with_defaults=True)
+                try:
+                    results[key] = await conn.wait_for_connection(
+                        timeout=timeout, interval=interval, delay=delay
+                    )
+                finally:
+                    with contextlib.suppress(Exception):
+                        await conn.close()
+
+        async with asyncio.TaskGroup() as tg:
+            for idx, target in enumerate(self._uris):
+                tg.create_task(_wait_one(idx, target))
+
+        return results
+
+    async def wait_for_port(
+        self,
+        port: int,
+        *,
+        host: str | None = None,
+        state: Literal["open", "closed"] = "open",
+        check_from: Literal["remote", "local"] = "remote",
+        timeout: float = 60.0,
+        interval: float = 1.0,
+        delay: float = 0.0,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
+    ) -> dict[str, float]:
+        """Параллельно ожидать открытия или закрытия TCP-порта на всех хостах пула."""
+        return await self._fan_out_dict(
+            lambda _key, conn: conn.wait_for_port(
+                port,
+                host=host,
+                state=state,
+                check_from=check_from,
+                timeout=timeout,
+                interval=interval,
+                delay=delay,
+            ),
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
+        )
+
+    async def wait_for_path(
+        self,
+        remote_path: str | Path,
+        *,
+        state: Literal["present", "absent"] = "present",
+        content_regex: str | None = None,
+        timeout: float = 60.0,
+        interval: float = 1.0,
+        delay: float = 0.0,
+        sudo: bool = False,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
+    ) -> dict[str, float]:
+        """Параллельно ожидать появления или удаления файла/директории/сокета на всех хостах пула."""
+        return await self._fan_out_dict(
+            lambda _key, conn: conn.wait_for_path(
+                remote_path,
+                state=state,
+                content_regex=content_regex,
+                timeout=timeout,
+                interval=interval,
+                delay=delay,
+                sudo=sudo,
+            ),
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
+        )
+
     async def run_script(
         self,
         local_path: str | Path,
@@ -625,6 +950,8 @@ class ConnectionPool:
         raise_on_error: bool = False,
         sensitive: bool = False,
         dry_run: bool | None = None,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
     ) -> dict[str, Result]:
         """Параллельно загрузить, выполнить и удалить локальный скрипт на всех хостах пула."""
         return await self._fan_out_dict(
@@ -640,7 +967,9 @@ class ConnectionPool:
                 raise_on_error=raise_on_error,
                 sensitive=sensitive,
                 dry_run=dry_run,
-            )
+            ),
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
         )
 
     async def ensure_package(
@@ -653,6 +982,9 @@ class ConnectionPool:
         update_cache: bool = False,
         sudo: bool = True,
         dry_run: bool | None = None,
+        *,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
     ) -> dict[str, EnsureResult]:
         """Параллельно проверить/установить/удалить пакет(ы) на всех хостах пула."""
         return await self._fan_out_dict(
@@ -663,7 +995,9 @@ class ConnectionPool:
                 update_cache=update_cache,
                 sudo=sudo,
                 dry_run=dry_run,
-            )
+            ),
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
         )
 
     async def ensure_service(
@@ -673,6 +1007,9 @@ class ConnectionPool:
         enabled: bool | None = None,
         sudo: bool = True,
         dry_run: bool | None = None,
+        *,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
     ) -> dict[str, EnsureResult]:
         """Параллельно привести состояние системного сервиса на всех хостах пула."""
         return await self._fan_out_dict(
@@ -682,7 +1019,9 @@ class ConnectionPool:
                 enabled=enabled,
                 sudo=sudo,
                 dry_run=dry_run,
-            )
+            ),
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
         )
 
     async def ensure_line(
@@ -696,6 +1035,9 @@ class ConnectionPool:
         mode: int | None = None,
         encoding: str = "utf-8",
         dry_run: bool | None = None,
+        *,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
     ) -> dict[str, EnsureResult]:
         """Параллельно обеспечить наличие или отсутствие строки в файле на всех хостах пула."""
         return await self._fan_out_dict(
@@ -709,7 +1051,9 @@ class ConnectionPool:
                 mode=mode,
                 encoding=encoding,
                 dry_run=dry_run,
-            )
+            ),
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
         )
 
     async def ensure_file(
@@ -727,6 +1071,8 @@ class ConnectionPool:
         sudo: bool = False,
         atomic: bool = False,
         dry_run: bool | None = None,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
     ) -> dict[str, EnsureResult]:
         """Параллельно обеспечить состояние файла или симлинка на всех хостах пула."""
         return await self._fan_out_dict(
@@ -743,7 +1089,9 @@ class ConnectionPool:
                 sudo=sudo,
                 atomic=atomic,
                 dry_run=dry_run,
-            )
+            ),
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
         )
 
     async def ensure_directory(
@@ -757,6 +1105,8 @@ class ConnectionPool:
         recurse: bool = False,
         sudo: bool = False,
         dry_run: bool | None = None,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
     ) -> dict[str, EnsureResult]:
         """Параллельно обеспечить состояние директории на всех хостах пула."""
         return await self._fan_out_dict(
@@ -769,7 +1119,9 @@ class ConnectionPool:
                 recurse=recurse,
                 sudo=sudo,
                 dry_run=dry_run,
-            )
+            ),
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
         )
 
     async def ensure_user(
@@ -786,6 +1138,8 @@ class ConnectionPool:
         system: bool = False,
         sudo: bool = True,
         dry_run: bool | None = None,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
     ) -> dict[str, EnsureResult]:
         """Параллельно обеспечить состояние системного пользователя на всех хостах пула."""
         return await self._fan_out_dict(
@@ -801,7 +1155,9 @@ class ConnectionPool:
                 system=system,
                 sudo=sudo,
                 dry_run=dry_run,
-            )
+            ),
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
         )
 
     async def ensure_authorized_key(
@@ -813,6 +1169,8 @@ class ConnectionPool:
         exclusive: bool = False,
         sudo: bool = False,
         dry_run: bool | None = None,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
     ) -> dict[str, EnsureResult]:
         """Параллельно обеспечить наличие или отсутствие SSH-ключа на всех хостах пула."""
         return await self._fan_out_dict(
@@ -823,7 +1181,9 @@ class ConnectionPool:
                 exclusive=exclusive,
                 sudo=sudo,
                 dry_run=dry_run,
-            )
+            ),
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
         )
 
     async def ensure_systemd_unit(
@@ -839,6 +1199,8 @@ class ConnectionPool:
         daemon_reload: bool = True,
         sudo: bool = True,
         dry_run: bool | None = None,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
     ) -> dict[str, EnsureResult]:
         """Параллельно обеспечить состояние systemd unit-файла и сервиса на всех хостах пула."""
         return await self._fan_out_dict(
@@ -851,7 +1213,9 @@ class ConnectionPool:
                 daemon_reload=daemon_reload,
                 sudo=sudo,
                 dry_run=dry_run,
-            )
+            ),
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
         )
 
     async def ensure_sysctl(
@@ -864,6 +1228,8 @@ class ConnectionPool:
         reload: bool = True,
         sudo: bool = True,
         dry_run: bool | None = None,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
     ) -> dict[str, EnsureResult]:
         """Параллельно обеспечить значение параметра ядра sysctl на всех хостах пула."""
         return await self._fan_out_dict(
@@ -875,7 +1241,9 @@ class ConnectionPool:
                 reload=reload,
                 sudo=sudo,
                 dry_run=dry_run,
-            )
+            ),
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
         )
 
     @contextlib.asynccontextmanager

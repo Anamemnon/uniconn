@@ -1,4 +1,4 @@
-# uniconn — LLM & AI Agent API Reference (v0.15.0)
+# uniconn — LLM & AI Agent API Reference (v0.16.0)
 
 > Universal async-first Python library (Python 3.11+) and CLI for executing commands, inspecting host facts, enforcing idempotent states, and managing files across SSH, Telnet, Serial/UART, IPMI BMC, Redfish BMC (`niquests`), Docker/Podman, Kubernetes (`kubectl`), Replay, and Local transports.
 
@@ -23,7 +23,7 @@
 - **Background Diagnostics, Streaming Logs & GNU Screen (`uniconn.background`)**: `DiagnosticSession`, `SyncDiagnosticSession`, `DiagnosticConfig`, `DiagnosticResult`, `StreamSourceSpec`, `DirectStreamCollector`, `LogPipeline`, `LogHandler`, `LocalFileHandler`, `ForwardHandler`, `StreamHandler`, `ArchiveHandler`, `ScreenPool`, `ScreenSession`, `ScreenResult`, `LogConfig`
 - **Hooks & OpenTelemetry (`uniconn.hooks` / `uniconn.telemetry`)**: `audit_log_hook`, `allowlist_hook`, `blocklist_hook`, `MetricsCollector`, `metrics_collector_hook`, `structured_log_hook`, `OtelTracingHook`, `otel_tracing_hook`, `InMemoryTracer`, `RecordedSpan`, `SpanProtocol`, `TracerProtocol`, `get_current_span`
 - **Logging (`structlog` + `stdlib`)**: `configure_logging`, `get_struct_logger`, `log_context`, `bind_log_context`, `unbind_log_context`, `clear_log_context`, `get_log_context`, `get_logger`, `setup_file_logging`, `SecretMaskingFilter`
-- **Exceptions**: `UniconnError`, `ConfigurationError`, `ConnectionError`, `CircuitOpenError`, `CassetteError`, `CassetteMissError`, `AuthenticationError`, `ExecutionError`, `FileTransferError`, `TimeoutError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `ScreenError`, `ScreenNotFoundError`, `ScreenSessionExistsError`, `ScreenPoolFullError`
+- **Exceptions**: `UniconnError`, `ConfigurationError`, `ConnectionError`, `CircuitOpenError`, `BatchAbortedError`, `CassetteError`, `CassetteMissError`, `AuthenticationError`, `ExecutionError`, `FileTransferError`, `TimeoutError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `ScreenError`, `ScreenNotFoundError`, `ScreenSessionExistsError`, `ScreenPoolFullError`
 
 ## URI Schemes & Secret Resolution (`SecretResolver`)
 - `ssh://[user[:password]@]host[:22][?key_file=...&password=env://SSH_PASS&known_hosts=strict&keepalive=30&ssh_config=true&use_agent=true&proxy=jump1,jump2&proxy_command=...&rate_limit=10&circuit_breaker_threshold=5&circuit_breaker_timeout=30]`
@@ -89,6 +89,29 @@ script_res: Result = await conn.run_script(
 async for line in conn.stream(command, timeout=None, **kwargs): ...
 alive: bool = await conn.is_alive(timeout=None)
 ping_res: PingResult = await conn.ping(timeout=5.0)
+
+# Wait Primitives (v0.16.0)
+ping_res: PingResult = await conn.wait_for_connection(timeout=120.0, interval=2.0, delay=0.0)
+elapsed: float = await conn.wait_for_port(
+    port: int,
+    *,
+    host: str | None = None,
+    state: Literal["open", "closed"] = "open",
+    check_from: Literal["remote", "local"] = "remote",
+    timeout: float = 60.0,
+    interval: float = 1.0,
+    delay: float = 0.0,
+)
+elapsed: float = await conn.wait_for_path(
+    remote_path: str | Path,
+    *,
+    state: Literal["present", "absent"] = "present",
+    content_regex: str | None = None,
+    timeout: float = 60.0,
+    interval: float = 1.0,
+    delay: float = 0.0,
+    sudo: bool = False,
+)
 
 # Host Inspection, Declarative FactSpec & DiagnosticSession (v0.8.0+)
 facts: HostFacts = await conn.gather_facts(
@@ -273,15 +296,30 @@ pool = ConnectionPool(
     circuit_breaker=False,
     failure_threshold=5,
     recovery_timeout=30.0,
+    batch_size=None,           # wave/batch rollout size (int | None)
+    max_fail_ratio=0.0,        # max allowed failure ratio per batch (0.0..1.0); raises BatchAbortedError
 )
-pool = ConnectionPool.from_file("inventory.yaml", group="web", max_concurrent=10, rate_limit=20.0, circuit_breaker=True)
+pool = ConnectionPool.from_file(
+    "inventory.yaml",
+    group="web",
+    max_concurrent=10,
+    rate_limit=20.0,
+    circuit_breaker=True,
+    batch_size=2,
+    max_fail_ratio=0.25,
+)
 
 async with pool:  # Keeps connections open across multiple pool operations
+    # Subset selection (reuses active connections without closing parent pool on sub-pool close)
+    canary_pool = pool.select(["web-1"], predicate=lambda key, conn: "web" in key)
     # Fleet cassette recording/replay: directory per host (<dir>/<host>.yaml) or single shared file (.yaml/.yml/.json)
     async with pool.use_cassette("tests/cassettes/fleet_dir", mode="once") as cassettes_by_host:
-        results: list[Result] = await pool.map("uptime", sudo=True)
+        results: list[Result] = await pool.map("uptime", sudo=True, batch_size=2, max_fail_ratio=0.25)
     safe_map: dict[str, Result | Exception] = await pool.map_safe("uptime")
     ping_map: dict[str, PingResult] = await pool.ping(timeout=5.0)
+    conn_map: dict[str, PingResult] = await pool.wait_for_connection(timeout=120.0, interval=2.0)
+    port_map: dict[str, float] = await pool.wait_for_port(443, state="open", check_from="remote")
+    path_map: dict[str, float] = await pool.wait_for_path("/tmp/ready", content_regex="OK")
     script_map: dict[str, Result | Exception] = await pool.run_script("./check.sh", args=["--fast"])
     facts_map: dict[str, HostFacts] = await pool.gather_facts()
     diff_rep: FactsDiffReport = await pool.diff_facts(baseline=None)
@@ -379,7 +417,7 @@ async def test_replay_flow(uniconn_cassette):
     assert res.ok
 ```
 
-### CLI Cassette Commands
+### CLI Cassette, Provisioning & Rollout Commands
 ```bash
 # Record commands/scripts into cassette:
 uniconn record ssh://user@host -c ./cassettes/node.yaml -- uptime
@@ -401,4 +439,11 @@ uniconn ensure-user deploy ssh://node-01 [--state present|absent] [--uid 1050] [
 uniconn ensure-authorized-key deploy "ssh-ed25519 AAAA..." ssh://node-01 [--state present|absent] [--sudo] [--dry-run]
 uniconn ensure-unit myapp.service ssh://node-01 [--file ./myapp.service | --content "..."] [--state started] [--enabled] [--dry-run]
 uniconn ensure-sysctl net.ipv4.ip_forward 1 ssh://node-01 [--config-file /etc/sysctl.d/99-uniconn.conf] [--dry-run]
+
+# Wait primitives & wave/batch rollout flags (v0.16.0):
+uniconn wait-for connection ssh://node-01 [--timeout 120] [--interval 2] [--format table|json]
+uniconn wait-for port 5432 ssh://node-01 [--state open|closed] [--check-from remote|local] [--timeout 60]
+uniconn wait-for path /tmp/ready.flag ssh://node-01 [--state present|absent] [--regex "READY"] [--sudo]
+uniconn run-multi ssh://node-01 ssh://node-02 -c "deploy.sh" --batch-size 1 --max-fail-ratio 0.0
 ```
+

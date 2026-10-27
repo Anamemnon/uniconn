@@ -42,5 +42,6 @@ def test_canonical_modules_match_backward_compat_reexports() -> None:
 
 
 def test_version_is_bumped_to_0140() -> None:
-    """Версия библиотеки должна быть 0.14.0."""
-    assert uniconn.__version__ == "0.15.0"
+    """Версия библиотеки должна быть актуальной (0.16.0)."""
+    assert uniconn.__version__ == "0.16.0"
+

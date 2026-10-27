@@ -61,6 +61,7 @@ from .core.connection import Connection, OperationObserver
 from .core.pipeline import AfterRunHook, BeforeRunHook, HookCallback, HookEvent, OnErrorHook
 from .exceptions import (
     AuthenticationError,
+    BatchAbortedError,
     BMCCapabilityError,
     CapabilityNotSupportedError,
     CassetteError,
@@ -176,7 +177,7 @@ from .transports.replay import (
 )
 from .transports.ssh import OpenSSHConfigParser, SFTPClientAdapter, SSHJumpChainManager
 
-__version__ = "0.15.0"
+__version__ = "0.16.0"
 
 
 def __getattr__(name: str) -> Any:
@@ -197,6 +198,7 @@ __all__ = [
     "AuthenticationError",
     "BMCCapabilityError",
     "BaseTransport",
+    "BatchAbortedError",
     "BeforeRunHook",
     "CapabilityNotSupportedError",
     "Cassette",

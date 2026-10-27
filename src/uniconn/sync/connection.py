@@ -609,6 +609,69 @@ class SyncConnection:
         """Проверить доступность хоста с измерением задержки (синхронно)."""
         return self._run_coro(self._async_conn.ping(timeout=timeout))
 
+    def wait_for_connection(
+        self,
+        timeout: float = 120.0,
+        interval: float = 2.0,
+        delay: float = 0.0,
+    ) -> PingResult:
+        """Ожидать восстановления доступности хоста (синхронно)."""
+        return self._run_coro(
+            self._async_conn.wait_for_connection(
+                timeout=timeout,
+                interval=interval,
+                delay=delay,
+            )
+        )
+
+    def wait_for_port(
+        self,
+        port: int,
+        *,
+        host: str | None = None,
+        state: Literal["open", "closed"] = "open",
+        check_from: Literal["remote", "local"] = "remote",
+        timeout: float = 60.0,
+        interval: float = 1.0,
+        delay: float = 0.0,
+    ) -> float:
+        """Ожидать открытия или закрытия TCP-порта (синхронно)."""
+        return self._run_coro(
+            self._async_conn.wait_for_port(
+                port,
+                host=host,
+                state=state,
+                check_from=check_from,
+                timeout=timeout,
+                interval=interval,
+                delay=delay,
+            )
+        )
+
+    def wait_for_path(
+        self,
+        remote_path: str | Path,
+        *,
+        state: Literal["present", "absent"] = "present",
+        content_regex: str | None = None,
+        timeout: float = 60.0,
+        interval: float = 1.0,
+        delay: float = 0.0,
+        sudo: bool = False,
+    ) -> float:
+        """Ожидать появления или удаления файла/директории/сокета (синхронно)."""
+        return self._run_coro(
+            self._async_conn.wait_for_path(
+                remote_path,
+                state=state,
+                content_regex=content_regex,
+                timeout=timeout,
+                interval=interval,
+                delay=delay,
+                sudo=sudo,
+            )
+        )
+
     def run_script(
         self,
         local_path: str | Path,

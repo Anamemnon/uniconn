@@ -502,6 +502,17 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
             int,
             Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
         ] = 10,
+        batch_size: Annotated[
+            int | None,
+            Parameter(name="--batch-size", help="Rollout wave/batch size"),
+        ] = None,
+        max_fail_ratio: Annotated[
+            float,
+            Parameter(
+                name="--max-fail-ratio",
+                help="Maximum allowed failure ratio per batch (0.0..1.0)",
+            ),
+        ] = 0.0,
         output_format: Annotated[
             str,
             Parameter(name=["--format", "-f"], help="Output format: table, json"),
@@ -520,7 +531,14 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
             logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
             try:
                 pool = build_cli_pool(
-                    cli_pkg, host_uris, inventory, group, max_concurrent, logger
+                    cli_pkg,
+                    host_uris,
+                    inventory,
+                    group,
+                    max_concurrent,
+                    logger,
+                    batch_size=batch_size,
+                    max_fail_ratio=max_fail_ratio,
                 )
                 res_map = await pool.ensure_user(
                     username,
@@ -569,6 +587,17 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
             int,
             Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
         ] = 10,
+        batch_size: Annotated[
+            int | None,
+            Parameter(name="--batch-size", help="Rollout wave/batch size"),
+        ] = None,
+        max_fail_ratio: Annotated[
+            float,
+            Parameter(
+                name="--max-fail-ratio",
+                help="Maximum allowed failure ratio per batch (0.0..1.0)",
+            ),
+        ] = 0.0,
         output_format: Annotated[
             str,
             Parameter(name=["--format", "-f"], help="Output format: table, json"),
@@ -586,7 +615,14 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
             logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
             try:
                 pool = build_cli_pool(
-                    cli_pkg, host_uris, inventory, group, max_concurrent, logger
+                    cli_pkg,
+                    host_uris,
+                    inventory,
+                    group,
+                    max_concurrent,
+                    logger,
+                    batch_size=batch_size,
+                    max_fail_ratio=max_fail_ratio,
                 )
                 res_map = await pool.ensure_authorized_key(
                     user,
@@ -646,6 +682,17 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
             int,
             Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
         ] = 10,
+        batch_size: Annotated[
+            int | None,
+            Parameter(name="--batch-size", help="Rollout wave/batch size"),
+        ] = None,
+        max_fail_ratio: Annotated[
+            float,
+            Parameter(
+                name="--max-fail-ratio",
+                help="Maximum allowed failure ratio per batch (0.0..1.0)",
+            ),
+        ] = 0.0,
         output_format: Annotated[
             str,
             Parameter(name=["--format", "-f"], help="Output format: table, json"),
@@ -668,7 +715,14 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                 if unit_file:
                     unit_content = Path(unit_file).read_text(encoding="utf-8")
                 pool = build_cli_pool(
-                    cli_pkg, host_uris, inventory, group, max_concurrent, logger
+                    cli_pkg,
+                    host_uris,
+                    inventory,
+                    group,
+                    max_concurrent,
+                    logger,
+                    batch_size=batch_size,
+                    max_fail_ratio=max_fail_ratio,
                 )
                 res_map = await pool.ensure_systemd_unit(
                     name,
@@ -724,6 +778,17 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
             int,
             Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
         ] = 10,
+        batch_size: Annotated[
+            int | None,
+            Parameter(name="--batch-size", help="Rollout wave/batch size"),
+        ] = None,
+        max_fail_ratio: Annotated[
+            float,
+            Parameter(
+                name="--max-fail-ratio",
+                help="Maximum allowed failure ratio per batch (0.0..1.0)",
+            ),
+        ] = 0.0,
         output_format: Annotated[
             str,
             Parameter(name=["--format", "-f"], help="Output format: table, json"),
@@ -741,7 +806,14 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
             logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
             try:
                 pool = build_cli_pool(
-                    cli_pkg, host_uris, inventory, group, max_concurrent, logger
+                    cli_pkg,
+                    host_uris,
+                    inventory,
+                    group,
+                    max_concurrent,
+                    logger,
+                    batch_size=batch_size,
+                    max_fail_ratio=max_fail_ratio,
                 )
                 res_map = await pool.ensure_sysctl(
                     key,
@@ -757,4 +829,231 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                 renderer.print_error_and_exit(e, title="Ensure Sysctl Error")
 
         asyncio.run(_execute())
+
+    @app.command(name="wait-for")
+    def wait_for_cmd(
+        kind: Annotated[
+            str,
+            Parameter(help="Condition type: connection, port, path"),
+        ],
+        *args: Annotated[
+            str,
+            Parameter(help="Target port/path (for port/path) followed by connection URIs"),
+        ],
+        host: Annotated[
+            str | None,
+            Parameter(name="--host", help="Target host for TCP port check"),
+        ] = None,
+        state: Annotated[
+            str | None,
+            Parameter(
+                name=["--state", "-s"],
+                help="Desired state: open/closed (port) or present/absent (path)",
+            ),
+        ] = None,
+        check_from: Annotated[
+            str,
+            Parameter(
+                name="--check-from",
+                help="Where to run TCP port probe: remote or local",
+            ),
+        ] = "remote",
+        regex: Annotated[
+            str | None,
+            Parameter(
+                name=["--regex", "-r"],
+                help="Regular expression to match in file content (for path)",
+            ),
+        ] = None,
+        timeout: Annotated[
+            float, Parameter(name=["--timeout", "-t"], help="Timeout in seconds")
+        ] = 60.0,
+        interval: Annotated[
+            float, Parameter(name="--interval", help="Polling interval in seconds")
+        ] = 1.0,
+        delay: Annotated[
+            float, Parameter(name="--delay", help="Initial delay in seconds")
+        ] = 0.0,
+        sudo: Annotated[
+            bool,
+            Parameter(name="--sudo", negative="", help="Run remote path check with sudo"),
+        ] = False,
+        inventory: Annotated[
+            str | None,
+            Parameter(name=["--inventory", "-i"], help="Inventory file (.yaml/.json)"),
+        ] = None,
+        group: Annotated[
+            str | None,
+            Parameter(name=["--group", "-g"], help="Host group name in inventory"),
+        ] = None,
+        max_concurrent: Annotated[
+            int,
+            Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
+        ] = 10,
+        batch_size: Annotated[
+            int | None,
+            Parameter(name="--batch-size", help="Rollout wave/batch size"),
+        ] = None,
+        max_fail_ratio: Annotated[
+            float,
+            Parameter(
+                name="--max-fail-ratio",
+                help="Maximum allowed failure ratio per batch (0.0..1.0)",
+            ),
+        ] = 0.0,
+        output_format: Annotated[
+            str,
+            Parameter(name=["--format", "-f"], help="Output format: table, json"),
+        ] = "table",
+        verbose: Annotated[
+            bool, Parameter(name=["--verbose", "-v"], negative="", help="Verbose output")
+        ] = False,
+    ) -> None:
+        """Wait for host connection, TCP port state, or filesystem path/content across hosts."""
+        kind_lower = kind.lower()
+        if kind_lower not in ("connection", "port", "path"):
+            console.print(
+                f"[red]ERROR:[/red] unknown wait-for kind {kind!r}, expected connection, port, or path"
+            )
+            sys.exit(1)
+
+        if kind_lower == "connection":
+            target_arg = ""
+            host_uris = list(args)
+        else:
+            if not args:
+                console.print(
+                    f"[red]ERROR:[/red] wait-for {kind_lower} requires a target argument"
+                )
+                sys.exit(1)
+            target_arg = args[0]
+            host_uris = list(args[1:])
+
+        if not host_uris and not inventory:
+            host_uris = ["local://"]
+
+        async def _execute() -> None:
+            logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
+            try:
+                pool = build_cli_pool(
+                    cli_pkg,
+                    host_uris,
+                    inventory,
+                    group,
+                    max_concurrent,
+                    logger,
+                    batch_size=batch_size,
+                    max_fail_ratio=max_fail_ratio,
+                )
+                if kind_lower == "connection":
+                    ping_map = await pool.wait_for_connection(
+                        timeout=timeout, interval=interval, delay=delay
+                    )
+                    if output_format == "json":
+                        payload = {k: v.to_dict() for k, v in ping_map.items()}
+                        console.print(json.dumps(payload, indent=2))
+                        return
+                    table = Table(
+                        title=f"Wait For Connection ({len(ping_map)} host(s))",
+                        box=box.ROUNDED,
+                        show_header=True,
+                        header_style="bold cyan",
+                    )
+                    table.add_column("Host", style="cyan")
+                    table.add_column("Status", style="green")
+                    table.add_column("Latency (ms)", justify="right")
+                    for hk, pr in ping_map.items():
+                        table.add_row(
+                            hk,
+                            "[green]ALIVE[/green]" if pr.alive else "[red]DEAD[/red]",
+                            f"{pr.latency_ms:.2f} ms",
+                        )
+                    console.print(table)
+                elif kind_lower == "port":
+                    port_num = int(target_arg)
+                    port_state: Any = (
+                        state if state in ("open", "closed") else "open"
+                    )
+                    check_from_val: Any = (
+                        check_from if check_from in ("remote", "local") else "remote"
+                    )
+                    elapsed_map = await pool.wait_for_port(
+                        port_num,
+                        host=host,
+                        state=port_state,
+                        check_from=check_from_val,
+                        timeout=timeout,
+                        interval=interval,
+                        delay=delay,
+                    )
+                    if output_format == "json":
+                        console.print(
+                            json.dumps(
+                                {
+                                    "kind": "port",
+                                    "port": port_num,
+                                    "state": port_state,
+                                    "elapsed": elapsed_map,
+                                },
+                                indent=2,
+                            )
+                        )
+                        return
+                    table = Table(
+                        title=f"Wait For Port {port_num} ({port_state})",
+                        box=box.ROUNDED,
+                        show_header=True,
+                        header_style="bold cyan",
+                    )
+                    table.add_column("Host", style="cyan")
+                    table.add_column("Port", justify="right")
+                    table.add_column("State", style="green")
+                    table.add_column("Elapsed (s)", justify="right")
+                    for hk, el in elapsed_map.items():
+                        table.add_row(hk, str(port_num), port_state, f"{el:.2f}s")
+                    console.print(table)
+                else:
+                    path_state: Any = (
+                        state if state in ("present", "absent") else "present"
+                    )
+                    elapsed_map = await pool.wait_for_path(
+                        target_arg,
+                        state=path_state,
+                        content_regex=regex,
+                        timeout=timeout,
+                        interval=interval,
+                        delay=delay,
+                        sudo=sudo,
+                    )
+                    if output_format == "json":
+                        console.print(
+                            json.dumps(
+                                {
+                                    "kind": "path",
+                                    "path": target_arg,
+                                    "state": path_state,
+                                    "elapsed": elapsed_map,
+                                },
+                                indent=2,
+                            )
+                        )
+                        return
+                    table = Table(
+                        title=f"Wait For Path {target_arg} ({path_state})",
+                        box=box.ROUNDED,
+                        show_header=True,
+                        header_style="bold cyan",
+                    )
+                    table.add_column("Host", style="cyan")
+                    table.add_column("Path", style="magenta")
+                    table.add_column("State", style="green")
+                    table.add_column("Elapsed (s)", justify="right")
+                    for hk, el in elapsed_map.items():
+                        table.add_row(hk, target_arg, path_state, f"{el:.2f}s")
+                    console.print(table)
+            except Exception as e:
+                renderer.print_error_and_exit(e, title="Wait-For Error")
+
+        asyncio.run(_execute())
+
 

@@ -174,17 +174,28 @@ def build_cli_pool(
     group: str | None,
     max_concurrent: int,
     logger: Any,
+    *,
+    batch_size: int | None = None,
+    max_fail_ratio: float = 0.0,
 ) -> Any:
     """Создать экземпляр ``ConnectionPool`` из списка URI или файла инвентаря."""
+    batch_kwargs: dict[str, Any] = {}
+    if batch_size is not None:
+        batch_kwargs["batch_size"] = batch_size
+    if max_fail_ratio != 0.0:
+        batch_kwargs["max_fail_ratio"] = max_fail_ratio
     if inventory:
         return cli_pkg.ConnectionPool.from_file(
             inventory,
             group=group,
             max_concurrent=max_concurrent,
             logger=logger,
+            **batch_kwargs,
         )
     return cli_pkg.ConnectionPool(
         host_uris,
         max_concurrent=max_concurrent,
         logger=logger,
+        **batch_kwargs,
     )
+

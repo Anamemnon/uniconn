@@ -65,6 +65,8 @@ class SyncConnectionPool:
         circuit_breaker: bool = False,
         failure_threshold: int = 5,
         recovery_timeout: float = 30.0,
+        batch_size: int | None = None,
+        max_fail_ratio: float = 0.0,
     ) -> Self:
         """Создать синхронный пул подключений из JSON или YAML инвентарного файла."""
         from ..pool.connection_pool import ConnectionPool
@@ -80,8 +82,20 @@ class SyncConnectionPool:
             circuit_breaker=circuit_breaker,
             failure_threshold=failure_threshold,
             recovery_timeout=recovery_timeout,
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
         )
         return cls(pool)
+
+    def select(
+        self,
+        hosts: Sequence[str] | Callable[[str], bool] | None = None,
+        *,
+        predicate: Callable[[str, Connection], bool] | None = None,
+    ) -> SyncConnectionPool:
+        """Выбрать подмножество хостов из синхронного пула с сохранением открытых сессий."""
+        sub_async = self._async_pool.select(hosts=hosts, predicate=predicate)
+        return SyncConnectionPool(sub_async)
 
     def _run_coro(self, coro: Any) -> Any:
         """Выполнить корутину пула в фоновом event loop."""
@@ -109,6 +123,9 @@ class SyncConnectionPool:
         command: str | Sequence[str],
         timeout: float | None = None,
         raise_on_error: bool = False,
+        *,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
         **kwargs: Any,
     ) -> list[Result]:
         """Параллельно выполнить команду на всех хостах пула (синхронно)."""
@@ -117,6 +134,8 @@ class SyncConnectionPool:
                 command,
                 timeout=timeout,
                 raise_on_error=raise_on_error,
+                batch_size=batch_size,
+                max_fail_ratio=max_fail_ratio,
                 **kwargs,
             )
         )
@@ -294,6 +313,77 @@ class SyncConnectionPool:
     ) -> dict[str, PingResult]:
         """Параллельно проверить доступность всех хостов пула с измерением задержки (синхронно)."""
         return self._run_coro(self._async_pool.ping(timeout=timeout))
+
+    def wait_for_connection(
+        self,
+        timeout: float = 120.0,
+        interval: float = 2.0,
+        delay: float = 0.0,
+    ) -> dict[str, PingResult]:
+        """Параллельно ожидать восстановления доступности всех хостов пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.wait_for_connection(
+                timeout=timeout,
+                interval=interval,
+                delay=delay,
+            )
+        )
+
+    def wait_for_port(
+        self,
+        port: int,
+        *,
+        host: str | None = None,
+        state: Literal["open", "closed"] = "open",
+        check_from: Literal["remote", "local"] = "remote",
+        timeout: float = 60.0,
+        interval: float = 1.0,
+        delay: float = 0.0,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
+    ) -> dict[str, float]:
+        """Параллельно ожидать открытия или закрытия TCP-порта на всех хостах пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.wait_for_port(
+                port,
+                host=host,
+                state=state,
+                check_from=check_from,
+                timeout=timeout,
+                interval=interval,
+                delay=delay,
+                batch_size=batch_size,
+                max_fail_ratio=max_fail_ratio,
+            )
+        )
+
+    def wait_for_path(
+        self,
+        remote_path: str | Path,
+        *,
+        state: Literal["present", "absent"] = "present",
+        content_regex: str | None = None,
+        timeout: float = 60.0,
+        interval: float = 1.0,
+        delay: float = 0.0,
+        sudo: bool = False,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
+    ) -> dict[str, float]:
+        """Параллельно ожидать появления или удаления пути на всех хостах пула (синхронно)."""
+        return self._run_coro(
+            self._async_pool.wait_for_path(
+                remote_path,
+                state=state,
+                content_regex=content_regex,
+                timeout=timeout,
+                interval=interval,
+                delay=delay,
+                sudo=sudo,
+                batch_size=batch_size,
+                max_fail_ratio=max_fail_ratio,
+            )
+        )
 
     def run_script(
         self,

@@ -127,6 +127,17 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
             int,
             Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
         ] = 10,
+        batch_size: Annotated[
+            int | None,
+            Parameter(name="--batch-size", help="Rollout wave/batch size"),
+        ] = None,
+        max_fail_ratio: Annotated[
+            float,
+            Parameter(
+                name="--max-fail-ratio",
+                help="Maximum allowed failure ratio per batch (0.0..1.0)",
+            ),
+        ] = 0.0,
         timeout: Annotated[
             float, Parameter(name=["--timeout", "-t"], help="Timeout in seconds")
         ] = 30.0,
@@ -147,7 +158,14 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
         async def _execute() -> None:
             logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
             pool = build_cli_pool(
-                cli_pkg, host_uris, inventory, group, max_concurrent, logger
+                cli_pkg,
+                host_uris,
+                inventory,
+                group,
+                max_concurrent,
+                logger,
+                batch_size=batch_size,
+                max_fail_ratio=max_fail_ratio,
             )
             target_labels = [pool._target_key(t) for t in pool._uris]
             if output_format != "json":
@@ -263,6 +281,17 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
             int,
             Parameter(name=["--max-concurrent", "-j"], help="Max concurrent connections"),
         ] = 10,
+        batch_size: Annotated[
+            int | None,
+            Parameter(name="--batch-size", help="Rollout wave/batch size"),
+        ] = None,
+        max_fail_ratio: Annotated[
+            float,
+            Parameter(
+                name="--max-fail-ratio",
+                help="Maximum allowed failure ratio per batch (0.0..1.0)",
+            ),
+        ] = 0.0,
         output_format: Annotated[
             str,
             Parameter(name=["--format", "-f"], help="Output format: table, json, plain"),
@@ -282,7 +311,14 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
             logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
             try:
                 pool = build_cli_pool(
-                    cli_pkg, host_uris, inventory, group, max_concurrent, logger
+                    cli_pkg,
+                    host_uris,
+                    inventory,
+                    group,
+                    max_concurrent,
+                    logger,
+                    batch_size=batch_size,
+                    max_fail_ratio=max_fail_ratio,
                 )
                 results_map = await pool.run_script(
                     script_path,
