@@ -1,4 +1,4 @@
-# uniconn — LLM & AI Agent API Reference (v0.16.0)
+# uniconn — LLM & AI Agent API Reference (v0.16.1)
 
 > Universal async-first Python library (Python 3.11+) and CLI for executing commands, inspecting host facts, enforcing idempotent states, and managing files across SSH, Telnet, Serial/UART, IPMI BMC, Redfish BMC (`niquests`), Docker/Podman, Kubernetes (`kubectl`), Replay, and Local transports.
 
@@ -7,6 +7,7 @@
 - Install all dependencies: `uv sync`
 - Run unit tests (context-saving output): `uv run pytest -m "not integration" -q --tb=short | tail -n 5`
 - Re-run failed unit tests with traceback: `uv run pytest -m "not integration" -q --tb=short --lf | tail -n 30`
+- Run latency & overhead benchmarks: `python -m benchmarks.overhead_bench --check-thresholds`
 - Lint & typecheck: `uv run ruff check src/` and `uv run pyright`
 - Preview dashboard server: `python3 main.py --serve` (listens on `0.0.0.0:3000`)
 - Documentation & Feature Matrix: `AGENTS.md` (architecture & rules), `FEATURES.md` (full catalog of implemented features — consult on-demand only)

@@ -141,6 +141,14 @@
       margin-top: 6px; font: 10px/1.5 var(--mono); color: var(--muted);
       font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
+    .transport-badges {
+      display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px;
+    }
+    .transport-badge {
+      display: inline-flex; align-items: center; padding: 2px 6px; border-radius: 5px;
+      background: #edf0f8; border: 1px solid #d9dfea; color: var(--text-secondary);
+      font: 500 10.5px/1.25 var(--mono); letter-spacing: -.01em; white-space: nowrap;
+    }
 
     .split-grid, .split-grid-asym { display: grid; gap: 18px; margin: 0; align-items: start; }
     .split-grid { grid-template-columns: 1fr 1fr; }
@@ -423,8 +431,19 @@
       <div class="kpi-strip">
         <div class="kpi-box">
           <div class="kpi-label">Registered Transports</div>
-          <div class="kpi-value" id="kpi-transports-count">5</div>
-          <div class="kpi-sub" id="kpi-transports-names">ipmi · local · serial · ssh · telnet</div>
+          <div class="kpi-value" id="kpi-transports-count">10</div>
+          <div class="transport-badges" id="kpi-transports-names">
+            <span class="transport-badge">docker</span>
+            <span class="transport-badge">ipmi</span>
+            <span class="transport-badge">kubectl</span>
+            <span class="transport-badge">local</span>
+            <span class="transport-badge">podman</span>
+            <span class="transport-badge">redfish</span>
+            <span class="transport-badge">replay</span>
+            <span class="transport-badge">serial</span>
+            <span class="transport-badge">ssh</span>
+            <span class="transport-badge">telnet</span>
+          </div>
         </div>
         <div class="kpi-box">
           <div class="kpi-label">Active Shell Working Dir</div>
@@ -916,11 +935,13 @@
           <div class="preset-bar" id="suite-preset-bar">
             <button type="button" class="btn" data-suite="all" onclick="runTestSuite('all')">All Unit</button>
             <button type="button" class="btn secondary" data-suite="core" onclick="runTestSuite('core')">core</button>
+            <button type="button" class="btn secondary" data-suite="services" onclick="runTestSuite('services')">services</button>
             <button type="button" class="btn secondary" data-suite="transports" onclick="runTestSuite('transports')">transports</button>
             <button type="button" class="btn secondary" data-suite="pools" onclick="runTestSuite('pools')">pools</button>
             <button type="button" class="btn secondary" data-suite="screen" onclick="runTestSuite('screen')">screen</button>
             <button type="button" class="btn secondary" data-suite="cli" onclick="runTestSuite('cli')">cli</button>
-            <button type="button" class="btn secondary" data-suite="services" onclick="runTestSuite('services')">services</button>
+            <button type="button" class="btn secondary" data-suite="architecture" onclick="runTestSuite('architecture')">architecture</button>
+            <button type="button" class="btn ghost" data-suite="benchmarks" onclick="runTestSuite('benchmarks')">benchmarks</button>
             <button type="button" class="btn ghost" data-suite="ruff" onclick="runTestSuite('ruff')">ruff check</button>
             <button type="button" class="btn ghost" data-suite="pyright" onclick="runTestSuite('pyright')">pyright</button>
           </div>
@@ -1067,7 +1088,12 @@
         document.getElementById('meta-transports').textContent = data.transports.join(' / ');
 
         document.getElementById('kpi-transports-count').textContent = String(data.transports.length);
-        document.getElementById('kpi-transports-names').textContent = data.transports.join(' · ');
+        const transportsBox = document.getElementById('kpi-transports-names');
+        if (transportsBox && Array.isArray(data.transports)) {
+          transportsBox.innerHTML = data.transports
+            .map(t => `<span class="transport-badge">${escapeHtml(t)}</span>`)
+            .join('');
+        }
         document.getElementById('kpi-shell-cwd').textContent = data.shell_demo.cwd_after_cd;
         document.getElementById('kpi-shell-size').textContent = data.shell_demo.term_size.join('×');
 
@@ -1650,7 +1676,7 @@
     async function runTestSuite(suiteId) {
       document.querySelectorAll('#suite-preset-bar button[data-suite]').forEach(btn => {
         const isMatch = btn.getAttribute('data-suite') === suiteId;
-        const isQualityTool = ['ruff', 'pyright'].includes(btn.getAttribute('data-suite'));
+        const isQualityTool = ['benchmarks', 'ruff', 'pyright'].includes(btn.getAttribute('data-suite'));
         if (isMatch) {
           btn.className = 'btn';
         } else {

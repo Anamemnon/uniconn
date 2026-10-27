@@ -2,7 +2,7 @@
 
 ## Обзор проекта
 
-`uniconn` (`v0.16.0`) — универсальная async-first Python-библиотека (Python 3.11+) для выполнения команд, инспекции хостов, идемпотентного управления состоянием и синхронизации файлов через единый фасад `Connection`. Управление зависимостями осуществляется через `uv`.
+`uniconn` (`v0.16.1`) — универсальная async-first Python-библиотека (Python 3.11+) для выполнения команд, инспекции хостов, идемпотентного управления состоянием и синхронизации файлов через единый фасад `Connection`. Управление зависимостями осуществляется через `uv`.
 
 Для быстрого ознакомления с сигнатурами публичного API и URI-схемами используйте файл `llms.txt` в корне репозитория.
 
@@ -71,7 +71,11 @@ uv run pytest -m "not integration" -q --tb=short | tail -n 5
 # Повторный запуск только упавших тестов с трейсбеком (при отладке)
 uv run pytest -m "not integration" -q --tb=short --lf | tail -n 30
 
+# Замер задержек и накладных расходов ядра (CommandPipeline, EventLoopPortal, DirectorySynchronizer)
+uv run python -m benchmarks.overhead_bench --check-thresholds
+
 # Линтинг (лимит строки 120 символов) и проверка типов
-uv run ruff check src/
+uv run ruff check src/ benchmarks/
 uv run pyright
 ```
+

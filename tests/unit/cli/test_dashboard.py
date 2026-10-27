@@ -23,12 +23,18 @@ class TestDashboardStatusAndShell:
     def test_run_demo_status_returns_full_metadata(self) -> None:
         """Проверить метаданные /api/status, включая список транспортов и тестовых пакетов."""
         status = _run_demo_status()
-        assert status["version"] == "0.16.0"
+        assert status["version"] == "0.16.1"
         assert "ssh" in status["transports"]
         assert "local" in status["transports"]
         assert "3.10" not in status["python_version"]
         assert "test_suites" in status
-        assert len(status["test_suites"]) >= 6
+        assert len(status["test_suites"]) == 8
+        suite_ids = [s["id"] for s in status["test_suites"]]
+        assert "architecture" in suite_ids
+        assert "core" in suite_ids
+        assert "services" in suite_ids
+        total_tests = sum(s["count"] for s in status["test_suites"] if s["id"] != "all")
+        assert total_tests == 614
         assert "default_inventory" in status
 
     def test_execute_shell_command_stateful_and_reset(self) -> None:
@@ -199,3 +205,18 @@ class TestDashboardUriPoolAndScreen:
             assert dup_id not in html
         assert "setPoolPreset('health')" in html
         assert "color: #030712" not in html
+        assert "transport-badge" in html
+        assert 'data-suite="architecture"' in html
+        assert 'data-suite="benchmarks"' in html
+
+    def test_execute_pytest_benchmarks_and_architecture(self) -> None:
+        """Проверить запуск архитектурных тестов и бенчмарка через _execute_pytest."""
+        from examples.dashboard.server import _execute_pytest
+
+        arch_res = _execute_pytest("architecture")
+        assert arch_res["ok"] is True
+        assert arch_res["exit_code"] == 0
+
+        bench_res = _execute_pytest("benchmarks")
+        assert bench_res["ok"] is True
+        assert bench_res["exit_code"] == 0

@@ -79,13 +79,14 @@ groups:
 """
 
 TEST_SUITES_META: list[dict[str, Any]] = [
-    {"id": "all", "label": "All Unit Tests", "path": "tests/unit", "count": 607},
-    {"id": "core", "label": "Core & Logging", "path": "tests/unit/core", "count": 265},
-    {"id": "services", "label": "Domain Services & Provisioning", "path": "tests/unit/services", "count": 60},
-    {"id": "transports", "label": "Transports & SFTP", "path": "tests/unit/transports", "count": 165},
-    {"id": "pools", "label": "Connection & SSH Pools", "path": "tests/unit/pools", "count": 34},
-    {"id": "screen", "label": "GNU Screen & LogPipeline", "path": "tests/unit/screen", "count": 30},
-    {"id": "cli", "label": "CLI & Web Dashboard", "path": "tests/unit/cli", "count": 49},
+    {"id": "all", "label": "All Unit Tests", "path": "tests/unit", "count": 614},
+    {"id": "core", "label": "Core & Logging", "path": "tests/unit/core", "count": 246},
+    {"id": "services", "label": "Domain Services & Provisioning", "path": "tests/unit/services", "count": 43},
+    {"id": "transports", "label": "Transports & SFTP", "path": "tests/unit/transports", "count": 154},
+    {"id": "pools", "label": "Connection & SSH Pools", "path": "tests/unit/pools", "count": 29},
+    {"id": "screen", "label": "GNU Screen & LogPipeline", "path": "tests/unit/screen", "count": 70},
+    {"id": "cli", "label": "CLI & Web Dashboard", "path": "tests/unit/cli", "count": 48},
+    {"id": "architecture", "label": "Architecture & API Surface", "path": "tests/unit/architecture", "count": 24},
 ]
 
 
@@ -1619,14 +1620,18 @@ def _execute_pytest(suite: str = "all") -> dict[str, Any]:
 
     if suite_clean == "ruff":
         cmd_args = (
-            [VENV_RUFF, "check", "src/", "examples/dashboard/server.py"]
+            [VENV_RUFF, "check", "src/", "benchmarks/", "examples/dashboard/server.py"]
             if os.path.exists(VENV_RUFF)
-            else ["uv", "run", "ruff", "check", "src/"]
+            else ["uv", "run", "ruff", "check", "src/", "benchmarks/"]
         )
-        label = "ruff check src/ examples/dashboard/server.py"
+        label = "ruff check src/ benchmarks/ examples/dashboard/server.py"
     elif suite_clean == "pyright":
         cmd_args = [VENV_PYRIGHT] if os.path.exists(VENV_PYRIGHT) else ["uv", "run", "pyright"]
         label = "pyright"
+    elif suite_clean in ("benchmarks", "benchmark", "overhead"):
+        py_bin = VENV_PYTHON if os.path.exists(VENV_PYTHON) else "python"
+        cmd_args = [py_bin, "-m", "benchmarks.overhead_bench", "-n", "100", "-w", "10", "--check-thresholds"]
+        label = "python -m benchmarks.overhead_bench -n 100 -w 10 --check-thresholds"
     else:
         suite_map = {item["id"]: item["path"] for item in TEST_SUITES_META}
         target_path = suite_map.get(suite_clean, "tests/unit")
