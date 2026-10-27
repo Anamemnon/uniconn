@@ -26,7 +26,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import uniconn
 from uniconn import (
     AuthenticationError,
     BMCCapabilityError,
@@ -313,11 +312,8 @@ def _build_fake_redfish_session(
     return session
 
 
-class TestRedfishURIParsingAndVersion:
-    """Tests for v0.14.0 version bump and redfish:// URI parsing."""
-
-    def test_version_is_0140(self) -> None:
-        assert uniconn.__version__ == "0.16.1"
+class TestRedfishURIParsing:
+    """Tests for redfish:// URI parsing."""
 
     def test_parse_redfish_uri_defaults_and_options(self) -> None:
         uri = (

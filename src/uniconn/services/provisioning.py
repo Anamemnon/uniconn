@@ -10,6 +10,7 @@ import os
 import re
 import shlex
 import shutil
+import sys
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -789,18 +790,21 @@ class StateManagementService:
         self, path_str: str, *, sudo: bool = False, is_link: bool = False
     ) -> tuple[str | None, str | None]:
         """Получить текущие имя владельца и группы файла или директории."""
-        if self._conn.transport_name == "local" and not sudo:
-            eff_path = Path(self._conn.context.resolve_path(path_str))
-            try:
-                import grp
-                import pwd
-
-                st = eff_path.lstat() if is_link else eff_path.stat()
-                u_name = pwd.getpwuid(st.st_uid).pw_name
-                g_name = grp.getgrgid(st.st_gid).gr_name
-                return u_name, g_name
-            except Exception:
+        if self._conn.transport_name == "local":
+            if sys.platform == "win32":
                 return None, None
+            if not sudo:
+                eff_path = Path(self._conn.context.resolve_path(path_str))
+                try:
+                    import grp
+                    import pwd
+
+                    st = eff_path.lstat() if is_link else eff_path.stat()
+                    u_name = pwd.getpwuid(st.st_uid).pw_name
+                    g_name = grp.getgrgid(st.st_gid).gr_name
+                    return u_name, g_name
+                except Exception:
+                    return None, None
 
         deref_flag = "" if is_link else "-L "
         res = await self._conn.run(
@@ -827,15 +831,18 @@ class StateManagementService:
         """Применить владельца и/или группу к пути."""
         if owner is None and group is None:
             return
-        if self._conn.transport_name == "local" and not sudo and not recurse and not is_link:
-            eff_path = Path(self._conn.context.resolve_path(path_str))
-            if owner is not None and group is not None:
-                shutil.chown(eff_path, user=owner, group=group)
-            elif owner is not None:
-                shutil.chown(eff_path, user=owner)
-            elif group is not None:
-                shutil.chown(eff_path, group=group)
-            return
+        if self._conn.transport_name == "local":
+            if sys.platform == "win32":
+                return
+            if not sudo and not recurse and not is_link:
+                eff_path = Path(self._conn.context.resolve_path(path_str))
+                if owner is not None and group is not None:
+                    shutil.chown(eff_path, user=owner, group=group)
+                elif owner is not None:
+                    shutil.chown(eff_path, user=owner)
+                elif group is not None:
+                    shutil.chown(eff_path, group=group)
+                return
 
         flags: list[str] = []
         if is_link:

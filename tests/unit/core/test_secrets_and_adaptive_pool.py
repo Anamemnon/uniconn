@@ -17,7 +17,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import uniconn
 from uniconn import (
     CommandTransport,
     Connection,
@@ -51,10 +50,6 @@ def _make_fake_proc(
 
 class TestContainerAndKubectlURIParsing:
     """Tests for URIParser with docker://, podman://, and kubectl:// schemes."""
-
-    def test_version_is_0130(self) -> None:
-        parts = tuple(int(x) for x in uniconn.__version__.split(".")[:2])
-        assert parts >= (0, 13)
 
     def test_parse_docker_uri_preserves_case_and_options(self) -> None:
         cfg = URIParser.parse("docker://root@MyAppContainer/var/www?runtime=docker&context=remote-ctx")

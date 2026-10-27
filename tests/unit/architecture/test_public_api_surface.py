@@ -41,8 +41,14 @@ def test_canonical_modules_match_backward_compat_reexports() -> None:
     assert ReexportedSyncConn is CanonicalSyncConn
 
 
-def test_version_is_bumped_to_0140() -> None:
-    """Версия библиотеки должна быть актуальной (0.16.1)."""
-    assert uniconn.__version__ == "0.16.1"
+def test_public_version_matches_pyproject() -> None:
+    """Версия библиотеки в uniconn.__version__ должна совпадать с версией в pyproject.toml."""
+    import tomllib
+    from pathlib import Path
+
+    pyproject_file = Path(__file__).resolve().parents[3] / "pyproject.toml"
+    with open(pyproject_file, "rb") as f:
+        data = tomllib.load(f)
+    assert uniconn.__version__ == data["project"]["version"]
 
 

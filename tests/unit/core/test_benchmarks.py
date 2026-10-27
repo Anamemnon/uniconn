@@ -19,6 +19,7 @@ from benchmarks.overhead_bench import (
     render_table,
     run_all_benchmarks,
 )
+from uniconn import __version__
 
 
 def test_compute_stats_percentiles_and_thresholds() -> None:
@@ -84,7 +85,7 @@ def test_benchmarks_export_json_and_yaml(tmp_path: Path) -> None:
     export_json(res, json_path)
     assert json_path.exists()
     data = json.loads(json_path.read_text(encoding="utf-8"))
-    assert data["version"] == "0.16.1"
+    assert data["version"] == __version__
     assert len(data["results"]) == 3
 
     export_yaml(res, yaml_path)

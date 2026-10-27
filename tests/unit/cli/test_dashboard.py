@@ -15,6 +15,7 @@ from examples.dashboard.server import (
     _execute_shell_command,
     _run_demo_status,
 )
+from uniconn import __version__
 
 
 class TestDashboardStatusAndShell:
@@ -23,7 +24,7 @@ class TestDashboardStatusAndShell:
     def test_run_demo_status_returns_full_metadata(self) -> None:
         """Проверить метаданные /api/status, включая список транспортов и тестовых пакетов."""
         status = _run_demo_status()
-        assert status["version"] == "0.16.1"
+        assert status["version"] == __version__
         assert "ssh" in status["transports"]
         assert "local" in status["transports"]
         assert "3.10" not in status["python_version"]
