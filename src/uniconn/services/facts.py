@@ -7,6 +7,7 @@ import contextlib
 import json
 import re
 import shlex
+import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -33,6 +34,76 @@ if TYPE_CHECKING:
 _ARTIFACT_PATH_RE = re.compile(
     r"(/[A-Za-z0-9._/-]+\.(?:tar\.xz|tar\.gz|tgz|tar\.bz2|zip|log|json|txt))"
 )
+
+
+def _collect_windows_local_facts(default_host: str) -> HostFacts:
+    """Собрать базовые системные факты для локального хоста на платформе Windows через ctypes/platform."""
+    import ctypes
+    import os
+    import platform
+    import shutil
+
+    cpu_count = os.cpu_count() or 1
+    hostname = platform.node() or default_host
+    kernel = platform.release() or "Windows"
+    distro = f"Windows {platform.release()}"
+    arch = platform.machine() or "x86_64"
+    mem_total = 0
+    mem_avail = 0
+
+    try:
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        stat = MEMORYSTATUSEX()
+        stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+            mem_total = int(stat.ullTotalPhys)
+            mem_avail = int(stat.ullAvailPhys)
+    except Exception:
+        pass
+
+    uptime = 0.0
+    with contextlib.suppress(Exception):
+        uptime = round(ctypes.windll.kernel32.GetTickCount64() / 1000.0, 1)
+
+    disks: list[DiskInfo] = []
+    with contextlib.suppress(Exception):
+        total, used, free = shutil.disk_usage("C:\\")
+        disks.append(
+            DiskInfo(
+                device="C:",
+                mountpoint="C:\\",
+                fstype="NTFS",
+                total_bytes=total,
+                used_bytes=used,
+                available_bytes=free,
+                use_percent=round((used / total) * 100, 1) if total > 0 else 0.0,
+            )
+        )
+
+    return HostFacts(
+        os_family="Windows",
+        distro=distro,
+        kernel=kernel,
+        arch=arch,
+        hostname=hostname,
+        uptime_seconds=uptime,
+        cpu_count=cpu_count,
+        memory_total_bytes=mem_total,
+        memory_available_bytes=mem_avail,
+        disks=disks,
+    )
 
 
 class ExternalToolRunner:
@@ -138,6 +209,20 @@ class FactCollector:
         self.cached: HostFacts | None = None
         self._tool_runner = ExternalToolRunner(conn)
 
+    def _is_run_mocked(self) -> bool:
+        """Проверить, переопределен ли метод run у подключения или транспорта (для тестов/моков)."""
+        conn_run = getattr(self._conn, "run", None)
+        conn_type_run = getattr(type(self._conn), "run", None)
+        if getattr(conn_run, "__func__", None) is not conn_type_run:
+            return True
+        tr = getattr(self._conn, "transport", None)
+        if tr is not None:
+            tr_run = getattr(tr, "run", None)
+            tr_type_run = getattr(type(tr), "run", None)
+            if getattr(tr_run, "__func__", None) is not tr_type_run:
+                return True
+        return False
+
     def _is_redfish_connection(self) -> bool:
         """Проверить, является ли целевое соединение Redfish BMC (включая Cassette/Replay)."""
         if self._conn.config.transport == "redfish":
@@ -180,6 +265,12 @@ class FactCollector:
                     raise_on_error=False,
                 )
                 facts = parse_redfish_facts(res.stdout, default_host=default_host)
+            elif (
+                sys.platform == "win32"
+                and self._conn.transport_name == "local"
+                and not self._is_run_mocked()
+            ):
+                facts = _collect_windows_local_facts(default_host)
             else:
                 res = await self._conn.run(
                     FACT_COLLECTION_SCRIPT,

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import stat
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -276,7 +277,9 @@ async def test_dry_run_mode_skips_execution_and_triggers_hooks(tmp_path: Path):
         raw = await conn.run_bytes("echo bytes")
         assert raw == b""
 
-    assert hook_calls == [f"before:touch {marker_file}", "after:0"]
+    from uniconn.core.connection import format_command
+    expected_cmd = format_command(["touch", str(marker_file)])
+    assert hook_calls == [f"before:{expected_cmd}", "after:0"]
 
 
 # ─── 4. Файловые операции в памяти (read_file, write_file) и run_bytes ──
@@ -289,7 +292,8 @@ async def test_local_read_write_file_and_run_bytes(tmp_path: Path):
         await conn.files.write_file("config.yaml", "key: value\n", mode=0o600)
         target = tmp_path / "config.yaml"
         assert target.exists()
-        assert stat.S_IMODE(target.stat().st_mode) == 0o600
+        if sys.platform != "win32":
+            assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
         text = await conn.files.read_file("config.yaml")
         assert text == "key: value\n"

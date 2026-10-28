@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -125,6 +126,12 @@ class TestOtelTracingHook:
 
         lines = [line async for line in conn.stream("printf 'a\\nb\\n'")]
         assert lines == ["a", "b"]
+
+
+        if sys.platform == 'win32':
+            from tests.unit.core.test_shell import FakeShellProcess
+            fake_proc = FakeShellProcess()
+            conn._transport.open_shell = AsyncMock(return_value=fake_proc)  # type: ignore[method-assign]
 
         async with await conn.open_shell(init_posix=False) as shell:
             sh_res = await shell.execute("echo in_shell")

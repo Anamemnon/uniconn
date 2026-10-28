@@ -110,6 +110,13 @@ def _resolve_default_shell(requested: str | None = None) -> str:
     return default
 
 
+def _safe_which(binary: str) -> str | None:
+    try:
+        return shutil.which(binary)
+    except AttributeError:
+        return None
+
+
 def _apply_windows_polyfills(parts: list[str]) -> str | None:
     """Эмулировать стандартные POSIX-команды на Windows через Python или встроенные утилиты."""
     if not parts:
@@ -119,25 +126,37 @@ def _apply_windows_polyfills(parts: list[str]) -> str | None:
     if first == "echo":
         return "echo " + " ".join(p.strip("'\"") for p in parts[1:])
 
-    if first == "cat" and len(parts) == 1 and shutil.which("cat") is None:
+    if first == "cat" and _safe_which("cat") is None:
+        if len(parts) == 1:
+            return (
+                f'"{sys.executable}" -c '
+                '"import sys, shutil; shutil.copyfileobj(sys.stdin.buffer, sys.stdout.buffer)"'
+            )
+        files = parts[1:]
         return (
             f'"{sys.executable}" -c '
-            '"import sys, shutil; shutil.copyfileobj(sys.stdin.buffer, sys.stdout.buffer)"'
+            '"import sys, pathlib; [sys.stdout.buffer.write(pathlib.Path(f).read_bytes()) for f in sys.argv[1:]]" '
+            f"{subprocess.list2cmdline(files)}"
         )
 
-    if first == "printf" and shutil.which("printf") is None:
+    if first == "pwd" and _safe_which("pwd") is None:
+        return f'"{sys.executable}" -c "import os, sys; sys.stdout.write(os.getcwd())"'
+
+    if first == "touch" and _safe_which("touch") is None:
+        files = parts[1:]
+        return (
+            f'"{sys.executable}" -c '
+            '"import sys, pathlib; [pathlib.Path(f).touch() for f in sys.argv[1:]]" '
+            f"{subprocess.list2cmdline(files)}"
+        )
+
+    if first == "printf" and _safe_which("printf") is None:
         raw_arg = parts[1] if len(parts) > 1 else ""
         try:
             decoded = codecs.decode(raw_arg, "unicode_escape")
         except Exception:
             decoded = raw_arg
         return f'"{sys.executable}" -c "import sys; sys.stdout.write({decoded!r})"'
-
-    def _safe_which(binary: str) -> str | None:
-        try:
-            return shutil.which(binary)
-        except AttributeError:
-            return None
 
     if first == "tail" and _safe_which("tail") is None:
         n = 10
@@ -210,10 +229,11 @@ class LocalTransport(BaseTransport):
                 return f"echo {rest[1:-1]}"
 
         # Токенизация команд с POSIX-кавычками или полифиллами
+        cmd_first = cmd_stripped.split(None, 1)[0].lower() if cmd_stripped else ""
         needs_tokenization = (
             "'" in command
-            or any(cmd_stripped.lower().startswith(f"{cmd} ") for cmd in ("cat", "printf", "tail"))
-            or cmd_stripped.lower() == "cat"
+            or cmd_first in ("cat", "printf", "tail", "pwd", "touch")
+            or any(cmd_stripped.lower().startswith(f"{cmd} ") for cmd in ("cat", "printf", "tail", "pwd", "touch"))
         )
         if needs_tokenization:
             try:

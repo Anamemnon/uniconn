@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -334,11 +335,19 @@ class TestPingRunScriptAndDiffFacts:
     @pytest.mark.asyncio
     async def test_run_script_uploads_executes_and_cleans_up(self, tmp_path: Path) -> None:
         """Проверить загрузку, исполнение с аргументами/окружением и очистку скрипта."""
-        script = tmp_path / "test_worker.sh"
-        script.write_text(
-            '#!/bin/sh\necho "ARG1=$1 ARG2=$2 ENV_VAL=$CUSTOM_VAR SCRIPT_PATH=$0"\n',
-            encoding="utf-8",
-        )
+        import sys
+        if sys.platform == "win32":
+            script = tmp_path / "test_worker.bat"
+            script.write_text(
+                '@echo off\necho ARG1=%1 ARG2=%2 ENV_VAL=%CUSTOM_VAR% SCRIPT_PATH=%~f0\n',
+                encoding="utf-8",
+            )
+        else:
+            script = tmp_path / "test_worker.sh"
+            script.write_text(
+                '#!/bin/sh\necho "ARG1=$1 ARG2=$2 ENV_VAL=$CUSTOM_VAR SCRIPT_PATH=$0"\n',
+                encoding="utf-8",
+            )
 
         async with Connection.from_uri("local://") as conn:
             res = await conn.run_script(
@@ -438,8 +447,12 @@ class TestCLIV090AndDashboard:
         assert diff_data["baseline_host"] == "local://"
 
         # 3. uniconn exec-script <script.sh> --args "..." --format json
-        script = tmp_path / "cli_hello.sh"
-        script.write_text('#!/bin/sh\necho "CLI_SCRIPT_OK:$1"\n', encoding="utf-8")
+        if sys.platform == "win32":
+            script = tmp_path / "cli_hello.bat"
+            script.write_text("@echo off\necho CLI_SCRIPT_OK:%1\n", encoding="utf-8")
+        else:
+            script = tmp_path / "cli_hello.sh"
+            script.write_text('#!/bin/sh\necho "CLI_SCRIPT_OK:$1"\n', encoding="utf-8")
         res_scr = runner.invoke(
             app,
             ["exec-script", str(script), "local://", "--args", "v090", "--format", "json"],

@@ -301,6 +301,7 @@ class TestTransportsOpenShell:
         with pytest.raises(ConnectionError, match="not connected"):
             await serial_transport.open_shell()
 
+    @pytest.mark.posix_only
     @pytest.mark.asyncio
     async def test_local_open_shell_stateful_session(self, tmp_path):
         """Connection('local://').open_shell() создаёт рабочую stateful сессию."""

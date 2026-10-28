@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -389,7 +390,8 @@ class TestSmartSyncDirAndTemplating:
             )
             assert "worker_processes 4;" in rendered
             assert cfg_file.read_text(encoding="utf-8") == rendered
-            assert (cfg_file.stat().st_mode & 0o777) == 0o640
+            if sys.platform != "win32":
+                assert (cfg_file.stat().st_mode & 0o777) == 0o640
 
         # SyncConnection
         sync_target = tmp_path / "sync_service.conf"
