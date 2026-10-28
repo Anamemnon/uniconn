@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "python3 main.py --serve",
-    "build": "export PATH=\"$PWD/.bin:$HOME/.local/bin:$PATH\" UV_PYTHON_INSTALL_DIR=\"$PWD/.uv/python\"; command -v uv >/dev/null || (curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=\"$PWD/.bin\" sh && uv sync --python 3.12 --all-extras --dev); uv run pytest -m \"not integration\"",
-    "lint": "export PATH=\"$PWD/.bin:$HOME/.local/bin:$PATH\" UV_PYTHON_INSTALL_DIR=\"$PWD/.uv/python\"; command -v uv >/dev/null || (curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=\"$PWD/.bin\" sh && uv sync --python 3.12 --all-extras --dev); uv run ruff check src/ && uv run pyright"
+    "build": "export PATH=\"/tmp/uniconn-uv:$PWD/.bin:$HOME/.local/bin:$PATH\" UV_PYTHON_INSTALL_DIR=\"/tmp/uniconn-python\" UV_PROJECT_ENVIRONMENT=\"/tmp/uniconn-venv\"; command -v uv >/dev/null || (curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=\"/tmp/uniconn-uv\" sh); [ -x /tmp/uniconn-venv/bin/python ] || uv sync --python 3.12 --all-extras --dev; uv run pytest -m \"not integration\"",
+    "lint": "export PATH=\"/tmp/uniconn-uv:$PWD/.bin:$HOME/.local/bin:$PATH\" UV_PYTHON_INSTALL_DIR=\"/tmp/uniconn-python\" UV_PROJECT_ENVIRONMENT=\"/tmp/uniconn-venv\"; command -v uv >/dev/null || (curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=\"/tmp/uniconn-uv\" sh); [ -x /tmp/uniconn-venv/bin/python ] || uv sync --python 3.12 --all-extras --dev; uv run ruff check src/ && uv run pyright --pythonpath /tmp/uniconn-venv/bin/python"
   }
 }

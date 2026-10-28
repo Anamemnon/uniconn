@@ -1,6 +1,6 @@
 [project]
 name = "uniconn"
-version = "0.16.8"
+dynamic = ["version"]
 description = "Universal library for remote command execution"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -77,6 +77,9 @@ uniconn = "uniconn.cli:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/uniconn/__init__.py"
 
 [dependency-groups]
 dev = ["uniconn[dev]"]

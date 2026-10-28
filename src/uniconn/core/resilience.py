@@ -176,9 +176,18 @@ class RateLimiter:
         self._burst = int(burst)
         self._tokens = float(burst)
         self._updated_at = time.monotonic()
-        self._lock = asyncio.Lock()
+        self._async_lock: asyncio.Lock | None = None
+        self._async_lock_loop: asyncio.AbstractEventLoop | None = None
         self._total_acquired = 0
         self._total_wait_seconds = 0.0
+
+    def _get_lock(self) -> asyncio.Lock:
+        """Получить asyncio.Lock, привязанный к текущему активному циклу событий."""
+        loop = asyncio.get_running_loop()
+        if self._async_lock is None or self._async_lock_loop is not loop:
+            self._async_lock = asyncio.Lock()
+            self._async_lock_loop = loop
+        return self._async_lock
 
     @property
     def rate(self) -> float:
@@ -213,7 +222,7 @@ class RateLimiter:
             Время ожидания в секундах (0.0, если токен был доступен сразу).
 
         """
-        async with self._lock:
+        async with self._get_lock():
             self._refill()
             wait_time = 0.0
             if self._tokens < 1.0:

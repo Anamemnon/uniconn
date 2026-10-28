@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -70,14 +71,42 @@ TEST_SUITES_META: list[dict[str, Any]] = [
 ]
 
 
+UV_BIN_DIR = "/tmp/uniconn-uv"
+UV_PYTHON_DIR = "/tmp/uniconn-python"
+UV_VENV_DIR = "/tmp/uniconn-venv"
+_UV_BOOTSTRAP_LOCK = threading.Lock()
+_UV_ENV_READY = False
+
+
+def _resolve_active_venv_dir() -> str:
+    """Определить директорию виртуального окружения проекта."""
+    for candidate in (UV_VENV_DIR, os.path.join(ROOT_DIR, ".venv"), "/root/.venv"):
+        if os.path.isfile(os.path.join(candidate, "bin", "python")):
+            return candidate
+    return UV_VENV_DIR
+
+
+def _find_venv_python() -> str | None:
+    """Найти интерпретатор Python внутри подготовленного виртуального окружения."""
+    for candidate in (
+        os.path.join(UV_VENV_DIR, "bin", "python"),
+        os.path.join(ROOT_DIR, ".venv", "bin", "python"),
+        "/root/.venv/bin/python",
+    ):
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 def _get_env() -> dict[str, str]:
     env = os.environ.copy()
+    venv_dir = _resolve_active_venv_dir()
     bin_dir = os.path.join(ROOT_DIR, ".bin")
-    venv_bin = os.path.join(ROOT_DIR, ".venv", "bin")
-    root_venv_bin = "/root/.venv/bin"
+    venv_bin = os.path.join(venv_dir, "bin")
     home_bin = os.path.expanduser("~/.local/bin")
-    env["PATH"] = os.pathsep.join((bin_dir, venv_bin, root_venv_bin, home_bin, env.get("PATH", "")))
-    env["UV_PROJECT_ENVIRONMENT"] = "/root/.venv"
+    env["PATH"] = os.pathsep.join((UV_BIN_DIR, bin_dir, venv_bin, home_bin, env.get("PATH", "")))
+    env["UV_PROJECT_ENVIRONMENT"] = venv_dir
+    env["UV_PYTHON_INSTALL_DIR"] = UV_PYTHON_DIR
     env["PYTHONPATH"] = os.pathsep.join(
         (
             ROOT_DIR,
@@ -90,8 +119,9 @@ def _get_env() -> dict[str, str]:
 
 
 def _find_uv_binary() -> str:
-    """Найти исполняемый файл uv в проекте или в системе."""
+    """Найти исполняемый файл uv в проекте, /tmp или системе."""
     candidates = [
+        os.path.join(UV_BIN_DIR, "uv"),
         os.path.join(ROOT_DIR, ".bin", "uv"),
         os.path.join(ROOT_DIR, ".venv", "bin", "uv"),
         "/root/.venv/bin/uv",
@@ -104,6 +134,73 @@ def _find_uv_binary() -> str:
 
     sys_uv = shutil.which("uv")
     return sys_uv if sys_uv else "uv"
+
+
+def _can_import_uniconn_in_proc() -> bool:
+    """Проверить, поддерживает ли текущий процесс Python 3.11+ и зависимости uniconn."""
+    if sys.version_info < (3, 11):
+        return False
+    try:
+        import structlog  # noqa: F401
+        import yaml  # noqa: F401
+
+        import uniconn  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
+def _ensure_uv_env() -> str | None:
+    """Автоматически установить uv и синхронизировать Python 3.12 venv при первом обращении."""
+    global _UV_ENV_READY
+    existing = _find_venv_python()
+    if _UV_ENV_READY and existing:
+        return existing
+
+    with _UV_BOOTSTRAP_LOCK:
+        existing = _find_venv_python()
+        if _UV_ENV_READY and existing:
+            return existing
+        if existing:
+            chk = subprocess.run(
+                [existing, "-c", "import structlog, yaml, pytest, uniconn"],
+                cwd=ROOT_DIR,
+                env=_get_env(),
+                capture_output=True,
+                timeout=15,
+            )
+            if chk.returncode == 0:
+                _UV_ENV_READY = True
+                return existing
+
+        try:
+            uv_bin = _find_uv_binary()
+            if uv_bin == "uv":
+                os.makedirs(UV_BIN_DIR, exist_ok=True)
+                install_cmd = (
+                    f'curl -LsSf https://astral.sh/uv/install.sh | '
+                    f'env UV_INSTALL_DIR="{UV_BIN_DIR}" sh'
+                )
+                subprocess.run(install_cmd, shell=True, cwd=ROOT_DIR, check=True, timeout=60)
+                uv_bin = _find_uv_binary()
+
+            env = _get_env()
+            env["UV_PROJECT_ENVIRONMENT"] = UV_VENV_DIR
+            subprocess.run(
+                [uv_bin, "sync", "--python", "3.12", "--all-extras", "--dev"],
+                cwd=ROOT_DIR,
+                env=env,
+                check=True,
+                capture_output=True,
+                timeout=180,
+            )
+            venv_py = _find_venv_python()
+            if venv_py:
+                _UV_ENV_READY = True
+            return venv_py
+        except Exception:
+            return _find_venv_python()
 
 
 class _FakeShellProcess:
@@ -202,6 +299,22 @@ def _serialize_result(res: Any) -> dict[str, Any]:
     }
 
 
+def _read_init_version() -> str:
+    """Извлечь __version__ напрямую из src/uniconn/__init__.py без импорта пакета."""
+    init_file = Path(ROOT_DIR) / "src" / "uniconn" / "__init__.py"
+    try:
+        m = re.search(
+            r'^__version__\s*=\s*["\']([^"\']+)["\']',
+            init_file.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return "0.0.0"
+
+
 def _run_demo_status() -> dict[str, Any]:
     """Собрать актуальную информацию о библиотеке uniconn и доступных транспортах."""
     fallback_uname = f"{platform.system()} {platform.release()} {platform.machine()}".strip()
@@ -250,9 +363,10 @@ def _run_demo_status() -> dict[str, Any]:
 
         return asyncio.run(_in_proc())
     except Exception:
-        ver = "0.16.8"
+        ver = _read_init_version()
         try:
             from uniconn import __version__
+
             ver = __version__
         except Exception:
             pass
@@ -1504,6 +1618,7 @@ def _execute_pytest(suite: str = "all") -> dict[str, Any]:
     t0 = time.monotonic()
     suite_clean = suite.strip().lower()
     task = SUITE_TO_POE_TASK.get(suite_clean, "test")
+    _ensure_uv_env()
     uv_bin = _find_uv_binary()
     cmd_args = [uv_bin, "run", "poe", task]
     label = f"{os.path.basename(uv_bin)} run poe {task}"
@@ -1514,7 +1629,7 @@ def _execute_pytest(suite: str = "all") -> dict[str, Any]:
             cwd=ROOT_DIR,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=180,
             env=_get_env(),
         )
         dur_s = round(time.monotonic() - t0, 2)
@@ -1542,6 +1657,98 @@ def _execute_pytest(suite: str = "all") -> dict[str, Any]:
         }
 
 
+def _execute_endpoint_direct(
+    endpoint: str,
+    payload: dict[str, Any],
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Выполнить обработчик API напрямую в текущем процессе."""
+    if endpoint == "status":
+        return _run_demo_status()
+    if endpoint == "shell":
+        st = state if state is not None else {"cwd": "/root", "env": {}, "term_size": [120, 40]}
+        return _execute_shell_command(
+            str(payload.get("cmd") or "pwd"),
+            st,
+            mode=str(payload.get("mode") or "fake"),
+            cols=int(payload.get("cols") or 120),
+            rows=int(payload.get("rows") or 40),
+            reset=bool(payload.get("reset", False)),
+        )
+    if endpoint == "local":
+        return _execute_local_command(str(payload.get("cmd") or "uname -a"))
+    if endpoint == "hooks":
+        st = state if state is not None else {}
+        return _execute_hooks_sandbox(payload, st)
+    if endpoint == "uri":
+        return _build_and_validate_uri(payload)
+    if endpoint == "pool":
+        return _execute_pool_sandbox(payload)
+    if endpoint == "screen":
+        st = state if state is not None else {"sessions": []}
+        return _execute_screen_sandbox(payload, st)
+    if endpoint == "v070":
+        return _execute_v070_sandbox(payload)
+    if endpoint == "v080":
+        return _execute_v080_sandbox(payload)
+    if endpoint == "v090":
+        return _execute_v090_sandbox(payload)
+    return {"error": f"Unknown endpoint: {endpoint}"}
+
+
+def _dispatch_endpoint(
+    endpoint: str,
+    payload: dict[str, Any] | None = None,
+    state: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Выполнить обработчик в текущем процессе или делегировать в подготовленный Python 3.12 venv."""
+    req_payload = payload or {}
+    if _can_import_uniconn_in_proc():
+        return _execute_endpoint_direct(endpoint, req_payload, state)
+
+    venv_py = _ensure_uv_env()
+    if venv_py:
+        try:
+            rpc_input = json.dumps(
+                {"endpoint": endpoint, "payload": req_payload, "state": state},
+                ensure_ascii=False,
+            )
+            proc = subprocess.run(
+                [venv_py, str(Path(__file__).resolve()), "--rpc"],
+                input=rpc_input,
+                cwd=ROOT_DIR,
+                env=_get_env(),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                last_line = proc.stdout.strip().splitlines()[-1]
+                rpc_resp = json.loads(last_line)
+                if state is not None and isinstance(rpc_resp.get("state"), dict):
+                    state.clear()
+                    state.update(rpc_resp["state"])
+                if isinstance(rpc_resp.get("result"), dict):
+                    return rpc_resp["result"]
+        except Exception:
+            pass
+
+    return _execute_endpoint_direct(endpoint, req_payload, state)
+
+
+def _handle_rpc_cli() -> None:
+    """Обработать одиночный JSON RPC-вызов внутри виртуального окружения Python 3.12."""
+    raw = sys.stdin.read()
+    req = json.loads(raw) if raw.strip() else {}
+    endpoint = str(req.get("endpoint") or "status")
+    payload = dict(req.get("payload") or {})
+    state = req.get("state")
+    state_dict = dict(state) if isinstance(state, dict) else None
+    result = _execute_endpoint_direct(endpoint, payload, state_dict)
+    sys.stdout.write(json.dumps({"result": result, "state": state_dict}, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
 class _ReusableThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
@@ -1559,6 +1766,9 @@ def serve_dev_dashboard(port: int = 3000) -> None:
         "history": [],
     }
     screen_state: dict[str, Any] = {"sessions": []}
+
+    if not _can_import_uniconn_in_proc():
+        threading.Thread(target=_ensure_uv_env, daemon=True).start()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:
@@ -1587,17 +1797,23 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                 parsed = urlparse(self.path)
                 qs = parse_qs(parsed.query)
                 if parsed.path == "/api/status":
-                    self._send_json(_run_demo_status())
+                    self._send_json(_dispatch_endpoint("status"))
                     return
                 if parsed.path == "/api/shell":
                     cmd = qs.get("cmd", ["pwd"])[0]
                     mode = qs.get("mode", ["fake"])[0]
                     reset = qs.get("reset", ["false"])[0].lower() == "true"
-                    self._send_json(_execute_shell_command(cmd, shell_state, mode=mode, reset=reset))
+                    self._send_json(
+                        _dispatch_endpoint(
+                            "shell",
+                            {"cmd": cmd, "mode": mode, "reset": reset},
+                            shell_state,
+                        )
+                    )
                     return
                 if parsed.path == "/api/local":
                     cmd = qs.get("cmd", ["uname -a"])[0]
-                    self._send_json(_execute_local_command(cmd))
+                    self._send_json(_dispatch_endpoint("local", {"cmd": cmd}))
                     return
                 if parsed.path == "/api/pytest":
                     suite = qs.get("suite", ["all"])[0]
@@ -1634,36 +1850,39 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                         rows = 40
                     reset = bool(payload.get("reset", False))
                     self._send_json(
-                        _execute_shell_command(
-                            cmd,
+                        _dispatch_endpoint(
+                            "shell",
+                            {
+                                "cmd": cmd,
+                                "mode": mode,
+                                "cols": cols,
+                                "rows": rows,
+                                "reset": reset,
+                            },
                             shell_state,
-                            mode=mode,
-                            cols=cols,
-                            rows=rows,
-                            reset=reset,
                         )
                     )
                     return
                 if parsed.path == "/api/hooks":
-                    self._send_json(_execute_hooks_sandbox(payload, metrics_state))
+                    self._send_json(_dispatch_endpoint("hooks", payload, metrics_state))
                     return
                 if parsed.path == "/api/uri":
-                    self._send_json(_build_and_validate_uri(payload))
+                    self._send_json(_dispatch_endpoint("uri", payload))
                     return
                 if parsed.path == "/api/pool":
-                    self._send_json(_execute_pool_sandbox(payload))
+                    self._send_json(_dispatch_endpoint("pool", payload))
                     return
                 if parsed.path == "/api/screen":
-                    self._send_json(_execute_screen_sandbox(payload, screen_state))
+                    self._send_json(_dispatch_endpoint("screen", payload, screen_state))
                     return
                 if parsed.path == "/api/v070":
-                    self._send_json(_execute_v070_sandbox(payload))
+                    self._send_json(_dispatch_endpoint("v070", payload))
                     return
                 if parsed.path == "/api/v080":
-                    self._send_json(_execute_v080_sandbox(payload))
+                    self._send_json(_dispatch_endpoint("v080", payload))
                     return
                 if parsed.path == "/api/v090":
-                    self._send_json(_execute_v090_sandbox(payload))
+                    self._send_json(_dispatch_endpoint("v090", payload))
                     return
 
                 self._send_json({"error": "Not found"}, status=404)
@@ -1673,3 +1892,7 @@ def serve_dev_dashboard(port: int = 3000) -> None:
     server = _ReusableThreadingHTTPServer(("0.0.0.0", port), Handler)
     print(f"uniconn dev dashboard listening on http://0.0.0.0:{port}", flush=True)
     server.serve_forever()
+
+
+if __name__ == "__main__" and "--rpc" in sys.argv:
+    _handle_rpc_cli()

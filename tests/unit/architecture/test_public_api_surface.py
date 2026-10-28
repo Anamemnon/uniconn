@@ -42,13 +42,30 @@ def test_canonical_modules_match_backward_compat_reexports() -> None:
 
 
 def test_public_version_matches_pyproject() -> None:
-    """Версия библиотеки в uniconn.__version__ должна совпадать с версией в pyproject.toml."""
+    """Версия в uniconn.__version__ должна быть динамически привязана в pyproject.toml."""
+    import re
     import tomllib
     from pathlib import Path
 
-    pyproject_file = Path(__file__).resolve().parents[3] / "pyproject.toml"
+    root_dir = Path(__file__).resolve().parents[3]
+    pyproject_file = root_dir / "pyproject.toml"
     with open(pyproject_file, "rb") as f:
         data = tomllib.load(f)
-    assert uniconn.__version__ == data["project"]["version"]
+
+    project = data["project"]
+    if "version" in project:
+        assert uniconn.__version__ == project["version"]
+    else:
+        assert "version" in project.get("dynamic", [])
+        version_rel_path = data["tool"]["hatch"]["version"]["path"]
+        assert version_rel_path == "src/uniconn/__init__.py"
+        version_file = root_dir / version_rel_path
+        match = re.search(
+            r'^__version__\s*=\s*["\']([^"\']+)["\']',
+            version_file.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        assert match is not None
+        assert uniconn.__version__ == match.group(1)
 
 

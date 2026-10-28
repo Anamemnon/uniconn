@@ -152,6 +152,40 @@ class TestCircuitBreakerAndRateLimiter:
         assert snap["rate"] == 50.0
         assert snap["burst"] == 2.0
 
+    def test_rate_limiter_lazy_lock_across_multiple_event_loops(self) -> None:
+        """Проверить ленивую перепривязку RateLimiter._get_lock() при смене event loop и в SyncConnection."""
+        from uniconn import SyncConnection
+
+        limiter = RateLimiter(rate=100.0, burst=1)
+        assert limiter._async_lock is None
+        assert limiter._async_lock_loop is None
+
+        async def _contend() -> list[float]:
+            return list(await asyncio.gather(limiter.acquire(), limiter.acquire()))
+
+        # Первый event loop (с конкуренцией за лок)
+        waits_1 = asyncio.run(_contend())
+        loop_1 = limiter._async_lock_loop
+        lock_1 = limiter._async_lock
+        assert len(waits_1) == 2
+        assert lock_1 is not None
+        assert loop_1 is not None
+
+        # Второй независимый event loop — лок должен пересоздаться без RuntimeError
+        waits_2 = asyncio.run(_contend())
+        loop_2 = limiter._async_lock_loop
+        lock_2 = limiter._async_lock
+        assert len(waits_2) == 2
+        assert lock_2 is not None
+        assert lock_2 is not lock_1
+        assert loop_2 is not loop_1
+
+        # Использование того же экземпляра RateLimiter в SyncConnection (фоновый поток EventLoopPortal)
+        with SyncConnection.from_uri("local://", rate_limit=limiter, retry_attempts=1) as sync_conn:
+            res = sync_conn.run("echo ok")
+            assert res.ok
+        assert limiter.total_acquired == 5
+
 
 class TestPipelineAndPoolResilience:
     """Тесты интеграции CircuitBreaker и RateLimiter в CommandPipeline и пулы."""
