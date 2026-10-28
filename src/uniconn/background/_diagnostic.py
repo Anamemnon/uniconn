@@ -29,6 +29,7 @@ from ._log_pipeline import (
     LogPipeline,
     _sanitize_name,
 )
+from ._session import BackgroundSession
 
 if TYPE_CHECKING:
     from ..core.connection import Connection
@@ -43,7 +44,7 @@ class StreamSourceSpec(BaseModel):
 
     name: str
     command: str
-    mode: Literal["auto", "stream", "screen"] = "auto"
+    mode: Literal["auto", "stream", "background"] = "auto"
     restart_on_exit: bool = False
     timeout: float | None = None
 
@@ -294,7 +295,7 @@ class DiagnosticSession:
         self._forward_handler: ForwardHandler | None = None
         self._pipeline: LogPipeline | None = None
         self._stream_collectors: list[DirectStreamCollector] = []
-        self._screen_commands: list[tuple[str, str]] = []
+        self._background_sessions: list[BackgroundSession] = []
 
     @property
     def workspace_dir(self) -> Path:
@@ -396,26 +397,27 @@ class DiagnosticSession:
         return self
 
     async def _start_stream_source(self, spec: StreamSourceSpec) -> None:
-        """Запустить потоковый источник в режиме ``stream`` или ``screen`` (с автовыбором)."""
+        """Запустить потоковый источник в режиме ``stream`` или ``background`` (с автовыбором)."""
         assert self._pipeline is not None
         effective_command = spec.command
 
-        if spec.mode == "screen":
-            chk = await self._conn.run(
-                "command -v screen >/dev/null 2>&1", raise_on_error=False
+        if spec.mode == "background":
+            bg_name = f"uniconn_diag_{_sanitize_name(spec.name)}"
+            remote_log = f"/tmp/{bg_name}.log"
+            await self._conn.run(
+                f"rm -f {shlex.quote(remote_log)}", raise_on_error=False
             )
-            if chk.ok:
-                screen_name = f"uniconn_diag_{_sanitize_name(spec.name)}"
-                remote_log = f"/tmp/{screen_name}.log"
-                launch_cmd = (
-                    f"rm -f {shlex.quote(remote_log)} && "
-                    f"screen -dmS {shlex.quote(screen_name)} "
-                    f"sh -c {shlex.quote(f'{spec.command} > {remote_log} 2>&1')}"
+            bg_session = BackgroundSession(
+                self._conn, bg_name, remote_log, backend="auto"
+            )
+            try:
+                await bg_session.create(spec.command)
+                self._background_sessions.append(bg_session)
+                effective_command = f"tail -n +1 -f {shlex.quote(remote_log)}"
+            except Exception as exc:
+                logger.warning(
+                    f"Не удалось запустить фоновый источник {bg_name!r}, откат на stream: {exc}"
                 )
-                res = await self._conn.run(launch_cmd, raise_on_error=False)
-                if res.ok:
-                    self._screen_commands.append((screen_name, remote_log))
-                    effective_command = f"tail -n +1 -f {shlex.quote(remote_log)}"
 
         collector = DirectStreamCollector(
             connection=self._conn,
@@ -465,15 +467,11 @@ class DiagnosticSession:
             if collector.error:
                 self.errors.append(f"stream[{collector.name}]: {collector.error}")
 
-        # Останавливаем screen-сессии на хосте, если они запускались и хост отвечает
-        for screen_name, remote_log in self._screen_commands:
+        # Останавливаем фоновые сессии на хосте, если они запускались и хост отвечает
+        for bg_session in self._background_sessions:
             try:
-                await self._conn.run(
-                    f"screen -S {shlex.quote(screen_name)} -X quit >/dev/null 2>&1; "
-                    f"rm -f {shlex.quote(remote_log)}",
-                    timeout=3.0,
-                    raise_on_error=False,
-                )
+                await bg_session.kill(graceful=False)
+                await bg_session.cleanup()
             except Exception:
                 host_survived = False
 

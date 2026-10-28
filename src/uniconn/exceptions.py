@@ -67,20 +67,20 @@ class BMCCapabilityError(UniconnError):
     """BMC не поддерживает запрошенную операцию."""
 
 
-class ScreenError(UniconnError):
-    """Базовое исключение подсистемы screen-сессий."""
+class BackgroundError(UniconnError):
+    """Базовое исключение подсистемы фоновых задач."""
 
 
-class ScreenNotFoundError(ScreenError):
-    """GNU screen не установлен на удалённом хосте."""
+class BackgroundBackendError(BackgroundError):
+    """Выбранный бэкенд фоновых задач недоступен или завершился с ошибкой."""
 
 
-class ScreenSessionExistsError(ScreenError):
-    """Screen-сессия с таким именем уже существует на хосте."""
+class BackgroundSessionExistsError(BackgroundError):
+    """Фоновая сессия с таким именем уже существует на хосте."""
 
 
-class ScreenPoolFullError(ScreenError):
-    """Достигнут лимит одновременных сессий в пуле (max_screens)."""
+class BackgroundPoolFullError(BackgroundError):
+    """Достигнут лимит одновременных сессий в пуле (max_sessions)."""
 
 
 class CapabilityNotSupportedError(UniconnError, NotImplementedError):

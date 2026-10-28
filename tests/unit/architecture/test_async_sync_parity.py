@@ -48,7 +48,7 @@ _ASYNC_ONLY_METHODS: frozenset[str] = frozenset(
 _ASYNC_ONLY_PRIMITIVES: tuple[str, ...] = (
     "SyncCommandPipeline",
     "SyncOperationObserver",
-    "SyncScreenPool",
+    "SyncBackgroundPool",
     "SyncLogPipeline",
     "SyncPoolStreamMultiplexer",
 )

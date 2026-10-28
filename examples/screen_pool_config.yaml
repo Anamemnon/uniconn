@@ -1,8 +1,9 @@
-# Пример конфигурации ScreenPool для мониторинга (см. examples/screen_monitoring.py)
+# Пример конфигурации BackgroundPool для мониторинга (см. examples/screen_monitoring.py)
 #
-# Загрузка: pool = ScreenPool.from_file("screen_pool_config.yaml")
+# Загрузка: pool = BackgroundPool.from_file("screen_pool_config.yaml")
 uri: "ssh://admin@web-server"
-max_screens: 8        # максимум одновременных screen-сессий
+backend: "auto"       # auto (tmux -> screen -> nohup), tmux, screen, nohup
+max_sessions: 8       # максимум одновременных фоновых сессий
 max_monitors: 2       # максимум параллельных SSH-запросов мониторинга
 poll_interval: 5.0    # пауза между циклами опроса, сек
 

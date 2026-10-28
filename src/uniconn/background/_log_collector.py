@@ -1,24 +1,19 @@
 # src/uniconn/background/_log_collector.py
-import asyncio
 import logging
 import shlex
-from collections.abc import AsyncIterator, Sequence
 
 from ..core.connection import Connection
-from ._models import LogEvent
-from ._session import ScreenSession
+from ._session import BackgroundSession
 
 logger = logging.getLogger(__name__)
 
 
-class ScreenLogCollector:
-    """Чтение логов screen-сессий порциями без постоянного SSH-канала.
+class BackgroundLogCollector:
+    """Порционное чтение логов фоновых сессий без постоянного SSH-канала.
 
-    Принцип: для каждой сессии хранится байтовый offset. Перед чтением
-    проверяется размер файла (``stat -c %s``): если размер меньше offset —
-    лог был усечён/ротирован, offset сбрасывается в 0. Чтение выполняется
-    через ``tail -c +{offset + 1}`` (tail считает байты с 1, а не с 0).
-    Байтовый (а не построчный) offset корректно работает с UTF-8.
+    Хранит смещение (в байтах) для каждой сессии и при очередном опросе
+    читает только новые данные через ``tail -c +{offset + 1}`` (в ``tail -c +N``
+    нумерация байтов начинается с 1).
     """
 
     def __init__(
@@ -30,64 +25,65 @@ class ScreenLogCollector:
         self._logger = logger or logging.getLogger(__name__)
         self._offsets: dict[str, int] = {}
 
-    async def read_chunk(self, session: ScreenSession) -> tuple[list[str], int]:
-        """Прочитать новые строки лога с текущего offset.
+    def get_offset(self, session_id: str) -> int:
+        """Текущее смещение в байтах для сессии (0, если ещё не читалась)."""
+        return self._offsets.get(session_id, 0)
+
+    def reset_offset(self, session_id: str) -> None:
+        """Сбросить смещение для сессии в 0."""
+        self._offsets.pop(session_id, None)
+
+    async def read_chunk(self, session: BackgroundSession) -> tuple[list[str], int]:
+        """Прочитать новую порцию лога сессии с последнего смещения.
+
+        Порядок действий:
+        1. Узнать текущий размер файла (``stat -c %s {log}``).
+        2. Если ``size <= offset`` (новых данных нет или файл ещё не создан) —
+           вернуть ``([], offset)``.
+        3. Прочитать новые байты (``tail -c +{offset + 1} {log}``) и
+           обновить сохранённое смещение до ``size``.
+
+        Args:
+            session: Сессия, лог которой нужно прочитать
 
         Returns:
-            Кортеж (список строк с переводами строк, новый offset).
-            Если лог-файла ещё нет или новых данных нет — ([], текущий offset).
+            Кортеж ``(строки, новое_смещение)``
 
         """
-        offset = self._offsets.get(session.session_id, 0)
-        log_path = session.remote_log_path
+        offset = self.get_offset(session.session_id)
+        quoted_path = shlex.quote(session.remote_log_path)
 
-        size_result = await self._connection.run(f"stat -c %s {shlex.quote(log_path)}")
-        if not size_result.ok:
+        stat_result = await self._connection.run(f"stat -c %s {quoted_path}")
+        if not stat_result.ok:
             return [], offset
         try:
-            size = int(size_result.stdout.strip())
+            size = int(stat_result.stdout.strip())
         except ValueError:
             return [], offset
 
         if size < offset:
-            self._logger.warning(
-                f"Лог сессии {session.session_id} усечён "
-                f"(размер {size} < offset {offset}), чтение с начала"
-            )
             offset = 0
         if size == offset:
             return [], offset
 
-        result = await self._connection.run(f"tail -c +{offset + 1} {shlex.quote(log_path)}")
-        if not result.ok or not result.stdout:
+        # tail -c +N: 1-based смещение, поэтому передаём offset + 1
+        tail_result = await self._connection.run(
+            f"tail -c +{offset + 1} {quoted_path}"
+        )
+        if not tail_result.ok:
             return [], offset
 
-        data = result.stdout
-        offset += len(data.encode("utf-8"))
-        self._offsets[session.session_id] = offset
-        return data.splitlines(keepends=True), offset
+        data = tail_result.stdout
+        new_offset = offset + len(data.encode("utf-8"))
+        self._offsets[session.session_id] = new_offset
+        lines = data.splitlines(keepends=True)
+        return lines, new_offset
 
-    async def stream(
-        self,
-        session: ScreenSession,
-        interval: float = 1.0,
-    ) -> AsyncIterator[str]:
-        """Бесконечный асинхронный итератор новых строк лога сессии."""
-        while True:
-            lines, _ = await self.read_chunk(session)
-            for line in lines:
-                yield line
-            await asyncio.sleep(interval)
-
-    async def stream_all(
-        self,
-        sessions: Sequence[ScreenSession],
-        interval: float = 1.0,
-    ) -> AsyncIterator[LogEvent]:
-        """Мультиплексированный поток событий лога от нескольких сессий."""
-        while True:
-            for session in sessions:
-                lines, _ = await self.read_chunk(session)
-                for line in lines:
-                    yield LogEvent(session_id=session.session_id, line=line)
-            await asyncio.sleep(interval)
+    async def read_all(self, session: BackgroundSession) -> str:
+        """Прочитать лог-файл сессии целиком (независимо от смещения)."""
+        result = await self._connection.run(
+            f"cat {shlex.quote(session.remote_log_path)}"
+        )
+        if not result.ok:
+            return ""
+        return result.stdout

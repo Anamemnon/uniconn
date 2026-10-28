@@ -1,5 +1,5 @@
-# tests/unit/test_screen_pool.py
-"""Тесты ScreenPool — оркестрация множества screen-сессий (мок Connection)."""
+# tests/unit/screen/test_screen_pool.py
+"""Тесты BackgroundPool — оркестрация множества фоновых сессий (мок Connection)."""
 
 import asyncio
 from datetime import datetime
@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from uniconn.background import LogConfig, ScreenPool, ScreenPoolConfig
-from uniconn.background._models import ScreenResult
-from uniconn.exceptions import ScreenError, ScreenPoolFullError
+from uniconn.background import BackgroundPool, BackgroundPoolConfig, LogConfig
+from uniconn.background._models import BackgroundResult
+from uniconn.exceptions import BackgroundError, BackgroundPoolFullError
 from uniconn.result import Result
 
 
@@ -34,25 +34,27 @@ def make_connection(handler) -> MagicMock:
 
 
 def default_handler(command: str, **kwargs) -> Result:
-    """Стандартный хост: screen установлен, сессий нет, логи пустые."""
-    if command == "which screen":
-        return make_result("/usr/bin/screen\n", command=command)
+    """Стандартный хост: auto-probe возвращает screen, сессий нет, логи пустые."""
+    if "if command -v tmux" in command:
+        return make_result("screen\n", command=command)
+    if "command -v screen" in command:
+        return make_result("", command=command)
     if command == "screen -ls":
         return make_result("No Sockets found in /run/screen/S-user.\n", exit_code=1)
     return make_result("", command=command)
 
 
-def make_pool(handler=default_handler, **kwargs) -> ScreenPool:
-    """ScreenPool с подменённым подключением."""
+def make_pool(handler=default_handler, **kwargs) -> BackgroundPool:
+    """BackgroundPool с подменённым подключением."""
     conn = make_connection(handler)
     with patch("uniconn.background._pool.Connection") as mock_cls:
         mock_cls.from_uri.return_value = conn
-        pool = ScreenPool("ssh://user@host", **kwargs)
+        pool = BackgroundPool("ssh://user@host", **kwargs)
     pool._connection = conn
     return pool
 
 
-def detach_hooks(pool: ScreenPool) -> None:
+def detach_hooks(pool: BackgroundPool) -> None:
     """Снять atexit/signal хуки, установленные при регистрации сессий."""
     pool._cleanup_manager.uninstall()
 
@@ -69,7 +71,8 @@ class TestStart:
             assert session.session_id.endswith("_0")
             assert session.remote_log_path == f"/tmp/{session.session_id}.log"
             assert session.session_id in pool.sessions
-            # Fail-safe на сервере: sentinel + cleanup-скрипт
+            assert pool.resolved_backend is not None
+            assert pool.resolved_backend.name == "screen"
             calls = [c.args[0] for c in pool._connection.run.call_args_list]
             assert any(pool._cleanup_manager.sentinel_path in c for c in calls)
             assert any(pool._cleanup_manager.cleanup_script_path in c for c in calls)
@@ -86,13 +89,35 @@ class TestStart:
         finally:
             detach_hooks(pool)
 
-    async def test_start_max_screens_exceeded(self):
-        """Превышение max_screens приводит к ScreenPoolFullError."""
-        pool = make_pool(max_screens=1)
+    async def test_start_max_sessions_exceeded(self):
+        """Превышение max_sessions приводит к BackgroundPoolFullError."""
+        pool = make_pool(max_sessions=1)
         await pool.start("cmd1")
         try:
-            with pytest.raises(ScreenPoolFullError):
+            with pytest.raises(BackgroundPoolFullError):
                 await pool.start("cmd2")
+        finally:
+            detach_hooks(pool)
+
+    async def test_start_with_nohup_fallback(self):
+        """При отсутствии tmux и screen пул автоматически использует nohup."""
+        state = {"alive": False}
+
+        def handler(command: str, **kwargs) -> Result:
+            if "if command -v tmux" in command:
+                return make_result("nohup\n", command=command)
+            if "kill -0 $(cat" in command:
+                return make_result(
+                    "", exit_code=0 if state["alive"] else 1, command=command
+                )
+            return make_result("", command=command)
+
+        pool = make_pool(handler)
+        session = await pool.start("python3 job.py", name="nohup_job")
+        try:
+            assert session.backend_name == "nohup"
+            assert pool.resolved_backend is not None
+            assert pool.resolved_backend.name == "nohup"
         finally:
             detach_hooks(pool)
 
@@ -105,8 +130,8 @@ class TestStop:
         state = {"alive": False}
 
         def handler(command: str, **kwargs) -> Result:
-            if command == "which screen":
-                return make_result("/usr/bin/screen\n", command=command)
+            if "if command -v tmux" in command:
+                return make_result("screen\n", command=command)
             if command == "screen -ls":
                 if state["alive"]:
                     return make_result("\t12345.mysess\t(Detached)\n", command=command)
@@ -121,17 +146,18 @@ class TestStop:
 
         result = await pool.stop(session.session_id)
         try:
-            assert isinstance(result, ScreenResult)
+            assert isinstance(result, BackgroundResult)
+            assert result.backend == "screen"
             assert session.session_id not in pool.sessions
             calls = [c.args[0] for c in pool._connection.run.call_args_list]
-            assert any("stuff" in c for c in calls)  # graceful Ctrl+C
+            assert any("stuff" in c for c in calls)
         finally:
             detach_hooks(pool)
 
     async def test_stop_unknown_session(self):
-        """Stop для неизвестной сессии падает с ScreenError."""
+        """Stop для неизвестной сессии падает с BackgroundError."""
         pool = make_pool()
-        with pytest.raises(ScreenError):
+        with pytest.raises(BackgroundError):
             await pool.stop("no_such_session")
 
     async def test_stop_all(self):
@@ -139,8 +165,8 @@ class TestStop:
         state = {"alive": False}
 
         def handler(command: str, **kwargs) -> Result:
-            if command == "which screen":
-                return make_result("/usr/bin/screen\n", command=command)
+            if "if command -v tmux" in command:
+                return make_result("screen\n", command=command)
             if command == "screen -ls":
                 if state["alive"]:
                     return make_result("\t1.a\t(Detached)\n\t2.b\t(Detached)\n")
@@ -155,7 +181,9 @@ class TestStop:
         try:
             assert pool.sessions == {}
             calls = [c.args[0] for c in pool._connection.run.call_args_list]
-            kills = [c for c in calls if c.startswith("screen -S") and "-X kill" in c]
+            kills = [
+                c for c in calls if c.startswith("screen -S") and "-X kill" in c
+            ]
             assert len(kills) == 2
             assert s1.session_id == "a"
         finally:
@@ -166,12 +194,12 @@ class TestWaitAll:
     """Тесты ожидания завершения сессий."""
 
     async def test_wait_all_collects_results(self):
-        """wait_all возвращает ScreenResult с exit code из exit-файла."""
+        """wait_all возвращает BackgroundResult с exit code из exit-файла."""
+
         def handler(command: str, **kwargs) -> Result:
-            if command == "which screen":
-                return make_result("/usr/bin/screen\n", command=command)
+            if "if command -v tmux" in command:
+                return make_result("screen\n", command=command)
             if command == "screen -ls":
-                # После создания сессия сразу «завершилась» (нет в screen -ls)
                 return make_result("", exit_code=1, command=command)
             if command.startswith("cat /tmp/"):
                 return make_result("0\n", command=command)
@@ -183,6 +211,7 @@ class TestWaitAll:
         try:
             assert session.session_id in results
             assert results[session.session_id].exit_code == 0
+            assert results[session.session_id].backend == "screen"
             assert pool.sessions == {}
         finally:
             detach_hooks(pool)
@@ -192,11 +221,13 @@ class TestWaitAll:
         state = {"alive": False}
 
         def handler(command: str, **kwargs) -> Result:
-            if command == "which screen":
-                return make_result("/usr/bin/screen\n", command=command)
+            if "if command -v tmux" in command:
+                return make_result("screen\n", command=command)
             if command == "screen -ls":
                 if state["alive"]:
-                    return make_result("\t12345.stuck\t(Detached)\n", command=command)
+                    return make_result(
+                        "\t12345.stuck\t(Detached)\n", command=command
+                    )
                 return make_result("", exit_code=1, command=command)
             if command.startswith("cat /tmp/"):
                 return make_result("", exit_code=1, command=command)
@@ -204,7 +235,7 @@ class TestWaitAll:
 
         pool = make_pool(handler, poll_interval=0.01)
         session = await pool.start("sleep 1000", name="stuck")
-        state["alive"] = True  # после создания сессия «зависла» навсегда
+        state["alive"] = True
         results = await pool.wait_all(timeout=0.05)
         try:
             assert results[session.session_id].exit_code == -1
@@ -222,8 +253,8 @@ class TestPoll:
         data = "line1\nline2\n"
 
         def handler(command: str, **kwargs) -> Result:
-            if command == "which screen":
-                return make_result("/usr/bin/screen\n", command=command)
+            if "if command -v tmux" in command:
+                return make_result("screen\n", command=command)
             if command == "screen -ls":
                 return make_result("", exit_code=1, command=command)
             if command.startswith("stat -c %s"):
@@ -250,8 +281,8 @@ class TestPoll:
         state = {"alive": False}
 
         def handler(command: str, **kwargs) -> Result:
-            if command == "which screen":
-                return make_result("/usr/bin/screen\n", command=command)
+            if "if command -v tmux" in command:
+                return make_result("screen\n", command=command)
             if command == "screen -ls":
                 if state["alive"]:
                     return make_result("\t12345.mon\t(Detached)\n", command=command)
@@ -280,8 +311,8 @@ class TestPoll:
             state["peak"] = max(state["peak"], state["current"])
             await asyncio.sleep(0.01)
             state["current"] -= 1
-            if command == "which screen":
-                return make_result("/usr/bin/screen\n", command=command)
+            if "if command -v tmux" in command:
+                return make_result("screen\n", command=command)
             if command == "screen -ls":
                 if state["alive"]:
                     return make_result("\t1.x\t(Detached)\n", command=command)
@@ -306,17 +337,19 @@ class TestFactories:
     """Тесты фабричных методов."""
 
     def test_from_config(self):
-        """from_config переносит все поля ScreenPoolConfig."""
-        config = ScreenPoolConfig(
+        """from_config переносит все поля BackgroundPoolConfig."""
+        config = BackgroundPoolConfig(
             uri="ssh://admin@server",
-            max_screens=8,
+            backend="tmux",
+            max_sessions=8,
             max_monitors=2,
             poll_interval=1.5,
             log_config=LogConfig(local_dir="/tmp/logs"),
         )
-        pool = ScreenPool.from_config(config)
+        pool = BackgroundPool.from_config(config)
         assert pool._uri == "ssh://admin@server"
-        assert pool._max_screens == 8
+        assert pool.backend == "tmux"
+        assert pool._max_sessions == 8
         assert pool._max_monitors == 2
         assert pool._poll_interval == 1.5
         assert pool._log_config.local_dir == "/tmp/logs"
@@ -325,12 +358,13 @@ class TestFactories:
         """from_file загружает конфигурацию из JSON."""
         path = tmp_path / "pool.json"
         path.write_text(
-            '{"uri": "ssh://admin@server", "max_screens": 4, "max_monitors": 1}',
+            '{"uri": "ssh://admin@server", "backend": "nohup", "max_sessions": 4, "max_monitors": 1}',
             encoding="utf-8",
         )
-        pool = ScreenPool.from_file(path)
+        pool = BackgroundPool.from_file(path)
         assert pool._uri == "ssh://admin@server"
-        assert pool._max_screens == 4
+        assert pool.backend == "nohup"
+        assert pool._max_sessions == 4
         assert pool._max_monitors == 1
 
 

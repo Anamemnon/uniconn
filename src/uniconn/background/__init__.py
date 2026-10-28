@@ -1,20 +1,29 @@
 # src/uniconn/background/__init__.py
-"""Подсистема фонового выполнения команд в GNU screen сессиях.
+"""Подсистема фонового выполнения команд и потоковой диагностики.
 
-Позволяет запускать долгоживущие команды на удалённом хосте через SSH
-в detached screen-сессиях, собирать их логи порциями (polling + tail)
-и гарантированно очищать ресурсы при завершении клиента.
+Позволяет запускать долгоживущие команды на удалённом хосте через сменные
+стратегии (``tmux``, GNU ``screen``, POSIX ``nohup``/``disown`` с автовыбором),
+собирать их логи порциями (polling + tail) и гарантированно очищать ресурсы.
 """
 
-from ._cleanup import ScreenCleanupManager
-from ._config import LogConfig, LogRule, ScreenPoolConfig
+from ._backends import (
+    BackgroundBackendStrategy,
+    BackgroundBackendType,
+    NohupBackend,
+    ScreenBackend,
+    TmuxBackend,
+    get_backend_by_name,
+    resolve_backend,
+)
+from ._cleanup import BackgroundCleanupManager
+from ._config import BackgroundPoolConfig, LogConfig, LogRule
 from ._diagnostic import (
     DiagnosticConfig,
     DiagnosticResult,
     DiagnosticSession,
     StreamSourceSpec,
 )
-from ._log_collector import ScreenLogCollector
+from ._log_collector import BackgroundLogCollector
 from ._log_pipeline import (
     ArchiveHandler,
     DirectStreamCollector,
@@ -25,12 +34,20 @@ from ._log_pipeline import (
     NullHandler,
     StreamHandler,
 )
-from ._models import LogEvent, ScreenResult, StatusEvent
-from ._pool import ScreenPool
-from ._session import ScreenSession
+from ._models import BackgroundResult, LogEvent, StatusEvent
+from ._pool import BackgroundPool
+from ._session import BackgroundSession
 
 __all__ = [
     "ArchiveHandler",
+    "BackgroundBackendStrategy",
+    "BackgroundBackendType",
+    "BackgroundCleanupManager",
+    "BackgroundLogCollector",
+    "BackgroundPool",
+    "BackgroundPoolConfig",
+    "BackgroundResult",
+    "BackgroundSession",
     "DiagnosticConfig",
     "DiagnosticResult",
     "DiagnosticSession",
@@ -42,15 +59,13 @@ __all__ = [
     "LogHandler",
     "LogPipeline",
     "LogRule",
+    "NohupBackend",
     "NullHandler",
-    "ScreenCleanupManager",
-    "ScreenLogCollector",
-    "ScreenPool",
-    "ScreenPoolConfig",
-    "ScreenResult",
-    "ScreenSession",
+    "ScreenBackend",
     "StatusEvent",
     "StreamHandler",
     "StreamSourceSpec",
+    "TmuxBackend",
+    "get_backend_by_name",
+    "resolve_backend",
 ]
-

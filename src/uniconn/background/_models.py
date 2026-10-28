@@ -5,7 +5,7 @@ from datetime import datetime
 
 @dataclass(frozen=True, slots=True)
 class LogEvent:
-    """Событие лога — одна строка вывода screen-сессии."""
+    """Событие лога — одна строка вывода фоновой сессии."""
 
     session_id: str
     line: str
@@ -14,7 +14,7 @@ class LogEvent:
 
 @dataclass(frozen=True, slots=True)
 class StatusEvent:
-    """Событие статуса screen-сессии (результат опроса)."""
+    """Событие статуса фоновой сессии (результат опроса)."""
 
     session_id: str
     alive: bool
@@ -23,11 +23,12 @@ class StatusEvent:
 
 
 @dataclass(frozen=True, slots=True)
-class ScreenResult:
-    """Итоговый результат завершившейся screen-сессии."""
+class BackgroundResult:
+    """Итоговый результат завершившейся фоновой сессии."""
 
     session_id: str
     exit_code: int
     remote_log_path: str
     local_log_path: str | None = None
     duration: float = 0.0
+    backend: str = "nohup"

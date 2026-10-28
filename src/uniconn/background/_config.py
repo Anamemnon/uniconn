@@ -6,6 +6,8 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ._backends import BackgroundBackendType
+
 
 class LogRule(BaseModel):
     """Правило обработки логов для команд, подходящих под regex."""
@@ -26,7 +28,7 @@ class LogRule(BaseModel):
 
 
 class LogConfig(BaseModel):
-    """Конфигурация обработки логов screen-сессий."""
+    """Конфигурация обработки логов фоновых сессий."""
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
@@ -41,13 +43,14 @@ class LogConfig(BaseModel):
         return None
 
 
-class ScreenPoolConfig(BaseModel):
-    """Конфигурация пула screen-сессий."""
+class BackgroundPoolConfig(BaseModel):
+    """Конфигурация пула фоновых сессий BackgroundPool."""
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
     uri: str
-    max_screens: int = 16
+    backend: BackgroundBackendType = "auto"
+    max_sessions: int = 16
     max_monitors: int = 4
     poll_interval: float = 5.0
     log_config: LogConfig = Field(default_factory=LogConfig)
@@ -60,7 +63,7 @@ class ScreenPoolConfig(BaseModel):
             path: Путь к файлу (.json, .yaml, .yml)
 
         Returns:
-            ScreenPoolConfig
+            BackgroundPoolConfig
 
         """
         filepath = Path(path)
@@ -69,11 +72,11 @@ class ScreenPoolConfig(BaseModel):
         if filepath.suffix in (".yaml", ".yml"):
             try:
                 import yaml
+
                 data = yaml.safe_load(content)
             except ImportError:
                 raise ImportError(
-                    "PyYAML not installed. "
-                    "Run: pip install pyyaml"
+                    "PyYAML not installed. Run: pip install pyyaml"
                 ) from None
         elif filepath.suffix == ".json":
             data = json.loads(content)

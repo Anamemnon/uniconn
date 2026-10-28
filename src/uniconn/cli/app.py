@@ -7,11 +7,11 @@ import sys
 from typing import Annotated, Any
 
 from .._logging import configure_logging
+from .cmd_bg import register_bg_commands
 from .cmd_cassette import register_cassette_commands
 from .cmd_exec import register_exec_commands
 from .cmd_files import register_file_commands
 from .cmd_ops import register_ops_commands
-from .cmd_screen import register_screen_commands
 from .renderers import CLIOutputRenderer, Console, Parameter, check_cli_deps, cyclopts
 
 
@@ -58,7 +58,7 @@ def create_cli_app() -> Any:
     register_exec_commands(app, console, renderer)
     register_file_commands(app, console, renderer)
     register_ops_commands(app, console, renderer)
-    register_screen_commands(app, console, renderer)
+    register_bg_commands(app, console, renderer)
     register_cassette_commands(app, console, renderer)
     return app
 

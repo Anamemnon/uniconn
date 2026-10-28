@@ -1,12 +1,12 @@
 # tests/unit/test_screen_log_pipeline.py
-"""Тесты LogPipeline, обработчиков логов и ScreenLogCollector."""
+"""Тесты LogPipeline, обработчиков логов и BackgroundLogCollector."""
 
 import logging
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
-from uniconn.background._log_collector import ScreenLogCollector
+from uniconn.background._log_collector import BackgroundLogCollector
 from uniconn.background._log_pipeline import (
     ForwardHandler,
     LocalFileHandler,
@@ -170,8 +170,8 @@ class TestLogPipeline:
         h2.handle.assert_awaited_once_with("s1", ["line\n"])
 
 
-class TestScreenLogCollector:
-    """Тесты ScreenLogCollector.read_chunk — offset-логика."""
+class TestBackgroundLogCollector:
+    """Тесты BackgroundLogCollector.read_chunk — offset-логика."""
 
     async def test_first_read_uses_tail_from_start(self):
         """Первый вызов читает tail -c +1 и возвращает строки с новым offset."""
@@ -182,7 +182,7 @@ class TestScreenLogCollector:
                 return make_result("line one\nli", command=command)
             return make_result("", command=command)
 
-        collector = ScreenLogCollector(make_connection(handler))
+        collector = BackgroundLogCollector(make_connection(handler))
         lines, offset = await collector.read_chunk(make_session())
         assert lines == ["line one\n", "li"]
         assert offset == len(b"line one\nli")
@@ -201,7 +201,7 @@ class TestScreenLogCollector:
             return make_result("", command=command)
 
         conn = make_connection(handler)
-        collector = ScreenLogCollector(conn)
+        collector = BackgroundLogCollector(conn)
         session = make_session()
 
         _, offset1 = await collector.read_chunk(session)
@@ -225,7 +225,7 @@ class TestScreenLogCollector:
             return make_result("", command=command)
 
         conn = make_connection(handler)
-        collector = ScreenLogCollector(conn)
+        collector = BackgroundLogCollector(conn)
         session = make_session()
 
         _, offset = await collector.read_chunk(session)
@@ -246,7 +246,7 @@ class TestScreenLogCollector:
             return make_result("12345", command=command)
 
         conn = make_connection(handler)
-        collector = ScreenLogCollector(conn)
+        collector = BackgroundLogCollector(conn)
         session = make_session()
 
         await collector.read_chunk(session)
@@ -262,7 +262,7 @@ class TestScreenLogCollector:
         conn = make_connection(
             lambda command, **kwargs: make_result("", exit_code=1, command=command)
         )
-        collector = ScreenLogCollector(conn)
+        collector = BackgroundLogCollector(conn)
         lines, offset = await collector.read_chunk(make_session())
         assert lines == []
         assert offset == 0

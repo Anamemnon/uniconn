@@ -1,22 +1,26 @@
 # src/uniconn/background/_session.py
 import asyncio
 import logging
-import re
 import shlex
 
 from ..core.connection import Connection
-from ..exceptions import ScreenNotFoundError, ScreenSessionExistsError
+from ..exceptions import BackgroundBackendError, BackgroundSessionExistsError
+from ._backends import (
+    BackgroundBackendStrategy,
+    BackgroundBackendType,
+    resolve_backend,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class ScreenSession:
-    """Управление одной GNU screen сессией на удалённом хосте.
+class BackgroundSession:
+    """Управление одной фоновой сессией на удалённом хосте.
 
-    Сессия создаётся в detached-режиме с логированием в файл (``screen -L``).
-    Команда выполняется через wrapper-скрипт, который записывает её exit code
-    в отдельный файл ``/tmp/uniconn_{session_id}.exit`` — это позволяет
-    получить код завершения после отключения SSH.
+    Поддерживает сменные стратегии фонового запуска (``tmux``, ``screen``,
+    ``nohup``) с автовыбором (``auto``). Команда выполняется через
+    wrapper-скрипт, который сохраняет PID в ``/tmp/uniconn_{session_id}.pid``
+    и код завершения в ``/tmp/uniconn_{session_id}.exit``.
     """
 
     def __init__(
@@ -24,16 +28,23 @@ class ScreenSession:
         connection: Connection,
         session_id: str,
         remote_log_path: str,
+        backend: BackgroundBackendStrategy | BackgroundBackendType = "auto",
         logger: logging.Logger | None = None,
     ):
         self._connection = connection
         self._session_id = session_id
         self._remote_log_path = remote_log_path
+        if isinstance(backend, BackgroundBackendStrategy):
+            self._backend: BackgroundBackendStrategy | None = backend
+            self._backend_spec: BackgroundBackendType = "auto"
+        else:
+            self._backend = None
+            self._backend_spec = backend
         self._logger = logger or logging.getLogger(__name__)
 
     @property
     def session_id(self) -> str:
-        """Имя screen-сессии."""
+        """Имя фоновой сессии."""
         return self._session_id
 
     @property
@@ -47,6 +58,11 @@ class ScreenSession:
         return f"/tmp/uniconn_{self._session_id}.exit"
 
     @property
+    def pid_file_path(self) -> str:
+        """Путь к PID-файлу фонового процесса на удалённом хосте."""
+        return f"/tmp/uniconn_{self._session_id}.pid"
+
+    @property
     def script_path(self) -> str:
         """Путь к wrapper-скрипту на удалённом хосте."""
         return f"/tmp/uniconn_{self._session_id}.sh"
@@ -56,81 +72,97 @@ class ScreenSession:
         """Подключение к хосту, на котором работает сессия."""
         return self._connection
 
+    @property
+    def backend_name(self) -> str:
+        """Имя активного или сконфигурированного бэкенда ('tmux', 'screen', 'nohup', 'auto')."""
+        if self._backend is not None:
+            return self._backend.name
+        return self._backend_spec
+
+    async def _ensure_backend(self) -> BackgroundBackendStrategy:
+        """Лениво определить и закэшировать стратегию фонового бэкенда."""
+        if self._backend is None:
+            self._backend = await resolve_backend(self._connection, self._backend_spec)
+        return self._backend
+
     async def create(self, command: str) -> None:
-        """Создать detached screen сессию с логированием.
+        """Создать и запустить фоновую сессию с логированием в файл.
 
         Порядок действий:
-        1. Проверка наличия screen на хосте (``which screen``).
-        2. Проверка, что сессия с таким именем ещё не существует.
-        3. Загрузка wrapper-скрипта (команда + запись exit code).
-        4. Запуск ``screen -dmS {id} -L -Logfile {log} bash {script}``.
+        1. Определение стратегии бэкенда (``tmux``, ``screen`` или ``nohup``).
+        2. Проверка, что сессия с таким именем ещё не запущена.
+        3. Загрузка wrapper-скрипта (запись PID + команда + запись exit code).
+        4. Делегирование запуска в ``backend.start_session(...)``.
 
         Args:
-            command: Команда для выполнения внутри screen-сессии
+            command: Команда для выполнения внутри фоновой сессии
 
         Raises:
-            ScreenNotFoundError: GNU screen не установлен на хосте
-            ScreenSessionExistsError: Сессия с таким именем уже существует
+            BackgroundBackendError: Выбранный бэкенд недоступен или не смог стартовать
+            BackgroundSessionExistsError: Сессия с таким именем уже существует
 
         """
-        result = await self._connection.run("which screen")
-        if not result.ok:
-            raise ScreenNotFoundError(
-                "GNU screen не установлен на хосте (which screen failed)"
-            )
+        backend = await self._ensure_backend()
 
         if await self.is_alive():
-            raise ScreenSessionExistsError(
-                f"Screen-сессия {self._session_id!r} уже существует"
+            raise BackgroundSessionExistsError(
+                f"Фоновая сессия {self._session_id!r} уже существует"
             )
 
-        # Wrapper-скрипт решает проблему экранирования кавычек:
-        # команда пишется в файл как есть, а не встраивается в bash -c '...'
-        script = f"#!/bin/bash\n{command}\necho $? > {self.exit_file_path}\n"
+        # Wrapper-скрипт решает проблему экранирования кавычек, фиксирует PID
+        # оболочки и гарантированно записывает код возврата (включая SIGINT/SIGTERM) в exit-файл.
+        q_pid = shlex.quote(self.pid_file_path)
+        q_exit = shlex.quote(self.exit_file_path)
+        script = (
+            "#!/bin/sh\n"
+            f"echo $$ > {q_pid}\n"
+            f'trap "rc=\\$?; [ -f {q_exit} ] || echo \\$rc > {q_exit}" EXIT\n'
+            'trap "exit 130" INT\n'
+            'trap "exit 143" TERM\n'
+            f"{command}\n"
+            f"echo $? > {q_exit}\n"
+        )
         write_result = await self._connection.run(
+            f"rm -f {shlex.quote(self.exit_file_path)} {shlex.quote(self.pid_file_path)} && "
             f"printf '%s' {shlex.quote(script)} > {shlex.quote(self.script_path)}"
         )
         if not write_result.ok:
-            raise ScreenNotFoundError(
+            raise BackgroundBackendError(
                 f"Не удалось записать wrapper-скрипт {self.script_path}: "
                 f"{write_result.stderr}"
             )
 
-        start_cmd = (
-            f"screen -dmS {shlex.quote(self._session_id)} "
-            f"-L -Logfile {shlex.quote(self._remote_log_path)} "
-            f"bash {shlex.quote(self.script_path)}"
+        await backend.start_session(
+            self._connection,
+            self._session_id,
+            self.script_path,
+            self._remote_log_path,
+            self.exit_file_path,
+            self.pid_file_path,
         )
-        start_result = await self._connection.run(start_cmd)
-        if not start_result.ok:
-            raise ScreenNotFoundError(
-                f"Не удалось запустить screen-сессию: {start_result.stderr}"
-            )
-        self._logger.debug(f"Screen-сессия {self._session_id} создана: {start_cmd}")
-
-    @staticmethod
-    def _parse_screen_ls(output: str) -> dict[str, int]:
-        r"""Разобрать вывод ``screen -ls`` в отображение {имя сессии: PID}.
-
-        Формат строк: ``\\t{PID}.{name}\\t(Detached)``. Сравнение по имени
-        целиком, чтобы ``uniconn_x_1`` не совпадал с ``uniconn_x_12``.
-        """
-        sessions: dict[str, int] = {}
-        for line in output.splitlines():
-            match = re.match(r"\s*(\d+)\.(\S+)", line)
-            if match:
-                sessions[match.group(2)] = int(match.group(1))
-        return sessions
+        self._logger.debug(
+            f"Фоновая сессия {self._session_id} создана (backend={backend.name})"
+        )
 
     async def is_alive(self) -> bool:
-        """Проверить, существует ли screen-сессия на хосте (точное совпадение имени)."""
-        result = await self._connection.run("screen -ls")
-        return self._session_id in self._parse_screen_ls(result.stdout)
+        """Проверить, продолжает ли работать фоновая сессия на хосте."""
+        backend = await self._ensure_backend()
+        return await backend.is_alive(
+            self._connection,
+            self._session_id,
+            self.pid_file_path,
+            self.exit_file_path,
+        )
 
     async def get_pid(self) -> int | None:
-        """Получить PID screen-процесса (парсинг ``screen -ls``, формат ``{PID}.{name}``)."""
-        result = await self._connection.run("screen -ls")
-        return self._parse_screen_ls(result.stdout).get(self._session_id)
+        """Получить PID процесса фоновой сессии."""
+        backend = await self._ensure_backend()
+        return await backend.get_pid(
+            self._connection,
+            self._session_id,
+            self.pid_file_path,
+            self.exit_file_path,
+        )
 
     async def get_exit_code(self) -> int | None:
         """Получить exit code завершившейся команды.
@@ -151,13 +183,17 @@ class ScreenSession:
             return None
 
     async def send_ctrl_c(self) -> None:
-        """Отправить Ctrl+C (SIGINT) в screen-сессию."""
-        await self._connection.run(
-            f"screen -S {shlex.quote(self._session_id)} -X stuff $'\\003'"
+        """Отправить мягкое прерывание (Ctrl+C / SIGINT) в фоновую сессию."""
+        backend = await self._ensure_backend()
+        await backend.send_interrupt(
+            self._connection,
+            self._session_id,
+            self.pid_file_path,
+            self.exit_file_path,
         )
 
     async def send_signal(self, sig: int) -> None:
-        """Отправить сигнал процессу screen-сессии по PID."""
+        """Отправить произвольный POSIX-сигнал процессу фоновой сессии по PID."""
         pid = await self.get_pid()
         if pid is not None:
             await self._connection.run(f"kill -{sig} {pid}")
@@ -167,14 +203,15 @@ class ScreenSession:
             )
 
     async def kill(self, graceful: bool = True, timeout: float = 5.0) -> None:
-        """Остановить screen-сессию.
+        """Остановить фоновую сессию.
 
         Args:
-            graceful: Сначала отправить Ctrl+C и подождать завершения,
+            graceful: Сначала отправить SIGINT / Ctrl+C и подождать завершения,
                 затем (если сессия жива) принудительно убить
             timeout: Время ожидания graceful-завершения в секундах
 
         """
+        backend = await self._ensure_backend()
         if graceful and await self.is_alive():
             await self.send_ctrl_c()
             loop = asyncio.get_running_loop()
@@ -185,14 +222,21 @@ class ScreenSession:
                 await asyncio.sleep(0.5)
 
         if await self.is_alive():
-            await self._connection.run(
-                f"screen -S {shlex.quote(self._session_id)} -X kill"
+            await backend.terminate(
+                self._connection,
+                self._session_id,
+                self.pid_file_path,
             )
 
     async def cleanup(self) -> None:
-        """Удалить артефакты сессии: лог-файл, exit-файл, wrapper-скрипт."""
+        """Удалить артефакты сессии: лог-файл, exit-файл, PID-файл, wrapper-скрипт."""
         paths = " ".join(
             shlex.quote(p)
-            for p in (self._remote_log_path, self.exit_file_path, self.script_path)
+            for p in (
+                self._remote_log_path,
+                self.exit_file_path,
+                self.pid_file_path,
+                self.script_path,
+            )
         )
         await self._connection.run(f"rm -f {paths}")

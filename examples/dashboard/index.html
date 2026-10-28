@@ -403,7 +403,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.1 1.1M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.1-1.1"/></svg>URI и код
         </button>
         <button type="button" class="nav-link" data-tab="tests" onclick="switchTab('tests')">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3M8 15h8"/></svg>Тесты и Screen
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3M8 15h8"/></svg>Тесты и Background
         </button>
       </nav>
       <div class="sidebar-note">
@@ -949,11 +949,11 @@
           <pre class="code-view" id="pytest-output-box" style="min-height: 310px;">Select a test package above to run pytest with "-m not integration" and 0 RuntimeWarning enforcement.</pre>
         </div>
 
-        <!-- Right: Background ScreenPool & LogPipeline Simulator -->
+        <!-- Right: BackgroundPool & LogPipeline Simulator -->
         <div class="panel">
           <div class="panel-header">
             <div>
-              <h2 class="panel-title">Background `ScreenPool` &amp; `LogPipeline` Inspector</h2>
+              <h2 class="panel-title">Background `BackgroundPool` &amp; `LogPipeline` Inspector</h2>
               <p class="panel-subtitle">Test log file path sanitization and regex event triggers</p>
             </div>
             <button type="button" class="btn" onclick="runScreenSandbox()">Run LogPipeline</button>
@@ -961,7 +961,7 @@
 
           <div class="form-row">
             <div class="field-group">
-              <label for="sc-name">Screen Session Name</label>
+              <label for="sc-name">Background Session Name</label>
               <input type="text" id="sc-name" value="db-backup-nightly" />
             </div>
             <div class="field-group">
@@ -1016,7 +1016,7 @@
       hooks: ['Наблюдаемость', 'Хуки и телеметрия', 'Проверяйте политики безопасности, маскирование секретов и структурированные события.'],
       pool: ['Оркестрация', 'Хосты и инвентарь', 'Настройте YAML-инвентарь и выполните операцию на группе хостов параллельно.'],
       uri: ['Конструктор', 'URI и готовый код', 'Соберите подключение и получите проверенный фрагмент для Async Python, Sync Python или CLI.'],
-      tests: ['Качество', 'Тесты и фоновые задачи', 'Запускайте пакеты unit-тестов и проверяйте обработку логов ScreenPool.']
+      tests: ['Качество', 'Тесты и фоновые задачи', 'Запускайте пакеты unit-тестов и проверяйте обработку логов BackgroundPool.']
     };
 
     function switchTab(tabId) {
@@ -1729,7 +1729,7 @@
         const data = await res.json();
         box.textContent = JSON.stringify(data.current || data, null, 2);
       } catch (_) {
-        box.textContent = 'Error running ScreenPool LogPipeline sandbox.';
+        box.textContent = 'Error running BackgroundPool LogPipeline sandbox.';
       } finally {
         setBusy(box, false);
       }

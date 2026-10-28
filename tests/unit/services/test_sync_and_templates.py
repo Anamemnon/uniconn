@@ -492,12 +492,17 @@ class TestCLIV060:
         with patch("uniconn.cli.Connection", conn_cls):
             res_status = runner.invoke(
                 app,
-                ["screen-status", "ssh://user@host", "--format", "json"],
+                ["bg-status", "ssh://user@host", "--backend", "screen", "--format", "json"],
             )
             assert res_status.exit_code == 0, res_status.output
             status_data = json.loads(res_status.output)
             assert status_data == [
-                {"session_id": "uniconn_pool1_0", "pid": "1234", "status": "Detached"}
+                {
+                    "session_id": "uniconn_pool1_0",
+                    "pid": "1234",
+                    "status": "Running",
+                    "backend": "screen",
+                }
             ]
 
             res_bmc = runner.invoke(

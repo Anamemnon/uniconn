@@ -65,7 +65,7 @@ TEST_SUITES_META: list[dict[str, Any]] = [
     {"id": "services", "label": "Domain Services & Provisioning", "path": "tests/unit/services", "count": 43},
     {"id": "transports", "label": "Transports & SFTP", "path": "tests/unit/transports", "count": 154},
     {"id": "pools", "label": "Connection & SSH Pools", "path": "tests/unit/pools", "count": 29},
-    {"id": "screen", "label": "GNU Screen & LogPipeline", "path": "tests/unit/screen", "count": 70},
+    {"id": "screen", "label": "BackgroundPool & LogPipeline", "path": "tests/unit/screen", "count": 70},
     {"id": "cli", "label": "CLI & Web Dashboard", "path": "tests/unit/cli", "count": 48},
     {"id": "architecture", "label": "Architecture & API Surface", "path": "tests/unit/architecture", "count": 24},
 ]
@@ -1167,7 +1167,7 @@ def _execute_pool_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _execute_screen_sandbox(payload: dict[str, Any], screen_state: dict[str, Any]) -> dict[str, Any]:
-    """Симулятор фоновых задач ScreenPool и реактивного LogPipeline."""
+    """Симулятор фоновых задач BackgroundPool и реактивного LogPipeline."""
     action = str(payload.get("action", "analyze")).strip()
     if action == "clear":
         screen_state["sessions"] = []
@@ -1182,7 +1182,7 @@ def _execute_screen_sandbox(payload: dict[str, Any], screen_state: dict[str, Any
     sample_logs_raw = str(
         payload.get("sample_logs")
         or (
-            "[12:00:01] INFO Starting background task in GNU screen...\n"
+            "[12:00:01] INFO Starting background task (backend=auto)...\n"
             "[12:00:02] INFO Progress: 25% — dumping schema public\n"
             "[12:00:03] WARN Slow query detected on table events_archive (1420ms)\n"
             "[12:00:04] INFO Progress: 75% — compressing blobs\n"

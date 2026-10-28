@@ -11,19 +11,19 @@ from collections.abc import Callable, Iterable
 from types import FrameType
 
 from ..core.connection import Connection
-from ._session import ScreenSession
+from ._session import BackgroundSession
 
 logger = logging.getLogger(__name__)
 
 
-class ScreenCleanupManager:
-    """Менеджер очистки screen-сессий и их артефактов.
+class BackgroundCleanupManager:
+    """Менеджер очистки фоновых сессий и их артефактов.
 
     Многоуровневая защита от зомби-процессов и утечки диска:
     - клиент: ``atexit`` + обработчики SIGINT/SIGTERM → остановка сессий;
     - сервер: cleanup-скрипт ``/tmp/uniconn_cleanup_{pool_id}.sh``
       и sentinel-файл ``/tmp/uniconn_{pool_id}.active`` (fail-safe,
-      можно запустить вручную после обрыва SSH).
+      работает для всех бэкендов: tmux, screen и nohup/PID).
 
     Двойной Ctrl+C (два сигнала подряд) → принудительное завершение.
     """
@@ -35,7 +35,7 @@ class ScreenCleanupManager:
     ):
         self._pool_id = pool_id
         self._logger = logger or logging.getLogger(__name__)
-        self._sessions: dict[str, ScreenSession] = {}
+        self._sessions: dict[str, BackgroundSession] = {}
         self._signal_count = 0
         self._installed = False
         self._previous_handlers: dict[int, signal.Handlers | Callable | int | None] = {}
@@ -51,11 +51,11 @@ class ScreenCleanupManager:
         return f"/tmp/uniconn_cleanup_{self._pool_id}.sh"
 
     @property
-    def sessions(self) -> dict[str, ScreenSession]:
-        """Зарегистрированные сессии (session_id → ScreenSession)."""
+    def sessions(self) -> dict[str, BackgroundSession]:
+        """Зарегистрированные сессии (session_id → BackgroundSession)."""
         return self._sessions
 
-    def register_session(self, session: ScreenSession) -> None:
+    def register_session(self, session: BackgroundSession) -> None:
         """Зарегистрировать сессию и установить хуки очистки."""
         self._sessions[session.session_id] = session
         self._install_hooks()
@@ -89,12 +89,7 @@ class ScreenCleanupManager:
         self._installed = False
 
     def _on_signal(self, signum: int, frame: FrameType | None) -> None:
-        """Обработчик SIGINT/SIGTERM: очистка, затем проброс сигнала дальше.
-
-        После очистки сигнал должен привести к завершению процесса:
-        вызывается прежний обработчик, а если его не было (SIG_DFL) —
-        восстанавливается дефолтный и сигнал отправляется процессу повторно.
-        """
+        """Обработчик SIGINT/SIGTERM: очистка, затем проброс сигнала дальше."""
         self._signal_count += 1
         force = self._signal_count >= 2
         if force:
@@ -103,29 +98,18 @@ class ScreenCleanupManager:
             )
         else:
             self._logger.info(
-                "Сигнал %s — graceful остановка screen-сессий", signum
+                "Сигнал %s — graceful остановка фоновых сессий", signum
             )
         self.cleanup_local(force=force)
         previous = self._previous_handlers.get(signum)
         if callable(previous):
             previous(signum, frame)
         elif previous == signal.SIG_DFL:
-            # Прежнего обработчика не было: восстановить дефолтный и
-            # повторно отправить сигнал себе, иначе процесс продолжит жить
             signal.signal(signum, signal.SIG_DFL)
             signal.raise_signal(signum)
 
     def cleanup_local(self, force: bool = False, timeout: float = 30.0) -> None:
-        """Синхронная очистка всех сессий (вызывается из atexit/signal).
-
-        Блокирует поток до завершения очистки (не более ``timeout`` секунд):
-        fire-and-forget через ``loop.create_task`` не подходит — из signal
-        handler процесс завершится раньше, чем задача успеет выполниться.
-        Если event loop уже активен в этом потоке, очистка выполняется
-        в отдельном потоке с собственным циклом (best-effort: SSH-объекты,
-        привязанные к активному циклу, могут не сработать — ошибки
-        логируются в ``cleanup_all``).
-        """
+        """Синхронная очистка всех сессий (вызывается из atexit/signal)."""
         if not self._sessions:
             return
         try:
@@ -165,65 +149,85 @@ class ScreenCleanupManager:
                 )
 
     def generate_cleanup_script(self, session_ids: Iterable[str] | None = None) -> str:
-        """Сгенерировать bash-скрипт очистки пула на сервере.
+        """Сгенерировать POSIX-скрипт очистки пула на сервере (tmux, screen, nohup).
 
-        Скрипт убивает screen-сессии пула по префиксу ``uniconn_{pool_id}_``,
+        Скрипт останавливает сессии пула по префиксу ``uniconn_{pool_id}_``,
         а также сессии с пользовательскими именами (по явному списку),
-        удаляет их логи, exit-файлы, wrapper-скрипты, sentinel и сам себя.
-
-        Args:
-            session_ids: Имена сессий для включения в скрипт
-                (по умолчанию — все зарегистрированные на данный момент).
-
+        удаляет их логи, exit-файлы, PID-файлы, wrapper-скрипты, sentinel и сам себя.
         """
         if session_ids is None:
             session_ids = sorted(self._sessions)
         prefix = f"uniconn_{self._pool_id}_"
         custom = [s for s in session_ids if not s.startswith(prefix)]
 
-        script = f"""#!/bin/bash
+        script = f"""#!/bin/sh
 POOL_ID="{self._pool_id}"
-for s in $(screen -ls | grep "uniconn_${{POOL_ID}}_" | awk '{{print $1}}'); do
-    screen -S "$s" -X kill 2>/dev/null
+if command -v tmux >/dev/null 2>&1; then
+    for s in $(tmux list-sessions -F '#{{session_name}}' 2>/dev/null | grep "^uniconn_${{POOL_ID}}_"); do
+        tmux kill-session -t "=$s" 2>/dev/null
+    done
+fi
+if command -v screen >/dev/null 2>&1; then
+    for s in $(screen -ls 2>/dev/null | grep "uniconn_${{POOL_ID}}_" | awk '{{print $1}}'); do
+        screen -S "$s" -X kill 2>/dev/null
+    done
+fi
+for pf in /tmp/uniconn_uniconn_${{POOL_ID}}_*.pid /tmp/uniconn_${{POOL_ID}}_*.pid; do
+    if [ -s "$pf" ]; then
+        pid=$(cat "$pf")
+        pkill -KILL -P "$pid" 2>/dev/null || true
+        kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+    fi
 done
 """
-        # Сессии с пользовательскими именами префиксом не покрываются —
-        # убиваем их и удаляем их артефакты по явным путям
         for name in custom:
-            script += f"screen -S {shlex.quote(name)} -X kill 2>/dev/null\n"
-            script += "rm -f " + " ".join(
-                shlex.quote(p)
-                for p in (
-                    f"/tmp/{name}.log",
-                    f"/tmp/uniconn_{name}.exit",
-                    f"/tmp/uniconn_{name}.sh",
+            q_name = shlex.quote(name)
+            q_tmux_target = shlex.quote(f"={name}")
+            q_pid_file = shlex.quote(f"/tmp/uniconn_{name}.pid")
+            script += f"command -v tmux >/dev/null 2>&1 && tmux kill-session -t {q_tmux_target} 2>/dev/null\n"
+            script += f"command -v screen >/dev/null 2>&1 && screen -S {q_name} -X kill 2>/dev/null\n"
+            script += (
+                f"if [ -s {q_pid_file} ]; then pid=$(cat {q_pid_file}); "
+                'pkill -KILL -P "$pid" 2>/dev/null || true; '
+                'kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; fi\n'
+            )
+            script += (
+                "rm -f "
+                + " ".join(
+                    shlex.quote(p)
+                    for p in (
+                        f"/tmp/{name}.log",
+                        f"/tmp/uniconn_{name}.exit",
+                        f"/tmp/uniconn_{name}.pid",
+                        f"/tmp/uniconn_{name}.sh",
+                    )
                 )
-            ) + "\n"
+                + "\n"
+            )
         script += """rm -f /tmp/uniconn_${POOL_ID}_*.log
-rm -f /tmp/uniconn_${POOL_ID}_*.exit
-rm -f /tmp/uniconn_${POOL_ID}_*.sh
+rm -f /tmp/uniconn_uniconn_${POOL_ID}_*.exit /tmp/uniconn_${POOL_ID}_*.exit
+rm -f /tmp/uniconn_uniconn_${POOL_ID}_*.pid /tmp/uniconn_${POOL_ID}_*.pid
+rm -f /tmp/uniconn_uniconn_${POOL_ID}_*.sh /tmp/uniconn_${POOL_ID}_*.sh
 rm -f /tmp/uniconn_${POOL_ID}.active
 rm -f "$0"
 """
         return script
 
     async def install_server_side(self, connection: Connection) -> None:
-        """Загрузить (или обновить) на сервере sentinel-файл и cleanup-скрипт.
-
-        Sentinel — JSON со списком сессий пула, нужен для ручной
-        диагностики после обрыва SSH. Вызывается при каждом запуске
-        новой сессии, чтобы список не устаревал и включал сессии
-        с пользовательскими именами.
-        """
-        sentinel = json.dumps({
-            "pool_id": self._pool_id,
-            "sessions": sorted(self._sessions),
-        })
+        """Загрузить (или обновить) на сервере sentinel-файл и cleanup-скрипт."""
+        sentinel = json.dumps(
+            {
+                "pool_id": self._pool_id,
+                "sessions": sorted(self._sessions),
+            }
+        )
+        q_sentinel_path = shlex.quote(self.sentinel_path)
+        q_cleanup_path = shlex.quote(self.cleanup_script_path)
         await connection.run(
-            f"printf '%s' {shlex.quote(sentinel)} > {self.sentinel_path}"
+            f"printf '%s' {shlex.quote(sentinel)} > {q_sentinel_path}"
         )
         await connection.run(
             f"printf '%s' {shlex.quote(self.generate_cleanup_script())} "
-            f"> {self.cleanup_script_path}"
+            f"> {q_cleanup_path}"
         )
-        await connection.run(f"chmod +x {self.cleanup_script_path}")
+        await connection.run(f"chmod +x {q_cleanup_path}")

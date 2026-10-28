@@ -19,7 +19,7 @@ from uniconn import (
     otel_tracing_hook,
 )
 from uniconn._logging import _sanitize_value
-from uniconn.background._models import LogEvent, ScreenResult, StatusEvent
+from uniconn.background._models import BackgroundResult, LogEvent, StatusEvent
 from uniconn.services.files import DirectorySynchronizer
 from uniconn.shell.expect_engine import ExpectStateMachine
 
@@ -39,7 +39,7 @@ def test_dataclass_models_use_slots() -> None:
         ),
         LogEvent(session_id="s1", line="hello"),
         StatusEvent(session_id="s1", alive=True),
-        ScreenResult(session_id="s1", exit_code=0, remote_log_path="/tmp/a.log"),
+        BackgroundResult(session_id="s1", exit_code=0, remote_log_path="/tmp/a.log"),
     ]
     for obj in instances:
         assert hasattr(type(obj), "__slots__"), f"{type(obj).__name__} is missing __slots__"

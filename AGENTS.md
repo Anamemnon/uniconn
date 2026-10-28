@@ -25,8 +25,8 @@
 - `shell/` (реэкспорт в `_shell.py`) — `ShellSession` (`shell/session.py`), `PosixMarkerProtocol` (`shell/marker_protocol.py`), `ExpectStateMachine` (`shell/expect_engine.py`).
 - `sync/` (реэкспорт в `_sync.py`) — `connection.py` (`SyncConnection`), `shell.py` (`SyncShellSession`), `pool.py` (`SyncConnectionPool` с поддержкой sync и async функций в `apply()`) и `services.py` (`SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`, `SyncDiagnosticSession`) на базе `EventLoopPortal`, `SyncProxyMixin` и однострочных `ParamSpec`-дескрипторов.
 - `pool/` (реэкспорты в `_pool.py` и `_session_pool.py`) — `connection_pool.py` (`ConnectionPool` с `_fan_out_list` / `_fan_out_dict`, батчевой раскаткой `batch_size` / `max_fail_ratio`, `select()` и `use_cassette`), `session_pool.py` (`SSHSessionPool` с адаптивным авто-понижением лимитов и `resize()`) и `stream_mux.py` (`PoolStreamMultiplexer`).
-- `background/` — `ScreenPool`, `ScreenSession`, `LogPipeline`, `DiagnosticSession`: управление фоновыми задачами и диагностическими сессиями.
-- `cli/` — модульный CLI на базе `cyclopts` и `rich` (`app.py`, `renderers.py`, `cmd_exec.py`, `cmd_files.py`, `cmd_ops.py`, `cmd_screen.py`, `cmd_cassette.py`).
+- `background/` — `BackgroundPool`, `BackgroundSession`, `BackgroundBackendStrategy` (`TmuxBackend`, `ScreenBackend`, `NohupBackend`), `LogPipeline`, `DiagnosticSession`: управление фоновыми задачами и диагностическими сессиями.
+- `cli/` — модульный CLI на базе `cyclopts` и `rich` (`app.py`, `renderers.py`, `cmd_exec.py`, `cmd_files.py`, `cmd_ops.py`, `cmd_bg.py`, `cmd_cassette.py`).
 - `result.py` (`Result`, `PingResult`, `SyncResult`, `EnsureResult`), `hooks.py`, `telemetry.py`, `pytest_plugin.py`, `_logging.py`, `exceptions.py` (`ConfigurationError`, `CircuitOpenError`, `BatchAbortedError`, `CassetteError`), `py.typed`.
 
 ## Точка входа и веб-панель (`main.py` и `examples/dashboard/`)
@@ -41,8 +41,8 @@ Unit-тесты (`tests/unit/`, 40 модулей, 607 тестов) сгруп�
 - `tests/unit/services/` — доменные сервисы (`FileOperationsService`, `checksum`, `atomic=True`, `sync_dir`, `write_template`, `FactCollector`, `diff_facts`, `StateManagementService` и системные примитивы `ensure_*`).
 - `tests/unit/transports/` — тесты транспортов (`SSH`, `Telnet`, `Serial`, `Local`, `IPMI`, `Redfish`, `Docker`, `Podman`, `Kubectl`, `Replay`/`Cassette`, `BaseTransport`), SFTP и `pytest_plugin`.
 - `tests/unit/pools/` — `ConnectionPool` (включая батчинг `batch_size`/`max_fail_ratio`, `BatchAbortedError` и `select()`) и `SSHSessionPool`.
-- `tests/unit/screen/` — `ScreenPool`, `ScreenSession`, `LogPipeline`, `DiagnosticSession`, `ScreenConfig`, cleanup.
-- `tests/unit/cli/` — CLI-команды (`cyclopts` + `rich`), фоновые screen-команды и интерактивная веб-панель (`examples/dashboard/`).
+- `tests/unit/background/` — `BackgroundPool`, `BackgroundSession`, стратегии (`tmux`, `screen`, `nohup`), `LogPipeline`, `DiagnosticSession`, `BackgroundPoolConfig`, cleanup.
+- `tests/unit/cli/` — CLI-команды (`cyclopts` + `rich`), фоновые `bg-*` команды и интерактивная веб-панель (`examples/dashboard/`).
 - `tests/unit/architecture/` — архитектурные инварианты и чистота публичного API (`__all__`).
 - `tests/integration/` — интеграционные тесты с Docker/testcontainers.
 
@@ -50,7 +50,7 @@ Unit-тесты (`tests/unit/`, 40 модулей, 607 тестов) сгруп�
 
 Подробный навык тестирования и обеспечения стабильности описан в `.claude/skills/testing-and-stability/SKILL.md` и `.cursor/rules/testing-and-stability.mdc`, а принципы чистого и минималистичного проектирования (`ub-mode`) — в `.claude/skills/ub-mode/SKILL.md` и `.cursor/rules/ub-mode.mdc`.
 
-1. **Прагматичный Async + Sync паритет без дублирования кода**: Пользовательские методы `Connection`, доменных сервисов (`.files`, `.state`, `.tunnels`), `ShellSession` и `ConnectionPool` отражаются в `Sync*`-классах декларативно через однострочные `ParamSpec`-дескрипторы (`sync_method`, `sync_context`, `sync_iter` в `core/bridge.py`) и динамический `SyncProxyMixin` без ручного копирования сигнатур и docstrings. Низкоуровневые async-примитивы (`CommandPipeline`, `OperationObserver`, `ScreenPool`, `LogPipeline`, `PoolStreamMultiplexer`) остаются строго асинхронными.
+1. **Прагматичный Async + Sync паритет без дублирования кода**: Пользовательские методы `Connection`, доменных сервисов (`.files`, `.state`, `.tunnels`), `ShellSession` и `ConnectionPool` отражаются в `Sync*`-классах декларативно через однострочные `ParamSpec`-дескрипторы (`sync_method`, `sync_context`, `sync_iter` в `core/bridge.py`) и динамический `SyncProxyMixin` без ручного копирования сигнатур и docstrings. Низкоуровневые async-примитивы (`CommandPipeline`, `OperationObserver`, `BackgroundPool`, `LogPipeline`, `PoolStreamMultiplexer`) остаются строго асинхронными.
 2. **Экспорт API**: Все публичные классы и функции должны быть экспортированы в `src/uniconn/__init__.py` (`__all__`) и отражены в `llms.txt`.
 3. **Экономия контекста (`FEATURES.md`)**: Файл `FEATURES.md` содержит полный каталог реализованных возможностей и архитектурных решений библиотеки. **Не нужно читать `FEATURES.md` в начале каждой задачи** (чтобы не засорять контекстное окно ИИ-агента) — используйте `llms.txt` для быстрого обзора API, а к `FEATURES.md` обращайтесь только тогда, когда нужно точечно сверить статус реализации конкретной возможности или дополнить список после нового этапа.
 4. **Качество кода**: Ограничение длины строки — **120 символов** (`ruff`), типизация — `pyright` в режиме `standard` (0 ошибок).
