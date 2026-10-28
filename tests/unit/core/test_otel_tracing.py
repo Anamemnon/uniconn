@@ -110,18 +110,18 @@ class TestOtelTracingHook:
         copy_file = tmp_path / "copy.txt"
         dl_file = tmp_path / "downloaded.txt"
 
-        await conn.write_file(str(target_file), "telemetry-data")
-        content = await conn.read_file(str(target_file))
+        await conn.files.write_file(str(target_file), "telemetry-data")
+        content = await conn.files.read_file(str(target_file))
         assert content == "telemetry-data"
 
-        await conn.upload(str(target_file), str(copy_file))
-        await conn.download(str(copy_file), str(dl_file))
+        await conn.files.upload(str(target_file), str(copy_file))
+        await conn.files.download(str(copy_file), str(dl_file))
 
         src_dir = tmp_path / "src_sync"
         dst_dir = tmp_path / "dst_sync"
         src_dir.mkdir()
         (src_dir / "a.txt").write_text("123", encoding="utf-8")
-        await conn.sync_dir(src_dir, dst_dir)
+        await conn.files.sync_dir(src_dir, dst_dir)
 
         lines = [line async for line in conn.stream("printf 'a\\nb\\n'")]
         assert lines == ["a", "b"]

@@ -1,7 +1,7 @@
 # src/uniconn/transports/replay/__init__.py
 """Пакет контрактного тестирования, записи и воспроизведения сессий (Replay / Cassette)."""
 
-from .context import CassetteContext, SyncCassetteContext
+from .context import CassetteContext, SyncCassetteContext, pool_use_cassette
 from .models import (
     CapabilityKind,
     Cassette,
@@ -43,5 +43,6 @@ __all__ = [
     "ShellDialogStep",
     "SyncCassetteContext",
     "normalize_temp_paths",
+    "pool_use_cassette",
 ]
 

@@ -83,7 +83,7 @@ class TestReleaseV0100Integration:
             facts = await conn.gather_facts(
                 spec={"files": {"etc_hostname": "/etc/hostname"}},
             )
-            raw_hostname = await conn.read_file("/etc/hostname")
+            raw_hostname = await conn.files.read_file("/etc/hostname")
 
         assert facts.hostname == "edge-node-01"
         assert facts.distro == "Ubuntu 24.04 LTS"

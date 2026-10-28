@@ -157,8 +157,8 @@ async def test_multiple_operation_observers_are_chained(tmp_path: Path) -> None:
     conn.add_operation_observer(obs2)
 
     f = tmp_path / "chained.txt"
-    await conn.write_file(f, "hello")
-    content = await conn.read_file(f)
+    await conn.files.write_file(f, "hello")
+    content = await conn.files.read_file(f)
     assert content == "hello"
 
     assert events == [
@@ -185,22 +185,22 @@ async def test_file_operations_respect_cd_dry_run_and_auto_connect(tmp_path: Pat
     # Dry-run не должен создавать целевой файл при upload и менять права при chmod
     dry_conn = Connection.from_uri("local://", dry_run=True)
     with dry_conn.cd(work_dir):
-        await dry_conn.upload(src_file, "dest.txt")
-        await dry_conn.chmod(src_file, 0o600)
+        await dry_conn.files.upload(src_file, "dest.txt")
+        await dry_conn.files.chmod(src_file, 0o600)
     assert not (work_dir / "dest.txt").exists()
 
     # Обычный режим без явного async with (проверка автоподключения и разрешения cd)
     conn = Connection.from_uri("local://")
     assert not conn.transport.is_connected
     with conn.cd(work_dir):
-        await conn.upload(src_file, "uploaded.txt")
+        await conn.files.upload(src_file, "uploaded.txt")
         assert conn.transport.is_connected
-        entries = await conn.listdir(".")
+        entries = await conn.files.listdir(".")
         assert "uploaded.txt" in entries
-        st = await conn.stat("uploaded.txt")
+        st = await conn.files.stat("uploaded.txt")
         assert st["size"] == 7
         dl_target = tmp_path / "downloaded.txt"
-        await conn.download("uploaded.txt", dl_target)
+        await conn.files.download("uploaded.txt", dl_target)
         assert dl_target.read_text(encoding="utf-8") == "payload"
     await conn.close()
 

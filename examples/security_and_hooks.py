@@ -38,12 +38,12 @@ async def main() -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             # 1. Контекстные менеджеры cd() и env() + файловые операции в памяти
             async with conn.cd(tmpdir), conn.env(APP_ENV="production", SERVICE_PORT="8080"):
-                await conn.write_file(
+                await conn.files.write_file(
                     "app.conf",
                     "env: production\nport: 8080\n",
                     mode=0o600,
                 )
-                content = await conn.read_file("app.conf")
+                content = await conn.files.read_file("app.conf")
                 print("Содержимое app.conf:", content.strip())
 
                 res = await conn.run(

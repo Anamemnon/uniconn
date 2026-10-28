@@ -2,7 +2,10 @@
 """Пул подключений для параллельного выполнения команд и групповых операций.
 
 Использует обобщённый движок параллельного распределения задач (``_fan_out_list`` /
-``_fan_out_dict``) и выделенный мультиплексор потоков ``PoolStreamMultiplexer``.
+``_fan_out_dict``), мультиплексор потоков ``PoolStreamMultiplexer`` и выделенные
+доменные сервисы:
+- ``pool.files`` (``PoolFileOperationsService``)
+- ``pool.state`` (``PoolStateManagementService``)
 """
 
 from __future__ import annotations
@@ -15,13 +18,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar
 
-from pydantic import SecretStr
-
 from ..config.models import ConnectionConfig
+from ..core.bridge import pool_fan_out_dict
 from ..core.connection import Connection, _resolve_rate_limiter, format_command
 from ..core.resilience import CircuitBreaker, RateLimiter
-from ..result import EnsureResult, PingResult, Result, SyncResult
-from ..services.facts_models import FactsDiffReport, FactSpec, HostFacts, diff_facts
+from ..result import EnsureResult, PingResult, Result
+from ..services.facts_models import FactsDiffReport, FactSpec, diff_facts
+from .services import PoolFileOperationsService, PoolStateManagementService
 from .stream_mux import PoolStreamMultiplexer
 
 if TYPE_CHECKING:
@@ -34,7 +37,14 @@ T = TypeVar("T")
 
 
 class ConnectionPool:
-    """Пул подключений для параллельного выполнения команд и групповых операций."""
+    """Пул подключений для параллельного выполнения команд и групповых операций.
+
+    Предоставляет групповое выполнение команд и проверок (``pool.map``, ``pool.apply``,
+    ``pool.stream``, ``pool.ping``, ``pool.wait_for_*``, ``pool.gather_facts``), а также
+    модульные доменные пространства имён:
+        - ``pool.files`` — параллельные файловые операции, шаблоны и ``sync_dir``
+        - ``pool.state`` — параллельное идемпотентное управление состоянием (``ensure_*``)
+    """
 
     def __init__(
         self,
@@ -62,6 +72,8 @@ class ConnectionPool:
         self._batch_size = batch_size
         self._max_fail_ratio = max_fail_ratio
         self._stream_mux = PoolStreamMultiplexer(self)
+        self.files = PoolFileOperationsService(self)
+        self.state = PoolStateManagementService(self)
         self._rate_limiter = _resolve_rate_limiter(rate_limit, {})
         self._circuit_breaker_enabled = circuit_breaker
         self._failure_threshold = failure_threshold
@@ -612,96 +624,6 @@ class ConnectionPool:
 
         return results
 
-    async def upload(
-        self,
-        local_path: str | Path,
-        remote_path: str | Path,
-        recurse: bool = False,
-        *,
-        verify: bool = False,
-        batch_size: int | None = None,
-        max_fail_ratio: float | None = None,
-        **kwargs: Any,
-    ) -> None:
-        """Параллельно загрузить файл или директорию на все хосты пула."""
-        await self._fan_out_list(
-            lambda conn: conn.upload(
-                str(local_path),
-                str(remote_path),
-                recurse=recurse,
-                **({"verify": True} if verify else {}),
-                **kwargs,
-            ),
-            batch_size=batch_size,
-            max_fail_ratio=max_fail_ratio,
-        )
-
-    async def download(
-        self,
-        remote_path: str | Path,
-        local_path: str | Path,
-        recurse: bool = False,
-        *,
-        verify: bool = False,
-        batch_size: int | None = None,
-        max_fail_ratio: float | None = None,
-        **kwargs: Any,
-    ) -> dict[str, str]:
-        """Параллельно скачать файл или директорию со всех хостов пула."""
-        local_str = str(local_path)
-        remote_name = Path(str(remote_path)).name
-
-        async def _dl_worker(key: str, conn: Connection) -> str:
-            safe_host = (
-                key.split("://", 1)[-1]
-                .replace("/", "_")
-                .replace(":", "_")
-                .replace("@", "_")
-            )
-            if "{host}" in local_str:
-                dest = local_str.format(host=safe_host)
-            elif len(self._uris) > 1:
-                dest_dir = Path(local_str) / safe_host
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                dest = str(dest_dir / remote_name)
-            else:
-                dest = local_str
-
-            await conn.download(
-                str(remote_path),
-                dest,
-                recurse=recurse,
-                **({"verify": True} if verify else {}),
-                **kwargs,
-            )
-            return dest
-
-        return await self._fan_out_dict(
-            _dl_worker,
-            batch_size=batch_size,
-            max_fail_ratio=max_fail_ratio,
-        )
-
-    async def checksum(
-        self,
-        remote_path: str | Path,
-        algorithm: Literal["sha256", "sha1", "md5"] = "sha256",
-        *,
-        sudo: bool = False,
-        batch_size: int | None = None,
-        max_fail_ratio: float | None = None,
-    ) -> dict[str, str]:
-        """Параллельно вычислить контрольную сумму удалённого файла на всех хостах пула."""
-        return await self._fan_out_dict(
-            lambda _key, conn: conn.checksum(
-                remote_path,
-                algorithm=algorithm,
-                sudo=sudo,
-            ),
-            batch_size=batch_size,
-            max_fail_ratio=max_fail_ratio,
-        )
-
     async def apply(
         self,
         func: Callable[[Connection], Awaitable[T]],
@@ -716,79 +638,12 @@ class ConnectionPool:
             max_fail_ratio=max_fail_ratio,
         )
 
-    async def sync_dir(
-        self,
-        local_dir: str | Path,
-        remote_dir: str | Path,
-        delete: bool = False,
-        exclude: Sequence[str] | None = None,
-        mtime_tolerance: float = 1.0,
-        dry_run: bool | None = None,
-        *,
-        batch_size: int | None = None,
-        max_fail_ratio: float | None = None,
-    ) -> dict[str, SyncResult]:
-        """Параллельно синхронизировать директорию на всех хостах пула."""
-        return await self._fan_out_dict(
-            lambda _key, conn: conn.sync_dir(
-                local_dir=local_dir,
-                remote_dir=remote_dir,
-                delete=delete,
-                exclude=exclude,
-                mtime_tolerance=mtime_tolerance,
-                dry_run=dry_run,
-            ),
-            batch_size=batch_size,
-            max_fail_ratio=max_fail_ratio,
-        )
+    # ─── Факты, проверки доступности и скрипты ─────────────────────
 
-    async def write_template(
-        self,
-        remote_path: str | Path,
-        template_str_or_path: str | Path,
-        context: Mapping[str, Any] | None = None,
-        mode: int | None = 0o644,
-        encoding: str = "utf-8",
-        engine: Literal["auto", "string", "jinja2"] = "auto",
-        *,
-        atomic: bool = False,
-        batch_size: int | None = None,
-        max_fail_ratio: float | None = None,
-    ) -> dict[str, str]:
-        """Параллельно отрендерить и записать шаблон конфигурации на всех хостах пула."""
-        return await self._fan_out_dict(
-            lambda _key, conn: conn.write_template(
-                remote_path=remote_path,
-                template_str_or_path=template_str_or_path,
-                context=context,
-                mode=mode,
-                encoding=encoding,
-                engine=engine,
-                atomic=atomic,
-            ),
-            batch_size=batch_size,
-            max_fail_ratio=max_fail_ratio,
-        )
-
-    async def gather_facts(
-        self,
-        refresh: bool = False,
-        timeout: float | None = None,
-        spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
-        *,
-        batch_size: int | None = None,
-        max_fail_ratio: float | None = None,
-    ) -> dict[str, HostFacts]:
-        """Параллельно собрать системные факты (``HostFacts``) со всех хостов пула."""
-        return await self._fan_out_dict(
-            lambda _key, conn: conn.gather_facts(
-                refresh=refresh,
-                timeout=timeout,
-                spec=spec,
-            ),
-            batch_size=batch_size,
-            max_fail_ratio=max_fail_ratio,
-        )
+    gather_facts = pool_fan_out_dict(Connection.gather_facts)
+    wait_for_port = pool_fan_out_dict(Connection.wait_for_port)
+    wait_for_path = pool_fan_out_dict(Connection.wait_for_path)
+    run_script = pool_fan_out_dict(Connection.run_script)
 
     async def diff_facts(
         self,
@@ -881,374 +736,7 @@ class ConnectionPool:
 
         return results
 
-    async def wait_for_port(
-        self,
-        port: int,
-        *,
-        host: str | None = None,
-        state: Literal["open", "closed"] = "open",
-        check_from: Literal["remote", "local"] = "remote",
-        timeout: float = 60.0,
-        interval: float = 1.0,
-        delay: float = 0.0,
-        batch_size: int | None = None,
-        max_fail_ratio: float | None = None,
-    ) -> dict[str, float]:
-        """Параллельно ожидать открытия или закрытия TCP-порта на всех хостах пула."""
-        return await self._fan_out_dict(
-            lambda _key, conn: conn.wait_for_port(
-                port,
-                host=host,
-                state=state,
-                check_from=check_from,
-                timeout=timeout,
-                interval=interval,
-                delay=delay,
-            ),
-            batch_size=batch_size,
-            max_fail_ratio=max_fail_ratio,
-        )
-
-    async def wait_for_path(
-        self,
-        remote_path: str | Path,
-        *,
-        state: Literal["present", "absent"] = "present",
-        content_regex: str | None = None,
-        timeout: float = 60.0,
-        interval: float = 1.0,
-        delay: float = 0.0,
-        sudo: bool = False,
-        batch_size: int | None = None,
-        max_fail_ratio: float | None = None,
-    ) -> dict[str, float]:
-        """Параллельно ожидать появления или удаления файла/директории/сокета на всех хостах пула."""
-        return await self._fan_out_dict(
-            lambda _key, conn: conn.wait_for_path(
-                remote_path,
-                state=state,
-                content_regex=content_regex,
-                timeout=timeout,
-                interval=interval,
-                delay=delay,
-                sudo=sudo,
-            ),
-            batch_size=batch_size,
-            max_fail_ratio=max_fail_ratio,
-        )
-
-    async def run_script(
-        self,
-        local_path: str | Path,
-        args: Sequence[str] | None = None,
-        *,
-        interpreter: str | None = None,
-        sudo: bool = False,
-        sudo_user: str | None = None,
-        sudo_password: str | SecretStr | None = None,
-        env: Mapping[str, str] | None = None,
-        timeout: float | None = None,
-        raise_on_error: bool = False,
-        sensitive: bool = False,
-        dry_run: bool | None = None,
-        batch_size: int | None = None,
-        max_fail_ratio: float | None = None,
-    ) -> dict[str, Result]:
-        """Параллельно загрузить, выполнить и удалить локальный скрипт на всех хостах пула."""
-        return await self._fan_out_dict(
-            lambda _key, conn: conn.run_script(
-                local_path=local_path,
-                args=args,
-                interpreter=interpreter,
-                sudo=sudo,
-                sudo_user=sudo_user,
-                sudo_password=sudo_password,
-                env=env,
-                timeout=timeout,
-                raise_on_error=raise_on_error,
-                sensitive=sensitive,
-                dry_run=dry_run,
-            ),
-            batch_size=batch_size,
-            max_fail_ratio=max_fail_ratio,
-        )
-
-    async def ensure_package(
-        self,
-        package: str | Sequence[str],
-        state: Literal["present", "absent"] = "present",
-        manager: Literal[
-            "auto", "apt", "dnf", "yum", "apk", "pacman", "zypper"
-        ] = "auto",
-        update_cache: bool = False,
-        sudo: bool = True,
-        dry_run: bool | None = None,
-        *,
-        batch_size: int | None = None,
-        max_fail_ratio: float | None = None,
-    ) -> dict[str, EnsureResult]:
-        """Параллельно проверить/установить/удалить пакет(ы) на всех хостах пула."""
-        return await self._fan_out_dict(
-            lambda _key, conn: conn.ensure_package(
-                package=package,
-                state=state,
-                manager=manager,
-                update_cache=update_cache,
-                sudo=sudo,
-                dry_run=dry_run,
-            ),
-            batch_size=batch_size,
-            max_fail_ratio=max_fail_ratio,
-        )
-
-    async def ensure_service(
-        self,
-        service: str,
-        state: Literal["started", "stopped", "restarted", "reloaded"] = "started",
-        enabled: bool | None = None,
-        sudo: bool = True,
-        dry_run: bool | None = None,
-        *,
-        batch_size: int | None = None,
-        max_fail_ratio: float | None = None,
-    ) -> dict[str, EnsureResult]:
-        """Параллельно привести состояние системного сервиса на всех хостах пула."""
-        return await self._fan_out_dict(
-            lambda _key, conn: conn.ensure_service(
-                service=service,
-                state=state,
-                enabled=enabled,
-                sudo=sudo,
-                dry_run=dry_run,
-            ),
-            batch_size=batch_size,
-            max_fail_ratio=max_fail_ratio,
-        )
-
-    async def ensure_line(
-        self,
-        remote_path: str | Path,
-        line: str,
-        state: Literal["present", "absent"] = "present",
-        regex: str | None = None,
-        create: bool = True,
-        backup: bool = False,
-        mode: int | None = None,
-        encoding: str = "utf-8",
-        dry_run: bool | None = None,
-        *,
-        batch_size: int | None = None,
-        max_fail_ratio: float | None = None,
-    ) -> dict[str, EnsureResult]:
-        """Параллельно обеспечить наличие или отсутствие строки в файле на всех хостах пула."""
-        return await self._fan_out_dict(
-            lambda _key, conn: conn.ensure_line(
-                remote_path=remote_path,
-                line=line,
-                state=state,
-                regex=regex,
-                create=create,
-                backup=backup,
-                mode=mode,
-                encoding=encoding,
-                dry_run=dry_run,
-            ),
-            batch_size=batch_size,
-            max_fail_ratio=max_fail_ratio,
-        )
-
-    async def ensure_file(
-        self,
-        remote_path: str | Path,
-        *,
-        state: Literal["present", "absent", "link"] = "present",
-        content: str | bytes | None = None,
-        target: str | Path | None = None,
-        mode: int | str | None = None,
-        owner: str | None = None,
-        group: str | None = None,
-        validate: str | None = None,
-        encoding: str = "utf-8",
-        sudo: bool = False,
-        atomic: bool = False,
-        dry_run: bool | None = None,
-        batch_size: int | None = None,
-        max_fail_ratio: float | None = None,
-    ) -> dict[str, EnsureResult]:
-        """Параллельно обеспечить состояние файла или симлинка на всех хостах пула."""
-        return await self._fan_out_dict(
-            lambda _key, conn: conn.ensure_file(
-                remote_path,
-                state=state,
-                content=content,
-                target=target,
-                mode=mode,
-                owner=owner,
-                group=group,
-                validate=validate,
-                encoding=encoding,
-                sudo=sudo,
-                atomic=atomic,
-                dry_run=dry_run,
-            ),
-            batch_size=batch_size,
-            max_fail_ratio=max_fail_ratio,
-        )
-
-    async def ensure_directory(
-        self,
-        remote_path: str | Path,
-        *,
-        state: Literal["present", "absent"] = "present",
-        mode: int | str | None = None,
-        owner: str | None = None,
-        group: str | None = None,
-        recurse: bool = False,
-        sudo: bool = False,
-        dry_run: bool | None = None,
-        batch_size: int | None = None,
-        max_fail_ratio: float | None = None,
-    ) -> dict[str, EnsureResult]:
-        """Параллельно обеспечить состояние директории на всех хостах пула."""
-        return await self._fan_out_dict(
-            lambda _key, conn: conn.ensure_directory(
-                remote_path,
-                state=state,
-                mode=mode,
-                owner=owner,
-                group=group,
-                recurse=recurse,
-                sudo=sudo,
-                dry_run=dry_run,
-            ),
-            batch_size=batch_size,
-            max_fail_ratio=max_fail_ratio,
-        )
-
-    async def ensure_user(
-        self,
-        username: str,
-        *,
-        state: Literal["present", "absent"] = "present",
-        uid: int | None = None,
-        group: str | None = None,
-        groups: Sequence[str] | None = None,
-        shell: str | None = None,
-        home: str | None = None,
-        create_home: bool = True,
-        system: bool = False,
-        sudo: bool = True,
-        dry_run: bool | None = None,
-        batch_size: int | None = None,
-        max_fail_ratio: float | None = None,
-    ) -> dict[str, EnsureResult]:
-        """Параллельно обеспечить состояние системного пользователя на всех хостах пула."""
-        return await self._fan_out_dict(
-            lambda _key, conn: conn.ensure_user(
-                username,
-                state=state,
-                uid=uid,
-                group=group,
-                groups=groups,
-                shell=shell,
-                home=home,
-                create_home=create_home,
-                system=system,
-                sudo=sudo,
-                dry_run=dry_run,
-            ),
-            batch_size=batch_size,
-            max_fail_ratio=max_fail_ratio,
-        )
-
-    async def ensure_authorized_key(
-        self,
-        user: str,
-        key: str,
-        *,
-        state: Literal["present", "absent"] = "present",
-        exclusive: bool = False,
-        sudo: bool = False,
-        dry_run: bool | None = None,
-        batch_size: int | None = None,
-        max_fail_ratio: float | None = None,
-    ) -> dict[str, EnsureResult]:
-        """Параллельно обеспечить наличие или отсутствие SSH-ключа на всех хостах пула."""
-        return await self._fan_out_dict(
-            lambda _key, conn: conn.ensure_authorized_key(
-                user,
-                key,
-                state=state,
-                exclusive=exclusive,
-                sudo=sudo,
-                dry_run=dry_run,
-            ),
-            batch_size=batch_size,
-            max_fail_ratio=max_fail_ratio,
-        )
-
-    async def ensure_systemd_unit(
-        self,
-        name: str,
-        *,
-        content: str | None = None,
-        state: Literal[
-            "present", "absent", "started", "stopped", "restarted"
-        ] = "present",
-        enabled: bool | None = None,
-        unit_dir: str = "/etc/systemd/system",
-        daemon_reload: bool = True,
-        sudo: bool = True,
-        dry_run: bool | None = None,
-        batch_size: int | None = None,
-        max_fail_ratio: float | None = None,
-    ) -> dict[str, EnsureResult]:
-        """Параллельно обеспечить состояние systemd unit-файла и сервиса на всех хостах пула."""
-        return await self._fan_out_dict(
-            lambda _key, conn: conn.ensure_systemd_unit(
-                name,
-                content=content,
-                state=state,
-                enabled=enabled,
-                unit_dir=unit_dir,
-                daemon_reload=daemon_reload,
-                sudo=sudo,
-                dry_run=dry_run,
-            ),
-            batch_size=batch_size,
-            max_fail_ratio=max_fail_ratio,
-        )
-
-    async def ensure_sysctl(
-        self,
-        name: str,
-        value: str | int,
-        *,
-        state: Literal["present", "absent"] = "present",
-        config_file: str = "/etc/sysctl.d/99-uniconn.conf",
-        reload: bool = True,
-        sudo: bool = True,
-        dry_run: bool | None = None,
-        batch_size: int | None = None,
-        max_fail_ratio: float | None = None,
-    ) -> dict[str, EnsureResult]:
-        """Параллельно обеспечить значение параметра ядра sysctl на всех хостах пула."""
-        return await self._fan_out_dict(
-            lambda _key, conn: conn.ensure_sysctl(
-                name,
-                value,
-                state=state,
-                config_file=config_file,
-                reload=reload,
-                sudo=sudo,
-                dry_run=dry_run,
-            ),
-            batch_size=batch_size,
-            max_fail_ratio=max_fail_ratio,
-        )
-
-    @contextlib.asynccontextmanager
-    async def use_cassette(
+    def use_cassette(
         self,
         path: str | Path,
         *,
@@ -1261,129 +749,19 @@ class ConnectionPool:
         normalize_temp: bool = True,
         allow_playback_repeats: bool = True,
         mask_secrets: bool = True,
-    ) -> AsyncIterator[dict[str, Any]]:
-        """Асинхронный контекстный менеджер записи/воспроизведения кассет для всего пула хостов.
+    ) -> contextlib.AbstractAsyncContextManager[dict[str, Any]]:
+        """Асинхронный контекстный менеджер записи/воспроизведения кассет для всего пула хостов."""
+        from ..transports.replay import pool_use_cassette
 
-        Если ``path`` оканчивается на ``.yaml``, ``.yml`` или ``.json`` — используется
-        единый общий файл кассеты для всех хостов пула. Иначе ``path`` трактуется
-        как директория, в которой для каждого хоста создаётся файл ``<dir>/<host>.yaml``.
-        """
-        import re as _re
-
-        from ..exceptions import CassetteError
-        from ..transports.replay.models import Cassette, RecordMode
-        from ..transports.replay.proxy import CassetteTransportProxy
-
-        target_path = Path(path)
-        rec_mode = RecordMode(mode)
-        is_single_file = target_path.suffix.lower() in (".yaml", ".yml", ".json")
-
-        conns_by_idx: dict[int, Connection] = {}
-        keys_by_idx: dict[int, str] = {}
-        for idx, target in enumerate(self._uris):
-            key = self._target_key(target)
-            keys_by_idx[idx] = key
-            if self._is_entered and idx in self._active_conns:
-                conns_by_idx[idx] = self._active_conns[idx]
-            else:
-                conn = self._build_conn(target, with_defaults=True)
-                conns_by_idx[idx] = conn
-                self._cassette_conns[idx] = conn
-
-        try:
-            if not is_single_file:
-                used_names: set[str] = set()
-                async with contextlib.AsyncExitStack() as stack:
-                    cassettes: dict[str, Cassette] = {}
-                    for idx, conn in conns_by_idx.items():
-                        key = keys_by_idx[idx]
-                        raw_host = key.split("://", 1)[-1]
-                        safe_name = (
-                            _re.sub(r"[^a-zA-Z0-9._-]+", "_", raw_host).strip("_")
-                            or f"host_{idx}"
-                        )
-                        if safe_name in used_names:
-                            safe_name = f"{safe_name}_{idx}"
-                        used_names.add(safe_name)
-                        host_file = target_path / f"{safe_name}.yaml"
-                        cass = await stack.enter_async_context(
-                            conn.use_cassette(
-                                host_file,
-                                mode=rec_mode,
-                                match_on=match_on,
-                                normalize_temp=normalize_temp,
-                                allow_playback_repeats=allow_playback_repeats,
-                                mask_secrets=mask_secrets,
-                            )
-                        )
-                        cassettes[key] = cass
-                    yield cassettes
-            else:
-                exists = target_path.is_file()
-                if exists and rec_mode != RecordMode.ALL:
-                    shared_cass = Cassette.load(target_path)
-                else:
-                    if rec_mode == RecordMode.NONE and not exists:
-                        raise CassetteError(
-                            f"Cassette file does not exist in RecordMode.NONE: {target_path}"
-                        )
-                    shared_cass = Cassette(
-                        transport="pool",
-                        host="pool",
-                        capabilities=["exec", "stream", "file", "shell"],
-                    )
-
-                base_interactions = [
-                    it.model_copy(deep=True) for it in shared_cass.interactions
-                ]
-                base_len = len(base_interactions)
-                orig_transports: dict[int, Any] = {}
-                proxies: dict[int, CassetteTransportProxy] = {}
-                cassettes = {}
-
-                for idx, conn in conns_by_idx.items():
-                    key = keys_by_idx[idx]
-                    orig = conn.transport
-                    orig_transports[idx] = orig
-                    host_cass = Cassette(
-                        transport=orig.name,
-                        host=conn.config.host or key,
-                        capabilities=list(shared_cass.capabilities),
-                        interactions=[
-                            it.model_copy(deep=True) for it in base_interactions
-                        ],
-                    )
-                    proxy = CassetteTransportProxy(
-                        config=conn.config,
-                        cassette=host_cass,
-                        wrapped=orig,
-                        mode=rec_mode,
-                        cassette_exists=exists,
-                        match_on=match_on,
-                        normalize_temp=normalize_temp,
-                        allow_playback_repeats=allow_playback_repeats,
-                        mask_secrets=mask_secrets,
-                    )
-                    conn.swap_transport(proxy)
-                    proxies[idx] = proxy
-                    cassettes[key] = host_cass
-
-                try:
-                    yield cassettes
-                finally:
-                    any_dirty = False
-                    new_items: list[Any] = []
-                    for idx, conn in conns_by_idx.items():
-                        proxy = proxies[idx]
-                        if proxy.is_dirty:
-                            any_dirty = True
-                            new_items.extend(proxy.cassette.interactions[base_len:])
-                        conn.swap_transport(orig_transports[idx])
-                    if any_dirty:
-                        shared_cass.interactions = [*base_interactions, *new_items]
-                        shared_cass.save(target_path)
-        finally:
-            self._cassette_conns.clear()
+        return pool_use_cassette(
+            self,
+            path,
+            mode=mode,
+            match_on=match_on,
+            normalize_temp=normalize_temp,
+            allow_playback_repeats=allow_playback_repeats,
+            mask_secrets=mask_secrets,
+        )
 
     def stream(
         self,
@@ -1399,4 +777,3 @@ class ConnectionPool:
         from ..sync.pool import SyncConnectionPool
 
         return SyncConnectionPool(self)
-

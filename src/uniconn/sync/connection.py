@@ -23,9 +23,6 @@ from ..core.context import CwdContext, EnvContext, ExecutionContext
 from ..core.pipeline import CommandPipeline, HookCallback, HookEvent
 from ..core.resilience import CircuitBreaker, RateLimiter
 from ..services.facts_models import FactSpec
-from ..services.files import FileOperationsService
-from ..services.provisioning import StateManagementService
-from ..services.tunnels import TunnelService
 from ..transports.base import BaseTransport
 from .services import (
     SyncDiagnosticSession,
@@ -43,7 +40,14 @@ if TYPE_CHECKING:
 
 
 class SyncConnection(SyncProxyMixin):
-    """Синхронная обёртка над async Connection на базе ``EventLoopPortal``."""
+    """Синхронная обёртка над async Connection на базе ``EventLoopPortal``.
+
+    Предоставляет ядро синхронного выполнения команд и интерактивных сессий,
+    а также модульные доменные пространства имён:
+        - ``sync_conn.files`` (``SyncFileOperationsService``)
+        - ``sync_conn.state`` (``SyncStateManagementService``)
+        - ``sync_conn.tunnels`` (``SyncTunnelService``)
+    """
 
     def __init__(self, async_conn: Connection) -> None:
         self._async_conn = async_conn
@@ -340,55 +344,6 @@ class SyncConnection(SyncProxyMixin):
     run_script = sync_method(Connection.run_script)
     gather_facts = sync_method(Connection.gather_facts)
     temp_dir = sync_context(Connection.temp_dir)
-
-    # ─── Файловые операции и туннели (делегация к self.files / self.tunnels) ─
-
-    read_file = sync_method(FileOperationsService.read_file, delegate_attr="files")
-    write_file = sync_method(FileOperationsService.write_file, delegate_attr="files")
-    checksum = sync_method(FileOperationsService.checksum, delegate_attr="files")
-    exists = sync_method(FileOperationsService.exists, delegate_attr="files")
-    mkdir = sync_method(FileOperationsService.mkdir, delegate_attr="files")
-    remove_file = sync_method(FileOperationsService.remove_file, delegate_attr="files")
-    upload = sync_method(FileOperationsService.upload, delegate_attr="files")
-    download = sync_method(FileOperationsService.download, delegate_attr="files")
-    chmod = sync_method(FileOperationsService.chmod, delegate_attr="files")
-    stat = sync_method(FileOperationsService.stat, delegate_attr="files")
-    listdir = sync_method(FileOperationsService.listdir, delegate_attr="files")
-    write_template = sync_method(
-        FileOperationsService.write_template, delegate_attr="files"
-    )
-    sync_dir = sync_method(FileOperationsService.sync_dir, delegate_attr="files")
-
-    forward_local_port = sync_context(
-        TunnelService.forward_local_port, delegate_attr="tunnels", cast_fn=int
-    )
-    forward_remote_port = sync_context(
-        TunnelService.forward_remote_port, delegate_attr="tunnels", cast_fn=int
-    )
-
-    # ─── Идемпотентное управление состоянием (делегация к self.state) ─
-
-    ensure_package = sync_method(
-        StateManagementService.ensure_package, delegate_attr="state"
-    )
-    ensure_service = sync_method(
-        StateManagementService.ensure_service, delegate_attr="state"
-    )
-    ensure_line = sync_method(StateManagementService.ensure_line, delegate_attr="state")
-    ensure_file = sync_method(StateManagementService.ensure_file, delegate_attr="state")
-    ensure_directory = sync_method(
-        StateManagementService.ensure_directory, delegate_attr="state"
-    )
-    ensure_user = sync_method(StateManagementService.ensure_user, delegate_attr="state")
-    ensure_authorized_key = sync_method(
-        StateManagementService.ensure_authorized_key, delegate_attr="state"
-    )
-    ensure_systemd_unit = sync_method(
-        StateManagementService.ensure_systemd_unit, delegate_attr="state"
-    )
-    ensure_sysctl = sync_method(
-        StateManagementService.ensure_sysctl, delegate_attr="state"
-    )
 
     # ─── Специализированные синхронные сессии и жизненный цикл ─────
 

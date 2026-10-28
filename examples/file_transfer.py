@@ -19,14 +19,14 @@ async def basic_file_transfer():
     """Базовая передача файлов."""
     async with Connection.from_uri("ssh://user:pass@host") as conn:
         # Загрузка файла на сервер
-        await conn.upload(
+        await conn.files.upload(
             "/local/config.yaml",
             "/etc/app/config.yaml",
         )
         print("Uploaded config.yaml")
 
         # Скачивание файла
-        await conn.download(
+        await conn.files.download(
             "/var/log/app.log",
             "/local/app.log",
         )
@@ -39,7 +39,7 @@ async def recursive_transfer():
     """Рекурсивная передача директорий."""
     async with Connection.from_uri("ssh://user:pass@host") as conn:
         # Явная рекурсия
-        await conn.upload(
+        await conn.files.upload(
             "/local/project",
             "/remote/project",
             recurse=True,
@@ -47,7 +47,7 @@ async def recursive_transfer():
         print("Uploaded project directory recursively")
 
         # Автоопределение (local_path — директория → recurse=True)
-        await conn.download(
+        await conn.files.download(
             "/var/log",
             "/local/logs",
         )
@@ -60,15 +60,15 @@ async def file_permissions():
     """Смена прав доступа к файлам."""
     async with Connection.from_uri("ssh://user:pass@host") as conn:
         # Исполняемый скрипт
-        await conn.chmod("/opt/scripts/deploy.sh", 0o755)
+        await conn.files.chmod("/opt/scripts/deploy.sh", 0o755)
         print("deploy.sh: rwxr-xr-x")
 
         # Приватный конфиг
-        await conn.chmod("/etc/app/secrets.yaml", 0o600)
+        await conn.files.chmod("/etc/app/secrets.yaml", 0o600)
         print("secrets.yaml: rw-------")
 
         # Конфиг приложения
-        await conn.chmod("/etc/app/config.yaml", 0o644)
+        await conn.files.chmod("/etc/app/config.yaml", 0o644)
         print("config.yaml: rw-r--r--")
 
 
@@ -77,7 +77,7 @@ async def file_permissions():
 async def file_metadata():
     """Получение метаданных файлов."""
     async with Connection.from_uri("ssh://user:pass@host") as conn:
-        info = await conn.stat("/var/log/syslog")
+        info = await conn.files.stat("/var/log/syslog")
 
         print("File: /var/log/syslog")
         print(f"  Size:     {info['size']:,} bytes")
@@ -92,7 +92,7 @@ async def file_metadata():
 async def directory_listing():
     """Список файлов в директории."""
     async with Connection.from_uri("ssh://user:pass@host") as conn:
-        files = await conn.listdir("/var/log")
+        files = await conn.files.listdir("/var/log")
         print("Files in /var/log:")
         for name in files:
             print(f"  {name}")

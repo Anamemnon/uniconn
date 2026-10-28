@@ -31,13 +31,13 @@ async def main() -> None:
         async with conn.temp_dir(prefix="uniconn_demo_") as tmp:
             print(f"Created temp_dir: {tmp}")
             async with conn.cd(tmp):
-                await conn.mkdir("releases/v1", mode=0o755)
-                await conn.write_file("releases/v1/version.txt", "0.5.0\n")
-                exists = await conn.exists("releases/v1/version.txt")
-                content = (await conn.read_file("releases/v1/version.txt"))
+                await conn.files.mkdir("releases/v1", mode=0o755)
+                await conn.files.write_file("releases/v1/version.txt", "0.5.0\n")
+                exists = await conn.files.exists("releases/v1/version.txt")
+                content = (await conn.files.read_file("releases/v1/version.txt"))
                 assert isinstance(content, str)
                 print(f"File exists: {exists}, content: {content.strip()}")
-        print(f"After exit temp_dir exists: {await conn.exists(tmp)}")
+        print(f"After exit temp_dir exists: {await conn.files.exists(tmp)}")
 
     print("\n=== 3. Мульти-хостовый Inventory и переиспользуемый ConnectionPool ===")
     inventory_yaml = """

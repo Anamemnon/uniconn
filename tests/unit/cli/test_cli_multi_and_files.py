@@ -120,34 +120,34 @@ async def test_local_exists_mkdir_and_temp_dir():
         async with conn.temp_dir(prefix="uniconn_v050_") as tmp:
             tmp_path = Path(tmp)
             assert tmp_path.is_dir()
-            assert await conn.exists(tmp) is True
+            assert await conn.files.exists(tmp) is True
 
             async with conn.cd(tmp):
-                assert await conn.exists("nested/sub") is False
-                await conn.mkdir("nested/sub", mode=0o755)
-                assert await conn.exists("nested/sub") is True
+                assert await conn.files.exists("nested/sub") is False
+                await conn.files.mkdir("nested/sub", mode=0o755)
+                assert await conn.files.exists("nested/sub") is True
 
-                await conn.write_file("nested/sub/hello.txt", "world")
-                assert await conn.exists("nested/sub/hello.txt") is True
-                assert await conn.read_file("nested/sub/hello.txt") == "world"
+                await conn.files.write_file("nested/sub/hello.txt", "world")
+                assert await conn.files.exists("nested/sub/hello.txt") is True
+                assert await conn.files.read_file("nested/sub/hello.txt") == "world"
 
         # После выхода из async with conn.temp_dir() директория удалена
         assert not tmp_path.exists()
-        assert await conn.exists(tmp) is False
+        assert await conn.files.exists(tmp) is False
 
 
 def test_sync_exists_mkdir_and_temp_dir():
-    """SyncConnection поддерживает exists(), mkdir() и контекстный менеджер temp_dir()."""
+    """SyncConnection поддерживает files.exists(), files.mkdir() и контекстный менеджер temp_dir()."""
     with Connection.from_uri("local://").to_sync() as conn:
         with conn.temp_dir(prefix="uniconn_sync_") as tmp:
-            assert conn.exists(tmp) is True
+            assert conn.files.exists(tmp) is True
             with conn.cd(tmp):
-                conn.mkdir("configs")
-                conn.write_file("configs/app.json", '{"port": 8080}')
-                assert conn.exists("configs/app.json") is True
+                conn.files.mkdir("configs")
+                conn.files.write_file("configs/app.json", '{"port": 8080}')
+                assert conn.files.exists("configs/app.json") is True
                 res = conn.run(["cat", "configs/app.json"])
                 assert res.json() == {"port": 8080}
-        assert conn.exists(tmp) is False
+        assert conn.files.exists(tmp) is False
 
 
 @pytest.mark.asyncio
@@ -270,31 +270,37 @@ hosts:
 
 @pytest.mark.asyncio
 async def test_pool_upload_and_download():
-    """ConnectionPool.upload() и download() параллельно передают файлы на все хосты."""
+    """ConnectionPool.files.upload() и files.download() параллельно передают файлы на все хосты."""
     c1 = MagicMock(spec=Connection)
     c1.config = ConnectionConfig(transport="ssh", host="host1")
-    c1.upload = AsyncMock()
-    c1.download = AsyncMock()
+    c1.files = MagicMock()
+    c1.files.upload = AsyncMock()
+    c1.files.download = AsyncMock()
     c1.__aenter__ = AsyncMock(return_value=c1)
     c1.__aexit__ = AsyncMock(return_value=None)
 
     c2 = MagicMock(spec=Connection)
     c2.config = ConnectionConfig(transport="ssh", host="host2")
-    c2.upload = AsyncMock()
-    c2.download = AsyncMock()
+    c2.files = MagicMock()
+    c2.files.upload = AsyncMock()
+    c2.files.download = AsyncMock()
     c2.__aenter__ = AsyncMock(return_value=c2)
     c2.__aexit__ = AsyncMock(return_value=None)
 
     async with ConnectionPool([c1, c2]) as pool:
-        await pool.upload("/local/app.tar.gz", "/remote/app.tar.gz")
-        c1.upload.assert_awaited_once_with(
-            "/local/app.tar.gz", "/remote/app.tar.gz", recurse=False
+        await pool.files.upload("/local/app.tar.gz", "/remote/app.tar.gz")
+        c1.files.upload.assert_awaited_once_with(
+            "/local/app.tar.gz",
+            "/remote/app.tar.gz",
+            recurse=False,
         )
-        c2.upload.assert_awaited_once_with(
-            "/local/app.tar.gz", "/remote/app.tar.gz", recurse=False
+        c2.files.upload.assert_awaited_once_with(
+            "/local/app.tar.gz",
+            "/remote/app.tar.gz",
+            recurse=False,
         )
 
-        saved = await pool.download("/var/log/syslog", "/tmp/logs/{host}.log")
+        saved = await pool.files.download("/var/log/syslog", "/tmp/logs/{host}.log")
         assert saved == {
             "host1": "/tmp/logs/host1.log",
             "host2": "/tmp/logs/host2.log",

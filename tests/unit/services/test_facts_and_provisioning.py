@@ -208,18 +208,18 @@ class TestIdempotentEnsureMethods:
         cfg_file = tmp_path / "app.conf"
         async with Connection.from_uri("local://") as conn:
             # 1. Создание файла с нуля
-            res1 = await conn.ensure_line(cfg_file, "listen_port = 8080")
+            res1 = await conn.state.ensure_line(cfg_file, "listen_port = 8080")
             assert isinstance(res1, EnsureResult)
             assert res1.ok is True
             assert res1.changed is True
             assert cfg_file.read_text(encoding="utf-8") == "listen_port = 8080\n"
 
             # 2. Повторный вызов — идемпотентно (changed=False)
-            res2 = await conn.ensure_line(cfg_file, "listen_port = 8080")
+            res2 = await conn.state.ensure_line(cfg_file, "listen_port = 8080")
             assert res2.changed is False
 
             # 3. Замена по регулярному выражению с созданием .bak
-            res3 = await conn.ensure_line(
+            res3 = await conn.state.ensure_line(
                 cfg_file,
                 "listen_port = 9090",
                 regex=r"^listen_port\s*=",
@@ -230,12 +230,12 @@ class TestIdempotentEnsureMethods:
             assert (tmp_path / "app.conf.bak").read_text(encoding="utf-8") == "listen_port = 8080\n"
 
             # 4. Удаление строки (state="absent")
-            res4 = await conn.ensure_line(cfg_file, "listen_port = 9090", state="absent")
+            res4 = await conn.state.ensure_line(cfg_file, "listen_port = 9090", state="absent")
             assert res4.changed is True
             assert cfg_file.read_text(encoding="utf-8") == ""
 
             # 5. Повторное удаление — changed=False
-            res5 = await conn.ensure_line(cfg_file, "listen_port = 9090", state="absent")
+            res5 = await conn.state.ensure_line(cfg_file, "listen_port = 9090", state="absent")
             assert res5.changed is False
             assert res5.to_dict()["state"] == "absent"
 
@@ -254,12 +254,12 @@ class TestIdempotentEnsureMethods:
             )
             conn.run = run_mock  # type: ignore[method-assign]
 
-            res_install = await conn.ensure_package("htop", state="present", manager="apt", update_cache=True)
+            res_install = await conn.state.ensure_package("htop", state="present", manager="apt", update_cache=True)
             assert res_install.ok is True
             assert res_install.changed is True
             assert "apt" in res_install.details
 
-            res_noop = await conn.ensure_package("htop", state="present", manager="apt")
+            res_noop = await conn.state.ensure_package("htop", state="present", manager="apt")
             assert res_noop.ok is True
             assert res_noop.changed is False
 
@@ -278,7 +278,7 @@ class TestIdempotentEnsureMethods:
             )
             conn.run = run_mock  # type: ignore[method-assign]
 
-            res = await conn.ensure_service("nginx", state="started", enabled=True)
+            res = await conn.state.ensure_service("nginx", state="started", enabled=True)
             assert res.ok is True
             assert res.changed is True
             assert "start" in res.details
@@ -337,7 +337,7 @@ class TestConnectionPoolStreamAndSyncPool:
             assert set(facts_map.keys()) == {"sync-node-1", "sync-node-2"}
             assert facts_map["sync-node-1"].cpu_count >= 1
 
-            ens_map = sync_pool.ensure_line(target_file, "ENABLE_METRICS=1")
+            ens_map = sync_pool.state.ensure_line(target_file, "ENABLE_METRICS=1")
             assert len(ens_map) == 2
             assert target_file.read_text(encoding="utf-8") == "ENABLE_METRICS=1\n"
 

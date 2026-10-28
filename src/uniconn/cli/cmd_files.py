@@ -88,7 +88,7 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                     max_fail_ratio=max_fail_ratio,
                 )
                 target_labels = [pool._target_key(t) for t in pool._uris]
-                await pool.upload(
+                await pool.files.upload(
                     local_path, remote_path, recurse=recurse, **({"verify": True} if verify else {})
                 )
 
@@ -186,7 +186,7 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                     batch_size=batch_size,
                     max_fail_ratio=max_fail_ratio,
                 )
-                saved = await pool.download(
+                saved = await pool.files.download(
                     remote_path, local_path, recurse=recurse, **({"verify": True} if verify else {})
                 )
 
@@ -290,7 +290,7 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                     batch_size=batch_size,
                     max_fail_ratio=max_fail_ratio,
                 )
-                results = await pool.sync_dir(
+                results = await pool.files.sync_dir(
                     local_dir=local_dir,
                     remote_dir=remote_dir,
                     delete=delete,
@@ -430,7 +430,7 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                     batch_size=batch_size,
                     max_fail_ratio=max_fail_ratio,
                 )
-                rendered_map = await pool.write_template(
+                rendered_map = await pool.files.write_template(
                     remote_path=remote_path,
                     template_str_or_path=template_path,
                     context=ctx,
@@ -510,7 +510,7 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                 pool = build_cli_pool(
                     cli_pkg, host_uris, inventory, group, max_concurrent, logger
                 )
-                digests = await pool.checksum(
+                digests = await pool.files.checksum(
                     remote_path, algorithm=alg_val, sudo=sudo
                 )
                 if output_format == "json":

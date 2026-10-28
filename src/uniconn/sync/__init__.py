@@ -6,6 +6,8 @@ from .pool import SyncConnectionPool
 from .services import (
     SyncDiagnosticSession,
     SyncFileOperationsService,
+    SyncPoolFileOperationsService,
+    SyncPoolStateManagementService,
     SyncStateManagementService,
     SyncTunnelService,
 )
@@ -16,6 +18,8 @@ __all__ = [
     "SyncConnectionPool",
     "SyncDiagnosticSession",
     "SyncFileOperationsService",
+    "SyncPoolFileOperationsService",
+    "SyncPoolStateManagementService",
     "SyncShellSession",
     "SyncStateManagementService",
     "SyncTunnelService",

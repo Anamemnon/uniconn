@@ -9,12 +9,22 @@ from typing import Any
 
 import pytest
 
-from uniconn import Connection, ConnectionPool, SyncConnection
+from uniconn import (
+    Connection,
+    ConnectionPool,
+    PoolFileOperationsService,
+    PoolStateManagementService,
+    SyncConnection,
+    SyncFileOperationsService,
+    SyncPoolFileOperationsService,
+    SyncStateManagementService,
+)
 from uniconn.core.bridge import (
     EventLoopPortal,
     SyncProxyMixin,
     async_delegate,
     context_delegate,
+    pool_fan_out_dict,
     sync_context,
     sync_iter,
     sync_method,
@@ -22,37 +32,53 @@ from uniconn.core.bridge import (
 
 
 def test_descriptors_preserve_docstrings_and_names() -> None:
-    """Дескрипторы сохраняют __name__ и __doc__ исходных методов."""
-    assert Connection.upload.__name__ == "upload"
-    assert Connection.upload.__doc__ is not None
-    assert "SHA-256" in Connection.upload.__doc__
+    """Дескрипторы сохраняют __name__ и __doc__ исходных методов и не протекают на верхний уровень фасадов."""
+    assert SyncFileOperationsService.upload.__name__ == "upload"
+    assert SyncFileOperationsService.upload.__doc__ is not None
+    assert "SHA-256" in SyncFileOperationsService.upload.__doc__
+
+    assert PoolFileOperationsService.checksum.__name__ == "checksum"
+    assert PoolFileOperationsService.checksum.__doc__ is not None
+
+    assert PoolStateManagementService.ensure_package.__name__ == "ensure_package"
+    assert PoolStateManagementService.ensure_package.__doc__ is not None
 
     assert SyncConnection.run.__name__ == "run"
     assert SyncConnection.run.__doc__ is not None
     assert "CommandPipeline" in SyncConnection.run.__doc__
 
-    assert SyncConnection.ensure_package.__name__ == "ensure_package"
-    assert SyncConnection.ensure_package.__doc__ is not None
+    assert SyncStateManagementService.ensure_package.__name__ == "ensure_package"
+    assert SyncStateManagementService.ensure_package.__doc__ is not None
+
+    assert SyncPoolFileOperationsService.upload.__name__ == "upload"
+    assert SyncPoolFileOperationsService.upload.__doc__ is not None
+
+    # Проверка отсутствия дублирующих доменных алиасов на верхнем уровне Connection и ConnectionPool
+    for removed_attr in ("upload", "download", "write_file", "ensure_package", "forward_local_port"):
+        assert not hasattr(Connection, removed_attr)
+        assert not hasattr(SyncConnection, removed_attr)
+        assert not hasattr(ConnectionPool, removed_attr)
 
 
 @pytest.mark.asyncio
 async def test_class_level_descriptor_invocation(tmp_path: Path) -> None:
-    """Вызов дескрипторов через класс (Connection.write_file(conn, ...)) работает корректно."""
+    """Вызов дескрипторов через класс (PoolFileOperationsService.write_file(pool.files, ...)) работает корректно."""
     target = tmp_path / "cls_call.txt"
-    async with Connection.from_uri("local://") as conn:
-        await Connection.write_file(conn, target, "from_class")
-        content = await Connection.read_file(conn, target)
-        assert content == "from_class"
+    async with ConnectionPool(["local://"]) as pool:
+        await PoolFileOperationsService.write_file(pool.files, target, "from_class")
+        content_map = await PoolFileOperationsService.read_file(pool.files, target)
+        assert content_map["local://"] == "from_class"
+        _ = pool_fan_out_dict
 
 
 def test_sync_class_level_descriptor_invocation(tmp_path: Path) -> None:
-    """Вызов sync-дескрипторов через класс (SyncConnection.run(sync_conn, ...)) работает корректно."""
+    """Вызов sync-дескрипторов через класс (SyncConnection.run, SyncFileOperationsService.write_file) работает."""
     target = tmp_path / "sync_cls.txt"
     with SyncConnection.from_uri("local://") as sync_conn:
         res = SyncConnection.run(sync_conn, "echo class_sync")
         assert res.text == "class_sync"
-        SyncConnection.write_file(sync_conn, target, "sync_payload")
-        assert SyncConnection.read_file(sync_conn, target) == "sync_payload"
+        SyncFileOperationsService.write_file(sync_conn.files, target, "sync_payload")
+        assert SyncFileOperationsService.read_file(sync_conn.files, target) == "sync_payload"
         lines = list(SyncConnection.stream(sync_conn, "echo streamed_line"))
         assert any("streamed_line" in line for line in lines)
         with SyncConnection.temp_dir(sync_conn, prefix="desc_") as tmp_d:

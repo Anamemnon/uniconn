@@ -586,7 +586,7 @@ class DiagnosticSession:
                 remote_dir = self._config.forward_remote_dir.rstrip("/")
                 remote_arch = f"{remote_dir}/{Path(resolved_archive).name}"
                 try:
-                    await fwd_conn.upload(resolved_archive, remote_arch)
+                    await fwd_conn.files.upload(resolved_archive, remote_arch)
                 except Exception as exc:
                     logger.warning(
                         f"Не удалось загрузить архив {resolved_archive} на резервный хост: {exc}"

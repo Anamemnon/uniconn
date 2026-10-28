@@ -270,7 +270,7 @@ async def test_dry_run_mode_skips_execution_and_triggers_hooks(tmp_path: Path):
         assert res.stdout == ""
         assert not marker_file.exists()
 
-        await conn.write_file(str(marker_file), "data")
+        await conn.files.write_file(str(marker_file), "data")
         assert not marker_file.exists()
 
         raw = await conn.run_bytes("echo bytes")
@@ -286,15 +286,15 @@ async def test_dry_run_mode_skips_execution_and_triggers_hooks(tmp_path: Path):
 async def test_local_read_write_file_and_run_bytes(tmp_path: Path):
     """read_file, write_file (с mode и conn.cd) и run_bytes корректно работают на LocalTransport."""
     async with Connection.from_uri("local://") as conn, conn.cd(tmp_path):
-        await conn.write_file("config.yaml", "key: value\n", mode=0o600)
+        await conn.files.write_file("config.yaml", "key: value\n", mode=0o600)
         target = tmp_path / "config.yaml"
         assert target.exists()
         assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
-        text = await conn.read_file("config.yaml")
+        text = await conn.files.read_file("config.yaml")
         assert text == "key: value\n"
 
-        raw_bytes = await conn.read_file("config.yaml", encoding=None)
+        raw_bytes = await conn.files.read_file("config.yaml", encoding=None)
         assert raw_bytes == b"key: value\n"
 
         # Проверка бинарного вывода, не являющегося валидным UTF-8
@@ -354,10 +354,10 @@ async def test_ssh_transport_read_write_file_and_run_bytes():
 
 
 def test_sync_connection_read_write_and_run_bytes(tmp_path: Path):
-    """SyncConnection поддерживает write_file, read_file и run_bytes."""
+    """SyncConnection поддерживает files.write_file, files.read_file и run_bytes."""
     target = tmp_path / "sync.txt"
     with Connection.from_uri("local://").to_sync() as conn:
-        conn.write_file(str(target), "sync content")
-        assert conn.read_file(str(target)) == "sync content"
+        conn.files.write_file(str(target), "sync content")
+        assert conn.files.read_file(str(target)) == "sync content"
         raw = conn.run_bytes(["python3", "-c", "import sys; sys.stdout.buffer.write(b'raw_ok')"])
         assert raw == b"raw_ok"

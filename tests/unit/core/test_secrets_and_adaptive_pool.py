@@ -177,19 +177,19 @@ class TestDockerAndPodmanTransport:
         monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
 
         async with Connection.from_uri("docker://app-ctr") as conn:
-            content = await conn.read_file("/etc/app.conf")
+            content = await conn.files.read_file("/etc/app.conf")
             assert content == "port=8080\n"
 
-            st = await conn.stat("/etc/app.conf")
+            st = await conn.files.stat("/etc/app.conf")
             assert st["size"] == 10
             assert st["is_file"] is True
             assert st["permissions"] == oct(0o100644)
 
-            items = await conn.listdir("/etc")
+            items = await conn.files.listdir("/etc")
             assert items == ["app.conf", "logs"]
 
             # Dry-run ensure_file computes unified diff against container file
-            ens = await conn.ensure_file("/etc/app.conf", content="port=9090\n", mode=0o644, dry_run=True)
+            ens = await conn.state.ensure_file("/etc/app.conf", content="port=9090\n", mode=0o644, dry_run=True)
             assert ens.changed is True
             assert ens.diff is not None
             assert "-port=8080" in ens.diff
@@ -197,8 +197,8 @@ class TestDockerAndPodmanTransport:
 
             local_src = tmp_path / "upload.txt"
             local_src.write_text("hello", encoding="utf-8")
-            await conn.upload(local_src, "/tmp/upload.txt")
-            await conn.download("/tmp/upload.txt", tmp_path / "downloaded.txt")
+            await conn.files.upload(local_src, "/tmp/upload.txt")
+            await conn.files.download("/tmp/upload.txt", tmp_path / "downloaded.txt")
             assert len(cp_calls) == 2
 
 
@@ -249,7 +249,7 @@ class TestKubectlTransport:
         monkeypatch.setattr("asyncio.create_subprocess_exec", fake_exec)
 
         async with Connection.from_uri("kubectl://default/api-pod") as conn:
-            async with conn.forward_local_port("127.0.0.1", 8080, local_port=0) as bound_port:
+            async with conn.tunnels.forward_local_port("127.0.0.1", 8080, local_port=0) as bound_port:
                 assert bound_port == 45123
 
     async def test_kubectl_with_use_cassette_record_and_replay(

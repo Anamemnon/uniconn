@@ -245,7 +245,7 @@ class TestSSHPortForwarding:
         conn = Connection.from_config(cfg)
         conn._transport = transport
 
-        async with conn.forward_local_port(
+        async with conn.tunnels.forward_local_port(
             remote_host="10.0.0.5",
             remote_port=5432,
             local_host="127.0.0.1",
@@ -259,7 +259,7 @@ class TestSSHPortForwarding:
         local_listener.close.assert_called_once()
         local_listener.wait_closed.assert_awaited_once()
 
-        async with conn.forward_remote_port(
+        async with conn.tunnels.forward_remote_port(
             remote_host="0.0.0.0",
             remote_port=0,
             local_host="127.0.0.1",
@@ -276,7 +276,7 @@ class TestSSHPortForwarding:
         # Проверка синхронной обёртки SyncConnection
         sync_conn = conn.to_sync()
         try:
-            with sync_conn.forward_local_port("10.0.0.5", 5432) as sync_port:
+            with sync_conn.tunnels.forward_local_port("10.0.0.5", 5432) as sync_port:
                 assert sync_port == 54321
         finally:
             sync_conn.close()
@@ -286,7 +286,7 @@ class TestSSHPortForwarding:
         """Для неподдерживаемых транспортов (local://) выбрасывается NotImplementedError."""
         async with Connection.from_uri("local://") as conn:
             with pytest.raises(NotImplementedError, match="forward_local_port not supported"):
-                async with conn.forward_local_port("127.0.0.1", 5432):
+                async with conn.tunnels.forward_local_port("127.0.0.1", 5432):
                     pass
 
 
@@ -309,7 +309,7 @@ class TestSmartSyncDirAndTemplating:
 
         async with Connection.from_uri("local://") as conn:
             # 1. Dry-run ничего не записывает на диск
-            dry_res = await conn.sync_dir(
+            dry_res = await conn.files.sync_dir(
                 src, dst, exclude=["*.pyc", ".git"], dry_run=True
             )
             assert dry_res.dry_run is True
@@ -317,7 +317,7 @@ class TestSmartSyncDirAndTemplating:
             assert not dst.exists()
 
             # 2. Первая реальная синхронизация загружает 2 файла
-            res1 = await conn.sync_dir(src, dst, exclude=["*.pyc", ".git"])
+            res1 = await conn.files.sync_dir(src, dst, exclude=["*.pyc", ".git"])
             assert isinstance(res1, SyncResult)
             assert sorted(res1.uploaded) == ["app.py", "sub/worker.py"]
             assert res1.skipped == []
@@ -327,7 +327,7 @@ class TestSmartSyncDirAndTemplating:
             assert not (dst / ".git").exists()
 
             # 3. Повторная синхронизация без изменений пропускает все файлы
-            res2 = await conn.sync_dir(src, dst, exclude=["*.pyc", ".git"])
+            res2 = await conn.files.sync_dir(src, dst, exclude=["*.pyc", ".git"])
             assert res2.uploaded == []
             assert sorted(res2.skipped) == ["app.py", "sub/worker.py"]
 
@@ -337,7 +337,7 @@ class TestSmartSyncDirAndTemplating:
             os.utime(src / "app.py", (future_mtime, future_mtime))
             (dst / "orphan.txt").write_text("remove me", encoding="utf-8")
 
-            res3 = await conn.sync_dir(
+            res3 = await conn.files.sync_dir(
                 src, dst, delete=True, exclude=["*.pyc", ".git"]
             )
             assert res3.uploaded == ["app.py"]
@@ -378,10 +378,10 @@ class TestSmartSyncDirAndTemplating:
 
     @pytest.mark.asyncio
     async def test_write_template_connection_sync_and_pool(self, tmp_path: Path) -> None:
-        """write_template и sync_dir работают в Connection, SyncConnection и ConnectionPool."""
+        """write_template и sync_dir работают в Connection.files, SyncConnection.files и ConnectionPool.files."""
         cfg_file = tmp_path / "nginx.conf"
         async with Connection.from_uri("local://") as conn:
-            rendered = await conn.write_template(
+            rendered = await conn.files.write_template(
                 cfg_file,
                 "user $user;\nworker_processes $workers;\n",
                 context={"user": "www-data", "workers": 4},
@@ -394,7 +394,7 @@ class TestSmartSyncDirAndTemplating:
         # SyncConnection
         sync_target = tmp_path / "sync_service.conf"
         with Connection.from_uri("local://").to_sync() as sconn:
-            sconn.write_template(
+            sconn.files.write_template(
                 sync_target,
                 "port=$port\n",
                 context={"port": 7070},
@@ -404,7 +404,7 @@ class TestSmartSyncDirAndTemplating:
         # ConnectionPool
         pool_target = tmp_path / "pool_out.conf"
         pool = ConnectionPool(["local://?node=1", "local://?node=2"])
-        pool_res = await pool.write_template(
+        pool_res = await pool.files.write_template(
             pool_target,
             "cluster=$cluster\n",
             context={"cluster": "eu-west"},

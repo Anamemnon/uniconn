@@ -19,7 +19,7 @@ async def test_write_file_atomic_local(tmp_path: Path) -> None:
     target.write_text("old-data\n", encoding="utf-8")
 
     async with Connection.from_uri("local://localhost") as conn:
-        await conn.write_file(target, "new-atomic-data\n", atomic=True)
+        await conn.files.write_file(target, "new-atomic-data\n", atomic=True)
 
     assert target.read_text(encoding="utf-8") == "new-atomic-data\n"
     # Временных файлов в директории остаться не должно
@@ -33,7 +33,7 @@ async def test_write_file_atomic_local_posix_permissions(tmp_path: Path) -> None
     """write_file(..., atomic=True) выставляет права на POSIX-файловой системе."""
     target = tmp_path / "config_posix.conf"
     async with Connection.from_uri("local://localhost") as conn:
-        await conn.write_file(target, "posix-data\n", mode=0o640, atomic=True)
+        await conn.files.write_file(target, "posix-data\n", mode=0o640, atomic=True)
     assert (target.stat().st_mode & 0o777) == 0o640
 
 
@@ -50,7 +50,7 @@ async def test_write_file_atomic_remote(mocker: pytest.MonkeyPatch) -> None:
         new=AsyncMock(return_value=Result(exit_code=0, stdout="", stderr="", duration=0.01, command="mv")),
     )
 
-    await conn.write_file("/etc/nginx/nginx.conf", "worker_processes auto;\n", mode=0o644, atomic=True)
+    await conn.files.write_file("/etc/nginx/nginx.conf", "worker_processes auto;\n", mode=0o644, atomic=True)
 
     assert write_mock.await_count == 1
     staged_path, payload = write_mock.await_args.args[:2]
@@ -70,7 +70,7 @@ async def test_write_template_atomic_local(tmp_path: Path) -> None:
     """write_template(..., atomic=True) рендерит шаблон и атомарно записывает результат."""
     target = tmp_path / "app.ini"
     async with Connection.from_uri("local://localhost") as conn:
-        rendered = await conn.write_template(
+        rendered = await conn.files.write_template(
             target,
             "port = ${port}\n",
             context={"port": 8080},
@@ -86,7 +86,7 @@ async def test_write_template_atomic_local_posix_permissions(tmp_path: Path) -> 
     """write_template(..., atomic=True) выставляет права на POSIX-файловой системе."""
     target = tmp_path / "app_posix.ini"
     async with Connection.from_uri("local://localhost") as conn:
-        await conn.write_template(
+        await conn.files.write_template(
             target,
             "port = ${port}\n",
             context={"port": 8080},
@@ -101,11 +101,11 @@ async def test_ensure_file_atomic(tmp_path: Path) -> None:
     """ensure_file(..., atomic=True) идемпотентно обновляет файл через атомарную замену."""
     target = tmp_path / "service.conf"
     async with Connection.from_uri("local://localhost") as conn:
-        res1 = await conn.ensure_file(target, content="enabled=1\n", atomic=True)
+        res1 = await conn.state.ensure_file(target, content="enabled=1\n", atomic=True)
         assert res1.changed is True
         assert target.read_text(encoding="utf-8") == "enabled=1\n"
 
-        res2 = await conn.ensure_file(target, content="enabled=1\n", atomic=True)
+        res2 = await conn.state.ensure_file(target, content="enabled=1\n", atomic=True)
         assert res2.changed is False
 
 
@@ -115,30 +115,30 @@ async def test_ensure_file_atomic_posix_mode(tmp_path: Path) -> None:
     """ensure_file(..., atomic=True) выставляет права на POSIX-файловой системе."""
     target = tmp_path / "service_posix.conf"
     async with Connection.from_uri("local://localhost") as conn:
-        res1 = await conn.ensure_file(target, content="enabled=1\n", mode=0o644, atomic=True)
+        res1 = await conn.state.ensure_file(target, content="enabled=1\n", mode=0o644, atomic=True)
         assert res1.changed is True
         assert (target.stat().st_mode & 0o777) == 0o644
 
-        res2 = await conn.ensure_file(target, content="enabled=1\n", mode=0o644, atomic=True)
+        res2 = await conn.state.ensure_file(target, content="enabled=1\n", mode=0o644, atomic=True)
         assert res2.changed is False
 
 
 @pytest.mark.asyncio
 async def test_checksum_local_algorithms(tmp_path: Path) -> None:
-    """conn.checksum вычисляет sha256, sha1 и md5 на локальном транспорте."""
+    """conn.files.checksum вычисляет sha256, sha1 и md5 на локальном транспорте."""
     payload = b"uniconn-integrity-test-payload\n"
     sample = tmp_path / "payload.bin"
     sample.write_bytes(payload)
 
     async with Connection.from_uri("local://localhost") as conn:
-        assert await conn.checksum(sample, "sha256") == hashlib.sha256(payload).hexdigest()
-        assert await conn.checksum(sample, "sha1") == hashlib.sha1(payload).hexdigest()
-        assert await conn.checksum(sample, "md5") == hashlib.md5(payload).hexdigest()
+        assert await conn.files.checksum(sample, "sha256") == hashlib.sha256(payload).hexdigest()
+        assert await conn.files.checksum(sample, "sha1") == hashlib.sha1(payload).hexdigest()
+        assert await conn.files.checksum(sample, "md5") == hashlib.md5(payload).hexdigest()
 
 
 @pytest.mark.asyncio
 async def test_checksum_remote_command(mocker: pytest.MonkeyPatch) -> None:
-    """conn.checksum на удалённом транспорте парсит вывод sha256sum."""
+    """conn.files.checksum на удалённом транспорте парсит вывод sha256sum."""
     conn = Connection.from_uri("ssh://root@10.0.0.5")
     expected_digest = hashlib.sha256(b"hello").hexdigest()
     mocker.patch.object(
@@ -155,7 +155,7 @@ async def test_checksum_remote_command(mocker: pytest.MonkeyPatch) -> None:
         ),
     )
 
-    digest = await conn.checksum("/var/lib/data.bin", algorithm="sha256")
+    digest = await conn.files.checksum("/var/lib/data.bin", algorithm="sha256")
     assert digest == expected_digest
 
 
@@ -170,16 +170,16 @@ async def test_upload_and_download_verify_success_and_failure(
     downloaded = tmp_path / "downloaded.txt"
 
     async with Connection.from_uri("local://localhost") as conn:
-        await conn.upload(src, dst, verify=True)
+        await conn.files.upload(src, dst, verify=True)
         assert dst.read_bytes() == b"verified-content-123"
 
-        await conn.download(dst, downloaded, verify=True)
+        await conn.files.download(dst, downloaded, verify=True)
         assert downloaded.read_bytes() == b"verified-content-123"
 
         # Симулируем расхождение контрольной суммы при загрузке
         mocker.patch.object(conn.files, "checksum", new=AsyncMock(return_value="0" * 64))
         with pytest.raises(FileTransferError, match="Checksum mismatch"):
-            await conn.upload(src, dst, verify=True)
+            await conn.files.upload(src, dst, verify=True)
 
 
 # ─── Unit 2: Системные примитивы (ensure_user, ensure_authorized_key, ensure_systemd_unit, ensure_sysctl) ───
@@ -200,7 +200,7 @@ async def test_ensure_user_present_and_idempotent(mocker: pytest.MonkeyPatch) ->
     run_mock = mocker.patch.object(conn, "run", side_effect=fake_run)
 
     # 1. Dry-run для нового пользователя возвращает unified diff
-    dry_res = await conn.ensure_user(
+    dry_res = await conn.state.ensure_user(
         "deploy",
         uid=1050,
         group="staff",
@@ -216,7 +216,7 @@ async def test_ensure_user_present_and_idempotent(mocker: pytest.MonkeyPatch) ->
     assert "+user=deploy" in dry_res.diff
 
     # 2. Создание пользователя
-    res1 = await conn.ensure_user(
+    res1 = await conn.state.ensure_user(
         "deploy",
         uid=1050,
         group="staff",
@@ -247,7 +247,7 @@ async def test_ensure_user_present_and_idempotent(mocker: pytest.MonkeyPatch) ->
         return Result(exit_code=0, stdout="", stderr="", duration=0.01, command=cmd)
 
     mocker.patch.object(conn, "run", side_effect=fake_run_existing)
-    res2 = await conn.ensure_user(
+    res2 = await conn.state.ensure_user(
         "deploy",
         uid=1050,
         group="staff",
@@ -273,31 +273,31 @@ async def test_ensure_authorized_key_local_and_diff(tmp_path: Path, mocker: pyte
         mocker.patch.object(conn.state, "_apply_owner_group", new=AsyncMock())
 
         # Dry-run
-        dry = await conn.ensure_authorized_key("alice", key1, dry_run=True)
+        dry = await conn.state.ensure_authorized_key("alice", key1, dry_run=True)
         assert dry.changed is True
         assert dry.diff is not None
         assert "+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI TestKeyOne" in dry.diff
 
         # Добавление первого ключа
-        r1 = await conn.ensure_authorized_key("alice", key1)
+        r1 = await conn.state.ensure_authorized_key("alice", key1)
         assert r1.changed is True
         auth_file = fake_home / ".ssh" / "authorized_keys"
         assert auth_file.exists()
         assert key1 in auth_file.read_text(encoding="utf-8")
 
         # Идемпотентный повтор
-        r2 = await conn.ensure_authorized_key("alice", key1)
+        r2 = await conn.state.ensure_authorized_key("alice", key1)
         assert r2.changed is False
 
         # Exclusive=True заменяет ключи только на key2
-        r3 = await conn.ensure_authorized_key("alice", key2, exclusive=True)
+        r3 = await conn.state.ensure_authorized_key("alice", key2, exclusive=True)
         assert r3.changed is True
         text_after_exclusive = auth_file.read_text(encoding="utf-8")
         assert key2 in text_after_exclusive
         assert key1 not in text_after_exclusive
 
         # Удаление ключа (state="absent")
-        r4 = await conn.ensure_authorized_key("alice", key2, state="absent")
+        r4 = await conn.state.ensure_authorized_key("alice", key2, state="absent")
         assert r4.changed is True
         assert key2 not in auth_file.read_text(encoding="utf-8")
 
@@ -312,7 +312,7 @@ async def test_ensure_authorized_key_posix_permissions(tmp_path: Path, mocker: p
     async with Connection.from_uri("local://localhost") as conn:
         mocker.patch.object(conn.state, "_resolve_user_home", new=AsyncMock(return_value=str(fake_home)))
         mocker.patch.object(conn.state, "_apply_owner_group", new=AsyncMock())
-        await conn.ensure_authorized_key("bob", key)
+        await conn.state.ensure_authorized_key("bob", key)
         auth_file = fake_home / ".ssh" / "authorized_keys"
         assert auth_file.exists()
         assert (auth_file.stat().st_mode & 0o777) == 0o600
@@ -370,7 +370,7 @@ async def test_ensure_systemd_unit_daemon_reload_only_on_change(mocker: pytest.M
         ),
     )
 
-    res1 = await conn.ensure_systemd_unit(
+    res1 = await conn.state.ensure_systemd_unit(
         "demo",
         content=unit_content,
         state="started",
@@ -413,7 +413,7 @@ async def test_ensure_systemd_unit_daemon_reload_only_on_change(mocker: pytest.M
         ),
     )
 
-    res2 = await conn.ensure_systemd_unit(
+    res2 = await conn.state.ensure_systemd_unit(
         "demo.service",
         content=unit_content,
         state="started",
@@ -442,7 +442,7 @@ async def test_ensure_sysctl_present_and_absent(tmp_path: Path, mocker: pytest.M
         mocker.patch.object(conn, "run", side_effect=fake_sysctl_run)
 
         # 1. Dry-run
-        dry = await conn.ensure_sysctl(
+        dry = await conn.state.ensure_sysctl(
             "net.ipv4.ip_forward",
             1,
             config_file=str(sysctl_conf),
@@ -453,7 +453,7 @@ async def test_ensure_sysctl_present_and_absent(tmp_path: Path, mocker: pytest.M
         assert "+net.ipv4.ip_forward = 1" in dry.diff
 
         # 2. Применение параметра
-        res1 = await conn.ensure_sysctl(
+        res1 = await conn.state.ensure_sysctl(
             "net.ipv4.ip_forward",
             1,
             config_file=str(sysctl_conf),
@@ -465,7 +465,7 @@ async def test_ensure_sysctl_present_and_absent(tmp_path: Path, mocker: pytest.M
 
         # 3. Повторный вызов (идемпотентность)
         run_calls.clear()
-        res2 = await conn.ensure_sysctl(
+        res2 = await conn.state.ensure_sysctl(
             "net.ipv4.ip_forward",
             1,
             config_file=str(sysctl_conf),
@@ -475,7 +475,7 @@ async def test_ensure_sysctl_present_and_absent(tmp_path: Path, mocker: pytest.M
         assert not any("sysctl -w" in c for c in run_calls)
 
         # 4. Удаление параметра (state="absent")
-        res3 = await conn.ensure_sysctl(
+        res3 = await conn.state.ensure_sysctl(
             "net.ipv4.ip_forward",
             1,
             state="absent",
@@ -489,23 +489,22 @@ async def test_ensure_sysctl_present_and_absent(tmp_path: Path, mocker: pytest.M
 
 
 def test_sync_connection_v0150_parity(tmp_path: Path, mocker: pytest.MonkeyPatch) -> None:
-    """SyncConnection поддерживает atomic, checksum, verify и все 4 новых системных примитива."""
+    """SyncConnection поддерживает atomic, checksum, verify и все 4 новых системных примитива через .files/.state."""
     from uniconn import SyncConnection
 
     f_path = tmp_path / "sync_atomic.txt"
     with SyncConnection.from_uri("local://localhost") as sconn:
-        sconn.write_file(f_path, "sync-payload\n", mode=0o600, atomic=True)
+        sconn.files.write_file(f_path, "sync-payload\n", mode=0o600, atomic=True)
         assert f_path.read_text(encoding="utf-8") == "sync-payload\n"
-        assert sconn.checksum(f_path, "sha256") == hashlib.sha256(b"sync-payload\n").hexdigest()
+        assert sconn.files.checksum(f_path, "sha256") == hashlib.sha256(b"sync-payload\n").hexdigest()
 
-        # Проверяем наличие и вызов синхронных методов ensure_*
+        # Проверяем наличие и вызов синхронных методов ensure_* на sconn.state
         for method_name in (
             "ensure_user",
             "ensure_authorized_key",
             "ensure_systemd_unit",
             "ensure_sysctl",
         ):
-            assert hasattr(sconn, method_name)
             assert hasattr(sconn.state, method_name)
 
         sysctl_conf = tmp_path / "sync-sysctl.conf"
@@ -522,7 +521,7 @@ def test_sync_connection_v0150_parity(tmp_path: Path, mocker: pytest.MonkeyPatch
                 )
             ),
         )
-        res = sconn.ensure_sysctl(
+        res = sconn.state.ensure_sysctl(
             "vm.swappiness",
             10,
             config_file=str(sysctl_conf),
@@ -534,7 +533,7 @@ def test_sync_connection_v0150_parity(tmp_path: Path, mocker: pytest.MonkeyPatch
 
 @pytest.mark.asyncio
 async def test_connection_pool_and_sync_pool_v0150_methods(tmp_path: Path) -> None:
-    """ConnectionPool и SyncConnectionPool пробрасывают checksum и новые ensure_* методы."""
+    """ConnectionPool и SyncConnectionPool пробрасывают checksum через .files и ensure_* через .state."""
     from uniconn import ConnectionPool
 
     sample = tmp_path / "pool_check.txt"
@@ -542,7 +541,7 @@ async def test_connection_pool_and_sync_pool_v0150_methods(tmp_path: Path) -> No
     expected_sha = hashlib.sha256(b"pool-data\n").hexdigest()
 
     async with ConnectionPool(["local://localhost"]) as pool:
-        hashes = await pool.checksum(sample, "sha256")
+        hashes = await pool.files.checksum(sample, "sha256")
         assert hashes["local://localhost"] == expected_sha
 
         for name in (
@@ -551,11 +550,11 @@ async def test_connection_pool_and_sync_pool_v0150_methods(tmp_path: Path) -> No
             "ensure_systemd_unit",
             "ensure_sysctl",
         ):
-            assert hasattr(pool, name)
+            assert hasattr(pool.state, name)
 
     sync_pool = ConnectionPool(["local://localhost"]).to_sync()
     try:
-        sync_hashes = sync_pool.checksum(sample, "sha256")
+        sync_hashes = sync_pool.files.checksum(sample, "sha256")
         assert sync_hashes["local://localhost"] == expected_sha
         for name in (
             "ensure_user",
@@ -563,7 +562,7 @@ async def test_connection_pool_and_sync_pool_v0150_methods(tmp_path: Path) -> No
             "ensure_systemd_unit",
             "ensure_sysctl",
         ):
-            assert hasattr(sync_pool, name)
+            assert hasattr(sync_pool.state, name)
     finally:
         sync_pool.close()
 

@@ -11,19 +11,22 @@ from uniconn import (
     Connection,
     ConnectionPool,
     FileOperationsService,
+    PoolFileOperationsService,
+    PoolStateManagementService,
     ShellSession,
     StateManagementService,
     SyncConnection,
     SyncConnectionPool,
     SyncFileOperationsService,
+    SyncPoolFileOperationsService,
+    SyncPoolStateManagementService,
     SyncShellSession,
     SyncStateManagementService,
     SyncTunnelService,
     TunnelService,
 )
 from uniconn.core.bridge import (
-    _AsyncDelegateDescriptor,
-    _ContextDelegateDescriptor,
+    _PoolFanOutDictDescriptor,
     _SyncContextDescriptor,
     _SyncIterDescriptor,
     _SyncMethodDescriptor,
@@ -78,6 +81,8 @@ def test_domain_services_async_sync_parity() -> None:
         (FileOperationsService, SyncFileOperationsService),
         (StateManagementService, SyncStateManagementService),
         (TunnelService, SyncTunnelService),
+        (PoolFileOperationsService, SyncPoolFileOperationsService),
+        (PoolStateManagementService, SyncPoolStateManagementService),
         (ShellSession, SyncShellSession),
         (ConnectionPool, SyncConnectionPool),
     ]
@@ -97,31 +102,32 @@ def test_async_only_primitives_are_not_duplicated_in_sync_layer() -> None:
 
 
 def test_sync_and_facade_methods_use_descriptors_without_boilerplate() -> None:
-    """Методы сервисов в Connection и Sync* используют типизированные дескрипторы вместо копипасты."""
-    assert isinstance(Connection.__dict__["upload"], _AsyncDelegateDescriptor)
-    assert isinstance(Connection.__dict__["ensure_package"], _AsyncDelegateDescriptor)
-    assert isinstance(Connection.__dict__["forward_local_port"], _ContextDelegateDescriptor)
+    """Методы сервисов в Pool* и Sync* используют типизированные дескрипторы вместо копипасты."""
+    assert isinstance(PoolFileOperationsService.__dict__["checksum"], _PoolFanOutDictDescriptor)
+    assert isinstance(PoolStateManagementService.__dict__["ensure_package"], _PoolFanOutDictDescriptor)
+    assert isinstance(ConnectionPool.__dict__["gather_facts"], _PoolFanOutDictDescriptor)
 
     assert isinstance(SyncConnection.__dict__["run"], _SyncMethodDescriptor)
     assert isinstance(SyncConnection.__dict__["stream"], _SyncIterDescriptor)
     assert isinstance(SyncConnection.__dict__["temp_dir"], _SyncContextDescriptor)
-    assert isinstance(SyncConnection.__dict__["ensure_package"], _SyncMethodDescriptor)
     assert isinstance(SyncFileOperationsService.__dict__["upload"], _SyncMethodDescriptor)
     assert isinstance(SyncStateManagementService.__dict__["ensure_user"], _SyncMethodDescriptor)
     assert isinstance(SyncTunnelService.__dict__["forward_local_port"], _SyncContextDescriptor)
+    assert isinstance(SyncPoolFileOperationsService.__dict__["checksum"], _SyncMethodDescriptor)
+    assert isinstance(SyncPoolStateManagementService.__dict__["ensure_package"], _SyncMethodDescriptor)
     assert isinstance(SyncConnectionPool.__dict__["map"], _SyncMethodDescriptor)
 
 
 def test_file_methods_accept_pathlib_path(tmp_path: Path) -> None:
-    """Все файловые методы SyncConnection принимают объекты pathlib.Path."""
+    """Все файловые методы SyncConnection.files принимают объекты pathlib.Path."""
     target_file = tmp_path / "sample.txt"
     with Connection.from_uri("local://").to_sync() as conn:
-        conn.write_file(target_file, "hello path")
-        assert conn.exists(target_file)
-        assert conn.read_file(target_file) == "hello path"
-        stat_info = conn.stat(target_file)
+        conn.files.write_file(target_file, "hello path")
+        assert conn.files.exists(target_file)
+        assert conn.files.read_file(target_file) == "hello path"
+        stat_info = conn.files.stat(target_file)
         assert stat_info["size"] == 10
-        assert "sample.txt" in conn.listdir(tmp_path)
-        conn.chmod(target_file, 0o644)
-        conn.remove_file(target_file)
-        assert not conn.exists(target_file)
+        assert "sample.txt" in conn.files.listdir(tmp_path)
+        conn.files.chmod(target_file, 0o644)
+        conn.files.remove_file(target_file)
+        assert not conn.files.exists(target_file)

@@ -419,8 +419,8 @@ class TestCLIV060:
         mock_pool = MagicMock()
         mock_pool._uris = ["ssh://node1", "ssh://node2"]
         mock_pool._target_key = lambda x: str(x)
-        mock_pool.upload = AsyncMock(return_value=None)
-        mock_pool.download = AsyncMock(
+        mock_pool.files.upload = AsyncMock(return_value=None)
+        mock_pool.files.download = AsyncMock(
             return_value={
                 "ssh://node1": "/tmp/node1.log",
                 "ssh://node2": "/tmp/node2.log",
@@ -444,7 +444,7 @@ class TestCLIV060:
             up_json = json.loads(up_res.output)
             assert up_json["action"] == "upload"
             assert up_json["ok"] is True
-            mock_pool.upload.assert_awaited_once_with(
+            mock_pool.files.upload.assert_awaited_once_with(
                 "./local.txt", "/remote.txt", recurse=False
             )
 

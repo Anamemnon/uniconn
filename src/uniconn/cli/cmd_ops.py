@@ -540,7 +540,7 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                     batch_size=batch_size,
                     max_fail_ratio=max_fail_ratio,
                 )
-                res_map = await pool.ensure_user(
+                res_map = await pool.state.ensure_user(
                     username,
                     state=state,
                     uid=uid,
@@ -624,7 +624,7 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                     batch_size=batch_size,
                     max_fail_ratio=max_fail_ratio,
                 )
-                res_map = await pool.ensure_authorized_key(
+                res_map = await pool.state.ensure_authorized_key(
                     user,
                     key,
                     state=state,
@@ -724,7 +724,7 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                     batch_size=batch_size,
                     max_fail_ratio=max_fail_ratio,
                 )
-                res_map = await pool.ensure_systemd_unit(
+                res_map = await pool.state.ensure_systemd_unit(
                     name,
                     content=unit_content,
                     state=state,
@@ -815,7 +815,7 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                     batch_size=batch_size,
                     max_fail_ratio=max_fail_ratio,
                 )
-                res_map = await pool.ensure_sysctl(
+                res_map = await pool.state.ensure_sysctl(
                     key,
                     value,
                     state=state,

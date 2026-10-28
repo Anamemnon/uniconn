@@ -16,11 +16,11 @@
 ## Public Exports (`from uniconn import ...`)
 - **Core & Facade**: `Connection`, `SyncConnection`, `ConnectionConfig`, `SecretResolver`, `URIParser`, `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `HostFacts`, `FactSpec`, `CustomCommandSpec`, `FileSourceSpec`, `ExternalToolSpec`, `ExternalToolRunner`, `FactsDiffReport`, `DiskInfo`, `NetworkInterface`, `diff_facts`, `render_template`, `OperationObserver`, `BeforeRunHook`, `AfterRunHook`, `OnErrorHook`, `HookCallback`, `HookEvent`
 - **Resilience (`uniconn.core.resilience`)**: `CircuitBreaker`, `CircuitState`, `RateLimiter`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`
-- **Domain Services (`uniconn.services`)**: `FileOperationsService`, `DirectorySynchronizer`, `TemplateEngine`, `StateManagementService`, `FactCollector`, `TunnelService`, `SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`
+- **Domain Services (`uniconn.services` / `uniconn.pool`)**: `FileOperationsService`, `DirectorySynchronizer`, `TemplateEngine`, `StateManagementService`, `FactCollector`, `TunnelService`, `PoolFileOperationsService`, `PoolStateManagementService`, `SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`, `SyncPoolFileOperationsService`, `SyncPoolStateManagementService`
 - **Strategies (`uniconn.services.provisioning`)**: `PackageManagerStrategy`, `AptStrategy`, `ApkStrategy`, `DnfYumStrategy`, `PacmanStrategy`, `ZypperStrategy`, `ServiceManagerStrategy`, `SystemdStrategy`, `OpenRCStrategy`, `SysVStrategy`
 - **Middleware Pipeline & Context (`uniconn.core`)**: `CommandRequest`, `CommandPipeline`, `CommandMiddleware`, `ContextMiddleware`, `SudoMiddleware`, `HookMiddleware`, `DryRunMiddleware`, `ObservabilityMiddleware`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`, `RetryMiddleware`, `TracingMiddleware`, `ExecutionContext`, `EventLoopPortal`, `SyncContextBridge`, `InventoryLoader`
 - **Transport Protocols, BMC, Container/K8s, Replay/Cassette & Helpers (`uniconn.transports` / `uniconn.pytest_plugin`)**: `BaseTransport`, `CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `ShellStdinProtocol`, `ShellStdoutProtocol`, `TunnelCapableTransport`, `require_capability`, `supports_capability`, `IPMITransport`, `RedfishTransport`, `DockerTransport`, `PodmanTransport`, `KubectlTransport`, `LocalTransport`, `ReplayTransport`, `CassetteTransportProxy`, `Cassette`, `CassetteDiffReport`, `InteractionDiff`, `CassetteContext`, `SyncCassetteContext`, `UniconnCassetteFixture`, `RecordMode`, `RecordedExecInteraction`, `RecordedStreamInteraction`, `RecordedFsInteraction`, `RecordedShellInteraction`, `ShellDialogStep`, `ReplayShellProcess`, `normalize_temp_paths`, `OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`
-- **Pools**: `ConnectionPool`, `SyncConnectionPool`, `PoolStreamMultiplexer`, `SSHSessionPool`
+- **Pools**: `ConnectionPool`, `SyncConnectionPool`, `PoolFileOperationsService`, `PoolStateManagementService`, `SyncPoolFileOperationsService`, `SyncPoolStateManagementService`, `PoolStreamMultiplexer`, `SSHSessionPool`
 - **Interactive PTY Shell (`uniconn.shell`)**: `ShellSession`, `SyncShellSession`, `PosixMarkerProtocol`, `ExpectStateMachine`
 - **Background Diagnostics, Streaming Logs & Pluggable Backends (`uniconn.background`)**: `DiagnosticSession`, `SyncDiagnosticSession`, `DiagnosticConfig`, `DiagnosticResult`, `StreamSourceSpec`, `DirectStreamCollector`, `LogPipeline`, `LogHandler`, `LocalFileHandler`, `ForwardHandler`, `StreamHandler`, `ArchiveHandler`, `BackgroundPool`, `BackgroundPoolConfig`, `BackgroundSession`, `BackgroundResult`, `BackgroundCleanupManager`, `BackgroundLogCollector`, `BackgroundBackendStrategy`, `TmuxBackend`, `ScreenBackend`, `NohupBackend`, `resolve_backend`, `LogConfig`
 - **Hooks & OpenTelemetry (`uniconn.hooks` / `uniconn.telemetry`)**: `audit_log_hook`, `allowlist_hook`, `blocklist_hook`, `MetricsCollector`, `metrics_collector_hook`, `structured_log_hook`, `OtelTracingHook`, `otel_tracing_hook`, `InMemoryTracer`, `RecordedSpan`, `SpanProtocol`, `TracerProtocol`, `get_current_span`
@@ -136,11 +136,11 @@ async with conn.diagnostic_session(
     await diag.emit_custom_log("stress", "Starting stress-ng workload")
     await diag.snapshot("mid_load")
 
-# Idempotent State Management & Unified Diff (v0.8.0 / v0.12.0 / v0.15.0)
-pkg_res: EnsureResult = await conn.ensure_package(package, state="present", manager="auto", update_cache=False, sudo=True, dry_run=None)
-svc_res: EnsureResult = await conn.ensure_service(service, state="started", enabled=None, sudo=True, dry_run=None)
-line_res: EnsureResult = await conn.ensure_line(remote_path, line, state="present", regex=None, create=True, backup=False, mode=None, dry_run=None)
-file_res: EnsureResult = await conn.ensure_file(
+# Idempotent State Management & Unified Diff via `conn.state` (v0.8.0 / v0.12.0 / v0.15.0)
+pkg_res: EnsureResult = await conn.state.ensure_package(package, state="present", manager="auto", update_cache=False, sudo=True, dry_run=None)
+svc_res: EnsureResult = await conn.state.ensure_service(service, state="started", enabled=None, sudo=True, dry_run=None)
+line_res: EnsureResult = await conn.state.ensure_line(remote_path, line, state="present", regex=None, create=True, backup=False, mode=None, dry_run=None)
+file_res: EnsureResult = await conn.state.ensure_file(
     remote_path: str,
     *,
     state: Literal["present", "absent", "link"] = "present",
@@ -155,7 +155,7 @@ file_res: EnsureResult = await conn.ensure_file(
     atomic: bool = False,
     dry_run: bool | None = None,
 )
-dir_res: EnsureResult = await conn.ensure_directory(
+dir_res: EnsureResult = await conn.state.ensure_directory(
     remote_path: str,
     *,
     state: Literal["present", "absent"] = "present",
@@ -166,7 +166,7 @@ dir_res: EnsureResult = await conn.ensure_directory(
     sudo: bool = False,
     dry_run: bool | None = None,
 )
-user_res: EnsureResult = await conn.ensure_user(
+user_res: EnsureResult = await conn.state.ensure_user(
     username: str,
     *,
     state: Literal["present", "absent"] = "present",
@@ -182,7 +182,7 @@ user_res: EnsureResult = await conn.ensure_user(
     sudo: bool = True,
     dry_run: bool | None = None,
 )
-key_res: EnsureResult = await conn.ensure_authorized_key(
+key_res: EnsureResult = await conn.state.ensure_authorized_key(
     user: str,
     key: str,
     *,
@@ -192,7 +192,7 @@ key_res: EnsureResult = await conn.ensure_authorized_key(
     sudo: bool = False,
     dry_run: bool | None = None,
 )
-unit_res: EnsureResult = await conn.ensure_systemd_unit(
+unit_res: EnsureResult = await conn.state.ensure_systemd_unit(
     name: str,
     content: str | None = None,
     *,
@@ -203,7 +203,7 @@ unit_res: EnsureResult = await conn.ensure_systemd_unit(
     sudo: bool = True,
     dry_run: bool | None = None,
 )
-sysctl_res: EnsureResult = await conn.ensure_sysctl(
+sysctl_res: EnsureResult = await conn.state.ensure_sysctl(
     key: str,
     value: str | int,
     *,
@@ -225,10 +225,10 @@ res: Result = await conn.expect(
     sensitive: bool = False,
 )
 
-# SSH Port Forwarding (Async & Sync context managers)
-async with conn.forward_local_port(remote_host="127.0.0.1", remote_port=5432, local_host="127.0.0.1", local_port=0) as bound_port:
+# SSH Port Forwarding via `conn.tunnels` (Async & Sync context managers)
+async with conn.tunnels.forward_local_port(remote_host="127.0.0.1", remote_port=5432, local_host="127.0.0.1", local_port=0) as bound_port:
     ...
-async with conn.forward_remote_port(remote_host="127.0.0.1", remote_port=0, local_host="127.0.0.1", local_port=8000) as bound_port:
+async with conn.tunnels.forward_remote_port(remote_host="127.0.0.1", remote_port=0, local_host="127.0.0.1", local_port=8000) as bound_port:
     ...
 
 # Context Managers (work with both `async with` and `with` for cd/env)
@@ -236,7 +236,7 @@ async with conn.cd("/var/www"), conn.env(APP_ENV="prod"):
     await conn.run(["./deploy.sh"])
 
 async with conn.temp_dir(prefix="uniconn_") as tmp_path:
-    await conn.write_file(f"{tmp_path}/data.txt", "hello")
+    await conn.files.write_file(f"{tmp_path}/data.txt", "hello")
 
 # Contract Testing & Cassette Recording/Replay (v0.10.0 / v0.12.0)
 async with conn.use_cassette(
@@ -256,20 +256,20 @@ conn.add_hook("before_run", callback)  # callback(command_str, host, kwargs)
 conn.add_hook("after_run", callback)   # callback(result: Result)
 conn.add_hook("on_error", callback)    # callback(exc, command_str, host)
 
-# File Operations, Smart Directory Sync & Templating (SFTP & Local)
-content: str | bytes = await conn.read_file(remote_path, encoding="utf-8")  # encoding=None -> bytes
-await conn.write_file(remote_path, content: str | bytes, mode: int | None = None, encoding="utf-8", *, atomic: bool = False)
-await conn.remove_file(remote_path)
-exists: bool = await conn.exists(remote_path)
-await conn.mkdir(remote_path, parents=True, exist_ok=True, mode=None)
-await conn.upload(local_path, remote_path, recurse=False, *, verify: bool = False)
-await conn.download(remote_path, local_path, recurse=False, *, verify: bool = False)
-digest: str = await conn.checksum(remote_path, algorithm="sha256", *, sudo=False)
-await conn.chmod(remote_path, 0o755)
-info: dict = await conn.stat(remote_path)
-names: list[str] = await conn.listdir(remote_path=".")
-sync_res: SyncResult = await conn.sync_dir(local_dir, remote_dir, delete=False, exclude=["*.pyc", ".git"])
-rendered: str = await conn.write_template(remote_path, template_str_or_path, context={...}, mode=0o644, engine="auto", *, atomic: bool = False)
+# File Operations, Smart Directory Sync & Templating via `conn.files` (SFTP & Local)
+content: str | bytes = await conn.files.read_file(remote_path, encoding="utf-8")  # encoding=None -> bytes
+await conn.files.write_file(remote_path, content: str | bytes, mode: int | None = None, encoding="utf-8", *, atomic: bool = False)
+await conn.files.remove_file(remote_path)
+exists: bool = await conn.files.exists(remote_path)
+await conn.files.mkdir(remote_path, parents=True, exist_ok=True, mode=None)
+await conn.files.upload(local_path, remote_path, recurse=False, *, verify: bool = False)
+await conn.files.download(remote_path, local_path, recurse=False, *, verify: bool = False)
+digest: str = await conn.files.checksum(remote_path, algorithm="sha256", *, sudo=False)
+await conn.files.chmod(remote_path, 0o755)
+info: dict = await conn.files.stat(remote_path)
+names: list[str] = await conn.files.listdir(remote_path=".")
+sync_res: SyncResult = await conn.files.sync_dir(local_dir, remote_dir, delete=False, exclude=["*.pyc", ".git"])
+rendered: str = await conn.files.write_template(remote_path, template_str_or_path, context={...}, mode=0o644, engine="auto", *, atomic: bool = False)
 
 # Stateful PTY Shell (SSH, Local, Telnet, Serial)
 async with await conn.open_shell(term_type="xterm", term_size=(80, 24), init_posix=None) as shell:
@@ -325,20 +325,20 @@ async with pool:  # Keeps connections open across multiple pool operations
     script_map: dict[str, Result | Exception] = await pool.run_script("./check.sh", args=["--fast"])
     facts_map: dict[str, HostFacts] = await pool.gather_facts()
     diff_rep: FactsDiffReport = await pool.diff_facts(baseline=None)
-    line_map: dict[str, EnsureResult] = await pool.ensure_line("/etc/hosts", "10.0.0.5 db.internal")
-    file_map: dict[str, EnsureResult] = await pool.ensure_file("/etc/app.conf", content="port=8080\n", mode=0o644, atomic=True)
-    dir_map: dict[str, EnsureResult] = await pool.ensure_directory("/var/lib/app", mode=0o755)
-    user_map: dict[str, EnsureResult] = await pool.ensure_user("deploy", groups=["docker"], shell="/bin/bash")
-    key_map: dict[str, EnsureResult] = await pool.ensure_authorized_key("deploy", "ssh-ed25519 AAAA...")
-    unit_map: dict[str, EnsureResult] = await pool.ensure_systemd_unit("myapp.service", "[Unit]\n...")
-    sysctl_map: dict[str, EnsureResult] = await pool.ensure_sysctl("net.ipv4.ip_forward", 1)
+    line_map: dict[str, EnsureResult] = await pool.state.ensure_line("/etc/hosts", "10.0.0.5 db.internal")
+    file_map: dict[str, EnsureResult] = await pool.state.ensure_file("/etc/app.conf", content="port=8080\n", mode=0o644, atomic=True)
+    dir_map: dict[str, EnsureResult] = await pool.state.ensure_directory("/var/lib/app", mode=0o755)
+    user_map: dict[str, EnsureResult] = await pool.state.ensure_user("deploy", groups=["docker"], shell="/bin/bash")
+    key_map: dict[str, EnsureResult] = await pool.state.ensure_authorized_key("deploy", "ssh-ed25519 AAAA...")
+    unit_map: dict[str, EnsureResult] = await pool.state.ensure_systemd_unit("myapp.service", "[Unit]\n...")
+    sysctl_map: dict[str, EnsureResult] = await pool.state.ensure_sysctl("net.ipv4.ip_forward", 1)
     async for host, line in pool.stream("journalctl -f -n 5"):
         print(host, line)
-    await pool.upload("./app.conf", "/etc/app/app.conf", verify=True)
-    paths: dict[str, str] = await pool.download("/var/log/syslog", "./logs/{host}.log", verify=True)
-    hashes: dict[str, str] = await pool.checksum("/etc/app/app.conf", algorithm="sha256")
-    sync_map: dict[str, SyncResult] = await pool.sync_dir("./dist", "/var/www/app", delete=True, exclude=["*.pyc"])
-    tpl_map: dict[str, str] = await pool.write_template("/etc/app.conf", "./app.conf.tpl", context={"port": 8080}, atomic=True)
+    await pool.files.upload("./app.conf", "/etc/app/app.conf", verify=True)
+    paths: dict[str, str] = await pool.files.download("/var/log/syslog", "./logs/{host}.log", verify=True)
+    hashes: dict[str, str] = await pool.files.checksum("/etc/app/app.conf", algorithm="sha256")
+    sync_map: dict[str, SyncResult] = await pool.files.sync_dir("./dist", "/var/www/app", delete=True, exclude=["*.pyc"])
+    tpl_map: dict[str, str] = await pool.files.write_template("/etc/app.conf", "./app.conf.tpl", context={"port": 8080}, atomic=True)
     custom = await pool.apply(lambda c: c.run("hostname"))
 
 with pool.to_sync() as sync_pool:

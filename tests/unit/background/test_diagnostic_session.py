@@ -148,9 +148,9 @@ class TestFactSpecAndExternalTools:
             Path(local_path).write_bytes(b"fake-sosreport-archive")
 
         conn.run = AsyncMock(side_effect=fake_run)  # type: ignore[method-assign]
-        conn.read_file = AsyncMock(side_effect=OSError("force shell fallback"))  # type: ignore[method-assign]
-        conn.download = AsyncMock(side_effect=fake_download)  # type: ignore[method-assign]
-        conn.remove_file = AsyncMock()  # type: ignore[method-assign]
+        conn.files.read_file = AsyncMock(side_effect=OSError("force shell fallback"))  # type: ignore[method-assign]
+        conn.files.download = AsyncMock(side_effect=fake_download)  # type: ignore[method-assign]
+        conn.files.remove_file = AsyncMock()  # type: ignore[method-assign]
 
         spec = FactSpec(
             commands=[
@@ -184,7 +184,7 @@ class TestFactSpecAndExternalTools:
         assert "not found" in facts.tools["missing"]["error"]
         assert facts.tools["sos"]["ok"] is True
         assert Path(facts.tools["sos"]["artifact_path"]).exists()
-        conn.remove_file.assert_awaited_once_with("/tmp/sosreport-node01.tar.xz")
+        conn.files.remove_file.assert_awaited_once_with("/tmp/sosreport-node01.tar.xz")
 
     def test_diff_facts_detects_custom_fields_drift(self) -> None:
         """diff_facts автоматически проверяет расхождения по ключам custom.*."""
@@ -325,7 +325,7 @@ class TestDiagnosticSessionLifecycle:
         )
 
         backup_conn.run = AsyncMock(return_value=_ok_res())  # type: ignore[method-assign]
-        backup_conn.upload = AsyncMock()  # type: ignore[method-assign]
+        backup_conn.files.upload = AsyncMock()  # type: ignore[method-assign]
 
         archive_target = tmp_path / "out" / "diag_{host}.tar.gz"
         config = DiagnosticConfig(
@@ -371,7 +371,7 @@ class TestDiagnosticSessionLifecycle:
             assert "streams/dmesg.log" in names
             assert "streams/test_runner.log" in names
 
-        backup_conn.upload.assert_awaited_once()
+        backup_conn.files.upload.assert_awaited_once()
 
     async def test_diagnostic_session_survives_host_crash(
         self, tmp_path: Path

@@ -319,6 +319,75 @@ def context_delegate(
     return _ContextDelegateDescriptor(service_attr, cm_fn)
 
 
+class _PoolFanOutDictDescriptor(Generic[P, R]):
+    """Дескриптор параллельного fan-out вызова метода соединения по всем хостам пула."""
+
+    def __init__(
+        self,
+        async_fn: Callable[Concatenate[Any, P], Coroutine[Any, Any, R]],
+        *,
+        conn_attr: str | None = None,
+    ) -> None:
+        self._async_fn = async_fn
+        self._method_name = async_fn.__name__
+        self._conn_attr = conn_attr
+        functools.update_wrapper(self, async_fn)
+
+    @overload
+    def __get__(
+        self, instance: None, owner: type | None = None
+    ) -> _PoolFanOutDictDescriptor[P, R]: ...
+
+    @overload
+    def __get__(
+        self, instance: Any, owner: type | None = None
+    ) -> Callable[P, Coroutine[Any, Any, dict[str, R]]]: ...
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        if instance is None:
+            return self
+        pool = getattr(instance, "_pool", instance)
+        conn_attr = self._conn_attr
+        method_name = self._method_name
+
+        @functools.wraps(self._async_fn)
+        async def _fan_out_call(*args: P.args, **kwargs: P.kwargs) -> dict[str, R]:
+            call_kwargs: dict[str, Any] = dict(kwargs)
+            batch_size = call_kwargs.pop("batch_size", None)
+            max_fail_ratio = call_kwargs.pop("max_fail_ratio", None)
+
+            async def _worker(_key: str, conn: Any) -> R:
+                target = (
+                    _resolve_attr_path(conn, conn_attr)
+                    if conn_attr is not None
+                    else conn
+                )
+                return await getattr(target, method_name)(*args, **call_kwargs)
+
+            return await pool._fan_out_dict(
+                _worker,
+                batch_size=batch_size,
+                max_fail_ratio=max_fail_ratio,
+            )
+
+        return _fan_out_call
+
+    def __call__(
+        self, instance: Any, /, *args: P.args, **kwargs: P.kwargs
+    ) -> Coroutine[Any, Any, dict[str, R]]:
+        bound = self.__get__(instance, type(instance))
+        return bound(*args, **kwargs)
+
+
+def pool_fan_out_dict(
+    async_fn: Callable[Concatenate[Any, P], Coroutine[Any, Any, R]],
+    *,
+    conn_attr: str | None = None,
+) -> _PoolFanOutDictDescriptor[P, R]:
+    """Создать типизированный дескриптор параллельного fan-out вызова по пулу хостов."""
+    return _PoolFanOutDictDescriptor(async_fn, conn_attr=conn_attr)
+
+
 class _SyncMethodDescriptor(Generic[P, R]):
     """Дескриптор, превращающий async-метод в синхронный вызов через ``EventLoopPortal``."""
 
@@ -475,6 +544,16 @@ class _SyncIterDescriptor(Generic[P, R]):
     ) -> Iterator[R]:
         bound = self.__get__(instance, type(instance))
         return bound(*args, **kwargs)
+
+
+@overload
+def sync_method(
+    async_fn: _PoolFanOutDictDescriptor[P, R],
+    *,
+    target_attr: str = "_async_target",
+    portal_attr: str = "_portal",
+    delegate_attr: str | None = None,
+) -> _SyncMethodDescriptor[P, dict[str, R]]: ...
 
 
 @overload

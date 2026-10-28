@@ -110,10 +110,10 @@ class ExternalToolRunner:
             target_dir = Path(tool.local_dir or artifact_dir or "./artifacts")
             target_dir.mkdir(parents=True, exist_ok=True)
             local_dest = target_dir / Path(remote_artifact).name
-            await self._conn.download(remote_artifact, str(local_dest))
+            await self._conn.files.download(remote_artifact, str(local_dest))
             if tool.cleanup_remote:
                 with contextlib.suppress(Exception):
-                    await self._conn.remove_file(remote_artifact)
+                    await self._conn.files.remove_file(remote_artifact)
             return {
                 "ok": True,
                 "artifact_path": str(local_dest),
@@ -218,7 +218,7 @@ class FactCollector:
         """Прочитать содержимое файла с ограничением по байтам и безопасным fallback."""
         max_bytes = int(file_spec.max_bytes)
         try:
-            content = await self._conn.read_file(file_spec.path, encoding="utf-8")
+            content = await self._conn.files.read_file(file_spec.path, encoding="utf-8")
             if isinstance(content, str):
                 return content[:max_bytes].strip()
             if isinstance(content, bytes):

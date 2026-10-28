@@ -1,5 +1,5 @@
 # src/uniconn/sync/services.py
-"""Синхронные отражения доменных сервисов и диагностической сессии на базе ``ParamSpec``-дескрипторов."""
+"""Синхронные отражения доменных сервисов подключения, пула и диагностической сессии."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Self
 
 from ..background._diagnostic import DiagnosticResult, DiagnosticSession
 from ..core.bridge import EventLoopPortal, SyncProxyMixin, sync_context, sync_method
+from ..pool.services import PoolFileOperationsService, PoolStateManagementService
 from ..services.facts_models import FactsDiffReport, FactSpec, HostFacts
 from ..services.files import FileOperationsService
 from ..services.provisioning import StateManagementService
@@ -16,6 +17,7 @@ from ..services.tunnels import TunnelService
 
 if TYPE_CHECKING:
     from .connection import SyncConnection
+    from .pool import SyncConnectionPool
 
 
 class SyncFileOperationsService(SyncProxyMixin):
@@ -104,6 +106,62 @@ class SyncTunnelService(SyncProxyMixin):
     forward_remote_port = sync_context(TunnelService.forward_remote_port, cast_fn=int)
 
 
+class SyncPoolFileOperationsService(SyncProxyMixin):
+    """Синхронное отражение ``PoolFileOperationsService`` (``sync_pool.files``)."""
+
+    def __init__(self, sync_pool: SyncConnectionPool) -> None:
+        self._sync_pool = sync_pool
+
+    @property
+    def _async_target(self) -> PoolFileOperationsService:
+        return self._sync_pool._async_pool.files
+
+    @property
+    def _portal(self) -> EventLoopPortal:
+        return self._sync_pool._portal
+
+    upload = sync_method(PoolFileOperationsService.upload)
+    download = sync_method(PoolFileOperationsService.download)
+    read_file = sync_method(PoolFileOperationsService.read_file)
+    write_file = sync_method(PoolFileOperationsService.write_file)
+    checksum = sync_method(PoolFileOperationsService.checksum)
+    exists = sync_method(PoolFileOperationsService.exists)
+    mkdir = sync_method(PoolFileOperationsService.mkdir)
+    chmod = sync_method(PoolFileOperationsService.chmod)
+    stat = sync_method(PoolFileOperationsService.stat)
+    listdir = sync_method(PoolFileOperationsService.listdir)
+    remove_file = sync_method(PoolFileOperationsService.remove_file)
+    write_template = sync_method(PoolFileOperationsService.write_template)
+    sync_dir = sync_method(PoolFileOperationsService.sync_dir)
+
+
+class SyncPoolStateManagementService(SyncProxyMixin):
+    """Синхронное отражение ``PoolStateManagementService`` (``sync_pool.state``)."""
+
+    def __init__(self, sync_pool: SyncConnectionPool) -> None:
+        self._sync_pool = sync_pool
+
+    @property
+    def _async_target(self) -> PoolStateManagementService:
+        return self._sync_pool._async_pool.state
+
+    @property
+    def _portal(self) -> EventLoopPortal:
+        return self._sync_pool._portal
+
+    ensure_package = sync_method(PoolStateManagementService.ensure_package)
+    ensure_service = sync_method(PoolStateManagementService.ensure_service)
+    ensure_line = sync_method(PoolStateManagementService.ensure_line)
+    ensure_file = sync_method(PoolStateManagementService.ensure_file)
+    ensure_directory = sync_method(PoolStateManagementService.ensure_directory)
+    ensure_user = sync_method(PoolStateManagementService.ensure_user)
+    ensure_authorized_key = sync_method(
+        PoolStateManagementService.ensure_authorized_key
+    )
+    ensure_systemd_unit = sync_method(PoolStateManagementService.ensure_systemd_unit)
+    ensure_sysctl = sync_method(PoolStateManagementService.ensure_sysctl)
+
+
 class SyncDiagnosticSession(SyncProxyMixin):
     """Синхронное отражение ``DiagnosticSession`` на базе ``EventLoopPortal``."""
 
@@ -163,3 +221,13 @@ class SyncDiagnosticSession(SyncProxyMixin):
                 self._async_session.__aexit__(exc_type, exc_val, exc_tb)
             )
         )
+
+
+__all__ = [
+    "SyncDiagnosticSession",
+    "SyncFileOperationsService",
+    "SyncPoolFileOperationsService",
+    "SyncPoolStateManagementService",
+    "SyncStateManagementService",
+    "SyncTunnelService",
+]

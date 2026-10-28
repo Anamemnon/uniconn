@@ -441,11 +441,11 @@ class TestBaseTransportFileOps:
 
 
 class TestConnectionFileOps:
-    """Тесты Connection файловых операций."""
+    """Тесты Connection.files файловых операций."""
 
     @pytest.mark.asyncio
     async def test_connection_upload(self, mocker):
-        """Connection.upload() делегирует транспорту."""
+        """Connection.files.upload() делегирует транспорту."""
         mock_transport = mocker.AsyncMock()
         mock_transport.upload = AsyncMock()
         mock_transport.name = "ssh"
@@ -456,7 +456,7 @@ class TestConnectionFileOps:
             config=ConnectionConfig(transport="ssh", host="testhost"),
         )
 
-        await conn.upload("/local/file.txt", "/remote/file.txt")
+        await conn.files.upload("/local/file.txt", "/remote/file.txt")
 
         mock_transport.upload.assert_called_once_with(
             "/local/file.txt", "/remote/file.txt", recurse=False
@@ -464,7 +464,7 @@ class TestConnectionFileOps:
 
     @pytest.mark.asyncio
     async def test_connection_upload_recurse(self, mocker):
-        """Connection.upload() с recurse=True."""
+        """Connection.files.upload() с recurse=True."""
         mock_transport = mocker.AsyncMock()
         mock_transport.upload = AsyncMock()
         mock_transport.name = "ssh"
@@ -475,7 +475,7 @@ class TestConnectionFileOps:
             config=ConnectionConfig(transport="ssh", host="testhost"),
         )
 
-        await conn.upload("/local/dir", "/remote/dir", recurse=True)
+        await conn.files.upload("/local/dir", "/remote/dir", recurse=True)
 
         mock_transport.upload.assert_called_once_with(
             "/local/dir", "/remote/dir", recurse=True
@@ -483,7 +483,7 @@ class TestConnectionFileOps:
 
     @pytest.mark.asyncio
     async def test_connection_download(self, mocker):
-        """Connection.download() делегирует транспорту."""
+        """Connection.files.download() делегирует транспорту."""
         mock_transport = mocker.AsyncMock()
         mock_transport.download = AsyncMock()
         mock_transport.name = "ssh"
@@ -494,7 +494,7 @@ class TestConnectionFileOps:
             config=ConnectionConfig(transport="ssh", host="testhost"),
         )
 
-        await conn.download("/remote/file.txt", "/local/file.txt")
+        await conn.files.download("/remote/file.txt", "/local/file.txt")
 
         mock_transport.download.assert_called_once_with(
             "/remote/file.txt", "/local/file.txt", recurse=False
@@ -502,7 +502,7 @@ class TestConnectionFileOps:
 
     @pytest.mark.asyncio
     async def test_connection_chmod(self, mocker):
-        """Connection.chmod() делегирует транспорту."""
+        """Connection.files.chmod() делегирует транспорту."""
         mock_transport = mocker.AsyncMock()
         mock_transport.chmod = AsyncMock()
         mock_transport.name = "ssh"
@@ -513,13 +513,13 @@ class TestConnectionFileOps:
             config=ConnectionConfig(transport="ssh", host="testhost"),
         )
 
-        await conn.chmod("/var/www/app.py", 0o755)
+        await conn.files.chmod("/var/www/app.py", 0o755)
 
         mock_transport.chmod.assert_called_once_with("/var/www/app.py", 0o755)
 
     @pytest.mark.asyncio
     async def test_connection_stat(self, mocker):
-        """Connection.stat() делегирует транспорту."""
+        """Connection.files.stat() делегирует транспорту."""
         mock_transport = mocker.AsyncMock()
         mock_transport.stat = AsyncMock(
             return_value={"size": 1024, "is_file": True}
@@ -532,14 +532,14 @@ class TestConnectionFileOps:
             config=ConnectionConfig(transport="ssh", host="testhost"),
         )
 
-        result = await conn.stat("/var/log/syslog")
+        result = await conn.files.stat("/var/log/syslog")
 
         assert result["size"] == 1024
         mock_transport.stat.assert_called_once_with("/var/log/syslog")
 
     @pytest.mark.asyncio
     async def test_connection_listdir(self, mocker):
-        """Connection.listdir() делегирует транспорту."""
+        """Connection.files.listdir() делегирует транспорту."""
         mock_transport = mocker.AsyncMock()
         mock_transport.listdir = AsyncMock(
             return_value=["file1.txt", "subdir"]
@@ -552,7 +552,7 @@ class TestConnectionFileOps:
             config=ConnectionConfig(transport="ssh", host="testhost"),
         )
 
-        result = await conn.listdir("/var/log")
+        result = await conn.files.listdir("/var/log")
 
         assert result == ["file1.txt", "subdir"]
         mock_transport.listdir.assert_called_once_with("/var/log")

@@ -11,8 +11,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import logging
 import shlex
 import shutil
@@ -28,7 +26,6 @@ from tenacity import wait_exponential_jitter
 from .._logging import log_event
 from ..config.inventory import InventoryLoader
 from ..config.models import ConnectionConfig
-from ..plugins._loader import TransportLoader
 from ..result import PingResult, Result, SyncResult
 from ..services.facts import FactCollector
 from ..services.facts_models import FactSpec, HostFacts
@@ -38,24 +35,30 @@ from ..services.templates import render_template as render_template
 from ..services.tunnels import TunnelService
 from ..shell.session import ShellSession
 from ..transports.base import BaseTransport
-from .bridge import async_delegate, context_delegate
 from .context import CwdContext, EnvContext, ExecutionContext, TempDirContext
+from .factories import (
+    _resolve_circuit_breaker,
+    _resolve_rate_limiter,
+    build_from_config,
+    build_from_dict,
+    build_from_file,
+    build_from_uri,
+    clone_connection,
+)
 from .pipeline import (
-    CircuitBreakerMiddleware,
     CommandPipeline,
     CommandRequest,
-    ContextMiddleware,
-    DryRunMiddleware,
     HookCallback,
     HookEvent,
-    HookMiddleware,
-    ObservabilityMiddleware,
-    RateLimitMiddleware,
-    RetryMiddleware,
-    SudoMiddleware,
     format_command,
 )
 from .resilience import CircuitBreaker, RateLimiter
+from .waiters import (
+    ping_connection,
+    wait_for_connection,
+    wait_for_path,
+    wait_for_port,
+)
 
 if TYPE_CHECKING:
     from ..background._diagnostic import (
@@ -75,6 +78,7 @@ _TempDirContext = TempDirContext
 _format_command = format_command
 _parse_inventory_data = InventoryLoader.parse_data
 _wait_exponential_jitter = wait_exponential_jitter
+
 
 @runtime_checkable
 class OperationObserver(Protocol):
@@ -178,52 +182,14 @@ class OperationObserver(Protocol):
     ) -> Result: ...
 
 
-def _resolve_rate_limiter(
-    rate_limit: float | RateLimiter | None,
-    options: Mapping[str, Any],
-) -> RateLimiter | None:
-    """Создать или вернуть экземпляр ``RateLimiter`` из параметра или ``config.options``."""
-    if isinstance(rate_limit, RateLimiter):
-        return rate_limit
-    if isinstance(rate_limit, int | float) and not isinstance(rate_limit, bool):
-        return RateLimiter(float(rate_limit))
-    opt_rate = options.get("rate_limit")
-    if isinstance(opt_rate, int | float) and not isinstance(opt_rate, bool) and opt_rate > 0:
-        return RateLimiter(float(opt_rate))
-    return None
-
-
-def _resolve_circuit_breaker(
-    circuit_breaker: CircuitBreaker | bool | None,
-    options: Mapping[str, Any],
-) -> CircuitBreaker | None:
-    """Создать или вернуть экземпляр ``CircuitBreaker`` из параметра или ``config.options``."""
-    if isinstance(circuit_breaker, CircuitBreaker):
-        return circuit_breaker
-    if circuit_breaker is False:
-        return None
-    has_opt_cb = (
-        options.get("circuit_breaker") is True
-        or "circuit_breaker_threshold" in options
-    )
-    if circuit_breaker is True or (circuit_breaker is None and has_opt_cb):
-        threshold = int(options.get("circuit_breaker_threshold", 5))
-        recovery = float(options.get("circuit_breaker_recovery_timeout", 30.0))
-        return CircuitBreaker(
-            failure_threshold=threshold,
-            recovery_timeout=recovery,
-        )
-    return None
-
-
 class Connection:
     """Основной класс-фасад для работы с удалёнными и локальными хостами.
 
-    Предоставляет как плоские фасадные методы (``conn.run``, ``conn.read_file``,
-    ``conn.ensure_package``, ``conn.forward_local_port``), так и модульные
-    доменные пространства имён:
+    Предоставляет ядро выполнения команд и интерактивных сессий (``conn.run``,
+    ``conn.stream``, ``conn.expect``, ``conn.open_shell``, ``conn.ping``,
+    ``conn.wait_for_*``), а также модульные доменные пространства имён:
         - ``conn.files`` — файловые операции, SFTP, шаблоны и ``sync_dir``
-        - ``conn.state`` — идемпотентное управление пакетами, сервисами и строками конфигов
+        - ``conn.state`` — идемпотентное управление пакетами, сервисами, пользователями и конфигами
         - ``conn.tunnels`` — сетевой проброс портов (Local/Remote Port Forwarding)
     """
 
@@ -344,7 +310,7 @@ class Connection:
     def _cached_facts(self, value: HostFacts | None) -> None:
         self._facts_collector.cached = value
 
-    # ─── Фабричные методы ──────────────────────────────────────────
+    # ─── Фабричные методы и клонирование (делегация в core/factories.py) ─
 
     @classmethod
     def from_uri(
@@ -360,14 +326,11 @@ class Connection:
         circuit_breaker: CircuitBreaker | bool | None = None,
     ) -> Self:
         """Создать подключение из URI строки."""
-        config = ConnectionConfig.from_uri(uri)
-        transport_class = TransportLoader.get(config.transport)
-        transport = transport_class(config)
-        return cls(
-            transport,
-            config,
-            retry_attempts,
-            logger,
+        return build_from_uri(
+            cls,
+            uri,
+            retry_attempts=retry_attempts,
+            logger=logger,
             dry_run=dry_run,
             before_run=before_run,
             after_run=after_run,
@@ -390,13 +353,11 @@ class Connection:
         circuit_breaker: CircuitBreaker | bool | None = None,
     ) -> Self:
         """Создать подключение из конфигурации."""
-        transport_class = TransportLoader.get(config.transport)
-        transport = transport_class(config)
-        return cls(
-            transport,
+        return build_from_config(
+            cls,
             config,
-            retry_attempts,
-            logger,
+            retry_attempts=retry_attempts,
+            logger=logger,
             dry_run=dry_run,
             before_run=before_run,
             after_run=after_run,
@@ -414,72 +375,12 @@ class Connection:
         dry_run: bool = False,
     ) -> Self:
         """Создать подключение из словаря."""
-        retry = data.get("retry_attempts", retry_attempts)
-        effective_dry_run = bool(data.get("dry_run", dry_run))
-        rate_limit = data.get("rate_limit")
-        circuit_breaker = data.get("circuit_breaker")
-        if "uri" in data:
-            conn = cls.from_uri(
-                str(data["uri"]),
-                retry_attempts=retry,
-                logger=logger,
-                dry_run=effective_dry_run,
-                rate_limit=rate_limit,
-                circuit_breaker=circuit_breaker,
-            )
-            overrides = {
-                k: v
-                for k, v in data.items()
-                if k
-                not in (
-                    "uri",
-                    "transport",
-                    "retry_attempts",
-                    "logger",
-                    "dry_run",
-                    "name",
-                    "groups",
-                    "rate_limit",
-                    "circuit_breaker",
-                )
-                and (
-                    k != "host"
-                    or conn.config.host is None
-                    or (
-                        conn.config.transport == "local"
-                        and conn.config.host == "localhost"
-                    )
-                )
-            }
-            if overrides:
-                conn = conn.with_overrides(**overrides)
-            return conn
-        config = ConnectionConfig(
-            **{
-                k: v
-                for k, v in data.items()
-                if k
-                not in (
-                    "retry_attempts",
-                    "logger",
-                    "dry_run",
-                    "name",
-                    "groups",
-                    "rate_limit",
-                    "circuit_breaker",
-                )
-            }
-        )
-        transport_class = TransportLoader.get(config.transport)
-        transport = transport_class(config)
-        return cls(
-            transport,
-            config,
-            retry,
-            logger,
-            dry_run=effective_dry_run,
-            rate_limit=rate_limit,
-            circuit_breaker=circuit_breaker,
+        return build_from_dict(
+            cls,
+            data,
+            retry_attempts=retry_attempts,
+            logger=logger,
+            dry_run=dry_run,
         )
 
     @classmethod
@@ -493,8 +394,14 @@ class Connection:
         group: str | None = None,
     ) -> list[Self]:
         """Создать подключения из JSON/YAML файла (включая инвентарь с хостами и группами)."""
-        entries = InventoryLoader.load_file(path, host=host, group=group)
-        return [cls.from_dict(data, retry_attempts, logger) for data in entries]
+        return build_from_file(
+            cls,
+            path,
+            retry_attempts=retry_attempts,
+            logger=logger,
+            host=host,
+            group=group,
+        )
 
     @classmethod
     def from_inventory(
@@ -512,8 +419,6 @@ class Connection:
             host=host,
         )
         return conns[0]
-
-    # ─── Клонирование и модификация ────────────────────────────────
 
     def copy(
         self,
@@ -533,80 +438,23 @@ class Connection:
         circuit_breaker: CircuitBreaker | bool | None = None,
     ) -> Self:
         """Создать копию подключения с возможностью изменения параметров."""
-        new_config = ConnectionConfig(
-            transport=self._config.transport,
-            host=host if host is not None else self._config.host,
-            port=port if port is not None else self._config.port,
-            username=username if username is not None else self._config.username,
-            password=(
-                SecretStr(password)
-                if isinstance(password, str)
-                else password
-                if password is not None
-                else self._config.password
-            ),
-            key_file=key_file if key_file is not None else self._config.key_file,
-            passphrase=(
-                SecretStr(passphrase)
-                if isinstance(passphrase, str)
-                else passphrase
-                if passphrase is not None
-                else self._config.passphrase
-            ),
-            ssh_config=(
-                ssh_config if ssh_config is not None else self._config.ssh_config
-            ),
-            timeout=timeout if timeout is not None else self._config.timeout,
-            options=options if options is not None else self._config.options,
+        return clone_connection(
+            self,
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            key_file=key_file,
+            passphrase=passphrase,
+            ssh_config=ssh_config,
+            timeout=timeout,
+            options=options,
+            retry_attempts=retry_attempts,
+            logger=logger,
+            dry_run=dry_run,
+            rate_limit=rate_limit,
+            circuit_breaker=circuit_breaker,
         )
-        transport_class = TransportLoader.get(new_config.transport)
-        transport = transport_class(new_config)
-        new_conn = type(self)(
-            transport,
-            new_config,
-            (
-                self._retry_attempts
-                if retry_attempts is None
-                else retry_attempts
-            ),
-            logger or self._logger,
-            dry_run=self._dry_run if dry_run is None else dry_run,
-            before_run=self._hooks["before_run"],
-            after_run=self._hooks["after_run"],
-            on_error=self._hooks["on_error"],
-            rate_limit=(
-                self._rate_limiter if rate_limit is None else rate_limit
-            ),
-            circuit_breaker=(
-                self._circuit_breaker
-                if circuit_breaker is None
-                else circuit_breaker
-            ),
-        )
-        for obs in self._operation_observers:
-            attach_fn = getattr(obs, "_attach_connection", None)
-            if callable(attach_fn):
-                attach_fn(new_conn)
-            else:
-                new_conn.add_operation_observer(obs)
-
-        default_mw_types = (
-            ContextMiddleware,
-            SudoMiddleware,
-            HookMiddleware,
-            DryRunMiddleware,
-            ObservabilityMiddleware,
-            CircuitBreakerMiddleware,
-            RateLimitMiddleware,
-            RetryMiddleware,
-        )
-        existing_mw_types = tuple(type(m) for m in new_conn.pipeline.middlewares)
-        for mw in self._pipeline.middlewares:
-            if not isinstance(mw, default_mw_types) and not isinstance(
-                mw, existing_mw_types
-            ):
-                new_conn.pipeline.add_middleware(mw)
-        return new_conn
 
     def with_overrides(self, **overrides: Any) -> Self:
         """Создать копию подключения с переопределёнными параметрами."""
@@ -875,40 +723,11 @@ class Connection:
         """Проверить живость подключения."""
         return await self._transport.ping(timeout=timeout)
 
+    # ─── Проверки доступности и поллинг (делегация в core/waiters.py) ─
+
     async def ping(self, timeout: float | None = None) -> PingResult:
         """Проверить доступность хоста с измерением задержки (``latency_ms``)."""
-        host = self._config.host or self._config.uri_safe or "localhost"
-        transport = self.transport_name
-        if self._dry_run:
-            return PingResult(
-                host=host,
-                alive=True,
-                latency_ms=0.0,
-                transport=transport,
-            )
-
-        start = time.monotonic()
-        try:
-            if not self._transport.is_connected:
-                await self._transport.connect()
-            alive = await self._transport.ping(timeout=timeout)
-            elapsed_ms = (time.monotonic() - start) * 1000.0
-            return PingResult(
-                host=host,
-                alive=alive,
-                latency_ms=elapsed_ms,
-                transport=transport,
-                error=None if alive else "Ping check returned False",
-            )
-        except Exception as exc:
-            elapsed_ms = (time.monotonic() - start) * 1000.0
-            return PingResult(
-                host=host,
-                alive=False,
-                latency_ms=elapsed_ms,
-                transport=transport,
-                error=str(exc),
-            )
+        return await ping_connection(self, timeout=timeout)
 
     async def wait_for_connection(
         self,
@@ -916,50 +735,9 @@ class Connection:
         interval: float = 2.0,
         delay: float = 0.0,
     ) -> PingResult:
-        """Ожидать восстановления доступности хоста (например, после ``reboot``).
-
-        Повторяет ``ping()`` с интервалом ``interval`` секунд до успешного ответа
-        или истечения ``timeout`` (при таймауте выбрасывает ``TimeoutError``).
-        """
-        from ..exceptions import TimeoutError as UniconnTimeoutError
-
-        if self._dry_run:
-            return await self.ping(timeout=timeout)
-
-        start = time.monotonic()
-        deadline = start + timeout
-        if delay > 0:
-            await asyncio.sleep(delay)
-
-        last_res: PingResult | None = None
-        while True:
-            remaining = deadline - time.monotonic()
-            probe_timeout = max(0.5, min(interval * 2.0, max(0.5, remaining)))
-            try:
-                if not self._transport.is_connected:
-                    with contextlib.suppress(Exception):
-                        await self._transport.disconnect()
-                last_res = await self.ping(timeout=probe_timeout)
-                if last_res.alive:
-                    return last_res
-            except Exception as exc:
-                last_res = PingResult(
-                    host=self._config.host or "localhost",
-                    alive=False,
-                    latency_ms=0.0,
-                    transport=self.transport_name,
-                    error=str(exc),
-                )
-
-            now = time.monotonic()
-            if now >= deadline:
-                break
-            await asyncio.sleep(min(interval, deadline - now))
-
-        err_detail = last_res.error if last_res and last_res.error else "host unreachable"
-        raise UniconnTimeoutError(
-            f"Timed out in wait_for_connection after {timeout:.2f}s ({err_detail})",
-            host=self._config.host,
+        """Ожидать восстановления доступности хоста (например, после ``reboot``)."""
+        return await wait_for_connection(
+            self, timeout=timeout, interval=interval, delay=delay
         )
 
     async def wait_for_port(
@@ -973,71 +751,16 @@ class Connection:
         interval: float = 1.0,
         delay: float = 0.0,
     ) -> float:
-        """Ожидать открытия (``open``) или закрытия (``closed``) TCP-порта.
-
-        Параметр ``check_from`` задаёт точку проверки:
-        - ``"remote"`` (по умолчанию): проверка выполняется изнутри целевого хоста;
-        - ``"local"``: прямое TCP-подключение с локальной управляющей машины.
-        Возвращает время ожидания в секундах (``float``).
-        """
-        from ..exceptions import TimeoutError as UniconnTimeoutError
-
-        if self._dry_run:
-            return 0.0
-
-        start = time.monotonic()
-        deadline = start + timeout
-        if delay > 0:
-            await asyncio.sleep(delay)
-
-        if host is not None:
-            target_host = host
-        elif check_from == "local":
-            target_host = self._config.host or "127.0.0.1"
-        else:
-            target_host = "127.0.0.1"
-
-        port_num = int(port)
-
-        while True:
-            is_open = False
-            if check_from == "local":
-                probe_timeout = max(0.2, min(2.0, interval))
-                try:
-                    _reader, writer = await asyncio.wait_for(
-                        asyncio.open_connection(target_host, port_num),
-                        timeout=probe_timeout,
-                    )
-                    writer.close()
-                    with contextlib.suppress(Exception):
-                        await writer.wait_closed()
-                    is_open = True
-                except Exception:
-                    is_open = False
-            else:
-                q_host = shlex.quote(target_host)
-                probe_cmd = (
-                    f"python3 -c 'import socket,sys; s=socket.socket(); s.settimeout(1.5); "
-                    f"sys.exit(0 if s.connect_ex(({target_host!r},{port_num}))==0 else 1)' 2>/dev/null "
-                    f"|| nc -z -w 2 {q_host} {port_num} 2>/dev/null "
-                    f"|| (echo >/dev/tcp/{q_host}/{port_num}) >/dev/null 2>&1"
-                )
-                with contextlib.suppress(Exception):
-                    res = await self.run(probe_cmd, raise_on_error=False, dry_run=False)
-                    is_open = res.ok
-
-            if (state == "open" and is_open) or (state == "closed" and not is_open):
-                return time.monotonic() - start
-
-            now = time.monotonic()
-            if now >= deadline:
-                break
-            await asyncio.sleep(min(interval, deadline - now))
-
-        raise UniconnTimeoutError(
-            f"Timed out in wait_for_port({target_host}:{port_num}, state={state!r}, "
-            f"check_from={check_from!r}) after {timeout:.2f}s",
-            host=self._config.host,
+        """Ожидать открытия (``open``) или закрытия (``closed``) TCP-порта."""
+        return await wait_for_port(
+            self,
+            port,
+            host=host,
+            state=state,
+            check_from=check_from,
+            timeout=timeout,
+            interval=interval,
+            delay=delay,
         )
 
     async def wait_for_path(
@@ -1051,83 +774,16 @@ class Connection:
         delay: float = 0.0,
         sudo: bool = False,
     ) -> float:
-        """Ожидать появления (``present``) или удаления (``absent``) файла/директории/сокета.
-
-        Если задан ``content_regex`` при ``state="present"``, дополнительно проверяет,
-        что содержимое файла соответствует регулярному выражению.
-        Возвращает время ожидания в секундах (``float``).
-        """
-        import re as _re
-
-        from ..exceptions import TimeoutError as UniconnTimeoutError
-
-        if self._dry_run:
-            return 0.0
-
-        start = time.monotonic()
-        deadline = start + timeout
-        if delay > 0:
-            await asyncio.sleep(delay)
-
-        path_str = str(remote_path)
-        q_path = shlex.quote(path_str)
-        compiled_re = _re.compile(content_regex) if content_regex is not None else None
-
-        while True:
-            exists = False
-            with contextlib.suppress(Exception):
-                if sudo:
-                    chk = await self.run(
-                        f"test -e {q_path}",
-                        sudo=True,
-                        raise_on_error=False,
-                        dry_run=False,
-                    )
-                    exists = chk.ok
-                else:
-                    try:
-                        exists = await self.exists(path_str)
-                    except Exception:
-                        chk = await self.run(
-                            f"test -e {q_path}",
-                            raise_on_error=False,
-                            dry_run=False,
-                        )
-                        exists = chk.ok
-
-            if state == "absent" and not exists:
-                return time.monotonic() - start
-
-            if state == "present" and exists:
-                if compiled_re is None:
-                    return time.monotonic() - start
-                text_content: str | None = None
-                with contextlib.suppress(Exception):
-                    if sudo:
-                        cat_res = await self.run(
-                            f"cat {q_path}",
-                            sudo=True,
-                            raise_on_error=False,
-                            dry_run=False,
-                        )
-                        if cat_res.ok:
-                            text_content = cat_res.stdout
-                    else:
-                        raw = await self.read_file(path_str, encoding="utf-8")
-                        text_content = (
-                            raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace")
-                        )
-                if text_content is not None and compiled_re.search(text_content):
-                    return time.monotonic() - start
-
-            now = time.monotonic()
-            if now >= deadline:
-                break
-            await asyncio.sleep(min(interval, deadline - now))
-
-        raise UniconnTimeoutError(
-            f"Timed out in wait_for_path({path_str!r}, state={state!r}) after {timeout:.2f}s",
-            host=self._config.host,
+        """Ожидать появления (``present``) или удаления (``absent``) файла/директории/сокета."""
+        return await wait_for_path(
+            self,
+            remote_path,
+            state=state,
+            content_regex=content_regex,
+            timeout=timeout,
+            interval=interval,
+            delay=delay,
+            sudo=sudo,
         )
 
     async def run_script(
@@ -1154,8 +810,8 @@ class Connection:
         async with self.temp_dir() as remote_dir:
             remote_script = f"{remote_dir.rstrip('/')}/{script_path.name}"
             if not effective_dry_run:
-                await self.upload(str(script_path), remote_script)
-                await self.chmod(remote_script, 0o700)
+                await self.files.upload(str(script_path), remote_script)
+                await self.files.chmod(remote_script, 0o700)
 
             if interpreter:
                 cmd_parts: list[str] = [*shlex.split(interpreter), remote_script]
@@ -1187,27 +843,6 @@ class Connection:
                 sensitive=sensitive,
                 dry_run=dry_run,
             )
-
-    # ─── Файловые операции и шаблоны (делегация в conn.files) ──────
-
-    upload = async_delegate("files", FileOperationsService.upload)
-    download = async_delegate("files", FileOperationsService.download)
-    read_file = async_delegate("files", FileOperationsService.read_file)
-    write_file = async_delegate("files", FileOperationsService.write_file)
-    checksum = async_delegate("files", FileOperationsService.checksum)
-    exists = async_delegate("files", FileOperationsService.exists)
-    mkdir = async_delegate("files", FileOperationsService.mkdir)
-    chmod = async_delegate("files", FileOperationsService.chmod)
-    stat = async_delegate("files", FileOperationsService.stat)
-    listdir = async_delegate("files", FileOperationsService.listdir)
-    remove_file = async_delegate("files", FileOperationsService.remove_file)
-    write_template = async_delegate("files", FileOperationsService.write_template)
-    sync_dir = async_delegate("files", FileOperationsService.sync_dir)
-
-    # ─── Проброс портов (делегация в conn.tunnels) ─────────────────
-
-    forward_local_port = context_delegate("tunnels", TunnelService.forward_local_port)
-    forward_remote_port = context_delegate("tunnels", TunnelService.forward_remote_port)
 
     # ─── Интерактивный Shell и Expect ──────────────────────────────
 
@@ -1317,7 +952,7 @@ class Connection:
             **kwargs,
         )
 
-    # ─── Факты о системе и идемпотентные операции (conn.state) ─────
+    # ─── Факты о системе и диагностика ─────────────────────────────
 
     async def gather_facts(
         self,
@@ -1364,20 +999,6 @@ class Connection:
             gather_pre_facts=gather_pre_facts,
             gather_post_facts=gather_post_facts,
         )
-
-    ensure_package = async_delegate("state", StateManagementService.ensure_package)
-    ensure_service = async_delegate("state", StateManagementService.ensure_service)
-    ensure_line = async_delegate("state", StateManagementService.ensure_line)
-    ensure_file = async_delegate("state", StateManagementService.ensure_file)
-    ensure_directory = async_delegate("state", StateManagementService.ensure_directory)
-    ensure_user = async_delegate("state", StateManagementService.ensure_user)
-    ensure_authorized_key = async_delegate(
-        "state", StateManagementService.ensure_authorized_key
-    )
-    ensure_systemd_unit = async_delegate(
-        "state", StateManagementService.ensure_systemd_unit
-    )
-    ensure_sysctl = async_delegate("state", StateManagementService.ensure_sysctl)
 
     async def __aenter__(self) -> Self:
         await self._transport.connect()

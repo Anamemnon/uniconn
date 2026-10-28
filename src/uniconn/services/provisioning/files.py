@@ -121,7 +121,7 @@ async def ensure_line(
             diff=synthetic_diff,
         )
 
-    file_exists = await svc._conn.exists(path_str)
+    file_exists = await svc._conn.files.exists(path_str)
     if not file_exists and state == "absent":
         return EnsureResult(
             target=path_str,
@@ -146,7 +146,7 @@ async def ensure_line(
     original_text = ""
     existing_lines: list[str] = []
     if file_exists:
-        raw_content = await svc._conn.read_file(path_str, encoding=encoding)
+        raw_content = await svc._conn.files.read_file(path_str, encoding=encoding)
         original_text = raw_content if isinstance(raw_content, str) else raw_content.decode(encoding)
         existing_lines = original_text.splitlines()
 
@@ -193,8 +193,8 @@ async def ensure_line(
         )
 
     if backup and file_exists:
-        await svc._conn.write_file(f"{path_str}.bak", original_text, encoding=encoding)
-    await svc._conn.write_file(path_str, new_content, mode=mode, encoding=encoding)
+        await svc._conn.files.write_file(f"{path_str}.bak", original_text, encoding=encoding)
+    await svc._conn.files.write_file(path_str, new_content, mode=mode, encoding=encoding)
     return EnsureResult(
         target=path_str,
         state=state,
@@ -225,7 +225,7 @@ async def _plan_mode_change(
         plan.record(f"mode {oct(parsed_mode)}")
         return True
     try:
-        st = await svc._conn.stat(path_str)
+        st = await svc._conn.files.stat(path_str)
         cur_mode = svc._extract_stat_mode(st)
     except Exception:
         cur_mode = -1
@@ -294,7 +294,7 @@ async def _ensure_file_absent(
         is_symlink = eff.is_symlink()
         exists = eff.exists() or is_symlink
     else:
-        exists = await svc._conn.exists(path_str)
+        exists = await svc._conn.files.exists(path_str)
         if not exists:
             chk = await svc._conn.run(
                 f"test -L {shlex.quote(path_str)}",
@@ -319,7 +319,7 @@ async def _ensure_file_absent(
     old_text = ""
     if not is_symlink:
         with contextlib.suppress(Exception):
-            raw = await svc._conn.read_file(path_str, encoding=encoding)
+            raw = await svc._conn.files.read_file(path_str, encoding=encoding)
             old_text = raw if isinstance(raw, str) else raw.decode(encoding, errors="replace")
 
     diff_str = (
@@ -356,7 +356,7 @@ async def _ensure_file_absent(
             dry_run=False,
         )
     else:
-        await svc._conn.remove_file(path_str)
+        await svc._conn.files.remove_file(path_str)
 
     return EnsureResult(
         target=path_str,
@@ -510,7 +510,7 @@ async def _validate_candidate_file(
     """Записать временный файл-кандидат и проверить его через команду ``validate``."""
     async with svc._conn.temp_dir(prefix="uniconn_val_") as tmp_dir:
         tmp_candidate = f"{tmp_dir.rstrip('/')}/candidate"
-        await svc._conn.write_file(
+        await svc._conn.files.write_file(
             tmp_candidate,
             candidate_payload,
             mode=parsed_mode,
@@ -556,11 +556,11 @@ async def _ensure_file_present(
     is_dry_run: bool,
 ) -> EnsureResult:
     """Обработать ``ensure_file(..., state='present')``."""
-    file_exists = await svc._conn.exists(path_str)
+    file_exists = await svc._conn.files.exists(path_str)
     old_bytes = b""
     if file_exists:
         with contextlib.suppress(Exception):
-            raw_existing = await svc._conn.read_file(path_str, encoding=None)
+            raw_existing = await svc._conn.files.read_file(path_str, encoding=None)
             old_bytes = raw_existing if isinstance(raw_existing, bytes) else raw_existing.encode(encoding)
 
     plan = ChangePlan(target=path_str, state="present", is_dry_run=is_dry_run)
@@ -606,7 +606,7 @@ async def _ensure_file_present(
         if sudo and svc._conn.transport_name != "local":
             async with svc._conn.temp_dir(prefix="uniconn_stage_") as stage_dir:
                 staged = f"{stage_dir.rstrip('/')}/staged"
-                await svc._conn.write_file(staged, write_payload, mode=parsed_mode, encoding=encoding)
+                await svc._conn.files.write_file(staged, write_payload, mode=parsed_mode, encoding=encoding)
                 await svc._conn.run(
                     f"mv -f {shlex.quote(staged)} {shlex.quote(path_str)}",
                     sudo=True,
@@ -614,7 +614,7 @@ async def _ensure_file_present(
                     dry_run=False,
                 )
         else:
-            await svc._conn.write_file(
+            await svc._conn.files.write_file(
                 path_str, write_payload, mode=parsed_mode, encoding=encoding, atomic=atomic
             )
 
@@ -627,7 +627,7 @@ async def _ensure_file_present(
                 dry_run=False,
             )
         else:
-            await svc._conn.chmod(path_str, parsed_mode)
+            await svc._conn.files.chmod(path_str, parsed_mode)
 
     if owner_changed:
         await svc._apply_owner_group(path_str, owner=owner, group=group, sudo=sudo)
@@ -799,7 +799,7 @@ async def ensure_directory(
             diff=synth_diff,
         )
 
-    dir_exists = await svc._conn.exists(path_str)
+    dir_exists = await svc._conn.files.exists(path_str)
     if state == "absent":
         return await _ensure_directory_absent(
             svc, path_str, dir_exists=dir_exists, sudo=sudo, is_dry_run=is_dry_run
@@ -836,7 +836,7 @@ async def ensure_directory(
                 dry_run=False,
             )
         else:
-            await svc._conn.mkdir(path_str, parents=True, exist_ok=True, mode=parsed_mode)
+            await svc._conn.files.mkdir(path_str, parents=True, exist_ok=True, mode=parsed_mode)
 
     if mode_changed and parsed_mode is not None:
         if (sudo and svc._conn.transport_name != "local") or recurse:
@@ -848,7 +848,7 @@ async def ensure_directory(
                 dry_run=False,
             )
         else:
-            await svc._conn.chmod(path_str, parsed_mode)
+            await svc._conn.files.chmod(path_str, parsed_mode)
 
     if owner_changed:
         await svc._apply_owner_group(

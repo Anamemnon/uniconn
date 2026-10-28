@@ -270,7 +270,7 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
 
         async with Connection.from_uri("local://") as conn:
             # 1. Dry-run creation computes unified diff without creating file
-            dry_res = await conn.ensure_file(
+            dry_res = await conn.state.ensure_file(
                 str(target),
                 content="port=8080\nworkers=4\n",
                 dry_run=True,
@@ -283,7 +283,7 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             assert not target.exists()
 
             # 2. Create file with content and validation command
-            res1 = await conn.ensure_file(
+            res1 = await conn.state.ensure_file(
                 str(target),
                 content="port=8080\nworkers=4\n",
                 validate=val_cmd,
@@ -295,7 +295,7 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             assert target.read_text(encoding="utf-8") == "port=8080\nworkers=4\n"
 
             # 3. Second call is idempotent (changed=False, diff=None)
-            res2 = await conn.ensure_file(
+            res2 = await conn.state.ensure_file(
                 str(target),
                 content="port=8080\nworkers=4\n",
             )
@@ -304,7 +304,7 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             assert res2.diff is None
 
             # 4. Dry-run update computes exact unified diff against existing file
-            dry_upd = await conn.ensure_file(
+            dry_upd = await conn.state.ensure_file(
                 str(target),
                 content="port=9090\nworkers=4\n",
                 dry_run=True,
@@ -317,7 +317,7 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             assert target.read_text(encoding="utf-8") == "port=8080\nworkers=4\n"
 
             # 5. Failed validation leaves original file untouched
-            bad_val = await conn.ensure_file(
+            bad_val = await conn.state.ensure_file(
                 str(target),
                 content="invalid_config\n",
                 validate=bad_val_cmd,
@@ -328,7 +328,7 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             assert target.read_text(encoding="utf-8") == "port=8080\nworkers=4\n"
 
             # 6. Absent state removes file and shows deletion diff
-            rm_res = await conn.ensure_file(str(target), state="absent")
+            rm_res = await conn.state.ensure_file(str(target), state="absent")
             assert rm_res.ok is True
             assert rm_res.changed is True
             assert rm_res.diff is not None
@@ -340,7 +340,7 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
         """Проверка выставления прав доступа (mode=0o640) на POSIX-файловой системе."""
         target = tmp_path / "app_secure.conf"
         async with Connection.from_uri("local://") as conn:
-            res = await conn.ensure_file(str(target), content="port=8080\n", mode=0o640)
+            res = await conn.state.ensure_file(str(target), content="port=8080\n", mode=0o640)
             assert res.ok is True
             assert (target.stat().st_mode & 0o777) == 0o640
 
@@ -351,7 +351,7 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
         link_path = tmp_path / "sym.txt"
 
         async with Connection.from_uri("local://") as conn:
-            res1 = await conn.ensure_file(str(link_path), state="link", target=str(src))
+            res1 = await conn.state.ensure_file(str(link_path), state="link", target=str(src))
             assert res1.ok is True
             assert res1.changed is True
             assert res1.diff is not None
@@ -360,7 +360,7 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             assert link_path.resolve() == src.resolve()
 
             # Idempotent re-run
-            res2 = await conn.ensure_file(str(link_path), state="link", target=str(src))
+            res2 = await conn.state.ensure_file(str(link_path), state="link", target=str(src))
             assert res2.ok is True
             assert res2.changed is False
 
@@ -370,7 +370,7 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
 
         async with Connection.from_uri("local://") as conn:
             # Dry-run directory creation
-            dry_dir = await conn.ensure_directory(str(dir_path), dry_run=True)
+            dry_dir = await conn.state.ensure_directory(str(dir_path), dry_run=True)
             assert dry_dir.changed is True
             assert dry_dir.dry_run is True
             assert dry_dir.diff is not None
@@ -378,19 +378,19 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             assert not dir_path.exists()
 
             # Real directory creation
-            dir_res = await conn.ensure_directory(str(dir_path))
+            dir_res = await conn.state.ensure_directory(str(dir_path))
             assert dir_res.ok is True
             assert dir_res.changed is True
             assert dir_path.is_dir()
 
             # Idempotent check
-            dir_res2 = await conn.ensure_directory(str(dir_path))
+            dir_res2 = await conn.state.ensure_directory(str(dir_path))
             assert dir_res2.ok is True
             assert dir_res2.changed is False
 
             # ensure_line with dry_run=True computes unified diff
             conf_path.write_text("APP_PORT=3000\n", encoding="utf-8")
-            line_dry = await conn.ensure_line(
+            line_dry = await conn.state.ensure_line(
                 str(conf_path),
                 "APP_PORT=4000",
                 regex=r"^APP_PORT=",
@@ -404,7 +404,7 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             assert conf_path.read_text(encoding="utf-8") == "APP_PORT=3000\n"
 
             # Remove directory
-            rm_dir = await conn.ensure_directory(str(dir_path), state="absent")
+            rm_dir = await conn.state.ensure_directory(str(dir_path), state="absent")
             assert rm_dir.ok is True
             assert rm_dir.changed is True
             assert not dir_path.exists()
@@ -414,7 +414,7 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
         """Проверка выставления прав доступа (mode=0o750) на POSIX-директории."""
         dir_path = tmp_path / "nested_posix" / "service_dir"
         async with Connection.from_uri("local://") as conn:
-            dir_res = await conn.ensure_directory(str(dir_path), mode=0o750)
+            dir_res = await conn.state.ensure_directory(str(dir_path), mode=0o750)
             assert dir_res.ok is True
             assert dir_res.changed is True
             assert dir_path.is_dir()
@@ -423,11 +423,11 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
     def test_sync_connection_and_pool_ensure_file_directory_parity(self, tmp_path: Path) -> None:
         sync_file = tmp_path / "sync_dir" / "hello.txt"
         with SyncConnection.from_uri("local://") as sconn:
-            d_res = sconn.ensure_directory(str(sync_file.parent), mode=0o755)
+            d_res = sconn.state.ensure_directory(str(sync_file.parent), mode=0o755)
             assert d_res.ok is True
             assert d_res.changed is True
 
-            f_res = sconn.ensure_file(str(sync_file), content="sync_world\n", mode=0o644)
+            f_res = sconn.state.ensure_file(str(sync_file), content="sync_world\n", mode=0o644)
             assert f_res.ok is True
             assert f_res.changed is True
             assert sync_file.read_text(encoding="utf-8") == "sync_world\n"

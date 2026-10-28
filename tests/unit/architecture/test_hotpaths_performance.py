@@ -129,8 +129,8 @@ async def test_otel_tracing_uses_observers_without_instance_monkey_patching(
         assert "open_shell" not in conn.__dict__
 
         target = tmp_path / "traced.txt"
-        await conn.write_file(target, "traced content")
-        content = await conn.read_file(target)
+        await conn.files.write_file(target, "traced content")
+        content = await conn.files.read_file(target)
         assert content == "traced content"
 
     span_names = [s.name for s in tracer.spans]

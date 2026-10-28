@@ -446,11 +446,11 @@ async def ensure_authorized_key(
     ssh_dir = f"{home_dir.rstrip('/')}/.ssh"
     auth_file = f"{ssh_dir}/authorized_keys"
 
-    file_exists = await svc._conn.exists(auth_file)
+    file_exists = await svc._conn.files.exists(auth_file)
     old_text = ""
     if file_exists:
         with contextlib.suppress(Exception):
-            raw = await svc._conn.read_file(auth_file, encoding="utf-8")
+            raw = await svc._conn.files.read_file(auth_file, encoding="utf-8")
             old_text = raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace")
 
     existing_lines = [ln.rstrip("\r") for ln in old_text.splitlines()]

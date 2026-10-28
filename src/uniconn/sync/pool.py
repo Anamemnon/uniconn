@@ -20,6 +20,7 @@ from ..core.bridge import (
 from ..core.connection import Connection
 from ..core.resilience import CircuitBreaker, RateLimiter
 from ..pool.connection_pool import ConnectionPool
+from .services import SyncPoolFileOperationsService, SyncPoolStateManagementService
 
 if TYPE_CHECKING:
     from .connection import SyncConnection
@@ -28,12 +29,21 @@ T = TypeVar("T")
 
 
 class SyncConnectionPool(SyncProxyMixin):
-    """Синхронная обёртка над ``ConnectionPool`` на базе ``EventLoopPortal``."""
+    """Синхронная обёртка над ``ConnectionPool`` на базе ``EventLoopPortal``.
+
+    Предоставляет групповое выполнение команд и проверок (``sync_pool.map``,
+    ``sync_pool.apply``, ``sync_pool.stream``, ``sync_pool.ping``, ``sync_pool.wait_for_*``,
+    ``sync_pool.gather_facts``), а также доменные пространства имён:
+        - ``sync_pool.files`` (``SyncPoolFileOperationsService``)
+        - ``sync_pool.state`` (``SyncPoolStateManagementService``)
+    """
 
     def __init__(self, async_pool: ConnectionPool) -> None:
         self._async_pool = async_pool
         self._async_target = async_pool
         self._portal = EventLoopPortal(owner_name="SyncConnectionPool")
+        self.files = SyncPoolFileOperationsService(self)
+        self.state = SyncPoolStateManagementService(self)
 
     @property
     def _closed(self) -> bool:
@@ -173,16 +183,11 @@ class SyncConnectionPool(SyncProxyMixin):
             )
         )
 
-    # ─── Fan-out операции пула (ParamSpec-дескрипторы к ConnectionPool) ─
+    # ─── Fan-out операции ядра пула (ParamSpec-дескрипторы к ConnectionPool) ─
 
     map = sync_method(ConnectionPool.map)
     map_safe = sync_method(ConnectionPool.map_safe)
     map_with_callback = sync_method(ConnectionPool.map_with_callback)
-    upload = sync_method(ConnectionPool.upload)
-    download = sync_method(ConnectionPool.download)
-    checksum = sync_method(ConnectionPool.checksum)
-    sync_dir = sync_method(ConnectionPool.sync_dir)
-    write_template = sync_method(ConnectionPool.write_template)
     gather_facts = sync_method(ConnectionPool.gather_facts)
     diff_facts = sync_method(ConnectionPool.diff_facts)
     ping = sync_method(ConnectionPool.ping)
@@ -190,14 +195,5 @@ class SyncConnectionPool(SyncProxyMixin):
     wait_for_port = sync_method(ConnectionPool.wait_for_port)
     wait_for_path = sync_method(ConnectionPool.wait_for_path)
     run_script = sync_method(ConnectionPool.run_script)
-    ensure_package = sync_method(ConnectionPool.ensure_package)
-    ensure_service = sync_method(ConnectionPool.ensure_service)
-    ensure_line = sync_method(ConnectionPool.ensure_line)
-    ensure_file = sync_method(ConnectionPool.ensure_file)
-    ensure_directory = sync_method(ConnectionPool.ensure_directory)
-    ensure_user = sync_method(ConnectionPool.ensure_user)
-    ensure_authorized_key = sync_method(ConnectionPool.ensure_authorized_key)
-    ensure_systemd_unit = sync_method(ConnectionPool.ensure_systemd_unit)
-    ensure_sysctl = sync_method(ConnectionPool.ensure_sysctl)
     use_cassette = sync_context(ConnectionPool.use_cassette, reopen_portal=True)
     stream = sync_iter(ConnectionPool.stream)

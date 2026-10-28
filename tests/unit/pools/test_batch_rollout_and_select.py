@@ -93,23 +93,25 @@ async def test_pool_batch_aborted_on_exception(mocker: pytest.MonkeyPatch) -> No
     pool = ConnectionPool(uris)
     called: list[str] = []
 
+    from uniconn.services.files import FileOperationsService
+
     async def fake_checksum(
-        self_conn: Connection,
+        self_files: FileOperationsService,
         remote_path: str | Path,
         algorithm: str = "sha256",
         *,
         sudo: bool = False,
     ) -> str:
-        host = self_conn.config.host or ""
+        host = self_files._conn.config.host or ""
         called.append(host)
         if host == "h1":
             raise RuntimeError("disk I/O error")
         return "deadbeef"
 
-    mocker.patch.object(Connection, "checksum", fake_checksum)
+    mocker.patch.object(FileOperationsService, "checksum", fake_checksum)
 
     with pytest.raises(BatchAbortedError) as exc_info:
-        await pool.checksum("/etc/hosts", batch_size=2, max_fail_ratio=0.2)
+        await pool.files.checksum("/etc/hosts", batch_size=2, max_fail_ratio=0.2)
 
     err = exc_info.value
     assert err.batch_index == 0

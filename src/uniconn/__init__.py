@@ -103,7 +103,13 @@ from .hooks import (
     otel_tracing_hook,
     structured_log_hook,
 )
-from .pool import ConnectionPool, PoolStreamMultiplexer, SSHSessionPool
+from .pool import (
+    ConnectionPool,
+    PoolFileOperationsService,
+    PoolStateManagementService,
+    PoolStreamMultiplexer,
+    SSHSessionPool,
+)
 from .pytest_plugin import UniconnCassetteFixture
 from .result import EnsureResult, PingResult, Result, SyncResult
 from .services import (
@@ -145,6 +151,8 @@ from .sync import (
     SyncConnectionPool,
     SyncDiagnosticSession,
     SyncFileOperationsService,
+    SyncPoolFileOperationsService,
+    SyncPoolStateManagementService,
     SyncShellSession,
     SyncStateManagementService,
     SyncTunnelService,
@@ -293,6 +301,8 @@ __all__ = [
     "PacmanStrategy",
     "PingResult",
     "PodmanTransport",
+    "PoolFileOperationsService",
+    "PoolStateManagementService",
     "PoolStreamMultiplexer",
     "PosixMarkerProtocol",
     "RateLimitMiddleware",
@@ -332,6 +342,8 @@ __all__ = [
     "SyncContextBridge",
     "SyncDiagnosticSession",
     "SyncFileOperationsService",
+    "SyncPoolFileOperationsService",
+    "SyncPoolStateManagementService",
     "SyncResult",
     "SyncShellSession",
     "SyncStateManagementService",

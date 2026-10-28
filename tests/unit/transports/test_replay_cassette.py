@@ -231,9 +231,9 @@ class TestCassetteRecordAndReplayModes:
         conn = Connection.from_uri(f"replay://bmc-01?cassette={cassette_file}")
         assert TransportLoader.get("replay") is ReplayTransport
 
-        assert await conn.exists("/etc/app.conf") is True
-        assert await conn.read_file("/etc/app.conf") == "port=8080\n"
-        await conn.write_file("/etc/app.conf", "port=9090\n", mode=0o644)
+        assert await conn.files.exists("/etc/app.conf") is True
+        assert await conn.files.read_file("/etc/app.conf") == "port=8080\n"
+        await conn.files.write_file("/etc/app.conf", "port=9090\n", mode=0o644)
 
         streamed = [line async for line in conn.stream("journalctl -f -n 2")]
         assert streamed == ["line-1", "line-2"]
