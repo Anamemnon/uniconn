@@ -148,6 +148,7 @@ class TestFactSpecAndExternalTools:
             Path(local_path).write_bytes(b"fake-sosreport-archive")
 
         conn.run = AsyncMock(side_effect=fake_run)  # type: ignore[method-assign]
+        conn.read_file = AsyncMock(side_effect=OSError("force shell fallback"))  # type: ignore[method-assign]
         conn.download = AsyncMock(side_effect=fake_download)  # type: ignore[method-assign]
         conn.remove_file = AsyncMock()  # type: ignore[method-assign]
 

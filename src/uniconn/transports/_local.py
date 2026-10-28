@@ -133,7 +133,13 @@ def _apply_windows_polyfills(parts: list[str]) -> str | None:
             decoded = raw_arg
         return f'"{sys.executable}" -c "import sys; sys.stdout.write({decoded!r})"'
 
-    if first == "tail" and shutil.which("tail") is None:
+    def _safe_which(binary: str) -> str | None:
+        try:
+            return shutil.which(binary)
+        except AttributeError:
+            return None
+
+    if first == "tail" and _safe_which("tail") is None:
         n = 10
         for i, p in enumerate(parts):
             if p == "-n" and i + 1 < len(parts):
@@ -146,7 +152,7 @@ def _apply_windows_polyfills(parts: list[str]) -> str | None:
             f'sys.stdout.write(\'\'.join(lines[-{n}:]))" {subprocess.list2cmdline([target_file])}'
         )
 
-    if first == "python3" and shutil.which("python3") is None:
+    if first == "python3" and _safe_which("python3") is None:
         parts[0] = sys.executable
 
     return None

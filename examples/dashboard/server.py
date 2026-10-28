@@ -138,7 +138,7 @@ def _find_uv_binary() -> str:
 
 def _can_import_uniconn_in_proc() -> bool:
     """Проверить, поддерживает ли текущий процесс Python 3.11+ и зависимости uniconn."""
-    if sys.version_info < (3, 11):
+    if sys.version_info < (3, 11):  # noqa: UP036
         return False
     try:
         import structlog  # noqa: F401
@@ -271,6 +271,16 @@ class _FakeShellProcess:
         if self.returncode is not None:
             return ""
         return await self._out_queue.get()
+
+    def change_terminal_size(self, cols: int, rows: int) -> None:
+        self.term_size = (cols, rows)
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = -15
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def _serialize_result(res: Any) -> dict[str, Any]:

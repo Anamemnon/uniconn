@@ -1987,7 +1987,6 @@ wheels = [
 
 [[package]]
 name = "uniconn"
-version = "0.16.9"
 source = { editable = "." }
 dependencies = [
     { name = "asyncssh" },
@@ -2064,34 +2063,47 @@ dev = [
 requires-dist = [
     { name = "asyncssh", specifier = ">=2.24" },
     { name = "asyncssh", marker = "extra == 'ssh'", specifier = ">=2.24" },
+    { name = "cyclopts", marker = "extra == 'all'", specifier = ">=5.0" },
     { name = "cyclopts", marker = "extra == 'cli'", specifier = ">=5.0" },
+    { name = "cyclopts", marker = "extra == 'dev'", specifier = ">=5.0" },
+    { name = "jinja2", marker = "extra == 'all'", specifier = ">=3.1" },
+    { name = "jinja2", marker = "extra == 'dev'", specifier = ">=3.1" },
     { name = "jinja2", marker = "extra == 'templates'", specifier = ">=3.1" },
     { name = "mkdocs", marker = "extra == 'dev'", specifier = ">=1.6" },
     { name = "mkdocstrings", extras = ["python"], marker = "extra == 'dev'", specifier = ">=1.0" },
+    { name = "niquests", marker = "extra == 'all'", specifier = ">=3.10" },
     { name = "niquests", marker = "extra == 'bmc'", specifier = ">=3.10" },
+    { name = "niquests", marker = "extra == 'dev'", specifier = ">=3.10" },
+    { name = "opentelemetry-api", marker = "extra == 'dev'", specifier = ">=1.25" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.25" },
     { name = "poethepoet", marker = "extra == 'dev'", specifier = ">=0.30" },
     { name = "pydantic", specifier = ">=2.14" },
+    { name = "pyghmi", marker = "extra == 'all'", specifier = ">=1.6" },
     { name = "pyghmi", marker = "extra == 'bmc'", specifier = ">=1.6" },
+    { name = "pyghmi", marker = "extra == 'dev'", specifier = ">=1.6" },
     { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.400" },
+    { name = "pyserial-asyncio", marker = "extra == 'all'", specifier = ">=0.6" },
+    { name = "pyserial-asyncio", marker = "extra == 'dev'", specifier = ">=0.6" },
     { name = "pyserial-asyncio", marker = "extra == 'serial'", specifier = ">=0.6" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.14" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "rich", marker = "extra == 'all'", specifier = ">=15.0" },
     { name = "rich", marker = "extra == 'cli'", specifier = ">=15.0" },
+    { name = "rich", marker = "extra == 'dev'", specifier = ">=15.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15" },
     { name = "sphinx", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "sphinx-rtd-theme", marker = "extra == 'dev'", specifier = ">=3.0" },
     { name = "structlog", specifier = ">=26.1" },
+    { name = "telnetlib3", marker = "extra == 'all'", specifier = ">=5.0" },
+    { name = "telnetlib3", marker = "extra == 'dev'", specifier = ">=5.0" },
     { name = "telnetlib3", marker = "extra == 'telnet'", specifier = ">=5.0" },
     { name = "tenacity", specifier = ">=9.2" },
     { name = "testcontainers", marker = "extra == 'dev'", specifier = ">=4.10" },
-    { name = "uniconn", extras = ["all", "otel"], marker = "extra == 'dev'" },
-    { name = "uniconn", extras = ["bmc", "serial", "telnet", "cli", "templates"], marker = "extra == 'all'" },
 ]
-provides-extras = ["ssh", "bmc", "serial", "telnet", "cli", "templates", "otel", "all", "dev"]
+provides-extras = ["all", "bmc", "cli", "dev", "otel", "serial", "ssh", "telnet", "templates"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "uniconn", extras = ["dev"] }]

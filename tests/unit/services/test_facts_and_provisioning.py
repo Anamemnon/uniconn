@@ -409,3 +409,117 @@ class TestCliAndDashboardV080:
         pool_facts = _execute_pool_sandbox({"operation": "gather_facts", "group": "web"})
         assert pool_facts["status"] == "ok"
         assert len(pool_facts["nodes"]) == 2
+
+
+class TestProvisioningPackageDecomposition:
+    """Тесты модульной декомпозиции пакета uniconn.services.provisioning и паттернов проектирования."""
+
+    def test_submodule_exports_and_backward_compatibility(self) -> None:
+        import re
+
+        from uniconn.services import provisioning
+        from uniconn.services.provisioning import (
+            ChangePlan,
+            PackageManagerStrategy,
+            ServiceManagerStrategy,
+            StateManagementService,
+            UserAttributeSpec,
+            build_useradd_command,
+            files,
+            packages,
+            resolve_service_transition,
+            service,
+            services,
+            system,
+            transform_authorized_keys,
+            transform_lines_absent,
+            transform_lines_present,
+        )
+
+        # Проверка доступности классов через корневой пакет и подмодули
+        assert provisioning.PackageManagerStrategy is packages.PackageManagerStrategy is PackageManagerStrategy
+        assert provisioning.ServiceManagerStrategy is services.ServiceManagerStrategy is ServiceManagerStrategy
+        assert provisioning.StateManagementService is service.StateManagementService is StateManagementService
+        assert provisioning.ensure_file is files.ensure_file
+        assert provisioning.ensure_user is system.ensure_user
+
+        # Паттерн 1: ChangePlan
+        plan = ChangePlan(target="/etc/demo.conf", state="present", is_dry_run=False)
+        assert plan.changed is False
+        noop_res = plan.to_result(
+            unchanged_details="Noop",
+            changed_prefix="Updated",
+            dry_run_prefix="[DRY-RUN] Would update",
+        )
+        assert noop_res.changed is False
+        assert noop_res.diff is None
+
+        plan.add_text_diff(
+            "a=1\n",
+            "a=2\n",
+            fromfile="a:/etc/demo.conf",
+            tofile="b:/etc/demo.conf",
+            action="updated content",
+        )
+        plan.record("mode 0o600 -> 0o644")
+        assert plan.changed is True
+        assert plan.full_diff is not None and "-a=1" in plan.full_diff and "+a=2" in plan.full_diff
+        changed_res = plan.to_result(
+            unchanged_details="Noop",
+            changed_prefix="File /etc/demo.conf",
+            dry_run_prefix="[DRY-RUN]",
+        )
+        assert changed_res.changed is True
+        assert "updated content, mode 0o600 -> 0o644" in changed_res.details
+
+        # Паттерн 3: Таблица переходов состояний сервиса
+        assert resolve_service_transition("started", is_active=True) is None
+        assert resolve_service_transition("started", is_active=False) == "start"
+        assert resolve_service_transition("stopped", is_active=True) == "stop"
+        assert resolve_service_transition("stopped", is_active=False) is None
+        assert resolve_service_transition("restarted", is_active=True) == "restart"
+        assert resolve_service_transition("reloaded", is_active=False) == "reload"
+
+        # Паттерн 4: Декларативная сборка useradd через UserAttributeSpec
+        spec = UserAttributeSpec(name="shell", cli_flag="-s", quote_value=True)
+        assert spec.format_cli_arg("/bin/zsh") == "/bin/zsh"
+        cmd = build_useradd_command(
+            "ops",
+            uid=2001,
+            group="admin",
+            groups=["docker", "sudo"],
+            shell="/bin/bash",
+            home="/home/ops",
+            create_home=True,
+            system=True,
+        )
+        assert cmd == "useradd -r -m -u 2001 -g admin -G docker,sudo -s /bin/bash -d /home/ops ops"
+
+        # Паттерн 5: Чистые функции трансформации строк и authorized_keys
+        lines_out, changed, _ = transform_lines_present(
+            ["port=80", "port=8080", "host=localhost"],
+            "port=9000",
+            re.compile(r"^port="),
+            path_str="/etc/app.ini",
+            file_exists=True,
+        )
+        assert changed is True
+        assert lines_out == ["port=9000", "host=localhost"]
+
+        lines_abs, changed_abs, _ = transform_lines_absent(
+            lines_out,
+            "port=9000",
+            None,
+            path_str="/etc/app.ini",
+        )
+        assert changed_abs is True
+        assert lines_abs == ["host=localhost"]
+
+        keys = transform_authorized_keys(
+            ["ssh-ed25519 AAA1", "ssh-ed25519 AAA2"],
+            ["ssh-ed25519 AAA2", "ssh-ed25519 AAA3"],
+            state="present",
+            exclusive=False,
+        )
+        assert keys == ["ssh-ed25519 AAA1", "ssh-ed25519 AAA2", "ssh-ed25519 AAA3"]
+
