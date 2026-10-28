@@ -71,7 +71,7 @@ class TemplateEngine:
                     return string.Template(raw_template).safe_substitute(ctx)
                 raise UniconnError(
                     "Jinja2 template engine requested, but 'jinja2' is not installed. "
-                    "Install it via 'pip install jinja2' or use engine='string'."
+                    "Install it via 'pip install uniconn[templates]' or use engine='string'."
                 ) from exc
             env = jinja2.Environment(
                 autoescape=False,

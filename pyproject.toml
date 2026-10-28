@@ -1,6 +1,6 @@
 [project]
 name = "uniconn"
-version = "0.16.4"
+version = "0.16.5"
 description = "Universal library for remote command execution"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -18,31 +18,29 @@ classifiers = [
     "Topic :: System :: Networking",
 ]
 
-# Dependencies (includes all built-in transports and CLI out of the box)
+# Core lightweight dependencies (SSH, Local execution, resilient pipeline, logging, and config)
 dependencies = [
     "pydantic>=2.14",          # Config validation, SecretStr
     "tenacity>=9.2",           # Retry logic (async support)
     "asyncssh>=2.24",          # SSH transport & SFTP
-    "telnetlib3>=5.0",         # Telnet transport
-    "pyserial-asyncio>=0.6",   # Serial/UART transport
-    "pyghmi>=1.6",             # BMC/IPMI transport
-    "niquests>=3.10",          # Async HTTP/2 & HTTP/3 client for Redfish BMC
-    "cyclopts>=5.0",           # Type-driven CLI interface
-    "rich>=15.0",              # CLI formatting
-    "pyyaml>=6.0",             # YAML support for from_file() and ScreenPool
-    "jinja2>=3.1",             # Template rendering engine
     "structlog>=26.1",         # Structured logging (JSON / Console / ContextVars)
+    "pyyaml>=6.0",             # YAML support for from_file(), inventory, and Cassettes
 ]
 
-# Optional dependencies (extras kept for backward compatibility)
+# Optional dependencies (extras)
 [project.optional-dependencies]
 ssh = ["asyncssh>=2.24"]
-telnet = ["telnetlib3>=5.0"]
-serial = ["pyserial-asyncio>=0.6"]
 bmc = ["pyghmi>=1.6", "niquests>=3.10"]
+serial = ["pyserial-asyncio>=0.6"]
+telnet = ["telnetlib3>=5.0"]
 cli = ["cyclopts>=5.0", "rich>=15.0"]
+templates = ["jinja2>=3.1"]
 otel = ["opentelemetry-api>=1.25"]
+all = [
+    "uniconn[bmc,serial,telnet,cli,templates]",
+]
 dev = [
+    "uniconn[all,otel]",
     "pytest>=8.0",
     "pytest-asyncio>=1.0",
     "pytest-mock>=3.14",

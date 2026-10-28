@@ -26,12 +26,24 @@
 
 ## Установка
 
-Установка со всеми встроенными транспортами (SSH, Telnet, Serial/UART, BMC/IPMI, Local) и CLI-инструментом:
+Легковесная установка ядра (SSH, Local, устойчивый конвейер команд, структурированное логирование и YAML/JSON инвентари):
 
 ```bash
 pip install uniconn
 # или через uv:
 uv add uniconn
+```
+
+Полная установка со всеми специализированными транспортами (Telnet, Serial, BMC/IPMI/Redfish), шаблонизатором Jinja2 и CLI:
+
+```bash
+pip install "uniconn[all]"
+# или выборочные extras:
+pip install "uniconn[cli]"          # CLI интерфейс (cyclopts, rich)
+pip install "uniconn[bmc]"          # IPMI (pyghmi) и Redfish (niquests)
+pip install "uniconn[serial]"       # Serial/UART (pyserial-asyncio)
+pip install "uniconn[telnet]"       # Telnet (telnetlib3)
+pip install "uniconn[templates]"    # Jinja2 шаблонизатор
 ```
 
 ### Разработка
@@ -575,7 +587,7 @@ result = await conn.run("sensors")       # Сенсоры
 - `sensors` - Данные сенсоров
 - `boot device` - Boot устройство
 
-**Зависимости:** `pip install uniconn[bmc]` (pyghmi)
+**Зависимости:** `pip install uniconn[bmc]` (pyghmi, niquests)
 
 ### Локальное выполнение
 
