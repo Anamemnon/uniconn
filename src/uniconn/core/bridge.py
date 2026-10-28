@@ -1,9 +1,9 @@
 # src/uniconn/core/bridge.py
-"""Универсальный портал исполнения асинхронных корутин и генераторов в фоновом daemon-потоке.
+"""Универсальный портал исполнения асинхронных корутин и типизированные дескрипторы Sync-слоя.
 
-Устраняет дублирование кода управления event loop между ``SyncConnection``,
-``SyncConnectionPool`` и ``SyncShellSession`` и переиспользует единый
-разделяемый фоновый цикл событий (Singleton Event Loop Portal).
+Устраняет дублирование кода и сигнатур между ``Connection``, доменными сервисами,
+``SyncConnection``, ``SyncConnectionPool`` и ``SyncShellSession``, переиспользуя единый
+разделяемый фоновый цикл событий (Singleton Event Loop Portal) и ``ParamSpec``-дескрипторы.
 """
 
 from __future__ import annotations
@@ -11,10 +11,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import functools
+import inspect
 import threading
-from collections.abc import AsyncIterator, Iterator
-from typing import Any, ClassVar, Generic, TypeVar
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
+from contextlib import AbstractAsyncContextManager
+from typing import Any, ClassVar, Concatenate, Generic, ParamSpec, TypeVar, overload
 
+P = ParamSpec("P")
+R = TypeVar("R")
 T = TypeVar("T")
 _STREAM_DONE = object()
 
@@ -213,3 +218,400 @@ class SyncContextBridge(Generic[T]):
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         """Выйти из контекстного менеджера синхронно."""
         self._portal.call(self._async_cm.__aexit__(exc_type, exc_val, exc_tb))
+
+
+# ─── Типизированные дескрипторы делегирования и Sync-моста ──────────────────
+
+
+def _resolve_attr_path(obj: Any, attr_path: str) -> Any:
+    """Разрешить вложенный путь атрибутов (например, ``_async_conn.files``)."""
+    cur = obj
+    for part in attr_path.split("."):
+        cur = getattr(cur, part)
+    return cur
+
+
+class _AsyncDelegateDescriptor(Generic[P, R]):
+    """Дескриптор делегирования async-метода доменному сервису (например, ``conn.files``)."""
+
+    def __init__(
+        self,
+        service_attr: str,
+        async_fn: Callable[Concatenate[Any, P], Coroutine[Any, Any, R]],
+    ) -> None:
+        self._service_attr = service_attr
+        self._method_name = async_fn.__name__
+        self._async_fn = async_fn
+        functools.update_wrapper(self, async_fn)
+
+    @overload
+    def __get__(
+        self, instance: None, owner: type | None = None
+    ) -> _AsyncDelegateDescriptor[P, R]: ...
+
+    @overload
+    def __get__(
+        self, instance: Any, owner: type | None = None
+    ) -> Callable[P, Coroutine[Any, Any, R]]: ...
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        if instance is None:
+            return self
+        service = _resolve_attr_path(instance, self._service_attr)
+        return getattr(service, self._method_name)
+
+    def __call__(
+        self, instance: Any, /, *args: P.args, **kwargs: P.kwargs
+    ) -> Coroutine[Any, Any, R]:
+        service = _resolve_attr_path(instance, self._service_attr)
+        return getattr(service, self._method_name)(*args, **kwargs)
+
+
+class _ContextDelegateDescriptor(Generic[P, R]):
+    """Дескриптор делегирования фабрики контекстного менеджера доменному сервису."""
+
+    def __init__(
+        self,
+        service_attr: str,
+        cm_fn: Callable[Concatenate[Any, P], AbstractAsyncContextManager[R]],
+    ) -> None:
+        self._service_attr = service_attr
+        self._method_name = cm_fn.__name__
+        self._cm_fn = cm_fn
+        functools.update_wrapper(self, cm_fn)
+
+    @overload
+    def __get__(
+        self, instance: None, owner: type | None = None
+    ) -> _ContextDelegateDescriptor[P, R]: ...
+
+    @overload
+    def __get__(
+        self, instance: Any, owner: type | None = None
+    ) -> Callable[P, AbstractAsyncContextManager[R]]: ...
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        if instance is None:
+            return self
+        service = _resolve_attr_path(instance, self._service_attr)
+        return getattr(service, self._method_name)
+
+    def __call__(
+        self, instance: Any, /, *args: P.args, **kwargs: P.kwargs
+    ) -> AbstractAsyncContextManager[R]:
+        service = _resolve_attr_path(instance, self._service_attr)
+        return getattr(service, self._method_name)(*args, **kwargs)
+
+
+def async_delegate(
+    service_attr: str,
+    async_fn: Callable[Concatenate[Any, P], Coroutine[Any, Any, R]],
+) -> _AsyncDelegateDescriptor[P, R]:
+    """Создать типизированный дескриптор делегирования async-метода сервису."""
+    return _AsyncDelegateDescriptor(service_attr, async_fn)
+
+
+def context_delegate(
+    service_attr: str,
+    cm_fn: Callable[Concatenate[Any, P], AbstractAsyncContextManager[R]],
+) -> _ContextDelegateDescriptor[P, R]:
+    """Создать типизированный дескриптор делегирования async-контекстного менеджера."""
+    return _ContextDelegateDescriptor(service_attr, cm_fn)
+
+
+class _SyncMethodDescriptor(Generic[P, R]):
+    """Дескриптор, превращающий async-метод в синхронный вызов через ``EventLoopPortal``."""
+
+    def __init__(
+        self,
+        async_fn: Any,
+        *,
+        target_attr: str = "_async_target",
+        portal_attr: str = "_portal",
+        delegate_attr: str | None = None,
+    ) -> None:
+        self._async_fn = async_fn
+        self._method_name: str = getattr(async_fn, "__name__", "")
+        self._target_attr = target_attr
+        self._portal_attr = portal_attr
+        self._delegate_attr = delegate_attr
+        functools.update_wrapper(self, async_fn)
+
+    @overload
+    def __get__(
+        self, instance: None, owner: type | None = None
+    ) -> _SyncMethodDescriptor[P, R]: ...
+
+    @overload
+    def __get__(
+        self, instance: Any, owner: type | None = None
+    ) -> Callable[P, R]: ...
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        if instance is None:
+            return self
+        if self._delegate_attr is not None:
+            delegate_obj = _resolve_attr_path(instance, self._delegate_attr)
+            return getattr(delegate_obj, self._method_name)
+
+        portal: EventLoopPortal = _resolve_attr_path(instance, self._portal_attr)
+        target = _resolve_attr_path(instance, self._target_attr)
+        bound_async = getattr(target, self._method_name)
+
+        @functools.wraps(self._async_fn)
+        def _sync_call(*args: P.args, **kwargs: P.kwargs) -> R:
+            return portal.call(bound_async(*args, **kwargs))
+
+        return _sync_call
+
+    def __call__(self, instance: Any, /, *args: P.args, **kwargs: P.kwargs) -> R:
+        bound = self.__get__(instance, type(instance))
+        return bound(*args, **kwargs)
+
+
+class _SyncContextDescriptor(Generic[P, R]):
+    """Дескриптор, оборачивающий async context manager в ``SyncContextBridge[R]``."""
+
+    def __init__(
+        self,
+        async_cm_fn: Any,
+        *,
+        target_attr: str = "_async_target",
+        portal_attr: str = "_portal",
+        delegate_attr: str | None = None,
+        cast_fn: Callable[[Any], R] | None = None,
+        reopen_portal: bool = False,
+    ) -> None:
+        self._async_cm_fn = async_cm_fn
+        self._method_name: str = getattr(async_cm_fn, "__name__", "")
+        self._target_attr = target_attr
+        self._portal_attr = portal_attr
+        self._delegate_attr = delegate_attr
+        self._cast_fn = cast_fn
+        self._reopen_portal = reopen_portal
+        functools.update_wrapper(self, async_cm_fn)
+
+    @overload
+    def __get__(
+        self, instance: None, owner: type | None = None
+    ) -> _SyncContextDescriptor[P, R]: ...
+
+    @overload
+    def __get__(
+        self, instance: Any, owner: type | None = None
+    ) -> Callable[P, SyncContextBridge[R]]: ...
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        if instance is None:
+            return self
+        if self._delegate_attr is not None:
+            delegate_obj = _resolve_attr_path(instance, self._delegate_attr)
+            return getattr(delegate_obj, self._method_name)
+
+        portal: EventLoopPortal = _resolve_attr_path(instance, self._portal_attr)
+        target = _resolve_attr_path(instance, self._target_attr)
+        bound_cm_fn = getattr(target, self._method_name)
+
+        @functools.wraps(self._async_cm_fn)
+        def _sync_cm(*args: P.args, **kwargs: P.kwargs) -> SyncContextBridge[R]:
+            if self._reopen_portal:
+                portal.reopen()
+            return SyncContextBridge(
+                portal,
+                bound_cm_fn(*args, **kwargs),
+                cast_fn=self._cast_fn,
+            )
+
+        return _sync_cm
+
+    def __call__(
+        self, instance: Any, /, *args: P.args, **kwargs: P.kwargs
+    ) -> SyncContextBridge[R]:
+        bound = self.__get__(instance, type(instance))
+        return bound(*args, **kwargs)
+
+
+class _SyncIterDescriptor(Generic[P, R]):
+    """Дескриптор, оборачивающий async-генератор в синхронный ``Iterator[R]``."""
+
+    def __init__(
+        self,
+        async_gen_fn: Any,
+        *,
+        target_attr: str = "_async_target",
+        portal_attr: str = "_portal",
+    ) -> None:
+        self._async_gen_fn = async_gen_fn
+        self._method_name: str = getattr(async_gen_fn, "__name__", "")
+        self._target_attr = target_attr
+        self._portal_attr = portal_attr
+        functools.update_wrapper(self, async_gen_fn)
+
+    @overload
+    def __get__(
+        self, instance: None, owner: type | None = None
+    ) -> _SyncIterDescriptor[P, R]: ...
+
+    @overload
+    def __get__(
+        self, instance: Any, owner: type | None = None
+    ) -> Callable[P, Iterator[R]]: ...
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        if instance is None:
+            return self
+        portal: EventLoopPortal = _resolve_attr_path(instance, self._portal_attr)
+        target = _resolve_attr_path(instance, self._target_attr)
+        bound_gen_fn = getattr(target, self._method_name)
+
+        @functools.wraps(self._async_gen_fn)
+        def _sync_iter(*args: P.args, **kwargs: P.kwargs) -> Iterator[R]:
+            return portal.iter_async(bound_gen_fn(*args, **kwargs))
+
+        return _sync_iter
+
+    def __call__(
+        self, instance: Any, /, *args: P.args, **kwargs: P.kwargs
+    ) -> Iterator[R]:
+        bound = self.__get__(instance, type(instance))
+        return bound(*args, **kwargs)
+
+
+@overload
+def sync_method(
+    async_fn: _AsyncDelegateDescriptor[P, R],
+    *,
+    target_attr: str = "_async_target",
+    portal_attr: str = "_portal",
+    delegate_attr: str | None = None,
+) -> _SyncMethodDescriptor[P, R]: ...
+
+
+@overload
+def sync_method(
+    async_fn: Callable[Concatenate[Any, P], Awaitable[R]],
+    *,
+    target_attr: str = "_async_target",
+    portal_attr: str = "_portal",
+    delegate_attr: str | None = None,
+) -> _SyncMethodDescriptor[P, R]: ...
+
+
+def sync_method(
+    async_fn: Any,
+    *,
+    target_attr: str = "_async_target",
+    portal_attr: str = "_portal",
+    delegate_attr: str | None = None,
+) -> _SyncMethodDescriptor[Any, Any]:
+    """Создать типизированный синхронный дескриптор для async-метода."""
+    return _SyncMethodDescriptor(
+        async_fn,
+        target_attr=target_attr,
+        portal_attr=portal_attr,
+        delegate_attr=delegate_attr,
+    )
+
+
+@overload
+def sync_context(
+    async_cm_fn: _ContextDelegateDescriptor[P, R],
+    *,
+    target_attr: str = "_async_target",
+    portal_attr: str = "_portal",
+    delegate_attr: str | None = None,
+    cast_fn: Callable[[Any], R] | None = None,
+    reopen_portal: bool = False,
+) -> _SyncContextDescriptor[P, R]: ...
+
+
+@overload
+def sync_context(
+    async_cm_fn: Callable[Concatenate[Any, P], AbstractAsyncContextManager[R]],
+    *,
+    target_attr: str = "_async_target",
+    portal_attr: str = "_portal",
+    delegate_attr: str | None = None,
+    cast_fn: Callable[[Any], R] | None = None,
+    reopen_portal: bool = False,
+) -> _SyncContextDescriptor[P, R]: ...
+
+
+def sync_context(
+    async_cm_fn: Any,
+    *,
+    target_attr: str = "_async_target",
+    portal_attr: str = "_portal",
+    delegate_attr: str | None = None,
+    cast_fn: Callable[[Any], Any] | None = None,
+    reopen_portal: bool = False,
+) -> _SyncContextDescriptor[Any, Any]:
+    """Создать типизированный синхронный дескриптор для async-контекстного менеджера."""
+    return _SyncContextDescriptor(
+        async_cm_fn,
+        target_attr=target_attr,
+        portal_attr=portal_attr,
+        delegate_attr=delegate_attr,
+        cast_fn=cast_fn,
+        reopen_portal=reopen_portal,
+    )
+
+
+def sync_iter(
+    async_gen_fn: Callable[Concatenate[Any, P], AsyncIterator[R]],
+    *,
+    target_attr: str = "_async_target",
+    portal_attr: str = "_portal",
+) -> _SyncIterDescriptor[P, R]:
+    """Создать типизированный синхронный дескриптор для async-генератора."""
+    return _SyncIterDescriptor(
+        async_gen_fn,
+        target_attr=target_attr,
+        portal_attr=portal_attr,
+    )
+
+
+class SyncProxyMixin:
+    """Базовый миксин динамического делегирования к целевому async-объекту (``__getattr__``).
+
+    Используется как fallback для любых свойств и методов, не переопределённых явно:
+    - корутины автоматически исполняются через ``self._portal.call(...)``;
+    - асинхронные генераторы оборачиваются через ``self._portal.iter_async(...)``;
+    - обычные свойства и синхронные методы возвращаются напрямую.
+    """
+
+    _target_attr_name: ClassVar[str] = "_async_target"
+    _portal_attr_name: ClassVar[str] = "_portal"
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("__") and name.endswith("__"):
+            raise AttributeError(name)
+        try:
+            target = object.__getattribute__(self, self._target_attr_name)
+        except AttributeError:
+            target = getattr(self, self._target_attr_name, None)
+            if target is None:
+                raise AttributeError(
+                    f"{type(self).__name__!r} object has no attribute {name!r}"
+                ) from None
+
+        attr = getattr(target, name)
+        if inspect.iscoroutinefunction(attr):
+            portal: EventLoopPortal = getattr(self, self._portal_attr_name)
+
+            @functools.wraps(attr)
+            def _sync_fallback(*args: Any, **kwargs: Any) -> Any:
+                return portal.call(attr(*args, **kwargs))
+
+            return _sync_fallback
+
+        if inspect.isasyncgenfunction(attr):
+            portal = getattr(self, self._portal_attr_name)
+
+            @functools.wraps(attr)
+            def _sync_gen_fallback(*args: Any, **kwargs: Any) -> Iterator[Any]:
+                return portal.iter_async(attr(*args, **kwargs))
+
+            return _sync_gen_fallback
+
+        return attr

@@ -1,11 +1,12 @@
 # tests/unit/architecture/test_async_sync_parity.py
-"""Архитектурный тест 100% паритета методов между Async и Sync фасадами (v0.11.0)."""
+"""Архитектурные тесты паритета Async/Sync фасадов и отсутствия ручного дублирования."""
 
 from __future__ import annotations
 
 import inspect
 from pathlib import Path
 
+import uniconn.sync as sync_pkg
 from uniconn import (
     Connection,
     ConnectionPool,
@@ -19,6 +20,13 @@ from uniconn import (
     SyncStateManagementService,
     SyncTunnelService,
     TunnelService,
+)
+from uniconn.core.bridge import (
+    _AsyncDelegateDescriptor,
+    _ContextDelegateDescriptor,
+    _SyncContextDescriptor,
+    _SyncIterDescriptor,
+    _SyncMethodDescriptor,
 )
 
 # Фабричные методы класса и конвертеры, специфичные только для async-фасада
@@ -36,6 +44,15 @@ _ASYNC_ONLY_METHODS: frozenset[str] = frozenset(
     }
 )
 
+# Низкоуровневые async-примитивы, которые по архитектурной политике не дублируются в Sync-слое
+_ASYNC_ONLY_PRIMITIVES: tuple[str, ...] = (
+    "SyncCommandPipeline",
+    "SyncOperationObserver",
+    "SyncScreenPool",
+    "SyncLogPipeline",
+    "SyncPoolStreamMultiplexer",
+)
+
 
 def _public_methods(cls: type) -> set[str]:
     names: set[str] = set()
@@ -48,7 +65,7 @@ def _public_methods(cls: type) -> set[str]:
 
 
 def test_connection_and_sync_connection_parity() -> None:
-    """Все публичные методы и свойства Connection (включая фабрики и copy) должны быть в SyncConnection."""
+    """Все пользовательские методы и свойства Connection доступны в SyncConnection."""
     async_methods = _public_methods(Connection) - {"to_sync"}
     sync_methods = _public_methods(SyncConnection)
     missing = async_methods - sync_methods
@@ -56,7 +73,7 @@ def test_connection_and_sync_connection_parity() -> None:
 
 
 def test_domain_services_async_sync_parity() -> None:
-    """Все публичные методы доменных сервисов должны присутствовать в Sync-аналогах."""
+    """Все публичные методы доменных сервисов присутствуют в Sync-аналогах."""
     pairs = [
         (FileOperationsService, SyncFileOperationsService),
         (StateManagementService, SyncStateManagementService),
@@ -69,6 +86,30 @@ def test_domain_services_async_sync_parity() -> None:
         sync_m = _public_methods(sync_cls)
         missing = async_m - sync_m
         assert not missing, f"{sync_cls.__name__} is missing {missing} from {async_cls.__name__}"
+
+
+def test_async_only_primitives_are_not_duplicated_in_sync_layer() -> None:
+    """Низкоуровневые async-примитивы (конвейер, мультиплексор, фоновые пулы) не дублируются в sync."""
+    for forbidden_name in _ASYNC_ONLY_PRIMITIVES:
+        assert not hasattr(sync_pkg, forbidden_name), (
+            f"{forbidden_name} should remain async-only and not be duplicated in uniconn.sync"
+        )
+
+
+def test_sync_and_facade_methods_use_descriptors_without_boilerplate() -> None:
+    """Методы сервисов в Connection и Sync* используют типизированные дескрипторы вместо копипасты."""
+    assert isinstance(Connection.__dict__["upload"], _AsyncDelegateDescriptor)
+    assert isinstance(Connection.__dict__["ensure_package"], _AsyncDelegateDescriptor)
+    assert isinstance(Connection.__dict__["forward_local_port"], _ContextDelegateDescriptor)
+
+    assert isinstance(SyncConnection.__dict__["run"], _SyncMethodDescriptor)
+    assert isinstance(SyncConnection.__dict__["stream"], _SyncIterDescriptor)
+    assert isinstance(SyncConnection.__dict__["temp_dir"], _SyncContextDescriptor)
+    assert isinstance(SyncConnection.__dict__["ensure_package"], _SyncMethodDescriptor)
+    assert isinstance(SyncFileOperationsService.__dict__["upload"], _SyncMethodDescriptor)
+    assert isinstance(SyncStateManagementService.__dict__["ensure_user"], _SyncMethodDescriptor)
+    assert isinstance(SyncTunnelService.__dict__["forward_local_port"], _SyncContextDescriptor)
+    assert isinstance(SyncConnectionPool.__dict__["map"], _SyncMethodDescriptor)
 
 
 def test_file_methods_accept_pathlib_path(tmp_path: Path) -> None:

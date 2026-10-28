@@ -1,25 +1,32 @@
 # src/uniconn/sync/connection.py
-"""Синхронная обёртка над async Connection на базе ``EventLoopPortal``."""
+"""Синхронная обёртка над async Connection на базе ``EventLoopPortal`` и ``ParamSpec``-дескрипторов."""
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self
 
 from pydantic import SecretStr
 
 from ..config.models import ConnectionConfig
-from ..core.bridge import EventLoopPortal, SyncContextBridge
+from ..core.bridge import (
+    EventLoopPortal,
+    SyncProxyMixin,
+    sync_context,
+    sync_iter,
+    sync_method,
+)
 from ..core.connection import Connection, OperationObserver
 from ..core.context import CwdContext, EnvContext, ExecutionContext
 from ..core.pipeline import CommandPipeline, HookCallback, HookEvent
 from ..core.resilience import CircuitBreaker, RateLimiter
-from ..result import EnsureResult, PingResult, Result, SyncResult
-from ..services.facts_models import FactSpec, HostFacts
-from ..services.provisioning import PkgManagerName, ServiceState
-from ..transports.base import BaseTransport, FileStat
+from ..services.facts_models import FactSpec
+from ..services.files import FileOperationsService
+from ..services.provisioning import StateManagementService
+from ..services.tunnels import TunnelService
+from ..transports.base import BaseTransport
 from .services import (
     SyncDiagnosticSession,
     SyncFileOperationsService,
@@ -35,11 +42,12 @@ if TYPE_CHECKING:
     )
 
 
-class SyncConnection:
+class SyncConnection(SyncProxyMixin):
     """Синхронная обёртка над async Connection на базе ``EventLoopPortal``."""
 
     def __init__(self, async_conn: Connection) -> None:
         self._async_conn = async_conn
+        self._async_target = async_conn
         self._portal = EventLoopPortal(owner_name="SyncConnection")
         self.files = SyncFileOperationsService(self)
         self.state = SyncStateManagementService(self)
@@ -200,6 +208,8 @@ class SyncConnection:
         """Создать копию синхронного подключения с переопределёнными параметрами."""
         return type(self)(self._async_conn.with_overrides(**overrides))
 
+    # ─── Свойства и контекст ───────────────────────────────────────
+
     @property
     def _closed(self) -> bool:
         """Признак закрытия синхронной обёртки."""
@@ -315,394 +325,72 @@ class SyncConnection:
         self._async_conn.add_hook(event, callback)
         return self
 
-    def run(
-        self,
-        command: str | Sequence[str],
-        timeout: float | None = None,
-        raise_on_error: bool = False,
-        input: str | bytes | None = None,
-        sudo: bool = False,
-        sudo_user: str | None = None,
-        sudo_password: str | SecretStr | None = None,
-        sensitive: bool = False,
-        dry_run: bool | None = None,
-        **kwargs: Any,
-    ) -> Result:
-        """Выполнить команду синхронно."""
-        return self._run_coro(
-            self._async_conn.run(
-                command,
-                timeout=timeout,
-                raise_on_error=raise_on_error,
-                input=input,
-                sudo=sudo,
-                sudo_user=sudo_user,
-                sudo_password=sudo_password,
-                sensitive=sensitive,
-                dry_run=dry_run,
-                **kwargs,
-            )
-        )
+    # ─── Команды, ожидание и потоки (дескрипторы к Connection) ────
 
-    def run_bytes(
-        self,
-        command: str | Sequence[str],
-        timeout: float | None = None,
-        raise_on_error: bool = False,
-        input: str | bytes | None = None,
-        sudo: bool = False,
-        sudo_user: str | None = None,
-        sudo_password: str | SecretStr | None = None,
-        sensitive: bool = False,
-        dry_run: bool | None = None,
-        **kwargs: Any,
-    ) -> bytes:
-        """Выполнить команду синхронно и вернуть сырой байтовый вывод."""
-        return self._run_coro(
-            self._async_conn.run_bytes(
-                command,
-                timeout=timeout,
-                raise_on_error=raise_on_error,
-                input=input,
-                sudo=sudo,
-                sudo_user=sudo_user,
-                sudo_password=sudo_password,
-                sensitive=sensitive,
-                dry_run=dry_run,
-                **kwargs,
-            )
-        )
+    run = sync_method(Connection.run)
+    run_bytes = sync_method(Connection.run_bytes)
+    run_commands = sync_method(Connection.run_commands)
+    expect = sync_method(Connection.expect)
+    stream = sync_iter(Connection.stream)
+    is_alive = sync_method(Connection.is_alive)
+    ping = sync_method(Connection.ping)
+    wait_for_connection = sync_method(Connection.wait_for_connection)
+    wait_for_port = sync_method(Connection.wait_for_port)
+    wait_for_path = sync_method(Connection.wait_for_path)
+    run_script = sync_method(Connection.run_script)
+    gather_facts = sync_method(Connection.gather_facts)
+    temp_dir = sync_context(Connection.temp_dir)
 
-    def read_file(
-        self,
-        remote_path: str | Path,
-        encoding: str | None = "utf-8",
-    ) -> str | bytes:
-        """Прочитать содержимое файла в память (синхронно)."""
-        return self.files.read_file(remote_path, encoding=encoding)
+    # ─── Файловые операции и туннели (делегация к self.files / self.tunnels) ─
 
-    def write_file(
-        self,
-        remote_path: str | Path,
-        content: str | bytes,
-        mode: int | None = None,
-        encoding: str = "utf-8",
-        *,
-        atomic: bool = False,
-    ) -> None:
-        """Записать строку или байты из памяти в файл (синхронно)."""
-        self.files.write_file(
-            remote_path, content, mode=mode, encoding=encoding, atomic=atomic
-        )
+    read_file = sync_method(FileOperationsService.read_file, delegate_attr="files")
+    write_file = sync_method(FileOperationsService.write_file, delegate_attr="files")
+    checksum = sync_method(FileOperationsService.checksum, delegate_attr="files")
+    exists = sync_method(FileOperationsService.exists, delegate_attr="files")
+    mkdir = sync_method(FileOperationsService.mkdir, delegate_attr="files")
+    remove_file = sync_method(FileOperationsService.remove_file, delegate_attr="files")
+    upload = sync_method(FileOperationsService.upload, delegate_attr="files")
+    download = sync_method(FileOperationsService.download, delegate_attr="files")
+    chmod = sync_method(FileOperationsService.chmod, delegate_attr="files")
+    stat = sync_method(FileOperationsService.stat, delegate_attr="files")
+    listdir = sync_method(FileOperationsService.listdir, delegate_attr="files")
+    write_template = sync_method(
+        FileOperationsService.write_template, delegate_attr="files"
+    )
+    sync_dir = sync_method(FileOperationsService.sync_dir, delegate_attr="files")
 
-    def checksum(
-        self,
-        remote_path: str | Path,
-        algorithm: Literal["sha256", "sha1", "md5"] = "sha256",
-        *,
-        sudo: bool = False,
-    ) -> str:
-        """Вычислить контрольную сумму файла на хосте (синхронно)."""
-        return self.files.checksum(remote_path, algorithm=algorithm, sudo=sudo)
+    forward_local_port = sync_context(
+        TunnelService.forward_local_port, delegate_attr="tunnels", cast_fn=int
+    )
+    forward_remote_port = sync_context(
+        TunnelService.forward_remote_port, delegate_attr="tunnels", cast_fn=int
+    )
 
-    def exists(self, remote_path: str | Path) -> bool:
-        """Проверить существование файла или директории на хосте (синхронно)."""
-        return self.files.exists(remote_path)
+    # ─── Идемпотентное управление состоянием (делегация к self.state) ─
 
-    def mkdir(
-        self,
-        remote_path: str | Path,
-        parents: bool = True,
-        exist_ok: bool = True,
-        mode: int | None = None,
-    ) -> None:
-        """Создать директорию на хосте (синхронно)."""
-        self.files.mkdir(
-            remote_path, parents=parents, exist_ok=exist_ok, mode=mode
-        )
+    ensure_package = sync_method(
+        StateManagementService.ensure_package, delegate_attr="state"
+    )
+    ensure_service = sync_method(
+        StateManagementService.ensure_service, delegate_attr="state"
+    )
+    ensure_line = sync_method(StateManagementService.ensure_line, delegate_attr="state")
+    ensure_file = sync_method(StateManagementService.ensure_file, delegate_attr="state")
+    ensure_directory = sync_method(
+        StateManagementService.ensure_directory, delegate_attr="state"
+    )
+    ensure_user = sync_method(StateManagementService.ensure_user, delegate_attr="state")
+    ensure_authorized_key = sync_method(
+        StateManagementService.ensure_authorized_key, delegate_attr="state"
+    )
+    ensure_systemd_unit = sync_method(
+        StateManagementService.ensure_systemd_unit, delegate_attr="state"
+    )
+    ensure_sysctl = sync_method(
+        StateManagementService.ensure_sysctl, delegate_attr="state"
+    )
 
-    def temp_dir(
-        self,
-        prefix: str = "uniconn_",
-        suffix: str = "",
-        dir: str | Path | None = None,
-    ) -> SyncContextBridge[str]:
-        """Синхронный контекстный менеджер временной директории на хосте."""
-        return SyncContextBridge(
-            self._portal,
-            self._async_conn.temp_dir(prefix=prefix, suffix=suffix, dir=dir),
-        )
-
-    def remove_file(self, remote_path: str | Path) -> None:
-        """Удалить файл на хосте (синхронно)."""
-        self.files.remove_file(remote_path)
-
-    def upload(
-        self,
-        local_path: str | Path,
-        remote_path: str | Path,
-        recurse: bool = False,
-        *,
-        verify: bool = False,
-        **kwargs: Any,
-    ) -> None:
-        """Загрузить файл или директорию на хост (синхронно)."""
-        self.files.upload(
-            local_path, remote_path, recurse=recurse, verify=verify, **kwargs
-        )
-
-    def download(
-        self,
-        remote_path: str | Path,
-        local_path: str | Path,
-        recurse: bool = False,
-        *,
-        verify: bool = False,
-        **kwargs: Any,
-    ) -> None:
-        """Скачать файл или директорию с хоста (синхронно)."""
-        self.files.download(
-            remote_path, local_path, recurse=recurse, verify=verify, **kwargs
-        )
-
-    def chmod(self, remote_path: str | Path, mode: int) -> None:
-        """Изменить права доступа к файлу на хосте (синхронно)."""
-        self.files.chmod(remote_path, mode)
-
-    def stat(self, remote_path: str | Path) -> FileStat:
-        """Получить метаданные файла на хосте (синхронно)."""
-        return self.files.stat(remote_path)
-
-    def listdir(self, remote_path: str | Path = ".") -> list[str]:
-        """Получить список файлов в директории на хосте (синхронно)."""
-        return self.files.listdir(remote_path)
-
-    def write_template(
-        self,
-        remote_path: str | Path,
-        template_str_or_path: str | Path,
-        context: Mapping[str, Any] | None = None,
-        mode: int | None = 0o644,
-        encoding: str = "utf-8",
-        engine: Literal["auto", "string", "jinja2"] = "auto",
-        *,
-        atomic: bool = False,
-    ) -> str:
-        """Отрендерить шаблон и записать его на хост (синхронно)."""
-        return self.files.write_template(
-            remote_path=remote_path,
-            template_str_or_path=template_str_or_path,
-            context=context,
-            mode=mode,
-            encoding=encoding,
-            engine=engine,
-            atomic=atomic,
-        )
-
-    def sync_dir(
-        self,
-        local_dir: str | Path,
-        remote_dir: str | Path,
-        delete: bool = False,
-        exclude: Sequence[str] | None = None,
-        mtime_tolerance: float = 1.0,
-        dry_run: bool | None = None,
-    ) -> SyncResult:
-        """Инкрементально синхронизировать директорию с хостом (синхронно)."""
-        return self.files.sync_dir(
-            local_dir=local_dir,
-            remote_dir=remote_dir,
-            delete=delete,
-            exclude=exclude,
-            mtime_tolerance=mtime_tolerance,
-            dry_run=dry_run,
-        )
-
-    def forward_local_port(
-        self,
-        remote_host: str = "127.0.0.1",
-        remote_port: int = 80,
-        local_host: str = "127.0.0.1",
-        local_port: int = 0,
-    ) -> SyncContextBridge[int]:
-        """Синхронный контекстный менеджер прямого проброса порта (Local Port Forwarding)."""
-        return self.tunnels.forward_local_port(
-            remote_host=remote_host,
-            remote_port=remote_port,
-            local_host=local_host,
-            local_port=local_port,
-        )
-
-    def forward_remote_port(
-        self,
-        remote_host: str = "127.0.0.1",
-        remote_port: int = 0,
-        local_host: str = "127.0.0.1",
-        local_port: int = 80,
-    ) -> SyncContextBridge[int]:
-        """Синхронный контекстный менеджер обратного проброса порта (Remote Port Forwarding)."""
-        return self.tunnels.forward_remote_port(
-            remote_host=remote_host,
-            remote_port=remote_port,
-            local_host=local_host,
-            local_port=local_port,
-        )
-
-    def expect(
-        self,
-        command: str | Sequence[str],
-        patterns: Mapping[str, str | SecretStr] | None = None,
-        final_prompt: str | None = None,
-        timeout: float | None = None,
-        line_ending: str = "\n",
-        sensitive: bool = False,
-        term_type: str = "xterm",
-        term_size: tuple[int, int] = (80, 24),
-        **kwargs: Any,
-    ) -> Result:
-        """Выполнить интерактивную команду с сопоставлением паттернов (синхронно)."""
-        return self._run_coro(
-            self._async_conn.expect(
-                command=command,
-                patterns=patterns,
-                final_prompt=final_prompt,
-                timeout=timeout,
-                line_ending=line_ending,
-                sensitive=sensitive,
-                term_type=term_type,
-                term_size=term_size,
-                **kwargs,
-            )
-        )
-
-    def run_commands(
-        self,
-        commands: Sequence[str | Sequence[str]],
-        stop_on_error: bool = True,
-        **kwargs: Any,
-    ) -> list[Result]:
-        """Последовательно выполнить список команд (синхронно)."""
-        return self._run_coro(
-            self._async_conn.run_commands(
-                commands,
-                stop_on_error=stop_on_error,
-                **kwargs,
-            )
-        )
-
-    def stream(
-        self,
-        command: str | Sequence[str],
-        timeout: float | None = None,
-        **kwargs: Any,
-    ) -> Iterator[str]:
-        """Синхронный генератор для потокового выполнения команды."""
-        return self._portal.iter_async(
-            self._async_conn.stream(command, timeout=timeout, **kwargs)
-        )
-
-    def is_alive(self, timeout: float | None = None) -> bool:
-        """Проверить живость подключения (синхронно)."""
-        return self._run_coro(self._async_conn.is_alive(timeout=timeout))
-
-    def ping(self, timeout: float | None = None) -> PingResult:
-        """Проверить доступность хоста с измерением задержки (синхронно)."""
-        return self._run_coro(self._async_conn.ping(timeout=timeout))
-
-    def wait_for_connection(
-        self,
-        timeout: float = 120.0,
-        interval: float = 2.0,
-        delay: float = 0.0,
-    ) -> PingResult:
-        """Ожидать восстановления доступности хоста (синхронно)."""
-        return self._run_coro(
-            self._async_conn.wait_for_connection(
-                timeout=timeout,
-                interval=interval,
-                delay=delay,
-            )
-        )
-
-    def wait_for_port(
-        self,
-        port: int,
-        *,
-        host: str | None = None,
-        state: Literal["open", "closed"] = "open",
-        check_from: Literal["remote", "local"] = "remote",
-        timeout: float = 60.0,
-        interval: float = 1.0,
-        delay: float = 0.0,
-    ) -> float:
-        """Ожидать открытия или закрытия TCP-порта (синхронно)."""
-        return self._run_coro(
-            self._async_conn.wait_for_port(
-                port,
-                host=host,
-                state=state,
-                check_from=check_from,
-                timeout=timeout,
-                interval=interval,
-                delay=delay,
-            )
-        )
-
-    def wait_for_path(
-        self,
-        remote_path: str | Path,
-        *,
-        state: Literal["present", "absent"] = "present",
-        content_regex: str | None = None,
-        timeout: float = 60.0,
-        interval: float = 1.0,
-        delay: float = 0.0,
-        sudo: bool = False,
-    ) -> float:
-        """Ожидать появления или удаления файла/директории/сокета (синхронно)."""
-        return self._run_coro(
-            self._async_conn.wait_for_path(
-                remote_path,
-                state=state,
-                content_regex=content_regex,
-                timeout=timeout,
-                interval=interval,
-                delay=delay,
-                sudo=sudo,
-            )
-        )
-
-    def run_script(
-        self,
-        local_path: str | Path,
-        args: Sequence[str] | None = None,
-        *,
-        interpreter: str | None = None,
-        sudo: bool = False,
-        sudo_user: str | None = None,
-        sudo_password: str | SecretStr | None = None,
-        env: Mapping[str, str] | None = None,
-        timeout: float | None = None,
-        raise_on_error: bool = False,
-        sensitive: bool = False,
-        dry_run: bool | None = None,
-    ) -> Result:
-        """Загрузить локальный скрипт во временную директорию, выполнить и удалить (синхронно)."""
-        return self._run_coro(
-            self._async_conn.run_script(
-                local_path=local_path,
-                args=args,
-                interpreter=interpreter,
-                sudo=sudo,
-                sudo_user=sudo_user,
-                sudo_password=sudo_password,
-                env=env,
-                timeout=timeout,
-                raise_on_error=raise_on_error,
-                sensitive=sensitive,
-                dry_run=dry_run,
-            )
-        )
+    # ─── Специализированные синхронные сессии и жизненный цикл ─────
 
     def open_shell(
         self,
@@ -721,19 +409,6 @@ class SyncConnection:
             )
         )
         return SyncShellSession(async_session, self)
-
-    def gather_facts(
-        self,
-        refresh: bool = False,
-        timeout: float | None = None,
-        spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
-    ) -> HostFacts:
-        """Собрать системные факты о целевом хосте (синхронно)."""
-        return self._run_coro(
-            self._async_conn.gather_facts(
-                refresh=refresh, timeout=timeout, spec=spec
-            )
-        )
 
     def diagnostic_session(
         self,
@@ -770,219 +445,6 @@ class SyncConnection:
             gather_post_facts=gather_post_facts,
         )
         return SyncDiagnosticSession(async_sess, self)
-
-    def ensure_package(
-        self,
-        package: str | Sequence[str],
-        state: Literal["present", "absent"] = "present",
-        manager: PkgManagerName = "auto",
-        update_cache: bool = False,
-        sudo: bool = True,
-        dry_run: bool | None = None,
-    ) -> EnsureResult:
-        """Идемпотентно обеспечить наличие или отсутствие пакета(ов) на хосте (синхронно)."""
-        return self.state.ensure_package(
-            package=package,
-            state=state,
-            manager=manager,
-            update_cache=update_cache,
-            sudo=sudo,
-            dry_run=dry_run,
-        )
-
-    def ensure_service(
-        self,
-        service: str,
-        state: ServiceState = "started",
-        enabled: bool | None = None,
-        sudo: bool = True,
-        dry_run: bool | None = None,
-    ) -> EnsureResult:
-        """Идемпотентно управлять состоянием системного сервиса (синхронно)."""
-        return self.state.ensure_service(
-            service=service,
-            state=state,
-            enabled=enabled,
-            sudo=sudo,
-            dry_run=dry_run,
-        )
-
-    def ensure_line(
-        self,
-        remote_path: str | Path,
-        line: str,
-        state: Literal["present", "absent"] = "present",
-        regex: str | None = None,
-        create: bool = True,
-        backup: bool = False,
-        mode: int | None = None,
-        encoding: str = "utf-8",
-        dry_run: bool | None = None,
-    ) -> EnsureResult:
-        """Идемпотентно обеспечить наличие или отсутствие строки в файле (синхронно)."""
-        return self.state.ensure_line(
-            remote_path=remote_path,
-            line=line,
-            state=state,
-            regex=regex,
-            create=create,
-            backup=backup,
-            mode=mode,
-            encoding=encoding,
-            dry_run=dry_run,
-        )
-
-    def ensure_file(
-        self,
-        remote_path: str | Path,
-        *,
-        state: Literal["present", "absent", "link"] = "present",
-        content: str | bytes | None = None,
-        target: str | Path | None = None,
-        mode: int | str | None = None,
-        owner: str | None = None,
-        group: str | None = None,
-        validate: str | None = None,
-        encoding: str = "utf-8",
-        atomic: bool = False,
-        sudo: bool = False,
-        dry_run: bool | None = None,
-    ) -> EnsureResult:
-        """Идемпотентно управлять файлом или символической ссылкой на хосте (синхронно)."""
-        return self.state.ensure_file(
-            remote_path,
-            state=state,
-            content=content,
-            target=target,
-            mode=mode,
-            owner=owner,
-            group=group,
-            validate=validate,
-            encoding=encoding,
-            atomic=atomic,
-            sudo=sudo,
-            dry_run=dry_run,
-        )
-
-    def ensure_directory(
-        self,
-        remote_path: str | Path,
-        *,
-        state: Literal["present", "absent"] = "present",
-        mode: int | str | None = None,
-        owner: str | None = None,
-        group: str | None = None,
-        recurse: bool = False,
-        sudo: bool = False,
-        dry_run: bool | None = None,
-    ) -> EnsureResult:
-        """Идемпотентно обеспечить наличие или отсутствие директории, её прав и владельца (синхронно)."""
-        return self.state.ensure_directory(
-            remote_path,
-            state=state,
-            mode=mode,
-            owner=owner,
-            group=group,
-            recurse=recurse,
-            sudo=sudo,
-            dry_run=dry_run,
-        )
-
-    def ensure_user(
-        self,
-        username: str,
-        *,
-        state: Literal["present", "absent"] = "present",
-        uid: int | None = None,
-        group: str | None = None,
-        groups: Sequence[str] | None = None,
-        shell: str | None = None,
-        home: str | None = None,
-        create_home: bool = True,
-        system: bool = False,
-        sudo: bool = True,
-        dry_run: bool | None = None,
-    ) -> EnsureResult:
-        """Идемпотентно управлять системным пользователем и его группами (синхронно)."""
-        return self.state.ensure_user(
-            username,
-            state=state,
-            uid=uid,
-            group=group,
-            groups=groups,
-            shell=shell,
-            home=home,
-            create_home=create_home,
-            system=system,
-            sudo=sudo,
-            dry_run=dry_run,
-        )
-
-    def ensure_authorized_key(
-        self,
-        user: str,
-        key: str,
-        *,
-        state: Literal["present", "absent"] = "present",
-        exclusive: bool = False,
-        sudo: bool = False,
-        dry_run: bool | None = None,
-    ) -> EnsureResult:
-        """Идемпотентно управлять SSH-ключами в ``~/.ssh/authorized_keys`` (синхронно)."""
-        return self.state.ensure_authorized_key(
-            user,
-            key,
-            state=state,
-            exclusive=exclusive,
-            sudo=sudo,
-            dry_run=dry_run,
-        )
-
-    def ensure_systemd_unit(
-        self,
-        name: str,
-        *,
-        content: str | None = None,
-        state: Literal["present", "absent", "started", "stopped", "restarted"] = "present",
-        enabled: bool | None = None,
-        unit_dir: str = "/etc/systemd/system",
-        daemon_reload: bool = True,
-        sudo: bool = True,
-        dry_run: bool | None = None,
-    ) -> EnsureResult:
-        """Идемпотентно управлять unit-файлом systemd (синхронно)."""
-        return self.state.ensure_systemd_unit(
-            name,
-            content=content,
-            state=state,
-            enabled=enabled,
-            unit_dir=unit_dir,
-            daemon_reload=daemon_reload,
-            sudo=sudo,
-            dry_run=dry_run,
-        )
-
-    def ensure_sysctl(
-        self,
-        name: str,
-        value: str | int,
-        *,
-        state: Literal["present", "absent"] = "present",
-        config_file: str = "/etc/sysctl.d/99-uniconn.conf",
-        reload: bool = True,
-        sudo: bool = True,
-        dry_run: bool | None = None,
-    ) -> EnsureResult:
-        """Идемпотентно управлять параметром ядра ``sysctl`` (синхронно)."""
-        return self.state.ensure_sysctl(
-            name,
-            value,
-            state=state,
-            config_file=config_file,
-            reload=reload,
-            sudo=sudo,
-            dry_run=dry_run,
-        )
 
     def use_cassette(
         self,
