@@ -7,7 +7,10 @@ import asyncio
 import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
+try:
+    import pytest
+except ImportError:
+    pytest = None  # type: ignore[assignment]
 
 from uniconn._config import ConnectionConfig
 from uniconn._connection import Connection

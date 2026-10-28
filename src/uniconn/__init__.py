@@ -177,7 +177,7 @@ from .transports.replay import (
 )
 from .transports.ssh import OpenSSHConfigParser, SFTPClientAdapter, SSHJumpChainManager
 
-__version__ = "0.16.6"
+__version__ = "0.16.7"
 
 
 def __getattr__(name: str) -> Any:

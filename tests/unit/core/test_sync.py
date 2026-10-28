@@ -11,6 +11,7 @@ import pytest
 from uniconn._config import ConnectionConfig
 from uniconn._connection import Connection
 from uniconn._sync import SyncConnection
+from uniconn.core.bridge import EventLoopPortal
 from uniconn.result import Result
 
 
@@ -185,4 +186,58 @@ class TestSyncShellSession:
 
         assert not shell.is_alive
         assert proc.terminated
+
+
+class TestEventLoopPortalDeadlockProtection:
+    """Тесты защиты от взаимных блокировок (deadlock) и защиты буфера очереди."""
+
+    def test_call_from_loop_thread_raises_deadlock(self):
+        """Вызов portal.call() изнутри daemon-потока портала возбуждает RuntimeError."""
+        portal = EventLoopPortal(owner_name="TestPortal")
+
+        async def _nested():
+            return "nested"
+
+        async def _outer():
+            # Попытка вызвать portal.call() из корутины, исполняемой на самом портале
+            return portal.call(_nested())
+
+        with pytest.raises(
+            RuntimeError,
+            match=r"Deadlock detected: TestPortal\.call\(\) cannot be called from within the portal event loop thread",
+        ):
+            portal.call(_outer())
+
+    def test_iter_async_from_loop_thread_raises_deadlock(self):
+        """Вызов portal.iter_async() изнутри daemon-потока портала возбуждает RuntimeError."""
+        portal = EventLoopPortal(owner_name="TestPortal")
+
+        async def _gen():
+            yield 1
+            yield 2
+
+        async def _outer():
+            # Попытка синхронной итерации portal.iter_async() из потока портала
+            return list(portal.iter_async(_gen()))
+
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                r"Deadlock detected: TestPortal\.iter_async\(\) cannot be called "
+                r"from within the portal event loop thread"
+            ),
+        ):
+            portal.call(_outer())
+
+    def test_iter_async_queue_bounded_and_streaming(self):
+        """Итератор iter_async использует ограниченную очередь (maxsize=1000) и корректно отдает данные."""
+        portal = EventLoopPortal(owner_name="TestPortal")
+
+        async def _gen():
+            for i in range(5):
+                yield i
+
+        items = list(portal.iter_async(_gen()))
+        assert items == [0, 1, 2, 3, 4]
+
 

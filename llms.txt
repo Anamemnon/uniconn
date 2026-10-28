@@ -1,4 +1,4 @@
-# uniconn — LLM & AI Agent API Reference (v0.16.6)
+# uniconn — LLM & AI Agent API Reference (v0.16.7)
 
 > Universal async-first Python library (Python 3.11+) and CLI for executing commands, inspecting host facts, enforcing idempotent states, and managing files across SSH, Telnet, Serial/UART, IPMI BMC, Redfish BMC (`niquests`), Docker/Podman, Kubernetes (`kubectl`), Replay, and Local transports.
 

@@ -3,7 +3,7 @@
   "version": "0.5.0",
   "private": true,
   "scripts": {
-    "dev": "python3 main.py --serve",
+    "dev": "export PATH=\"$PWD/.bin:$HOME/.local/bin:$PATH\" UV_PROJECT_ENVIRONMENT=\"/root/.venv\"; uv run python main.py --serve",
     "build": "export PATH=\"$PWD/.bin:$HOME/.local/bin:$PATH\" UV_PYTHON_INSTALL_DIR=\"$PWD/.uv/python\"; command -v uv >/dev/null || (curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=\"$PWD/.bin\" sh && uv sync --python 3.12 --all-extras --dev); uv run pytest -m \"not integration\"",
     "lint": "export PATH=\"$PWD/.bin:$HOME/.local/bin:$PATH\" UV_PYTHON_INSTALL_DIR=\"$PWD/.uv/python\"; command -v uv >/dev/null || (curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=\"$PWD/.bin\" sh && uv sync --python 3.12 --all-extras --dev); uv run ruff check src/ && uv run pyright"
   }

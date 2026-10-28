@@ -439,10 +439,11 @@ class ConnectionPool:
                     for idx, target in enumerate(self._uris)
                 ]
             return [task.result() for task in tasks]
-        except* Exception as eg:
+        except BaseException as eg:
             if log_errors:
+                err_count = len(getattr(eg, "exceptions", [eg]))
                 self._logger.error(
-                    f"Multiple failures: {len(eg.exceptions)} errors"
+                    f"Multiple failures: {err_count} errors"
                 )
             raise
 
@@ -498,7 +499,7 @@ class ConnectionPool:
                     tg.create_task(_open_one(idx, target))
             self._is_entered = True
             self._owns_active_conns = True
-        except* Exception:
+        except BaseException:
             await self.close()
             raise
 

@@ -72,8 +72,12 @@ TEST_SUITES_META: list[dict[str, Any]] = [
 
 def _get_env() -> dict[str, str]:
     env = os.environ.copy()
+    bin_dir = os.path.join(ROOT_DIR, ".bin")
+    venv_bin = os.path.join(ROOT_DIR, ".venv", "bin")
+    root_venv_bin = "/root/.venv/bin"
     home_bin = os.path.expanduser("~/.local/bin")
-    env["PATH"] = os.pathsep.join((home_bin, env.get("PATH", "")))
+    env["PATH"] = os.pathsep.join((bin_dir, venv_bin, root_venv_bin, home_bin, env.get("PATH", "")))
+    env["UV_PROJECT_ENVIRONMENT"] = "/root/.venv"
     env["PYTHONPATH"] = os.pathsep.join(
         (
             ROOT_DIR,
@@ -83,6 +87,93 @@ def _get_env() -> dict[str, str]:
         )
     )
     return env
+
+
+def _find_uv_binary() -> str:
+    """Найти исполняемый файл uv в проекте или в системе."""
+    candidates = [
+        os.path.join(ROOT_DIR, ".bin", "uv"),
+        os.path.join(ROOT_DIR, ".venv", "bin", "uv"),
+        "/root/.venv/bin/uv",
+        os.path.expanduser("~/.local/bin/uv"),
+    ]
+    for c in candidates:
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    import shutil
+
+    sys_uv = shutil.which("uv")
+    return sys_uv if sys_uv else "uv"
+
+
+class _FakeShellProcess:
+    """Фейковый asyncssh PTY-процесс с эмуляцией stateful оболочки для дашборда."""
+
+    def __init__(self, echo_commands: bool = False) -> None:
+        self.cwd = "/home/user"
+        self.env: dict[str, str] = {}
+        self.echo_commands = echo_commands
+        self.returncode: int | None = None
+        self.exit_status: int | None = None
+        self.terminated = False
+        self.closed = False
+        self.term_size = (80, 24)
+        self.written_chunks: list[str] = []
+        self._out_queue: asyncio.Queue[str] = asyncio.Queue()
+
+        self.stdin = type("StdinMock", (), {})()
+        self.stdin.write = self._on_stdin_write
+
+        async def _drain() -> None:
+            pass
+
+        self.stdin.drain = _drain
+
+        self.stdout = type("StdoutMock", (), {})()
+        self.stdout.read = self._on_stdout_read
+
+    def _on_stdin_write(self, text: str) -> None:
+        self.written_chunks.append(text)
+        stripped = text.strip()
+        if stripped in ("", "\x03", "exit", "export PS1=''; stty -echo"):
+            return
+
+        m = re.match(r'^(.*);\s*echo\s+"\\n(__UNICONN_[a-f0-9]+__)\$\?"$', stripped)
+        if not m:
+            return
+        cmd, marker_prefix = m.group(1).strip(), m.group(2)
+
+        output, exit_code = self._eval_command(cmd)
+        prefix = f"{stripped}\r\n" if self.echo_commands else ""
+        payload = f"{prefix}{output}\n{marker_prefix}{exit_code}\n"
+        self._out_queue.put_nowait(payload)
+
+    def _eval_command(self, cmd: str) -> tuple[str, int]:
+        if cmd.startswith("cd "):
+            target = cmd[3:].strip()
+            self.cwd = target
+            return "", 0
+        if cmd == "pwd":
+            return self.cwd, 0
+        if cmd.startswith("export "):
+            assignment = cmd[7:].strip()
+            if "=" in assignment:
+                k, v = assignment.split("=", 1)
+                self.env[k.strip()] = v.strip().strip("'\"")
+            return "", 0
+        if cmd.startswith("echo $"):
+            var_name = cmd[6:].strip()
+            return self.env.get(var_name, ""), 0
+        if cmd.startswith("echo "):
+            return cmd[5:].strip().strip("'\""), 0
+        if cmd == "false":
+            return "error occurred", 127
+        return f"ran:{cmd}", 0
+
+    async def _on_stdout_read(self, _n: int = 4096) -> str:
+        if self.returncode is not None:
+            return ""
+        return await self._out_queue.get()
 
 
 def _serialize_result(res: Any) -> dict[str, Any]:
@@ -116,8 +207,6 @@ def _run_demo_status() -> dict[str, Any]:
     fallback_uname = f"{platform.system()} {platform.release()} {platform.machine()}".strip()
     fallback_py = f"Python {sys.version.split()[0]}"
     try:
-        from test_shell import FakeShellProcess
-
         from uniconn import Connection, ShellSession, __version__
         from uniconn.plugins._loader import TransportLoader
 
@@ -135,7 +224,7 @@ def _run_demo_status() -> dict[str, Any]:
             except Exception:
                 pass
 
-            proc = FakeShellProcess()
+            proc = _FakeShellProcess()
             s = ShellSession(proc, host="demo-ssh-host")
             await s.initialize()
             await s.execute("cd /var/log")
@@ -161,16 +250,24 @@ def _run_demo_status() -> dict[str, Any]:
 
         return asyncio.run(_in_proc())
     except Exception:
-        from uniconn import __version__
-        from uniconn.plugins._loader import TransportLoader
-
+        ver = "0.16.7"
         try:
+            from uniconn import __version__
+            ver = __version__
+        except Exception:
+            pass
+
+        transports = [
+            "docker", "ipmi", "kubectl", "local", "podman", "redfish", "replay", "serial", "ssh", "telnet"
+        ]
+        try:
+            from uniconn.plugins._loader import TransportLoader
             transports = sorted(TransportLoader.list_available())
         except Exception:
-            transports = ["docker", "ipmi", "kubectl", "local", "podman", "redfish", "replay", "serial", "ssh", "telnet"]
+            pass
 
         return {
-            "version": __version__,
+            "version": ver,
             "transports": transports,
             "local_uname": fallback_uname,
             "python_version": fallback_py,
@@ -202,8 +299,6 @@ def _execute_shell_command(
 
     t0 = time.monotonic()
     try:
-        from test_shell import FakeShellProcess
-
         from uniconn import Connection, ShellSession
 
         async def _run_shell() -> dict[str, Any]:
@@ -231,7 +326,7 @@ def _execute_shell_command(
                     )
                     return payload
 
-            proc = FakeShellProcess()
+            proc = _FakeShellProcess()
             proc.cwd = str(shell_state.get("cwd", "/root"))
             proc.env = dict(shell_state.get("env", {}))
             s = ShellSession(proc, host="interactive-demo")
@@ -1409,8 +1504,9 @@ def _execute_pytest(suite: str = "all") -> dict[str, Any]:
     t0 = time.monotonic()
     suite_clean = suite.strip().lower()
     task = SUITE_TO_POE_TASK.get(suite_clean, "test")
-    cmd_args = ["uv", "run", "poe", task]
-    label = f"uv run poe {task}"
+    uv_bin = _find_uv_binary()
+    cmd_args = [uv_bin, "run", "poe", task]
+    label = f"{os.path.basename(uv_bin)} run poe {task}"
 
     try:
         proc = subprocess.run(
@@ -1487,82 +1583,92 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                 return {}
 
         def do_GET(self) -> None:
-            parsed = urlparse(self.path)
-            qs = parse_qs(parsed.query)
-            if parsed.path == "/api/status":
-                self._send_json(_run_demo_status())
-                return
-            if parsed.path == "/api/shell":
-                cmd = qs.get("cmd", ["pwd"])[0]
-                mode = qs.get("mode", ["fake"])[0]
-                reset = qs.get("reset", ["false"])[0].lower() == "true"
-                self._send_json(_execute_shell_command(cmd, shell_state, mode=mode, reset=reset))
-                return
-            if parsed.path == "/api/local":
-                cmd = qs.get("cmd", ["uname -a"])[0]
-                self._send_json(_execute_local_command(cmd))
-                return
-            if parsed.path == "/api/pytest":
-                suite = qs.get("suite", ["all"])[0]
-                self._send_json(_execute_pytest(suite))
-                return
+            try:
+                parsed = urlparse(self.path)
+                qs = parse_qs(parsed.query)
+                if parsed.path == "/api/status":
+                    self._send_json(_run_demo_status())
+                    return
+                if parsed.path == "/api/shell":
+                    cmd = qs.get("cmd", ["pwd"])[0]
+                    mode = qs.get("mode", ["fake"])[0]
+                    reset = qs.get("reset", ["false"])[0].lower() == "true"
+                    self._send_json(_execute_shell_command(cmd, shell_state, mode=mode, reset=reset))
+                    return
+                if parsed.path == "/api/local":
+                    cmd = qs.get("cmd", ["uname -a"])[0]
+                    self._send_json(_execute_local_command(cmd))
+                    return
+                if parsed.path == "/api/pytest":
+                    suite = qs.get("suite", ["all"])[0]
+                    self._send_json(_execute_pytest(suite))
+                    return
 
-            body = HTML_TEMPLATE_PATH.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+                if parsed.path.startswith("/api/"):
+                    self._send_json({"error": "Not found"}, status=404)
+                    return
+
+                body = HTML_TEMPLATE_PATH.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception as exc:
+                self._send_json({"status": "error", "error": str(exc)}, status=500)
 
         def do_POST(self) -> None:
-            parsed = urlparse(self.path)
-            payload = self._read_json_body()
-            if parsed.path == "/api/shell":
-                cmd = str(payload.get("cmd") or "pwd")
-                mode = str(payload.get("mode") or "fake")
-                try:
-                    cols = max(20, int(payload.get("cols") or 120))
-                except (TypeError, ValueError):
-                    cols = 120
-                try:
-                    rows = max(5, int(payload.get("rows") or 40))
-                except (TypeError, ValueError):
-                    rows = 40
-                reset = bool(payload.get("reset", False))
-                self._send_json(
-                    _execute_shell_command(
-                        cmd,
-                        shell_state,
-                        mode=mode,
-                        cols=cols,
-                        rows=rows,
-                        reset=reset,
+            try:
+                parsed = urlparse(self.path)
+                payload = self._read_json_body()
+                if parsed.path == "/api/shell":
+                    cmd = str(payload.get("cmd") or "pwd")
+                    mode = str(payload.get("mode") or "fake")
+                    try:
+                        cols = max(20, int(payload.get("cols") or 120))
+                    except (TypeError, ValueError):
+                        cols = 120
+                    try:
+                        rows = max(5, int(payload.get("rows") or 40))
+                    except (TypeError, ValueError):
+                        rows = 40
+                    reset = bool(payload.get("reset", False))
+                    self._send_json(
+                        _execute_shell_command(
+                            cmd,
+                            shell_state,
+                            mode=mode,
+                            cols=cols,
+                            rows=rows,
+                            reset=reset,
+                        )
                     )
-                )
-                return
-            if parsed.path == "/api/hooks":
-                self._send_json(_execute_hooks_sandbox(payload, metrics_state))
-                return
-            if parsed.path == "/api/uri":
-                self._send_json(_build_and_validate_uri(payload))
-                return
-            if parsed.path == "/api/pool":
-                self._send_json(_execute_pool_sandbox(payload))
-                return
-            if parsed.path == "/api/screen":
-                self._send_json(_execute_screen_sandbox(payload, screen_state))
-                return
-            if parsed.path == "/api/v070":
-                self._send_json(_execute_v070_sandbox(payload))
-                return
-            if parsed.path == "/api/v080":
-                self._send_json(_execute_v080_sandbox(payload))
-                return
-            if parsed.path == "/api/v090":
-                self._send_json(_execute_v090_sandbox(payload))
-                return
+                    return
+                if parsed.path == "/api/hooks":
+                    self._send_json(_execute_hooks_sandbox(payload, metrics_state))
+                    return
+                if parsed.path == "/api/uri":
+                    self._send_json(_build_and_validate_uri(payload))
+                    return
+                if parsed.path == "/api/pool":
+                    self._send_json(_execute_pool_sandbox(payload))
+                    return
+                if parsed.path == "/api/screen":
+                    self._send_json(_execute_screen_sandbox(payload, screen_state))
+                    return
+                if parsed.path == "/api/v070":
+                    self._send_json(_execute_v070_sandbox(payload))
+                    return
+                if parsed.path == "/api/v080":
+                    self._send_json(_execute_v080_sandbox(payload))
+                    return
+                if parsed.path == "/api/v090":
+                    self._send_json(_execute_v090_sandbox(payload))
+                    return
 
-            self._send_json({"error": "Not found"}, status=404)
+                self._send_json({"error": "Not found"}, status=404)
+            except Exception as exc:
+                self._send_json({"status": "error", "error": str(exc)}, status=500)
 
     server = _ReusableThreadingHTTPServer(("0.0.0.0", port), Handler)
     print(f"uniconn dev dashboard listening on http://0.0.0.0:{port}", flush=True)

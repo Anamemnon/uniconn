@@ -91,6 +91,16 @@ class EventLoopPortal:
 
     def call(self, coro: Any) -> Any:
         """Синхронно выполнить корутину в фоновом event loop и вернуть результат."""
+        if self._loop_thread is None and self._shared_thread is not None:
+            self._loop_thread = self._shared_thread
+        if self._loop_thread is not None and threading.current_thread() is self._loop_thread:
+            with contextlib.suppress(Exception):
+                coro.close()
+            raise RuntimeError(
+                f"Deadlock detected: {self._owner_name}.call() cannot be called "
+                "from within the portal event loop thread. Await the coroutine directly instead."
+            )
+
         if self._closed:
             with contextlib.suppress(Exception):
                 coro.close()
@@ -109,6 +119,14 @@ class EventLoopPortal:
 
     def iter_async(self, async_gen: AsyncIterator[T]) -> Iterator[T]:
         """Преобразовать асинхронный генератор в синхронный итератор через очередь."""
+        if self._loop_thread is None and self._shared_thread is not None:
+            self._loop_thread = self._shared_thread
+        if self._loop_thread is not None and threading.current_thread() is self._loop_thread:
+            raise RuntimeError(
+                f"Deadlock detected: {self._owner_name}.iter_async() cannot be called "
+                "from within the portal event loop thread. Iterate with 'async for' directly instead."
+            )
+
         if self._closed:
             close_fn = getattr(async_gen, "aclose", None)
             if callable(close_fn):
@@ -121,7 +139,7 @@ class EventLoopPortal:
 
         loop = self.get_loop()
         caller_ctx = contextvars.copy_context()
-        q: asyncio.Queue[Any] = asyncio.Queue()
+        q: asyncio.Queue[Any] = asyncio.Queue(maxsize=1000)
 
         async def _pump() -> None:
             for var, val in caller_ctx.items():
