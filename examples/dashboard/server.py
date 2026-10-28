@@ -250,7 +250,7 @@ def _run_demo_status() -> dict[str, Any]:
 
         return asyncio.run(_in_proc())
     except Exception:
-        ver = "0.16.7"
+        ver = "0.16.8"
         try:
             from uniconn import __version__
             ver = __version__

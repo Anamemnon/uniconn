@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from enum import StrEnum
 from typing import Any
@@ -50,6 +51,7 @@ class CircuitBreaker:
         self._failure_count: int = 0
         self._opened_at: float | None = None
         self._half_open_calls: int = 0
+        self._lock = threading.RLock()
 
     @property
     def failure_threshold(self) -> int:
@@ -64,37 +66,41 @@ class CircuitBreaker:
     @property
     def failure_count(self) -> int:
         """Текущее число последовательных ошибок."""
-        return self._failure_count
+        with self._lock:
+            return self._failure_count
 
     @property
     def state(self) -> CircuitState:
         """Текущее состояние цепи (с учётом автоматического истечения recovery_timeout)."""
-        if self._state == CircuitState.OPEN and self._opened_at is not None:
-            elapsed = time.monotonic() - self._opened_at
-            if elapsed >= self._recovery_timeout:
-                self._state = CircuitState.HALF_OPEN
-                self._half_open_calls = 0
-        return self._state
+        with self._lock:
+            if self._state == CircuitState.OPEN and self._opened_at is not None:
+                elapsed = time.monotonic() - self._opened_at
+                if elapsed >= self._recovery_timeout:
+                    self._state = CircuitState.HALF_OPEN
+                    self._half_open_calls = 0
+            return self._state
 
     @property
     def remaining_seconds(self) -> float:
         """Оставшееся время в секундах до перехода из OPEN в HALF_OPEN (0.0 если не OPEN)."""
-        if self._state != CircuitState.OPEN or self._opened_at is None:
-            return 0.0
-        rem = self._recovery_timeout - (time.monotonic() - self._opened_at)
-        return max(0.0, round(rem, 3))
+        with self._lock:
+            if self._state != CircuitState.OPEN or self._opened_at is None:
+                return 0.0
+            rem = self._recovery_timeout - (time.monotonic() - self._opened_at)
+            return max(0.0, round(rem, 3))
 
     def allow_request(self) -> bool:
         """Проверить, разрешён ли очередной запрос в текущем состоянии цепи."""
-        current = self.state
-        if current == CircuitState.CLOSED:
-            return True
-        if current == CircuitState.HALF_OPEN:
-            if self._half_open_calls < self._half_open_max_calls:
-                self._half_open_calls += 1
+        with self._lock:
+            current = self.state
+            if current == CircuitState.CLOSED:
                 return True
+            if current == CircuitState.HALF_OPEN:
+                if self._half_open_calls < self._half_open_max_calls:
+                    self._half_open_calls += 1
+                    return True
+                return False
             return False
-        return False
 
     def check_or_raise(
         self,
@@ -103,35 +109,38 @@ class CircuitBreaker:
         command: str | None = None,
     ) -> None:
         """Проверить разрешение на вызов или выбросить ``CircuitOpenError``."""
-        if not self.allow_request():
-            rem = self.remaining_seconds
-            target = host or "target"
-            raise CircuitOpenError(
-                f"Circuit breaker is {self._state.value.upper()} for {target} "
-                f"(failures={self._failure_count}/{self._failure_threshold}, "
-                f"retry in {rem:.2f}s)",
-                host=host,
-                remaining_seconds=rem,
-                command=command,
-            )
+        with self._lock:
+            if not self.allow_request():
+                rem = self.remaining_seconds
+                target = host or "target"
+                raise CircuitOpenError(
+                    f"Circuit breaker is {self._state.value.upper()} for {target} "
+                    f"(failures={self._failure_count}/{self._failure_threshold}, "
+                    f"retry in {rem:.2f}s)",
+                    host=host,
+                    remaining_seconds=rem,
+                    command=command,
+                )
 
     def record_success(self) -> None:
         """Зафиксировать успешное выполнение и замкнуть цепь (CLOSED)."""
-        self._state = CircuitState.CLOSED
-        self._failure_count = 0
-        self._opened_at = None
-        self._half_open_calls = 0
+        with self._lock:
+            self._state = CircuitState.CLOSED
+            self._failure_count = 0
+            self._opened_at = None
+            self._half_open_calls = 0
 
     def record_failure(self) -> None:
         """Зафиксировать сбой и при достижении порога разомкнуть цепь (OPEN)."""
-        self._failure_count += 1
-        if (
-            self._state == CircuitState.HALF_OPEN
-            or self._failure_count >= self._failure_threshold
-        ):
-            self._state = CircuitState.OPEN
-            self._opened_at = time.monotonic()
-            self._half_open_calls = 0
+        with self._lock:
+            self._failure_count += 1
+            if (
+                self._state == CircuitState.HALF_OPEN
+                or self._failure_count >= self._failure_threshold
+            ):
+                self._state = CircuitState.OPEN
+                self._opened_at = time.monotonic()
+                self._half_open_calls = 0
 
     def reset(self) -> None:
         """Принудительно сбросить CircuitBreaker в начальное состояние CLOSED."""
@@ -139,13 +148,14 @@ class CircuitBreaker:
 
     def to_dict(self) -> dict[str, Any]:
         """Сериализовать состояние CircuitBreaker в словарь."""
-        return {
-            "state": self.state.value,
-            "failure_count": self._failure_count,
-            "failure_threshold": self._failure_threshold,
-            "recovery_timeout": self._recovery_timeout,
-            "remaining_seconds": self.remaining_seconds,
-        }
+        with self._lock:
+            return {
+                "state": self.state.value,
+                "failure_count": self._failure_count,
+                "failure_threshold": self._failure_threshold,
+                "recovery_timeout": self._recovery_timeout,
+                "remaining_seconds": self.remaining_seconds,
+            }
 
 
 class RateLimiter:

@@ -103,6 +103,34 @@ class TestCircuitBreakerAndRateLimiter:
         cb.reset()
         assert cb.state == CircuitState.CLOSED
 
+    def test_circuit_breaker_thread_safety_half_open_admissions(self) -> None:
+        """В состоянии HALF_OPEN ровно half_open_max_calls параллельных запросов разрешаются."""
+        import concurrent.futures
+        import time
+
+        cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.04, half_open_max_calls=2)
+        cb.record_failure()
+        assert cb.state == CircuitState.OPEN
+
+        time.sleep(0.05)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            futures = [executor.submit(cb.allow_request) for _ in range(50)]
+            results = [f.result() for f in futures]
+
+        assert results.count(True) == 2
+        assert results.count(False) == 48
+
+    def test_circuit_breaker_thread_safety_concurrent_failures(self) -> None:
+        """Параллельные вызовы record_failure() атомарно увеличивают failure_count без race condition."""
+        import concurrent.futures
+
+        cb = CircuitBreaker(failure_threshold=100, recovery_timeout=60.0)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            futures = [executor.submit(cb.record_failure) for _ in range(50)]
+            concurrent.futures.wait(futures)
+
+        assert cb.failure_count == 50
+
     @pytest.mark.asyncio
     async def test_rate_limiter_token_bucket_throttling(self) -> None:
         """Проверить взрывную ёмкость (burst) и троттлинг RateLimiter."""
