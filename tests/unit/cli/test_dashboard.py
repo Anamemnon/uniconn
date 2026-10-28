@@ -7,7 +7,6 @@ from typing import Any
 from examples.dashboard.server import (
     HTML_TEMPLATE_PATH,
     _build_and_validate_uri,
-    _call_handler_in_venv,
     _execute_hooks_sandbox,
     _execute_local_command,
     _execute_pool_sandbox,
@@ -117,14 +116,12 @@ class TestDashboardHooksAndTelemetry:
         assert res["status"] == "reset"
         assert res["metrics"]["total_runs"] == 0
 
-    def test_call_handler_in_venv_delegates_cleanly(self) -> None:
-        """Проверить делегирование обработчика в .venv/bin/python (fallback для системного Python 3.10)."""
-        res = _call_handler_in_venv(
-            "_execute_hooks_sandbox",
-            {"cmd": "echo 'venv-delegated-ok'", "dry_run": True},
+    def test_hooks_sandbox_direct_execution(self) -> None:
+        """Проверить прямое in-process выполнение обработчика песочницы."""
+        res = _execute_hooks_sandbox(
+            {"cmd": "echo 'direct-execution-ok'", "dry_run": True},
             {},
         )
-        assert res is not None
         assert res["status"] == "ok"
         assert res["metrics"]["total_runs"] == 1
 

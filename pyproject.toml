@@ -1,6 +1,6 @@
 [project]
 name = "uniconn"
-version = "0.16.5"
+version = "0.16.6"
 description = "Universal library for remote command execution"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -41,6 +41,7 @@ all = [
 ]
 dev = [
     "uniconn[all,otel]",
+    "poethepoet>=0.30",
     "pytest>=8.0",
     "pytest-asyncio>=1.0",
     "pytest-mock>=3.14",
@@ -136,3 +137,17 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["E501", "D", "B007", "B017", "N806", "SIM105", "SIM117"]
 "examples/**" = ["E501", "D"]
+
+[tool.poe.tasks]
+lint = "ruff check src/ benchmarks/ examples/ tests/"
+typecheck = "pyright"
+bench = "python -m benchmarks.overhead_bench -n 100 -w 10 --check-thresholds"
+test = "pytest tests/unit -m 'not integration' -q"
+test-core = "pytest tests/unit/core -m 'not integration' -q"
+test-services = "pytest tests/unit/services -m 'not integration' -q"
+test-transports = "pytest tests/unit/transports -m 'not integration' -q"
+test-pools = "pytest tests/unit/pools -m 'not integration' -q"
+test-screen = "pytest tests/unit/screen -m 'not integration' -q"
+test-cli = "pytest tests/unit/cli -m 'not integration' -q"
+test-arch = "pytest tests/unit/architecture -m 'not integration' -q"
+check = ["lint", "typecheck", "test-arch"]

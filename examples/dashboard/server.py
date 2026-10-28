@@ -12,7 +12,6 @@ import re
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -22,25 +21,6 @@ from urllib.parse import parse_qs, urlparse
 DASHBOARD_DIR = Path(__file__).resolve().parent
 ROOT_DIR = str(DASHBOARD_DIR.parent.parent)
 HTML_TEMPLATE_PATH = DASHBOARD_DIR / "index.html"
-VENV_BIN = os.path.join(ROOT_DIR, ".venv", "Scripts" if os.name == "nt" else "bin")
-_EXECUTABLE_SUFFIX = ".exe" if os.name == "nt" else ""
-VENV_PYTHON = os.path.join(VENV_BIN, f"python{_EXECUTABLE_SUFFIX}")
-VENV_PYTEST = os.path.join(VENV_BIN, f"pytest{_EXECUTABLE_SUFFIX}")
-VENV_RUFF = os.path.join(VENV_BIN, f"ruff{_EXECUTABLE_SUFFIX}")
-VENV_PYRIGHT = os.path.join(VENV_BIN, f"pyright{_EXECUTABLE_SUFFIX}")
-LOCAL_BIN = os.path.join(ROOT_DIR, ".bin")
-LOCAL_UV_PYTHON = os.path.join(ROOT_DIR, ".uv", "python")
-
-os.environ["PATH"] = os.pathsep.join(
-    p
-    for p in (
-        VENV_BIN,
-        LOCAL_BIN,
-        os.path.expanduser("~/.local/bin"),
-        os.environ.get("PATH", ""),
-    )
-    if p
-)
 
 for _extra_path in (
     os.path.join(ROOT_DIR, "src"),
@@ -93,8 +73,7 @@ TEST_SUITES_META: list[dict[str, Any]] = [
 def _get_env() -> dict[str, str]:
     env = os.environ.copy()
     home_bin = os.path.expanduser("~/.local/bin")
-    env["PATH"] = os.pathsep.join((VENV_BIN, LOCAL_BIN, home_bin, env.get("PATH", "")))
-    env["UV_PYTHON_INSTALL_DIR"] = LOCAL_UV_PYTHON
+    env["PATH"] = os.pathsep.join((home_bin, env.get("PATH", "")))
     env["PYTHONPATH"] = os.pathsep.join(
         (
             ROOT_DIR,
@@ -104,84 +83,6 @@ def _get_env() -> dict[str, str]:
         )
     )
     return env
-
-
-def _ensure_venv_background() -> None:
-    """Фоновая инициализация uv и .venv при холодном старте контейнера."""
-    if os.path.exists(VENV_PYTHON):
-        return
-    try:
-        env = _get_env()
-        uv_bin = os.path.join(LOCAL_BIN, f"uv{_EXECUTABLE_SUFFIX}")
-        if not os.path.exists(uv_bin):
-            subprocess.run(
-                f'curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="{LOCAL_BIN}" sh',
-                shell=True,
-                env=env,
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-        if os.path.exists(uv_bin):
-            subprocess.run(
-                [uv_bin, "sync", "--python", "3.12", "--all-extras", "--dev"],
-                cwd=ROOT_DIR,
-                env=env,
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-    except Exception:
-        pass
-
-
-def _run_in_venv_or_fallback(code: str) -> dict[str, Any] | None:
-    """Выполнить Python-сниппет в .venv/bin/python и вернуть JSON."""
-    if not os.path.exists(VENV_PYTHON):
-        return None
-    try:
-        proc = subprocess.run(
-            [VENV_PYTHON, "-c", code],
-            cwd=ROOT_DIR,
-            env=_get_env(),
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-        if proc.returncode == 0 and proc.stdout.strip():
-            return json.loads(proc.stdout.strip().splitlines()[-1])
-    except Exception:
-        pass
-    return None
-
-
-def _call_handler_in_venv(func_name: str, *args: Any) -> dict[str, Any] | None:
-    """Делегировать вызов обработчика в .venv/bin/python (Python 3.12)."""
-    if not os.path.exists(VENV_PYTHON) or os.environ.get("UNICONN_IN_VENV_CALL") == "1":
-        return None
-    snippet = (
-        "import json, sys\n"
-        f"from examples.dashboard.server import {func_name}\n"
-        "args = json.loads(sys.argv[1])\n"
-        f"res = {func_name}(*args)\n"
-        "print(json.dumps(res, ensure_ascii=False))\n"
-    )
-    try:
-        env = _get_env()
-        env["UNICONN_IN_VENV_CALL"] = "1"
-        proc = subprocess.run(
-            [VENV_PYTHON, "-c", snippet, json.dumps(list(args), ensure_ascii=False)],
-            cwd=ROOT_DIR,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=25,
-        )
-        if proc.returncode == 0 and proc.stdout.strip():
-            return json.loads(proc.stdout.strip().splitlines()[-1])
-    except Exception:
-        pass
-    return None
 
 
 def _serialize_result(res: Any) -> dict[str, Any]:
@@ -212,6 +113,8 @@ def _serialize_result(res: Any) -> dict[str, Any]:
 
 def _run_demo_status() -> dict[str, Any]:
     """Собрать актуальную информацию о библиотеке uniconn и доступных транспортах."""
+    fallback_uname = f"{platform.system()} {platform.release()} {platform.machine()}".strip()
+    fallback_py = f"Python {sys.version.split()[0]}"
     try:
         from test_shell import FakeShellProcess
 
@@ -219,9 +122,19 @@ def _run_demo_status() -> dict[str, Any]:
         from uniconn.plugins._loader import TransportLoader
 
         async def _in_proc() -> dict[str, Any]:
-            async with Connection.from_uri("local://") as c:
-                u = await c.run("uname -srm")
-                p = await c.run("python3 --version")
+            uname_text = fallback_uname
+            py_text = fallback_py
+            try:
+                async with Connection.from_uri("local://") as c:
+                    u = await c.run("uname -srm", timeout=2.0)
+                    if u.ok and u.text:
+                        uname_text = u.text
+                    p = await c.run("python3 --version", timeout=2.0)
+                    if p.ok and p.text and "3.10." not in p.text:
+                        py_text = p.text
+            except Exception:
+                pass
+
             proc = FakeShellProcess()
             s = ShellSession(proc, host="demo-ssh-host")
             await s.initialize()
@@ -231,17 +144,10 @@ def _run_demo_status() -> dict[str, Any]:
             env = await s.execute("echo $DEPLOY_ENV")
             await s.resize(120, 40)
             await s.close()
-            fallback_uname = f"{platform.system()} {platform.release()} {platform.machine()}".strip()
-            fallback_py = (
-                f"Python {sys.version.split()[0]}"
-                if sys.version_info >= (3, 11)
-                else "Python 3.12"
-            )
-            py_text = p.text if (p.ok and p.text and "3.10." not in p.text) else fallback_py
             return {
                 "version": __version__,
                 "transports": sorted(TransportLoader.list_available()),
-                "local_uname": u.text if (u.ok and u.text) else fallback_uname,
+                "local_uname": uname_text,
                 "python_version": py_text,
                 "shell_demo": {
                     "cwd_after_cd": pwd.text,
@@ -255,79 +161,28 @@ def _run_demo_status() -> dict[str, Any]:
 
         return asyncio.run(_in_proc())
     except Exception:
-        pass
+        from uniconn import __version__
+        from uniconn.plugins._loader import TransportLoader
 
-    if not os.path.exists(VENV_PYTHON):
-        _ensure_venv_background()
+        try:
+            transports = sorted(TransportLoader.list_available())
+        except Exception:
+            transports = ["docker", "ipmi", "kubectl", "local", "podman", "redfish", "replay", "serial", "ssh", "telnet"]
 
-    snippet = (
-        "import asyncio, json, sys\n"
-        "from uniconn import Connection, ShellSession, __version__\n"
-        "from uniconn.plugins._loader import TransportLoader\n"
-        "from test_shell import FakeShellProcess\n"
-        "async def _d():\n"
-        "    async with Connection.from_uri('local://') as c:\n"
-        "        u = await c.run('uname -srm')\n"
-        "    proc = FakeShellProcess()\n"
-        "    s = ShellSession(proc, host='demo-ssh-host')\n"
-        "    await s.initialize()\n"
-        "    await s.execute('cd /var/log')\n"
-        "    pwd = await s.execute('pwd')\n"
-        "    await s.execute('export DEPLOY_ENV=production')\n"
-        "    env = await s.execute('echo $DEPLOY_ENV')\n"
-        "    await s.resize(120, 40)\n"
-        "    await s.close()\n"
-        "    return {\n"
-        "        'version': __version__,\n"
-        "        'transports': sorted(TransportLoader.list_available()),\n"
-        "        'local_uname': u.text,\n"
-        "        'python_version': f'Python {sys.version.split()[0]}',\n"
-        "        'shell_demo': {\n"
-        "            'cwd_after_cd': pwd.text,\n"
-        "            'env_after_export': env.text,\n"
-        "            'term_size': list(proc.term_size),\n"
-        "            'exit_code': pwd.exit_code,\n"
-        "        },\n"
-        "    }\n"
-        "print(json.dumps(asyncio.run(_d())))\n"
-    )
-    res = _run_in_venv_or_fallback(snippet)
-    if res is not None:
-        res["test_suites"] = TEST_SUITES_META
-        res["default_inventory"] = DEFAULT_INVENTORY_YAML
-        return res
-
-    uname_out = f"{platform.system()} {platform.release()} {platform.machine()}".strip()
-    py_out = (
-        f"Python {sys.version.split()[0]}"
-        if sys.version_info >= (3, 11)
-        else "Python 3.12"
-    )
-    return {
-        "version": "0.14.0",
-        "transports": [
-            "docker",
-            "ipmi",
-            "kubectl",
-            "local",
-            "podman",
-            "redfish",
-            "replay",
-            "serial",
-            "ssh",
-            "telnet",
-        ],
-        "local_uname": uname_out,
-        "python_version": py_out,
-        "shell_demo": {
-            "cwd_after_cd": "/var/log",
-            "env_after_export": "production",
-            "term_size": [120, 40],
-            "exit_code": 0,
-        },
-        "test_suites": TEST_SUITES_META,
-        "default_inventory": DEFAULT_INVENTORY_YAML,
-    }
+        return {
+            "version": __version__,
+            "transports": transports,
+            "local_uname": fallback_uname,
+            "python_version": fallback_py,
+            "shell_demo": {
+                "cwd_after_cd": "/var/log",
+                "env_after_export": "production",
+                "term_size": [120, 40],
+                "exit_code": 0,
+            },
+            "test_suites": TEST_SUITES_META,
+            "default_inventory": DEFAULT_INVENTORY_YAML,
+        }
 
 
 def _execute_shell_command(
@@ -400,41 +255,6 @@ def _execute_shell_command(
     except Exception:
         pass
 
-    snippet = (
-        "import asyncio, json\n"
-        "from uniconn import ShellSession\n"
-        "from test_shell import FakeShellProcess\n"
-        "async def _s():\n"
-        "    proc = FakeShellProcess()\n"
-        f"    proc.cwd = {shell_state.get('cwd', '/root')!r}\n"
-        f"    proc.env = {shell_state.get('env', {})!r}\n"
-        "    s = ShellSession(proc, host='interactive-demo')\n"
-        f"    await s.resize({cols}, {rows})\n"
-        f"    res = await s.execute({cmd!r})\n"
-        "    return {\n"
-        "        'mode': 'ShellSession.execute() [Stateful]',\n"
-        "        'command': res.command,\n"
-        "        'exit_code': res.exit_code,\n"
-        "        'ok': res.ok,\n"
-        "        'stdout': res.stdout,\n"
-        "        'stderr': res.stderr,\n"
-        "        'text': res.text,\n"
-        "        'lines': res.lines,\n"
-        "        'to_dict': res.to_dict(),\n"
-        "        'cwd': proc.cwd,\n"
-        "        'env': proc.env,\n"
-        "        'term_size': list(proc.term_size),\n"
-        "        'duration_s': round(res.duration, 4),\n"
-        "        'duration_ms': round(res.duration * 1000, 2),\n"
-        "    }\n"
-        "print(json.dumps(asyncio.run(_s())))\n"
-    )
-    res = _run_in_venv_or_fallback(snippet)
-    if res is not None:
-        shell_state["cwd"] = res.get("cwd", shell_state.get("cwd", "/root"))
-        shell_state["env"] = res.get("env", shell_state.get("env", {}))
-        return res
-
     proc = subprocess.run(
         cmd,
         shell=True,
@@ -477,31 +297,6 @@ def _execute_local_command(cmd: str) -> dict[str, Any]:
         return asyncio.run(_run_local())
     except Exception:
         pass
-
-    snippet = (
-        "import asyncio, json\n"
-        "from uniconn import Connection\n"
-        "async def _l():\n"
-        "    async with Connection.from_uri('local://') as c:\n"
-        f"        r = await c.run({cmd!r})\n"
-        "        return {\n"
-        "            'mode': \"Connection('local://').run\",\n"
-        "            'command': r.command,\n"
-        "            'exit_code': r.exit_code,\n"
-        "            'ok': r.ok,\n"
-        "            'stdout': r.stdout,\n"
-        "            'stderr': r.stderr,\n"
-        "            'text': r.text,\n"
-        "            'lines': r.lines,\n"
-        "            'to_dict': r.to_dict(),\n"
-        "            'duration_s': round(r.duration, 4),\n"
-        "            'duration_ms': round(r.duration * 1000, 2),\n"
-        "        }\n"
-        "print(json.dumps(asyncio.run(_l())))\n"
-    )
-    res = _run_in_venv_or_fallback(snippet)
-    if res is not None:
-        return res
 
     proc = subprocess.run(
         cmd,
@@ -721,12 +516,6 @@ def _execute_hooks_sandbox(payload: dict[str, Any], metrics_state: dict[str, Any
 
         return asyncio.run(_run_sbx())
     except Exception as exc:
-        delegated = _call_handler_in_venv("_execute_hooks_sandbox", payload, metrics_state)
-        if delegated is not None:
-            if isinstance(delegated.get("metrics"), dict):
-                metrics_state.clear()
-                metrics_state.update(delegated["metrics"])
-            return delegated
         return {
             "status": "error",
             "error": {"type": type(exc).__name__, "message": str(exc)},
@@ -821,9 +610,6 @@ def _build_and_validate_uri(payload: dict[str, Any]) -> dict[str, Any]:
             },
         }
     except Exception as exc:
-        delegated = _call_handler_in_venv("_build_and_validate_uri", payload)
-        if delegated is not None:
-            return delegated
         return {
             "valid": False,
             "error": {"type": type(exc).__name__, "message": str(exc)},
@@ -1110,7 +896,14 @@ def _execute_pool_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
                         role = str(opts.get("role", "worker"))
                         dc = str(opts.get("dc", "eu-1"))
                         async with conn_obj.env(UNICONN_HOST=h_name, UNICONN_ROLE=role, UNICONN_DC=dc):
-                            return await conn_obj.run(command)
+                            cmd_to_run = command
+                            if os.name == "nt":
+                                cmd_to_run = (
+                                    cmd_to_run.replace("$UNICONN_HOST", h_name)
+                                    .replace("$UNICONN_ROLE", role)
+                                    .replace("$UNICONN_DC", dc)
+                                )
+                            return await conn_obj.run(cmd_to_run)
 
                     results = await pool.apply(_mapped_node)
 
@@ -1147,9 +940,6 @@ def _execute_pool_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
             "nodes": cards,
         }
     except Exception as exc:
-        delegated = _call_handler_in_venv("_execute_pool_sandbox", payload)
-        if delegated is not None:
-            return delegated
         return {
             "status": "error",
             "error": {"type": type(exc).__name__, "message": str(exc)},
@@ -1239,11 +1029,6 @@ def _execute_screen_sandbox(payload: dict[str, Any], screen_state: dict[str, Any
 
         return asyncio.run(_run_pipeline())
     except Exception as exc:
-        delegated = _call_handler_in_venv("_execute_screen_sandbox", payload, screen_state)
-        if delegated is not None:
-            if isinstance(delegated.get("sessions"), list):
-                screen_state["sessions"] = delegated["sessions"]
-            return delegated
         return {
             "status": "error",
             "error": {"type": type(exc).__name__, "message": str(exc)},
@@ -1324,9 +1109,6 @@ def _execute_v070_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
 
         return asyncio.run(_run_feature())
     except Exception as exc:
-        delegated = _call_handler_in_venv("_execute_v070_sandbox", payload)
-        if delegated is not None:
-            return delegated
         return {
             "status": "error",
             "error": {"type": type(exc).__name__, "message": str(exc)},
@@ -1416,9 +1198,6 @@ def _execute_v080_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
 
         return asyncio.run(_run_feature())
     except Exception as exc:
-        delegated = _call_handler_in_venv("_execute_v080_sandbox", payload)
-        if delegated is not None:
-            return delegated
         return {
             "status": "error",
             "error": {"type": type(exc).__name__, "message": str(exc)},
@@ -1601,46 +1380,37 @@ def _execute_v090_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
 
         return asyncio.run(_run_feature())
     except Exception as exc:
-        delegated = _call_handler_in_venv("_execute_v090_sandbox", payload)
-        if delegated is not None:
-            return delegated
         return {
             "status": "error",
             "error": {"type": type(exc).__name__, "message": str(exc)},
         }
 
 
-def _execute_pytest(suite: str = "all") -> dict[str, Any]:
-    """Запустить выбранный модульный пакет тестов pytest или проверку качества кода (ruff/pyright)."""
-    if not os.path.exists(VENV_PYTEST):
-        _ensure_venv_background()
+SUITE_TO_POE_TASK: dict[str, str] = {
+    "ruff": "lint",
+    "pyright": "typecheck",
+    "benchmarks": "bench",
+    "benchmark": "bench",
+    "overhead": "bench",
+    "all": "test",
+    "core": "test-core",
+    "services": "test-services",
+    "transports": "test-transports",
+    "pools": "test-pools",
+    "screen": "test-screen",
+    "cli": "test-cli",
+    "architecture": "test-arch",
+    "check": "check",
+}
 
+
+def _execute_pytest(suite: str = "all") -> dict[str, Any]:
+    """Запустить выбранный пакет тестов, проверку линтера или бенчмарк через uv run poe <task>."""
     t0 = time.monotonic()
     suite_clean = suite.strip().lower()
-
-    if suite_clean == "ruff":
-        cmd_args = (
-            [VENV_RUFF, "check", "src/", "benchmarks/", "examples/dashboard/server.py"]
-            if os.path.exists(VENV_RUFF)
-            else ["uv", "run", "ruff", "check", "src/", "benchmarks/"]
-        )
-        label = "ruff check src/ benchmarks/ examples/dashboard/server.py"
-    elif suite_clean == "pyright":
-        cmd_args = [VENV_PYRIGHT] if os.path.exists(VENV_PYRIGHT) else ["uv", "run", "pyright"]
-        label = "pyright"
-    elif suite_clean in ("benchmarks", "benchmark", "overhead"):
-        py_bin = VENV_PYTHON if os.path.exists(VENV_PYTHON) else "python"
-        cmd_args = [py_bin, "-m", "benchmarks.overhead_bench", "-n", "100", "-w", "10", "--check-thresholds"]
-        label = "python -m benchmarks.overhead_bench -n 100 -w 10 --check-thresholds"
-    else:
-        suite_map = {item["id"]: item["path"] for item in TEST_SUITES_META}
-        target_path = suite_map.get(suite_clean, "tests/unit")
-        cmd_args = (
-            [VENV_PYTEST, target_path, "-m", "not integration", "-q"]
-            if os.path.exists(VENV_PYTEST)
-            else ["uv", "run", "pytest", target_path, "-m", "not integration", "-q"]
-        )
-        label = f'pytest {target_path} -m "not integration" -q'
+    task = SUITE_TO_POE_TASK.get(suite_clean, "test")
+    cmd_args = ["uv", "run", "poe", task]
+    label = f"uv run poe {task}"
 
     try:
         proc = subprocess.run(
@@ -1648,7 +1418,7 @@ def _execute_pytest(suite: str = "all") -> dict[str, Any]:
             cwd=ROOT_DIR,
             capture_output=True,
             text=True,
-            timeout=90,
+            timeout=120,
             env=_get_env(),
         )
         dur_s = round(time.monotonic() - t0, 2)
@@ -1682,7 +1452,6 @@ class _ReusableThreadingHTTPServer(ThreadingHTTPServer):
 
 def serve_dev_dashboard(port: int = 3000) -> None:
     """Запустить HTTP-сервер предпросмотра и тестирования uniconn на 0.0.0.0:3000."""
-    threading.Thread(target=_ensure_venv_background, daemon=True).start()
     shell_state: dict[str, Any] = {"cwd": "/root", "env": {}, "term_size": [120, 40]}
     metrics_state: dict[str, Any] = {
         "total_runs": 0,
