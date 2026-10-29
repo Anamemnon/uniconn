@@ -408,8 +408,8 @@ class DirectStreamCollector:
                     if self._stop_event.is_set():
                         break
                     normalized = line if line.endswith("\n") else f"{line}\n"
-                    self.lines_collected += 1
                     await self._pipeline.emit(self.name, [normalized])
+                    self.lines_collected += 1
                 if not self._restart_on_exit or self._stop_event.is_set():
                     break
                 await asyncio.sleep(self._restart_delay)
@@ -424,12 +424,15 @@ class DirectStreamCollector:
                     break
                 await asyncio.sleep(self._restart_delay)
 
-    async def stop(self) -> None:
+    async def stop(self, timeout: float = 1.0) -> None:
         """Корректно остановить фоновую задачу чтения потока."""
         self._stop_event.set()
         if self._task is not None:
             if not self._task.done():
-                self._task.cancel()
+                try:
+                    await asyncio.wait_for(asyncio.shield(self._task), timeout=timeout)
+                except (TimeoutError, asyncio.CancelledError, Exception):
+                    self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._task
             self._task = None

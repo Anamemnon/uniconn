@@ -340,16 +340,18 @@ class TestDiagnosticSessionLifecycle:
             local_dir=str(tmp_path / "work"),
             archive_path=str(archive_target),
             archive_format="tar.gz",
+            fsync_realtime=False,
             forward_remote_dir="/var/diag_backup",
         )
 
         async with conn.diagnostic_session(
             config=config, forward_to=backup_conn
         ) as diag:
-            for _ in range(50):
-                if any(c.lines_collected >= 1 for c in diag._stream_collectors):
+            collector = diag._stream_collectors[0]
+            for _ in range(100):
+                if collector.lines_collected >= 1 or not collector.is_running:
                     break
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(0.02)
             await diag.emit_custom_log("test_runner", "stress step 1 completed")
             snap = await diag.snapshot("mid_test")
             assert snap.hostname == "node-01"
@@ -411,11 +413,13 @@ class TestDiagnosticSessionLifecycle:
             streams=["dmesg -w"],
             local_dir=tmp_path / "crash_work",
             archive_path=tmp_path / "crash_bundle.tar.gz",
+            fsync_realtime=False,
         ) as diag:
-            for _ in range(50):
-                if any(c.lines_collected >= 2 for c in diag._stream_collectors):
+            collector = diag._stream_collectors[0]
+            for _ in range(150):
+                if collector.lines_collected >= 2 or not collector.is_running:
                     break
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(0.02)
 
         assert diag.result is not None
         assert diag.result.host_survived is False
