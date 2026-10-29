@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ctypes
+import shutil
+import sys
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -152,6 +155,62 @@ class TestHostFactsParsingAndCollection:
         eth0 = next(i for i in facts.interfaces if i.name == "eth0")
         assert eth0.ipv4 == ["192.168.1.50"]
         assert eth0.ipv6 == ["fd00::50"]
+
+    def test_windows_local_facts_multi_disk(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Сбор локальных фактов на Windows обнаруживает все доступные диски и типы ФС."""
+        from uniconn.services.facts import _collect_windows_local_facts
+
+        fake_k32 = MagicMock()
+        fake_k32.GetLogicalDrives.return_value = (1 << 2) | (1 << 3) | (1 << 6)
+        fake_k32.GetDriveTypeW.return_value = 3
+
+        def _fake_get_volume_info(
+            root: str, n1: object, s1: int, n2: object, s2: object, n3: object, fs_buf: object, s4: int
+        ) -> int:
+            if fs_buf is not None:
+                fs_buf.value = "NTFS"
+            return 1
+
+        fake_k32.GetVolumeInformationW.side_effect = _fake_get_volume_info
+        fake_k32.GlobalMemoryStatusEx.return_value = 0
+        fake_k32.GetTickCount64.return_value = 120_000
+
+        class FakeWindll:
+            kernel32 = fake_k32
+
+        monkeypatch.setattr(ctypes, "windll", FakeWindll(), raising=False)
+
+        usages = {
+            "C:\\": (2_000_000_000_000, 500_000_000_000, 1_500_000_000_000),
+            "D:\\": (1_000_000_000_000, 200_000_000_000, 800_000_000_000),
+            "G:\\": (4_000_000_000_000, 1_000_000_000_000, 3_000_000_000_000),
+        }
+        monkeypatch.setattr(shutil, "disk_usage", lambda path: usages.get(path, (100, 10, 90)))
+
+        facts = _collect_windows_local_facts("win-host")
+        assert facts.os_family == "Windows"
+        assert len(facts.disks) == 3
+        assert [d.mountpoint for d in facts.disks] == ["C:\\", "D:\\", "G:\\"]
+        assert all(d.fstype == "NTFS" for d in facts.disks)
+        g_disk = next(d for d in facts.disks if d.device == "G:")
+        assert g_disk.total_bytes == 4_000_000_000_000
+        assert g_disk.use_percent == 25.0
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+    def test_windows_local_facts_real_environment(self) -> None:
+        """Реальный опрос дисков Windows на физической машине."""
+        from uniconn.services.facts import _collect_windows_local_facts
+
+        facts = _collect_windows_local_facts("localhost")
+        assert facts.os_family == "Windows"
+        assert len(facts.disks) >= 1
+        for disk in facts.disks:
+            assert disk.mountpoint.endswith(":\\")
+            assert disk.device.endswith(":")
+            assert disk.total_bytes > 0
+            assert disk.available_bytes <= disk.total_bytes
+            assert 0.0 <= disk.use_percent <= 100.0
+            assert disk.fstype != ""
 
     @pytest.mark.asyncio
     async def test_connection_gather_facts_local_and_cache(self) -> None:

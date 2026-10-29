@@ -51,46 +51,87 @@ def _collect_windows_local_facts(default_host: str) -> HostFacts:
     mem_total = 0
     mem_avail = 0
 
-    try:
-        class MEMORYSTATUSEX(ctypes.Structure):
-            _fields_ = [
-                ("dwLength", ctypes.c_ulong),
-                ("dwMemoryLoad", ctypes.c_ulong),
-                ("ullTotalPhys", ctypes.c_ulonglong),
-                ("ullAvailPhys", ctypes.c_ulonglong),
-                ("ullTotalPageFile", ctypes.c_ulonglong),
-                ("ullAvailPageFile", ctypes.c_ulonglong),
-                ("ullTotalVirtual", ctypes.c_ulonglong),
-                ("ullAvailVirtual", ctypes.c_ulonglong),
-                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-            ]
+    kernel32 = getattr(getattr(ctypes, "windll", None), "kernel32", None)
+    if kernel32 is not None:
+        try:
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
 
-        stat = MEMORYSTATUSEX()
-        stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
-            mem_total = int(stat.ullTotalPhys)
-            mem_avail = int(stat.ullAvailPhys)
-    except Exception:
-        pass
+            stat = MEMORYSTATUSEX()
+            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
+                mem_total = int(stat.ullTotalPhys)
+                mem_avail = int(stat.ullAvailPhys)
+        except Exception:
+            pass
 
     uptime = 0.0
-    with contextlib.suppress(Exception):
-        uptime = round(ctypes.windll.kernel32.GetTickCount64() / 1000.0, 1)
+    if kernel32 is not None:
+        with contextlib.suppress(Exception):
+            uptime = round(kernel32.GetTickCount64() / 1000.0, 1)
 
     disks: list[DiskInfo] = []
-    with contextlib.suppress(Exception):
-        total, used, free = shutil.disk_usage("C:\\")
-        disks.append(
-            DiskInfo(
-                device="C:",
-                mountpoint="C:\\",
-                fstype="NTFS",
-                total_bytes=total,
-                used_bytes=used,
-                available_bytes=free,
-                use_percent=round((used / total) * 100, 1) if total > 0 else 0.0,
+    if kernel32 is not None:
+        try:
+            drive_mask = kernel32.GetLogicalDrives()
+            fs_buffer = ctypes.create_unicode_buffer(256)
+
+            for i in range(26):
+                if not (drive_mask & (1 << i)):
+                    continue
+                letter = chr(65 + i)
+                root = f"{letter}:\\"
+                drive_type = kernel32.GetDriveTypeW(root)
+                # 2 = DRIVE_REMOVABLE, 3 = DRIVE_FIXED, 4 = DRIVE_REMOTE, 6 = DRIVE_RAMDISK
+                if drive_type not in (2, 3, 4, 6):
+                    continue
+                try:
+                    total, used, free = shutil.disk_usage(root)
+                    fstype = "NTFS"
+                    if kernel32.GetVolumeInformationW(root, None, 0, None, None, None, fs_buffer, 256):
+                        fstype = fs_buffer.value or "NTFS"
+
+                    disks.append(
+                        DiskInfo(
+                            device=f"{letter}:",
+                            mountpoint=root,
+                            fstype=fstype,
+                            total_bytes=total,
+                            used_bytes=used,
+                            available_bytes=free,
+                            use_percent=round((used / total) * 100, 1) if total > 0 else 0.0,
+                        )
+                    )
+                except OSError:
+                    continue
+        except Exception:
+            pass
+
+    # Резервный опрос C:\ при сбое Win32 API или на не-Windows окружении
+    if not disks:
+        with contextlib.suppress(Exception):
+            total, used, free = shutil.disk_usage("C:\\")
+            disks.append(
+                DiskInfo(
+                    device="C:",
+                    mountpoint="C:\\",
+                    fstype="NTFS",
+                    total_bytes=total,
+                    used_bytes=used,
+                    available_bytes=free,
+                    use_percent=round((used / total) * 100, 1) if total > 0 else 0.0,
+                )
             )
-        )
 
     return HostFacts(
         os_family="Windows",
