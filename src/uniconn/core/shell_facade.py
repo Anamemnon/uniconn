@@ -170,7 +170,9 @@ async def raw_open_shell(
         conn=conn,
     )
     should_init_posix = (
-        (conn.transport_name != "serial") if init_posix is None else init_posix
+        (conn.transport_name not in ("serial", "uart"))
+        if init_posix is None
+        else init_posix
     )
     if should_init_posix:
         await session.initialize()

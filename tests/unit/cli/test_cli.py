@@ -287,3 +287,76 @@ class TestCLIShell:
         assert "uniconn" in res.output
 
 
+class TestCLISerialPorts:
+    """Тесты команды serial-ports."""
+
+    def test_cli_serial_ports_empty(self):
+        """Команда serial-ports при отсутствии портов сообщает о ненахождении."""
+        from uniconn import cli
+        from uniconn.cli import CliRunner
+
+        app = cli.create_cli_app()
+        runner = CliRunner()
+        with patch("uniconn.transports._serial.list_serial_ports", return_value=[]):
+            res = runner.invoke(app, ["serial-ports"])
+            assert res.exit_code == 0
+            assert "No serial ports detected" in res.output
+
+    def test_cli_serial_ports_table(self):
+        """Команда serial-ports выводит таблицу с информацией о портах."""
+        from uniconn import cli
+        from uniconn.cli import CliRunner
+        from uniconn.transports._serial import SerialPortInfo
+
+        mock_ports = [
+            SerialPortInfo(
+                device="COM3",
+                description="CP2102 USB to UART",
+                vid=0x10C4,
+                pid=0xEA60,
+                manufacturer="Silicon Labs",
+                serial_number="0001",
+            )
+        ]
+
+        app = cli.create_cli_app()
+        runner = CliRunner()
+        with patch("uniconn.transports._serial.list_serial_ports", return_value=mock_ports):
+            res = runner.invoke(app, ["serial-ports"])
+            assert res.exit_code == 0
+            assert "COM3" in res.output
+            assert "10C4:EA60" in res.output
+            assert "Silicon Labs" in res.output
+
+    def test_cli_serial_ports_json(self):
+        """Команда serial-ports --format json выводит валидный JSON."""
+        import json
+
+        from uniconn import cli
+        from uniconn.cli import CliRunner
+        from uniconn.transports._serial import SerialPortInfo
+
+        mock_ports = [
+            SerialPortInfo(
+                device="/dev/ttyUSB0",
+                description="FTDI USB Serial",
+                vid=0x0403,
+                pid=0x6001,
+                manufacturer="FTDI",
+                serial_number="FT12345",
+            )
+        ]
+
+        app = cli.create_cli_app()
+        runner = CliRunner()
+        with patch("uniconn.transports._serial.list_serial_ports", return_value=mock_ports):
+            res = runner.invoke(app, ["serial-ports", "--format", "json"])
+            assert res.exit_code == 0
+            parsed = json.loads(res.output)
+            assert isinstance(parsed, list)
+            assert len(parsed) == 1
+            assert parsed[0]["device"] == "/dev/ttyUSB0"
+            assert parsed[0]["vid"] == 0x0403
+            assert parsed[0]["pid"] == 0x6001
+
+

@@ -63,8 +63,8 @@ class URIParser:
 
         transport = parsed.scheme.lower()
 
-        if transport == "serial":
-            return cls._parse_serial(parsed, uri)
+        if transport in ("serial", "uart"):
+            return cls._parse_serial(parsed, uri, transport=transport)
 
         if transport == "local":
             return cls._parse_local(parsed)
@@ -222,21 +222,46 @@ class URIParser:
         )
 
     @classmethod
-    def _parse_serial(cls, parsed: ParseResult, uri: str) -> ConnectionConfig:
-        """Парсинг serial URI."""
+    def _parse_serial(
+        cls,
+        parsed: ParseResult,
+        uri: str,
+        transport: str = "serial",
+    ) -> ConnectionConfig:
+        """Парсинг serial и uart URI."""
         from .models import ConnectionConfig
 
         _ = uri
         options = cls._parse_options(parsed.query)
         device = parsed.netloc or parsed.path
 
+        if ":" in device:
+            dev_candidate, _, baud_candidate = device.rpartition(":")
+            if baud_candidate.isdigit():
+                device = dev_candidate
+                options.setdefault("baudrate", int(baud_candidate))
+
+        if device.startswith("/"):
+            trimmed = device.lstrip("/")
+            if trimmed.upper().startswith("COM") and trimmed[3:].isdigit():
+                device = trimmed
+
         if device:
             options["device"] = device
+        elif "device" in options:
+            device = str(options["device"])
+
+        baud_val = options.get("baudrate")
+        baud_int = (
+            int(baud_val)
+            if isinstance(baud_val, int | str) and str(baud_val).isdigit()
+            else None
+        )
 
         return ConnectionConfig(
-            transport="serial",
-            host=None,
-            port=None,
+            transport=transport,
+            host=device or None,
+            port=baud_int,
             username=None,
             password=None,
             options=options,
@@ -314,12 +339,14 @@ class URIParser:
                 return f"local://?{query}"
             return "local://"
 
-        if transport == "serial":
-            device = host or ""
-            if options:
-                query = "&".join(f"{k}={v}" for k, v in options.items())
-                return f"serial://{device}?{query}"
-            return f"serial://{device}"
+        if transport in ("serial", "uart"):
+            device = host or (options.get("device") if options else "") or ""
+            opts = dict(options) if options else {}
+            opts.pop("device", None)
+            if opts:
+                query = "&".join(f"{k}={v}" for k, v in opts.items())
+                return f"{transport}://{device}?{query}"
+            return f"{transport}://{device}"
 
         if transport == "kubectl":
             opts = dict(options) if options else {}

@@ -38,6 +38,8 @@ class TransportLoader:
             "podman": ("..transports._docker", "PodmanTransport"),
             "kubectl": ("..transports._kubectl", "KubectlTransport"),
             "redfish": ("..transports.bmc._redfish", "RedfishTransport"),
+            "serial": ("..transports._serial", "SerialTransport"),
+            "uart": ("..transports._serial", "SerialTransport"),
         }
         if transport_name in builtin_fallbacks and transport_name not in eps.names:
             from importlib import import_module
@@ -74,7 +76,7 @@ class TransportLoader:
         """Список доступных транспортов."""
         eps = entry_points(group="uniconn.transports")
         names = list(eps.names)
-        for builtin_name in ("replay", "docker", "podman", "kubectl", "redfish"):
+        for builtin_name in ("replay", "docker", "podman", "kubectl", "redfish", "serial", "uart"):
             if builtin_name not in names:
                 names.append(builtin_name)
         return names

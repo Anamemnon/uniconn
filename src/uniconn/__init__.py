@@ -164,6 +164,7 @@ from .sync import (
 from .transports._docker import DockerTransport, PodmanTransport
 from .transports._kubectl import KubectlTransport
 from .transports._local import LocalTransport
+from .transports._serial import SerialPortInfo, SerialTransport, list_serial_ports
 from .transports.base import (
     BaseTransport,
     CommandTransport,
@@ -331,6 +332,8 @@ __all__ = [
     "ScriptExecutionManager",
     "SecretMaskingFilter",
     "SecretResolver",
+    "SerialPortInfo",
+    "SerialTransport",
     "ServiceManagerStrategy",
     "ShellCapableTransport",
     "ShellDialogStep",
@@ -381,6 +384,7 @@ __all__ = [
     "get_log_context",
     "get_logger",
     "get_struct_logger",
+    "list_serial_ports",
     "log_context",
     "metrics_collector_hook",
     "normalize_temp_paths",

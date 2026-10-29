@@ -32,6 +32,7 @@ dependencies = [
 ssh = ["asyncssh>=2.24"]
 bmc = ["pyghmi>=1.6", "niquests>=3.10"]
 serial = ["pyserial-asyncio>=0.6"]
+uart = ["pyserial-asyncio>=0.6"]
 telnet = ["telnetlib3>=5.0"]
 cli = ["cyclopts>=5.0", "rich>=15.0"]
 templates = ["jinja2>=3.1"]
@@ -61,6 +62,7 @@ local = "uniconn.transports._local:LocalTransport"
 ssh = "uniconn.transports._ssh:SSHTransport"
 telnet = "uniconn.transports._telnet:TelnetTransport"
 serial = "uniconn.transports._serial:SerialTransport"
+uart = "uniconn.transports._serial:SerialTransport"
 ipmi = "uniconn.transports.bmc._ipmi:IPMITransport"
 redfish = "uniconn.transports.bmc._redfish:RedfishTransport"
 replay = "uniconn.transports.replay:ReplayTransport"

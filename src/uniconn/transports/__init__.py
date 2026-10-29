@@ -15,6 +15,7 @@
 from ._docker import DockerTransport, PodmanTransport
 from ._kubectl import KubectlTransport
 from ._local import LocalTransport
+from ._serial import SerialPortInfo, SerialTransport, list_serial_ports
 from .base import BaseTransport
 from .bmc import IPMITransport, RedfishTransport
 from .replay import (
@@ -51,7 +52,10 @@ __all__ = [
     "RedfishTransport",
     "ReplayShellProcess",
     "ReplayTransport",
+    "SerialPortInfo",
+    "SerialTransport",
     "ShellDialogStep",
     "SyncCassetteContext",
+    "list_serial_ports",
     "normalize_temp_paths",
 ]

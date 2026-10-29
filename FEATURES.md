@@ -71,7 +71,7 @@
 ### 5. Транспорты и протоколы возможностей (ISP)
 - ✅ Протоколы возможностей в `src/uniconn/transports/base.py`: `CommandTransport`, `FileCapableTransport`, `ShellCapableTransport`, `TunnelCapableTransport`, проверка `require_capability()` и `supports_capability()`, исключение `CapabilityNotSupportedError`
 - ✅ SSH (`SSHTransport`) — `asyncssh`, декомпозированный пакет `src/uniconn/transports/ssh/` (`OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`), поддержка `~/.ssh/config`, многоступенчатых цепочек Jump-хостов (`proxy=jump1,jump2`), `ProxyCommand`
-- ✅ Serial/UART (`SerialTransport`) — `pyserial-asyncio`, `baudrate`, `parity`, `stopbits`, `xonxoff`, `rtscts`
+- ✅ Serial/UART (`SerialTransport`, схемы `serial://` и `uart://`) — `pyserial-asyncio`, `baudrate` (включая `:baudrate`), `parity` (N/E/O/M/S, even/odd), `stopbits` (1/1.5/2), `xonxoff`, `rtscts`, аппаратные сигналы `DTR`/`RTS`/`send_break()`, опрос `CTS`/`DSR`/`CD`/`RI`, Smart Framing с `inter_byte_timeout`, безопасный `ping()`, Port Discovery (`list_serial_ports`, CLI `uniconn serial-ports`), бинарный ввод-вывод `run_bytes()`, пассивный режим `stream(command=None)`
 - ✅ Telnet (`TelnetTransport`) — `telnetlib3`, аутентификация login/password, настройка `term_type`
 - ✅ Local (`LocalTransport`) — `asyncio.subprocess`, слияние `env`, поддержка `cwd`, PTY-сессии
 - ✅ IPMI (`IPMITransport`) — `pyghmi`, управление питанием (`power status/on/off/cycle`), `sensors`, `boot device`

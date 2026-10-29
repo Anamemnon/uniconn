@@ -39,6 +39,11 @@ class ConnectionConfig(BaseModel):
     @property
     def uri_safe(self) -> str:
         """URI без чувствительных данных (для логирования)."""
+        if self.transport in ("serial", "uart"):
+            dev = self.host or self.options.get("device") or ""
+            baud = self.port or self.options.get("baudrate")
+            suffix = f":{baud}" if baud else ""
+            return f"{self.transport}://{dev}{suffix}"
         if self.password:
             return f"{self.transport}://{self.username}@{self.host}:{self.port}"
         return f"{self.transport}://{self.host}:{self.port}"
@@ -52,4 +57,3 @@ class ConnectionConfig(BaseModel):
 
 
 __all__ = ["ConnectionConfig"]
-

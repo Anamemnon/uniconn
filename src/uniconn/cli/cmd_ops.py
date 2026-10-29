@@ -1058,3 +1058,48 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
         asyncio.run(_execute())
 
 
+
+    @app.command(name="serial-ports")
+    def serial_ports_cmd(
+        *,
+        output_format: Annotated[
+            str,
+            Parameter(name=["--format", "-f"], help="Output format: table, json"),
+        ] = "table",
+    ) -> None:
+        """List available local serial/UART ports (COM / /dev/tty)."""
+        import dataclasses
+
+        from ..transports._serial import list_serial_ports
+
+        ports = list_serial_ports()
+        if output_format.lower() == "json":
+            print_json(console, [dataclasses.asdict(p) for p in ports])
+            return
+
+        if not ports:
+            console.print("[dim]No serial ports detected on the local system.[/dim]")
+            return
+
+        table = Table(
+            title="Available Serial (UART) Ports",
+            box=box.ROUNDED,
+            show_header=True,
+            header_style="bold cyan",
+        )
+        table.add_column("Device", style="cyan")
+        table.add_column("Description", style="green")
+        table.add_column("VID:PID", style="yellow")
+        table.add_column("Manufacturer", style="magenta")
+        table.add_column("Serial Number", style="dim")
+
+        for p in ports:
+            table.add_row(
+                p.device,
+                p.description or "-",
+                p.vid_pid_hex or "-",
+                p.manufacturer or "-",
+                p.serial_number or "-",
+            )
+
+        console.print(table)
