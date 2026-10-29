@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from pydantic import SecretStr
 
@@ -27,6 +27,9 @@ from .pipeline import (
 from .resilience import CircuitBreaker, RateLimiter
 
 if TYPE_CHECKING:
+    from ..background._diagnostic import DiagnosticConfig, DiagnosticSession, StreamSourceSpec
+    from ..services.facts_models import FactSpec
+    from ..transports.replay import CassetteContext
     from .connection import Connection
 
 ConnT = TypeVar("ConnT", bound="Connection")
@@ -218,6 +221,23 @@ def build_from_file(
     return [cls.from_dict(data, retry_attempts, logger) for data in entries]
 
 
+def build_from_inventory(
+    cls: type[ConnT],
+    path: str | Path,
+    host: str,
+    retry_attempts: int = 3,
+    logger: logging.Logger | None = None,
+) -> ConnT:
+    """Создать одиночное подключение по имени хоста из инвентарного файла (YAML/JSON)."""
+    conns = cls.from_file(
+        path,
+        retry_attempts=retry_attempts,
+        logger=logger,
+        host=host,
+    )
+    return conns[0]
+
+
 def clone_connection(
     conn: ConnT,
     host: str | None = None,
@@ -268,7 +288,7 @@ def clone_connection(
         new_config,
         conn.retry_attempts if retry_attempts is None else retry_attempts,
         logger or conn.logger,
-        dry_run=conn.is_dry_run if dry_run is None else dry_run,
+        dry_run=conn.dry_run if dry_run is None else dry_run,
         before_run=conn.get_hooks("before_run"),
         after_run=conn.get_hooks("after_run"),
         on_error=conn.get_hooks("on_error"),
@@ -293,12 +313,104 @@ def clone_connection(
     return new_conn
 
 
+def with_overrides_connection(conn: ConnT, **overrides: Any) -> ConnT:
+    """Создать копию подключения с переопределёнными параметрами."""
+    return conn.copy(
+        host=overrides.get("host"),
+        port=overrides.get("port"),
+        username=overrides.get("username"),
+        password=overrides.get("password"),
+        key_file=overrides.get("key_file"),
+        passphrase=overrides.get("passphrase"),
+        ssh_config=overrides.get("ssh_config"),
+        timeout=overrides.get("timeout"),
+        options=overrides.get("options"),
+        retry_attempts=overrides.get("retry_attempts"),
+        logger=overrides.get("logger"),
+        dry_run=overrides.get("dry_run"),
+        rate_limit=overrides.get("rate_limit"),
+        circuit_breaker=overrides.get("circuit_breaker"),
+    )
+
+
+def open_cassette_context(
+    conn: Connection,
+    path: str | Path,
+    *,
+    mode: Any = "once",
+    match_on: Sequence[Literal["command", "cwd", "sudo"]] = ("command", "cwd", "sudo"),
+    normalize_temp: bool = True,
+    allow_playback_repeats: bool = True,
+    mask_secrets: bool = True,
+) -> CassetteContext:
+    """Асинхронный контекстный менеджер записи и воспроизведения кассет взаимодействий."""
+    from ..transports.replay import CassetteContext
+
+    return CassetteContext(
+        conn,
+        path,
+        mode=mode,
+        match_on=match_on,
+        normalize_temp=normalize_temp,
+        allow_playback_repeats=allow_playback_repeats,
+        mask_secrets=mask_secrets,
+    )
+
+
+def open_diagnostic_session(
+    conn: Connection,
+    config: DiagnosticConfig | Mapping[str, Any] | str | Path | None = None,
+    *,
+    spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
+    streams: Sequence[StreamSourceSpec | Mapping[str, Any] | str] | None = None,
+    local_dir: str | Path | None = None,
+    archive_path: str | Path | None = None,
+    archive_format: Literal["tar.gz", "zip", "none"] | None = None,
+    forward_to: Connection | str | None = None,
+    forward_remote_dir: str | None = None,
+    fsync_realtime: bool | None = None,
+    gather_pre_facts: bool | None = None,
+    gather_post_facts: bool | None = None,
+) -> DiagnosticSession:
+    """Открыть комплексную диагностическую сессию (слепки + фоновые потоки логов + архивация)."""
+    from ..background._diagnostic import DiagnosticSession
+
+    return DiagnosticSession(
+        conn,
+        config=config,
+        spec=spec,
+        streams=streams,
+        local_dir=local_dir,
+        archive_path=archive_path,
+        archive_format=archive_format,
+        forward_to=forward_to,
+        forward_remote_dir=forward_remote_dir,
+        fsync_realtime=fsync_realtime,
+        gather_pre_facts=gather_pre_facts,
+        gather_post_facts=gather_post_facts,
+    )
+
+
+build_from_uri.__name__ = "from_uri"
+build_from_config.__name__ = "from_config"
+build_from_dict.__name__ = "from_dict"
+build_from_file.__name__ = "from_file"
+build_from_inventory.__name__ = "from_inventory"
+clone_connection.__name__ = "copy"
+with_overrides_connection.__name__ = "with_overrides"
+open_cassette_context.__name__ = "use_cassette"
+open_diagnostic_session.__name__ = "diagnostic_session"
+
 __all__ = [
     "_resolve_circuit_breaker",
     "_resolve_rate_limiter",
     "build_from_config",
     "build_from_dict",
     "build_from_file",
+    "build_from_inventory",
     "build_from_uri",
     "clone_connection",
+    "open_cassette_context",
+    "open_diagnostic_session",
+    "with_overrides_connection",
 ]

@@ -306,7 +306,7 @@ def test_sync_connection_factories_shared_loop_and_reentrant_context(tmp_path: P
         assert c1._portal.get_loop() is c2._portal.get_loop()
 
     with c3:
-        assert c3.is_dry_run is True
+        assert c3.dry_run is True
         assert c3.run("echo dry").text == ""
 
 
@@ -367,3 +367,65 @@ def test_no_internal_imports_from_deprecated_private_shims() -> None:
             if pat in text:
                 violations.append(f"{py_file.relative_to(src_root)}: {pat}")
     assert not violations, f"Found internal shim imports: {violations}"
+
+
+@pytest.mark.asyncio
+async def test_core_decomposition_pipeline_bytes_observers_and_dry_run_deprecation(
+    tmp_path: Path,
+) -> None:
+    """Проверка декомпозиции ядра (<400 строк), output_format='bytes', using_observer и DeprecationWarning для is_dry_run."""
+    from uniconn.core.scripts import ScriptExecutionManager
+    from uniconn.core.temp import HostTempManager
+    from uniconn.services.provisioning import facade, service_managers
+
+    src_root = Path(__file__).resolve().parents[3] / "src" / "uniconn"
+    conn_file = src_root / "core" / "connection.py"
+    assert len(conn_file.read_text(encoding="utf-8").splitlines()) < 400
+    assert hasattr(facade, "StateManagementService")
+    assert hasattr(service_managers, "ServiceManagerStrategy")
+    assert callable(HostTempManager.temp_dir)
+    assert callable(ScriptExecutionManager.run_script)
+
+    conn = Connection.from_uri("local://")
+
+    # 1. CommandRequest(output_format="bytes") и Result.raw_bytes
+    req = CommandRequest(
+        raw_command="python3 -c 'import sys; sys.stdout.buffer.write(b\"\\x01\\x02ok\")'",
+        command="python3 -c 'import sys; sys.stdout.buffer.write(b\"\\x01\\x02ok\")'",
+        exec_command=f"{sys.executable} -c \"import sys; sys.stdout.buffer.write(b'\\x01\\x02ok')\"",
+        output_format="bytes",
+    )
+    res_bytes = await conn.pipeline.execute(req)
+    assert res_bytes.raw_bytes == b"\x01\x02ok"
+
+    # 2. remove_operation_observer и using_observer (включая гарантию очистки при ошибке)
+    tracer = InMemoryTracer()
+    obs = otel_tracing_hook(tracer=tracer)
+    async with conn.using_observer(obs):
+        assert obs in conn.operation_observers
+    assert obs not in conn.operation_observers
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with conn.using_observer(obs):
+            assert obs in conn.operation_observers
+            raise RuntimeError("boom")
+    assert obs not in conn.operation_observers
+
+    # Повторный вызов remove_operation_observer безопасен
+    conn.remove_operation_observer(obs)
+
+    # 3. SyncConnection: using_observer, remove_operation_observer, with_overrides и DeprecationWarning для is_dry_run
+    sync_conn = conn.to_sync().with_overrides(dry_run=True)
+    with sync_conn.using_observer(obs):
+        assert obs in sync_conn.operation_observers
+    assert obs not in sync_conn.operation_observers
+
+    with pytest.deprecated_call(match="is_dry_run is deprecated"):
+        assert conn.is_dry_run is False
+
+    with pytest.deprecated_call(match="is_dry_run is deprecated"):
+        assert sync_conn.is_dry_run is True
+
+    sync_conn.close()
+    await conn.close()
+

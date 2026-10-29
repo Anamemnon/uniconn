@@ -484,11 +484,11 @@ class TestProvisioningPackageDecomposition:
             StateManagementService,
             UserAttributeSpec,
             build_useradd_command,
+            facade,
             files,
             packages,
             resolve_service_transition,
-            service,
-            services,
+            service_managers,
             system,
             transform_authorized_keys,
             transform_lines_absent,
@@ -497,8 +497,8 @@ class TestProvisioningPackageDecomposition:
 
         # Проверка доступности классов через корневой пакет и подмодули
         assert provisioning.PackageManagerStrategy is packages.PackageManagerStrategy is PackageManagerStrategy
-        assert provisioning.ServiceManagerStrategy is services.ServiceManagerStrategy is ServiceManagerStrategy
-        assert provisioning.StateManagementService is service.StateManagementService is StateManagementService
+        assert provisioning.ServiceManagerStrategy is service_managers.ServiceManagerStrategy is ServiceManagerStrategy
+        assert provisioning.StateManagementService is facade.StateManagementService is StateManagementService
         assert provisioning.ensure_file is files.ensure_file
         assert provisioning.ensure_user is system.ensure_user
 

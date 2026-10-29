@@ -1,4 +1,4 @@
-# src/uniconn/services/provisioning/service.py
+# src/uniconn/services/provisioning/facade.py
 """Фасад доменного сервиса идемпотентного управления состоянием (StateManagementService)."""
 
 from __future__ import annotations
@@ -32,10 +32,10 @@ from .packages import (
 from .packages import (
     resolve_pkg_manager as _resolve_pkg_manager,
 )
-from .services import (
+from .service_managers import (
     ServiceState,
 )
-from .services import (
+from .service_managers import (
     ensure_service as _ensure_service,
 )
 from .system import (

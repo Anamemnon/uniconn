@@ -295,6 +295,9 @@ class ConnectionPool:
         if self._is_entered and idx in self._active_conns:
             yield self._active_conns[idx]
             return
+        if idx in self._cassette_conns:
+            yield self._cassette_conns[idx]
+            return
 
         conn = self._build_conn(target, with_defaults=with_defaults)
         cb = getattr(conn, "circuit_breaker", None)

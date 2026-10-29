@@ -12,10 +12,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from ...result import EnsureResult
-from .services import ServiceState
+from .service_managers import ServiceState
 
 if TYPE_CHECKING:
-    from .service import StateManagementService
+    from .facade import StateManagementService
 
 
 # ─── Декларативная спецификация атрибутов пользователя (Pattern 4) ──
@@ -216,7 +216,7 @@ async def ensure_user(
     dry_run: bool | None = None,
 ) -> EnsureResult:
     """Идемпотентно управлять системным пользователем и его группами."""
-    is_dry_run = svc._conn.is_dry_run if dry_run is None else dry_run
+    is_dry_run = svc._conn.dry_run if dry_run is None else dry_run
 
     if not svc._can_inspect_in_dry_run():
         synth_diff = (
@@ -424,7 +424,7 @@ async def ensure_authorized_key(
     dry_run: bool | None = None,
 ) -> EnsureResult:
     """Идемпотентно управлять SSH-ключами в ``~/.ssh/authorized_keys``."""
-    is_dry_run = svc._conn.is_dry_run if dry_run is None else dry_run
+    is_dry_run = svc._conn.dry_run if dry_run is None else dry_run
     clean_key = key.strip()
     if not clean_key:
         raise ValueError("SSH public key cannot be empty")
@@ -582,7 +582,7 @@ async def ensure_systemd_unit(
     dry_run: bool | None = None,
 ) -> EnsureResult:
     """Идемпотентно управлять unit-файлом systemd с вызовом ``daemon-reload`` при изменениях."""
-    is_dry_run = svc._conn.is_dry_run if dry_run is None else dry_run
+    is_dry_run = svc._conn.dry_run if dry_run is None else dry_run
     unit_name = name if "." in name else f"{name}.service"
     unit_path = f"{unit_dir.rstrip('/')}/{unit_name}"
 
@@ -722,7 +722,7 @@ async def ensure_sysctl(
     dry_run: bool | None = None,
 ) -> EnsureResult:
     """Идемпотентно управлять параметром ядра ``sysctl`` и применять его на лету."""
-    is_dry_run = svc._conn.is_dry_run if dry_run is None else dry_run
+    is_dry_run = svc._conn.dry_run if dry_run is None else dry_run
     val_str = str(value).strip()
     line_str = f"{name} = {val_str}"
     regex_pat = rf"^\s*{re.escape(name)}\s*="

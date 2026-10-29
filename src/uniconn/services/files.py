@@ -92,7 +92,7 @@ class DirectorySynchronizer:
     ) -> SyncResult:
         """Выполнить инкрементальную синхронизацию ``local_dir -> remote_dir``."""
         start_time = time.monotonic()
-        is_dry = self._conn.is_dry_run if dry_run is None else dry_run
+        is_dry = self._conn.dry_run if dry_run is None else dry_run
         patterns = list(exclude or [])
         compiled_exclude = _compile_exclude_regex(patterns)
 
@@ -242,7 +242,7 @@ class FileOperationsService:
         recurse: bool = False,
         **kwargs: Any,
     ) -> None:
-        if self._conn.is_dry_run:
+        if self._conn.dry_run:
             self._conn.logger.info(
                 f"[DRY-RUN] Skipping upload {str(local_path)!r} -> {str(remote_path)!r} "
                 f"on {self._conn.config.uri_safe}"
@@ -290,7 +290,7 @@ class FileOperationsService:
             handler = _step
 
         await handler(local_path, remote_path, recurse=recurse, **kwargs)
-        if verify and not recurse and not self._conn.is_dry_run:
+        if verify and not recurse and not self._conn.dry_run:
             local_digest = _local_file_digest(local_path, "sha256")
             remote_digest = await self.checksum(remote_path, algorithm="sha256")
             if local_digest != remote_digest:
@@ -348,7 +348,7 @@ class FileOperationsService:
             handler = _step
 
         await handler(remote_path, local_path, recurse=recurse, **kwargs)
-        if verify and not recurse and not self._conn.is_dry_run:
+        if verify and not recurse and not self._conn.dry_run:
             remote_digest = await self.checksum(remote_path, algorithm="sha256")
             local_digest = _local_file_digest(local_path, "sha256")
             if local_digest != remote_digest:
@@ -407,7 +407,7 @@ class FileOperationsService:
         *,
         atomic: bool = False,
     ) -> None:
-        if self._conn.is_dry_run:
+        if self._conn.dry_run:
             self._conn.logger.info(
                 f"[DRY-RUN] Skipping write_file to {str(remote_path)!r} on {self._conn.config.uri_safe}"
             )
@@ -554,7 +554,7 @@ class FileOperationsService:
         mode: int | None = None,
     ) -> None:
         """Создать директорию на хосте."""
-        if self._conn.is_dry_run:
+        if self._conn.dry_run:
             self._conn.logger.info(
                 f"[DRY-RUN] Skipping mkdir {str(remote_path)!r} on {self._conn.config.uri_safe}"
             )
@@ -571,7 +571,7 @@ class FileOperationsService:
 
     async def chmod(self, remote_path: str | Path, mode: int) -> None:
         """Изменить права доступа к файлу на удалённом хосте."""
-        if self._conn.is_dry_run:
+        if self._conn.dry_run:
             self._conn.logger.info(
                 f"[DRY-RUN] Skipping chmod {oct(mode)} {str(remote_path)!r} "
                 f"on {self._conn.config.uri_safe}"
@@ -596,7 +596,7 @@ class FileOperationsService:
 
     async def remove_file(self, remote_path: str | Path) -> None:
         """Удалить файл на хосте."""
-        if self._conn.is_dry_run:
+        if self._conn.dry_run:
             self._conn.logger.info(
                 f"[DRY-RUN] Skipping remove_file {str(remote_path)!r} on {self._conn.config.uri_safe}"
             )

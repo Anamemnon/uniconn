@@ -1,4 +1,4 @@
-# src/uniconn/services/provisioning/services.py
+# src/uniconn/services/provisioning/service_managers.py
 """Стратегии систем инициализации (ServiceManagerStrategy) и табличная диспетчеризация состояний сервиса."""
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Literal
 from ...result import EnsureResult
 
 if TYPE_CHECKING:
-    from .service import StateManagementService
+    from .facade import StateManagementService
 
 ServiceState = Literal["started", "stopped", "restarted", "reloaded"]
 ServiceAction = Literal["start", "stop", "restart", "reload"]
@@ -210,8 +210,8 @@ async def ensure_service(
     manager: Literal["auto", "systemd", "openrc", "sysv"] = "auto",
 ) -> EnsureResult:
     """Идемпотентно управлять состоянием системного сервиса."""
-    is_dry_run = svc._conn.is_dry_run if dry_run is None else dry_run
-    if svc._conn.is_dry_run:
+    is_dry_run = svc._conn.dry_run if dry_run is None else dry_run
+    if svc._conn.dry_run:
         return EnsureResult(
             target=service,
             state=state,

@@ -19,6 +19,7 @@ class Result:
     timestamp: datetime = field(default_factory=datetime.now)
     host: str | None = None
     sensitive: bool = False
+    raw_bytes: bytes = b""
 
     @property
     def ok(self) -> bool:

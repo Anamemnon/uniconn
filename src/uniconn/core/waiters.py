@@ -25,7 +25,7 @@ async def ping_connection(
     """Проверить доступность хоста с измерением задержки (``latency_ms``)."""
     host = conn.config.host or conn.config.uri_safe or "localhost"
     transport = conn.transport_name
-    if conn.is_dry_run:
+    if conn.dry_run:
         return PingResult(
             host=host,
             alive=True,
@@ -64,7 +64,7 @@ async def wait_for_connection(
     delay: float = 0.0,
 ) -> PingResult:
     """Ожидать восстановления доступности хоста (например, после ``reboot``)."""
-    if conn.is_dry_run:
+    if conn.dry_run:
         return await conn.ping(timeout=timeout)
 
     start = time.monotonic()
@@ -116,7 +116,7 @@ async def wait_for_port(
     delay: float = 0.0,
 ) -> float:
     """Ожидать открытия (``open``) или закрытия (``closed``) TCP-порта."""
-    if conn.is_dry_run:
+    if conn.dry_run:
         return 0.0
 
     start = time.monotonic()
@@ -187,7 +187,7 @@ async def wait_for_path(
     sudo: bool = False,
 ) -> float:
     """Ожидать появления (``present``) или удаления (``absent``) файла/директории/сокета."""
-    if conn.is_dry_run:
+    if conn.dry_run:
         return 0.0
 
     start = time.monotonic()
@@ -256,6 +256,8 @@ async def wait_for_path(
         host=conn.config.host,
     )
 
+
+ping_connection.__name__ = "ping"
 
 __all__ = [
     "ping_connection",

@@ -11,6 +11,7 @@ from ._plan import (
     extract_stat_mode,
     get_owner_group,
 )
+from .facade import StateManagementService
 from .files import (
     ensure_directory,
     ensure_file,
@@ -30,8 +31,7 @@ from .packages import (
     ensure_package,
     resolve_pkg_manager,
 )
-from .service import StateManagementService
-from .services import (
+from .service_managers import (
     SERVICE_STRATEGIES,
     OpenRCStrategy,
     ServiceAction,

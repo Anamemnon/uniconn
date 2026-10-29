@@ -1,24 +1,14 @@
 # src/uniconn/core/connection.py
-"""Фасад Connection для работы с удалёнными и локальными хостами.
-
-Делегирует выполнение команд конвейеру ``CommandPipeline``, а доменные
-операции — специализированным сервисам:
-- ``conn.files`` (``FileOperationsService``)
-- ``conn.state`` (``StateManagementService``)
-- ``conn.tunnels`` (``TunnelService``)
-- ``conn._facts_collector`` (``FactCollector``)
-"""
+"""Фасад Connection для работы с удалёнными и локальными хостами."""
 
 from __future__ import annotations
 
+import contextlib
 import logging
-import shlex
-import shutil
-import tempfile
-import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+import warnings
+from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol, Self, runtime_checkable
+from typing import TYPE_CHECKING, Any, Self
 
 from pydantic import SecretStr
 from tenacity import wait_exponential_jitter
@@ -26,14 +16,13 @@ from tenacity import wait_exponential_jitter
 from .._logging import log_event
 from ..config.inventory import InventoryLoader
 from ..config.models import ConnectionConfig
-from ..result import PingResult, Result, SyncResult
+from ..result import Result
 from ..services.facts import FactCollector
 from ..services.facts_models import FactSpec, HostFacts
 from ..services.files import FileOperationsService
 from ..services.provisioning import StateManagementService
 from ..services.templates import render_template as render_template
 from ..services.tunnels import TunnelService
-from ..shell.session import ShellSession
 from ..transports.base import BaseTransport
 from .context import CwdContext, EnvContext, ExecutionContext, TempDirContext
 from .factories import (
@@ -42,36 +31,30 @@ from .factories import (
     build_from_config,
     build_from_dict,
     build_from_file,
+    build_from_inventory,
     build_from_uri,
     clone_connection,
+    open_cassette_context,
+    open_diagnostic_session,
+    with_overrides_connection,
 )
-from .pipeline import (
-    CommandPipeline,
-    CommandRequest,
-    HookCallback,
-    HookEvent,
-    format_command,
-)
+from .pipeline import CommandPipeline, CommandRequest, HookCallback, HookEvent, format_command
 from .resilience import CircuitBreaker, RateLimiter
-from .waiters import (
-    ping_connection,
-    wait_for_connection,
-    wait_for_path,
-    wait_for_port,
+from .scripts import ScriptExecutionManager, run_script
+from .shell_facade import (
+    ObserverContext,
+    OperationObserver,
+    expect_command,
+    open_shell_session,
+    raw_open_shell,
 )
+from .temp import HostTempManager, create_temp_dir, remove_temp_dir, temp_dir
+from .waiters import ping_connection, wait_for_connection, wait_for_path, wait_for_port
 
 if TYPE_CHECKING:
-    from ..background._diagnostic import (
-        DiagnosticConfig,
-        DiagnosticSession,
-        StreamSourceSpec,
-    )
     from ..sync.connection import SyncConnection
-    from ..transports.replay import CassetteContext
 
 logger = logging.getLogger(__name__)
-
-# Псевдонимы для обратной совместимости внутренних импортов
 _CwdContext = CwdContext
 _EnvContext = EnvContext
 _TempDirContext = TempDirContext
@@ -80,118 +63,8 @@ _parse_inventory_data = InventoryLoader.parse_data
 _wait_exponential_jitter = wait_exponential_jitter
 
 
-@runtime_checkable
-class OperationObserver(Protocol):
-    """Протокол наблюдателя сквозных операций (files, shell, stream)."""
-
-    def observe_stream(
-        self,
-        conn: Any,
-        command: Any,
-        raw_gen: AsyncIterator[str],
-        /,
-    ) -> AsyncIterator[str]: ...
-
-    async def observe_open_shell(
-        self,
-        conn: Any,
-        raw_fn: Callable[..., Awaitable[ShellSession]],
-        /,
-        term_type: str = "xterm",
-        term_size: tuple[int, int] = (80, 24),
-        init_posix: bool | None = None,
-        **kwargs: Any,
-    ) -> ShellSession: ...
-
-    async def observe_upload(
-        self,
-        conn: Any,
-        raw_fn: Callable[..., Awaitable[None]],
-        local_path: str | Path,
-        remote_path: str | Path,
-        /,
-        recurse: bool = False,
-        **kwargs: Any,
-    ) -> None: ...
-
-    async def observe_download(
-        self,
-        conn: Any,
-        raw_fn: Callable[..., Awaitable[None]],
-        remote_path: str | Path,
-        local_path: str | Path,
-        /,
-        recurse: bool = False,
-        **kwargs: Any,
-    ) -> None: ...
-
-    async def observe_read_file(
-        self,
-        conn: Any,
-        raw_fn: Callable[..., Awaitable[str | bytes]],
-        remote_path: str | Path,
-        /,
-        encoding: str | None = "utf-8",
-    ) -> str | bytes: ...
-
-    async def observe_write_file(
-        self,
-        conn: Any,
-        raw_fn: Callable[..., Awaitable[None]],
-        remote_path: str | Path,
-        content: str | bytes,
-        /,
-        mode: int | None = None,
-        encoding: str = "utf-8",
-    ) -> None: ...
-
-    async def observe_sync_dir(
-        self,
-        conn: Any,
-        raw_fn: Callable[..., Awaitable[SyncResult]],
-        /,
-        local_dir: str | Path,
-        remote_dir: str | Path,
-        delete: bool = False,
-        exclude: Any = None,
-        mtime_tolerance: float = 1.0,
-        dry_run: bool | None = None,
-    ) -> SyncResult: ...
-
-    async def observe_shell_execute(
-        self,
-        conn: Any,
-        raw_fn: Callable[..., Awaitable[Result]],
-        command: Any,
-        /,
-        timeout: float | None = None,
-    ) -> Result: ...
-
-    async def observe_shell_expect(
-        self,
-        conn: Any,
-        raw_fn: Callable[..., Awaitable[Result]],
-        /,
-        command: Any = None,
-        patterns: Any = None,
-        final_prompt: str | None = None,
-        timeout: float | None = None,
-        line_ending: str = "\n",
-        sensitive: bool = False,
-        allow_eof: bool = True,
-    ) -> Result: ...
-
-
 class Connection:
-    """Основной класс-фасад для работы с удалёнными и локальными хостами.
-
-    Предоставляет ядро выполнения команд и интерактивных сессий (``conn.run``,
-    ``conn.stream``, ``conn.expect``, ``conn.open_shell``, ``conn.ping``,
-    ``conn.wait_for_*``), а также модульные доменные пространства имён:
-        - ``conn.files`` — файловые операции, SFTP, шаблоны и ``sync_dir``
-        - ``conn.state`` — идемпотентное управление пакетами, сервисами, пользователями и конфигами
-        - ``conn.tunnels`` — сетевой проброс портов (Local/Remote Port Forwarding)
-    """
+    """Основной класс-фасад для работы с удалёнными и локальными хостами."""
 
     def __init__(
         self,
@@ -212,9 +85,7 @@ class Connection:
         self._logger = logger or logging.getLogger(__name__)
         self._dry_run = dry_run
         self._rate_limiter = _resolve_rate_limiter(rate_limit, config.options)
-        self._circuit_breaker = _resolve_circuit_breaker(
-            circuit_breaker, config.options
-        )
+        self._circuit_breaker = _resolve_circuit_breaker(circuit_breaker, config.options)
         self._context = ExecutionContext()
         self._cwd_stack = self._context.cwd_stack
         self._env_stack = self._context.env_stack
@@ -232,57 +103,61 @@ class Connection:
 
     @property
     def transport(self) -> BaseTransport:
-        """Текущий экземпляр транспорта подключения."""
         return self._transport
 
     def swap_transport(self, new_transport: BaseTransport) -> BaseTransport:
-        """Безопасно заменить активный транспорт (используется в ``use_cassette``) и вернуть прежний."""
-        prev = self._transport
-        self._transport = new_transport
+        prev, self._transport = self._transport, new_transport
         return prev
 
     @property
     def context(self) -> ExecutionContext:
-        """Контекст выполнения (стек рабочих директорий и переменных окружения)."""
         return self._context
 
     @property
     def logger(self) -> logging.Logger:
-        """Логгер подключения."""
         return self._logger
 
     @property
     def retry_attempts(self) -> int:
-        """Количество повторных попыток выполнения команд при сетевых сбоях."""
         return self._retry_attempts
 
     @property
+    def dry_run(self) -> bool:
+        return self._dry_run
+
+    @property
     def is_dry_run(self) -> bool:
-        """Признак активного режима ``dry_run``."""
+        warnings.warn(
+            "Connection.is_dry_run is deprecated, use Connection.dry_run instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self._dry_run
 
     def get_hooks(self, event: HookEvent) -> list[HookCallback]:
-        """Вернуть список зарегистрированных хуков для указанного события."""
         return self._hooks.get(event, [])
 
     @property
     def operation_observers(self) -> list[OperationObserver]:
-        """Список зарегистрированных наблюдателей операций (например, ``OtelTracingHook``)."""
         return self._operation_observers
 
     def add_operation_observer(self, observer: OperationObserver) -> None:
-        """Зарегистрировать наблюдатель сквозных операций (files, shell, stream) без monkey-patching."""
         if observer not in self._operation_observers:
             self._operation_observers.append(observer)
 
+    def remove_operation_observer(self, observer: OperationObserver) -> None:
+        with contextlib.suppress(ValueError):
+            self._operation_observers.remove(observer)
+
+    def using_observer(self, observer: OperationObserver) -> ObserverContext:
+        return ObserverContext(self, observer)
+
     @property
     def pipeline(self) -> CommandPipeline:
-        """Конвейер выполнения команд (Middleware Pipeline)."""
         return self._pipeline
 
     @property
     def rate_limiter(self) -> RateLimiter | None:
-        """Ограничитель частоты команд (Token Bucket), если настроен."""
         return self._rate_limiter
 
     @rate_limiter.setter
@@ -294,7 +169,6 @@ class Connection:
 
     @property
     def circuit_breaker(self) -> CircuitBreaker | None:
-        """Автоматический предохранитель (Circuit Breaker), если настроен."""
         return self._circuit_breaker
 
     @circuit_breaker.setter
@@ -303,272 +177,48 @@ class Connection:
 
     @property
     def _cached_facts(self) -> HostFacts | None:
-        """Кэшированный экземпляр HostFacts."""
         return self._facts_collector.cached
 
     @_cached_facts.setter
     def _cached_facts(self, value: HostFacts | None) -> None:
         self._facts_collector.cached = value
 
-    # ─── Фабричные методы и клонирование (делегация в core/factories.py) ─
+    # ─── Фабрики, клонирование и контекстные менеджеры ─────────────
 
-    @classmethod
-    def from_uri(
-        cls,
-        uri: str,
-        retry_attempts: int = 3,
-        logger: logging.Logger | None = None,
-        dry_run: bool = False,
-        before_run: Sequence[HookCallback] | None = None,
-        after_run: Sequence[HookCallback] | None = None,
-        on_error: Sequence[HookCallback] | None = None,
-        rate_limit: float | RateLimiter | None = None,
-        circuit_breaker: CircuitBreaker | bool | None = None,
-    ) -> Self:
-        """Создать подключение из URI строки."""
-        return build_from_uri(
-            cls,
-            uri,
-            retry_attempts=retry_attempts,
-            logger=logger,
-            dry_run=dry_run,
-            before_run=before_run,
-            after_run=after_run,
-            on_error=on_error,
-            rate_limit=rate_limit,
-            circuit_breaker=circuit_breaker,
-        )
-
-    @classmethod
-    def from_config(
-        cls,
-        config: ConnectionConfig,
-        retry_attempts: int = 3,
-        logger: logging.Logger | None = None,
-        dry_run: bool = False,
-        before_run: Sequence[HookCallback] | None = None,
-        after_run: Sequence[HookCallback] | None = None,
-        on_error: Sequence[HookCallback] | None = None,
-        rate_limit: float | RateLimiter | None = None,
-        circuit_breaker: CircuitBreaker | bool | None = None,
-    ) -> Self:
-        """Создать подключение из конфигурации."""
-        return build_from_config(
-            cls,
-            config,
-            retry_attempts=retry_attempts,
-            logger=logger,
-            dry_run=dry_run,
-            before_run=before_run,
-            after_run=after_run,
-            on_error=on_error,
-            rate_limit=rate_limit,
-            circuit_breaker=circuit_breaker,
-        )
-
-    @classmethod
-    def from_dict(
-        cls,
-        data: dict[str, Any],
-        retry_attempts: int = 3,
-        logger: logging.Logger | None = None,
-        dry_run: bool = False,
-    ) -> Self:
-        """Создать подключение из словаря."""
-        return build_from_dict(
-            cls,
-            data,
-            retry_attempts=retry_attempts,
-            logger=logger,
-            dry_run=dry_run,
-        )
-
-    @classmethod
-    def from_file(
-        cls,
-        path: str | Path,
-        retry_attempts: int = 3,
-        logger: logging.Logger | None = None,
-        *,
-        host: str | None = None,
-        group: str | None = None,
-    ) -> list[Self]:
-        """Создать подключения из JSON/YAML файла (включая инвентарь с хостами и группами)."""
-        return build_from_file(
-            cls,
-            path,
-            retry_attempts=retry_attempts,
-            logger=logger,
-            host=host,
-            group=group,
-        )
-
-    @classmethod
-    def from_inventory(
-        cls,
-        path: str | Path,
-        host: str,
-        retry_attempts: int = 3,
-        logger: logging.Logger | None = None,
-    ) -> Self:
-        """Создать одиночное подключение по имени хоста из инвентарного файла (YAML/JSON)."""
-        conns = cls.from_file(
-            path,
-            retry_attempts=retry_attempts,
-            logger=logger,
-            host=host,
-        )
-        return conns[0]
-
-    def copy(
-        self,
-        host: str | None = None,
-        port: int | None = None,
-        username: str | None = None,
-        password: str | SecretStr | None = None,
-        key_file: str | None = None,
-        passphrase: str | SecretStr | None = None,
-        ssh_config: str | bool | None = None,
-        timeout: float | None = None,
-        options: dict[str, Any] | None = None,
-        retry_attempts: int | None = None,
-        logger: logging.Logger | None = None,
-        dry_run: bool | None = None,
-        rate_limit: float | RateLimiter | None = None,
-        circuit_breaker: CircuitBreaker | bool | None = None,
-    ) -> Self:
-        """Создать копию подключения с возможностью изменения параметров."""
-        return clone_connection(
-            self,
-            host=host,
-            port=port,
-            username=username,
-            password=password,
-            key_file=key_file,
-            passphrase=passphrase,
-            ssh_config=ssh_config,
-            timeout=timeout,
-            options=options,
-            retry_attempts=retry_attempts,
-            logger=logger,
-            dry_run=dry_run,
-            rate_limit=rate_limit,
-            circuit_breaker=circuit_breaker,
-        )
-
-    def with_overrides(self, **overrides: Any) -> Self:
-        """Создать копию подключения с переопределёнными параметрами."""
-        return self.copy(
-            host=overrides.get("host"),
-            port=overrides.get("port"),
-            username=overrides.get("username"),
-            password=overrides.get("password"),
-            key_file=overrides.get("key_file"),
-            passphrase=overrides.get("passphrase"),
-            ssh_config=overrides.get("ssh_config"),
-            timeout=overrides.get("timeout"),
-            options=overrides.get("options"),
-            retry_attempts=overrides.get("retry_attempts"),
-            logger=overrides.get("logger"),
-            dry_run=overrides.get("dry_run"),
-            rate_limit=overrides.get("rate_limit"),
-            circuit_breaker=overrides.get("circuit_breaker"),
-        )
-
-    # ─── Контекстные менеджеры cd / env / temp_dir и Hooks ─────────
+    from_uri = classmethod(build_from_uri)
+    from_config = classmethod(build_from_config)
+    from_dict = classmethod(build_from_dict)
+    from_file = classmethod(build_from_file)
+    from_inventory = classmethod(build_from_inventory)
+    copy = clone_connection
+    with_overrides = with_overrides_connection
 
     def cd(self, path: str | Path) -> CwdContext:
-        """Контекстный менеджер для временной смены рабочей директории."""
         return self._context.cd(path)
 
-    def env(
-        self, mapping: dict[str, str] | None = None, **env_vars: str
-    ) -> EnvContext:
-        """Контекстный менеджер для временной установки переменных окружения."""
+    def env(self, mapping: dict[str, str] | None = None, **env_vars: str) -> EnvContext:
         return self._context.env(mapping, **env_vars)
 
     @property
     def current_cwd(self) -> str | None:
-        """Текущая рабочая директория из активного стека ``conn.cd()``."""
         return self._context.current_cwd
 
     @property
     def current_env(self) -> dict[str, str]:
-        """Текущий объединённый словарь переменных окружения из стека ``conn.env()``."""
         return self._context.current_env
 
     def add_hook(self, event: HookEvent, callback: HookCallback) -> Self:
-        """Зарегистрировать lifecycle-хук (``before_run``, ``after_run``, ``on_error``)."""
         if event not in self._hooks:
             raise ValueError(
-                f"Unknown hook event: {event!r}. "
-                "Expected 'before_run', 'after_run', or 'on_error'"
+                f"Unknown hook event: {event!r}. Expected 'before_run', 'after_run', or 'on_error'"
             )
         self._hooks[event].append(callback)
         return self
 
-    def temp_dir(
-        self,
-        prefix: str = "uniconn_",
-        suffix: str = "",
-        dir: str | Path | None = None,
-    ) -> TempDirContext:
-        """Асинхронный контекстный менеджер временной директории на хосте."""
-        return TempDirContext(self, prefix=prefix, suffix=suffix, dir=dir)
-
-    def use_cassette(
-        self,
-        path: str | Path,
-        *,
-        mode: Any = "once",
-        match_on: Sequence[Literal["command", "cwd", "sudo"]] = (
-            "command",
-            "cwd",
-            "sudo",
-        ),
-        normalize_temp: bool = True,
-        allow_playback_repeats: bool = True,
-        mask_secrets: bool = True,
-    ) -> CassetteContext:
-        """Асинхронный контекстный менеджер записи и воспроизведения кассет взаимодействий."""
-        from ..transports.replay import CassetteContext
-
-        return CassetteContext(
-            self,
-            path,
-            mode=mode,
-            match_on=match_on,
-            normalize_temp=normalize_temp,
-            allow_playback_repeats=allow_playback_repeats,
-            mask_secrets=mask_secrets,
-        )
-
-    async def _create_temp_dir(
-        self,
-        prefix: str = "uniconn_",
-        suffix: str = "",
-        dir: str | None = None,
-    ) -> str:
-        """Создать временную директорию на хосте и вернуть путь к ней."""
-        base_dir = dir or "/tmp"
-        if self._dry_run:
-            return f"{base_dir.rstrip('/')}/{prefix}dryrun{suffix}"
-
-        if self.transport_name == "local":
-            return tempfile.mkdtemp(suffix=suffix, prefix=prefix, dir=dir)
-
-        template = f"{base_dir.rstrip('/')}/{prefix}XXXXXX{suffix}"
-        res = await self.run(["mktemp", "-d", template], raise_on_error=True)
-        return res.text
-
-    async def _remove_temp_dir(self, path: str) -> None:
-        """Удалить временную директорию на хосте."""
-        if self._dry_run or not path:
-            return
-        if self.transport_name == "local":
-            shutil.rmtree(path, ignore_errors=True)
-            return
-        await self.run(["rm", "-rf", path])
+    temp_dir = temp_dir
+    _create_temp_dir = create_temp_dir
+    _remove_temp_dir = remove_temp_dir
+    use_cassette = open_cassette_context
 
     # ─── Выполнение команд (через CommandPipeline) ─────────────────
 
@@ -587,8 +237,7 @@ class Connection:
     ) -> Result:
         """Выполнить команду на хосте через конвейер ``CommandPipeline``."""
         cmd_str = format_command(command)
-        effective_dry_run = self._dry_run if dry_run is None else dry_run
-        request = CommandRequest(
+        req = CommandRequest(
             raw_command=command,
             command=cmd_str,
             exec_command=cmd_str,
@@ -599,10 +248,11 @@ class Connection:
             sudo_user=sudo_user,
             sudo_password=sudo_password,
             sensitive=sensitive,
-            dry_run=effective_dry_run,
+            dry_run=self._dry_run if dry_run is None else dry_run,
+            output_format="text",
             transport_kwargs=dict(kwargs),
         )
-        return await self._pipeline.execute(request)
+        return await self._pipeline.execute(req)
 
     async def run_bytes(
         self,
@@ -618,11 +268,11 @@ class Connection:
         **kwargs: Any,
     ) -> bytes:
         """Выполнить команду через конвейер ``CommandPipeline`` и вернуть сырой байтовый вывод (``bytes``)."""
-        cmd_str = format_command(command)
         effective_dry_run = self._dry_run if dry_run is None else dry_run
         if effective_dry_run:
             return b""
-        request = CommandRequest(
+        cmd_str = format_command(command)
+        req = CommandRequest(
             raw_command=command,
             command=cmd_str,
             exec_command=cmd_str,
@@ -634,39 +284,13 @@ class Connection:
             sudo_password=sudo_password,
             sensitive=sensitive,
             dry_run=effective_dry_run,
+            output_format="bytes",
             transport_kwargs=dict(kwargs),
         )
-
-        async def _bytes_terminal_dispatch(req: CommandRequest) -> Result:
-            t0 = time.monotonic()
-            raw = await self._transport.run_bytes(
-                req.exec_command,
-                timeout=req.timeout,
-                raise_on_error=req.raise_on_error,
-                **req.transport_kwargs,
-            )
-            req.metadata["raw_bytes"] = raw
-            return Result(
-                exit_code=0,
-                stdout=raw.decode("utf-8", errors="replace"),
-                stderr="",
-                duration=time.monotonic() - t0,
-                command=req.command,
-                host=self._config.host,
-                sensitive=req.sensitive,
-            )
-
-        await self._pipeline.execute(
-            request,
-            terminal_handler=_bytes_terminal_dispatch,
-        )
-        return bytes(request.metadata.get("raw_bytes", b""))
+        return (await self._pipeline.execute(req)).raw_bytes
 
     async def run_commands(
-        self,
-        commands: Sequence[str | Sequence[str]],
-        stop_on_error: bool = True,
-        **kwargs: Any,
+        self, commands: Sequence[str | Sequence[str]], stop_on_error: bool = True, **kwargs: Any
     ) -> list[Result]:
         """Последовательно выполнить список команд на хосте."""
         results: list[Result] = []
@@ -678,8 +302,7 @@ class Connection:
                     self._logger,
                     logging.WARNING,
                     "command.batch_stopped",
-                    f"run_commands: остановка на команде {command!r} "
-                    f"(exit_code={result.exit_code})",
+                    f"run_commands: остановка на команде {command!r} (exit_code={result.exit_code})",
                     host=self._config.host,
                     command=format_command(command),
                     exit_code=result.exit_code,
@@ -688,25 +311,17 @@ class Connection:
         return results
 
     async def _raw_stream(
-        self,
-        command: str | Sequence[str],
-        timeout: float | None = None,
-        **kwargs: Any,
+        self, command: str | Sequence[str], timeout: float | None = None, **kwargs: Any
     ) -> AsyncIterator[str]:
         cmd_str = format_command(command)
         self._context.apply_to_kwargs(kwargs)
         if not self._transport.is_connected:
             await self._transport.connect()
-
-        timeout = timeout or self._config.timeout
-        async for line in self._transport.stream(cmd_str, timeout=timeout, **kwargs):
+        async for line in self._transport.stream(cmd_str, timeout=timeout or self._config.timeout, **kwargs):
             yield line
 
     async def stream(
-        self,
-        command: str | Sequence[str],
-        timeout: float | None = None,
-        **kwargs: Any,
+        self, command: str | Sequence[str], timeout: float | None = None, **kwargs: Any
     ) -> AsyncIterator[str]:
         """Потоковое получение вывода команды."""
         gen = self._raw_stream(command, timeout=timeout, **kwargs)
@@ -716,243 +331,22 @@ class Connection:
             yield line
 
     async def close(self) -> None:
-        """Закрыть подключение."""
         await self._transport.disconnect()
 
     async def is_alive(self, timeout: float | None = None) -> bool:
-        """Проверить живость подключения."""
         return await self._transport.ping(timeout=timeout)
 
-    # ─── Проверки доступности и поллинг (делегация в core/waiters.py) ─
+    # ─── Ожидание, скрипты, Shell, факты и диагностика ─────────────
 
-    async def ping(self, timeout: float | None = None) -> PingResult:
-        """Проверить доступность хоста с измерением задержки (``latency_ms``)."""
-        return await ping_connection(self, timeout=timeout)
-
-    async def wait_for_connection(
-        self,
-        timeout: float = 120.0,
-        interval: float = 2.0,
-        delay: float = 0.0,
-    ) -> PingResult:
-        """Ожидать восстановления доступности хоста (например, после ``reboot``)."""
-        return await wait_for_connection(
-            self, timeout=timeout, interval=interval, delay=delay
-        )
-
-    async def wait_for_port(
-        self,
-        port: int,
-        *,
-        host: str | None = None,
-        state: Literal["open", "closed"] = "open",
-        check_from: Literal["remote", "local"] = "remote",
-        timeout: float = 60.0,
-        interval: float = 1.0,
-        delay: float = 0.0,
-    ) -> float:
-        """Ожидать открытия (``open``) или закрытия (``closed``) TCP-порта."""
-        return await wait_for_port(
-            self,
-            port,
-            host=host,
-            state=state,
-            check_from=check_from,
-            timeout=timeout,
-            interval=interval,
-            delay=delay,
-        )
-
-    async def wait_for_path(
-        self,
-        remote_path: str | Path,
-        *,
-        state: Literal["present", "absent"] = "present",
-        content_regex: str | None = None,
-        timeout: float = 60.0,
-        interval: float = 1.0,
-        delay: float = 0.0,
-        sudo: bool = False,
-    ) -> float:
-        """Ожидать появления (``present``) или удаления (``absent``) файла/директории/сокета."""
-        return await wait_for_path(
-            self,
-            remote_path,
-            state=state,
-            content_regex=content_regex,
-            timeout=timeout,
-            interval=interval,
-            delay=delay,
-            sudo=sudo,
-        )
-
-    async def run_script(
-        self,
-        local_path: str | Path,
-        args: Sequence[str] | None = None,
-        *,
-        interpreter: str | None = None,
-        sudo: bool = False,
-        sudo_user: str | None = None,
-        sudo_password: str | SecretStr | None = None,
-        env: Mapping[str, str] | None = None,
-        timeout: float | None = None,
-        raise_on_error: bool = False,
-        sensitive: bool = False,
-        dry_run: bool | None = None,
-    ) -> Result:
-        """Загрузить локальный скрипт во временную директорию, выполнить и удалить."""
-        script_path = Path(local_path)
-        if not script_path.is_file():
-            raise FileNotFoundError(f"Local script not found: {local_path}")
-
-        effective_dry_run = self._dry_run if dry_run is None else dry_run
-        async with self.temp_dir() as remote_dir:
-            remote_script = f"{remote_dir.rstrip('/')}/{script_path.name}"
-            if not effective_dry_run:
-                await self.files.upload(str(script_path), remote_script)
-                await self.files.chmod(remote_script, 0o700)
-
-            if interpreter:
-                cmd_parts: list[str] = [*shlex.split(interpreter), remote_script]
-            else:
-                cmd_parts = [remote_script]
-
-            if args:
-                cmd_parts.extend(str(a) for a in args)
-
-            if env:
-                with self.env(dict(env)):
-                    return await self.run(
-                        cmd_parts,
-                        timeout=timeout,
-                        raise_on_error=raise_on_error,
-                        sudo=sudo,
-                        sudo_user=sudo_user,
-                        sudo_password=sudo_password,
-                        sensitive=sensitive,
-                        dry_run=dry_run,
-                    )
-            return await self.run(
-                cmd_parts,
-                timeout=timeout,
-                raise_on_error=raise_on_error,
-                sudo=sudo,
-                sudo_user=sudo_user,
-                sudo_password=sudo_password,
-                sensitive=sensitive,
-                dry_run=dry_run,
-            )
-
-    # ─── Интерактивный Shell и Expect ──────────────────────────────
-
-    async def expect(
-        self,
-        command: str | Sequence[str],
-        patterns: Mapping[str, str | SecretStr] | None = None,
-        final_prompt: str | None = None,
-        timeout: float | None = None,
-        line_ending: str = "\n",
-        sensitive: bool = False,
-        term_type: str = "xterm",
-        term_size: tuple[int, int] = (80, 24),
-        **kwargs: Any,
-    ) -> Result:
-        """Выполнить интерактивную команду с декларативным сопоставлением regex-паттернов."""
-        cmd_str = format_command(command)
-        if self._dry_run:
-            self._logger.info(
-                f"[DRY-RUN] Skipping expect {cmd_str!r} on {self._config.uri_safe}"
-            )
-            return Result(
-                exit_code=0,
-                stdout="",
-                stderr="",
-                duration=0.0,
-                command=cmd_str,
-                host=self._config.host,
-                sensitive=sensitive,
-            )
-
-        session = await self.open_shell(
-            term_type=term_type,
-            term_size=term_size,
-            init_posix=False,
-            **kwargs,
-        )
-        try:
-            return await session.expect(
-                command=cmd_str,
-                patterns=patterns,
-                final_prompt=final_prompt,
-                timeout=timeout,
-                line_ending=line_ending,
-                sensitive=sensitive,
-            )
-        finally:
-            await session.close()
-
-    async def _raw_open_shell(
-        self,
-        term_type: str = "xterm",
-        term_size: tuple[int, int] = (80, 24),
-        init_posix: bool | None = None,
-        **kwargs: Any,
-    ) -> ShellSession:
-        if not self._transport.is_connected:
-            await self._transport.connect()
-
-        proc = await self._transport.open_shell(
-            term_type=term_type,
-            term_size=term_size,
-            **kwargs,
-        )
-        session = ShellSession(
-            proc=proc,
-            host=self._config.host,
-            default_timeout=self._config.timeout,
-            observers=list(self._operation_observers),
-            conn=self,
-        )
-        should_init_posix = (
-            (self.transport_name != "serial") if init_posix is None else init_posix
-        )
-        if should_init_posix:
-            await session.initialize()
-        else:
-            session._initialized = True
-        return session
-
-    async def open_shell(
-        self,
-        term_type: str = "xterm",
-        term_size: tuple[int, int] = (80, 24),
-        init_posix: bool | None = None,
-        **kwargs: Any,
-    ) -> ShellSession:
-        """Открыть интерактивную stateful PTY shell-сессию."""
-        handler: Callable[..., Awaitable[ShellSession]] = self._raw_open_shell
-        for obs in reversed(self._operation_observers):
-            prev_handler = handler
-
-            async def _step(
-                *a: Any,
-                _obs: Any = obs,
-                _nxt: Callable[..., Awaitable[ShellSession]] = prev_handler,
-                **kw: Any,
-            ) -> ShellSession:
-                return await _obs.observe_open_shell(self, _nxt, *a, **kw)
-
-            handler = _step
-
-        return await handler(
-            term_type=term_type,
-            term_size=term_size,
-            init_posix=init_posix,
-            **kwargs,
-        )
-
-    # ─── Факты о системе и диагностика ─────────────────────────────
+    ping = ping_connection
+    wait_for_connection = wait_for_connection
+    wait_for_port = wait_for_port
+    wait_for_path = wait_for_path
+    run_script = run_script
+    expect = expect_command
+    _raw_open_shell = raw_open_shell
+    open_shell = open_shell_session
+    diagnostic_session = open_diagnostic_session
 
     async def gather_facts(
         self,
@@ -960,45 +354,7 @@ class Connection:
         timeout: float | None = None,
         spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
     ) -> HostFacts:
-        """Собрать системные факты о целевом хосте (базовые + декларативные источники ``FactSpec``)."""
-        return await self._facts_collector.gather(
-            refresh=refresh,
-            timeout=timeout,
-            spec=spec,
-        )
-
-    def diagnostic_session(
-        self,
-        config: DiagnosticConfig | Mapping[str, Any] | str | Path | None = None,
-        *,
-        spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
-        streams: Sequence[StreamSourceSpec | Mapping[str, Any] | str] | None = None,
-        local_dir: str | Path | None = None,
-        archive_path: str | Path | None = None,
-        archive_format: Literal["tar.gz", "zip", "none"] | None = None,
-        forward_to: Connection | str | None = None,
-        forward_remote_dir: str | None = None,
-        fsync_realtime: bool | None = None,
-        gather_pre_facts: bool | None = None,
-        gather_post_facts: bool | None = None,
-    ) -> DiagnosticSession:
-        """Открыть комплексную диагностическую сессию (слепки + фоновые потоки логов + архивация)."""
-        from ..background._diagnostic import DiagnosticSession
-
-        return DiagnosticSession(
-            self,
-            config=config,
-            spec=spec,
-            streams=streams,
-            local_dir=local_dir,
-            archive_path=archive_path,
-            archive_format=archive_format,
-            forward_to=forward_to,
-            forward_remote_dir=forward_remote_dir,
-            fsync_realtime=fsync_realtime,
-            gather_pre_facts=gather_pre_facts,
-            gather_post_facts=gather_post_facts,
-        )
+        return await self._facts_collector.gather(refresh=refresh, timeout=timeout, spec=spec)
 
     async def __aenter__(self) -> Self:
         await self._transport.connect()
@@ -1008,30 +364,25 @@ class Connection:
         await self._transport.disconnect()
 
     def to_sync(self) -> SyncConnection:
-        """Конвертировать в синхронную версию."""
         from ..sync.connection import SyncConnection
 
         return SyncConnection(self)
 
     @property
     def config(self) -> ConnectionConfig:
-        """Конфигурация подключения."""
         return self._config
 
     @property
     def transport_name(self) -> str:
-        """Имя используемого транспорта."""
         return self._transport.name
-
-    @property
-    def dry_run(self) -> bool:
-        """Включён ли режим dry_run для данного подключения."""
-        return self._dry_run
 
 
 __all__ = [
     "Connection",
+    "HostTempManager",
+    "ObserverContext",
     "OperationObserver",
+    "ScriptExecutionManager",
     "_resolve_circuit_breaker",
     "_resolve_rate_limiter",
     "format_command",

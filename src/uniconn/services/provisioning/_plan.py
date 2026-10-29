@@ -142,7 +142,7 @@ class ChangePlan:
 
 def can_inspect_in_dry_run(conn: Connection) -> bool:
     """Проверить, можно ли безопасно выполнить read-only чтение с хоста при dry_run."""
-    if not conn.is_dry_run:
+    if not conn.dry_run:
         return True
     return conn.transport.is_connected or conn.transport_name in ("local", "replay")
 

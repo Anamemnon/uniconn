@@ -18,7 +18,7 @@ from ...result import EnsureResult
 from ._plan import ChangePlan, _parse_mode
 
 if TYPE_CHECKING:
-    from .service import StateManagementService
+    from .facade import StateManagementService
 
 
 # ─── Чистые функции трансформации строк (Pure Functional Core) ──────
@@ -103,7 +103,7 @@ async def ensure_line(
     """Идемпотентно обеспечить наличие, замену или отсутствие строки в файле."""
     path_str = str(remote_path)
     clean_line = line.rstrip("\r\n")
-    is_dry_run = svc._conn.is_dry_run if dry_run is None else dry_run
+    is_dry_run = svc._conn.dry_run if dry_run is None else dry_run
 
     if not svc._can_inspect_in_dry_run():
         synthetic_diff = (
@@ -658,7 +658,7 @@ async def ensure_file(
     """Идемпотентно управлять файлом или символической ссылкой на хосте."""
     path_str = str(remote_path)
     parsed_mode = _parse_mode(mode)
-    is_dry_run = svc._conn.is_dry_run if dry_run is None else dry_run
+    is_dry_run = svc._conn.dry_run if dry_run is None else dry_run
 
     if state == "link" and target is None:
         raise ValueError("Parameter 'target' is required when state='link'")
@@ -785,7 +785,7 @@ async def ensure_directory(
     """Идемпотентно обеспечить наличие или отсутствие директории, её прав и владельца."""
     path_str = str(remote_path)
     parsed_mode = _parse_mode(mode)
-    is_dry_run = svc._conn.is_dry_run if dry_run is None else dry_run
+    is_dry_run = svc._conn.dry_run if dry_run is None else dry_run
 
     if not svc._can_inspect_in_dry_run():
         synth_diff = f"--- a:{path_str}\n+++ b:{path_str}\n@@ -0,0 +1 @@\n+directory state={state}\n"

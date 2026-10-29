@@ -290,7 +290,7 @@ class FactCollector:
             return self.cached
 
         default_host = self._conn.config.host or "localhost"
-        if self._conn.is_dry_run:
+        if self._conn.dry_run:
             facts = HostFacts(hostname=default_host)
             self.cached = facts
             return facts

@@ -14,6 +14,7 @@ import inspect
 import logging
 import shlex
 import sys
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -106,6 +107,7 @@ class CommandRequest:
     sudo_password: str | SecretStr | None = None
     sensitive: bool = False
     dry_run: bool = False
+    output_format: Literal["text", "bytes"] = "text"
     transport_kwargs: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -465,8 +467,26 @@ class CommandPipeline:
         self._middlewares.insert(index, middleware)
 
     async def _terminal_dispatch(self, request: CommandRequest) -> Result:
-        """Финальное звено пайплайна — вызов ``transport.run()``."""
+        """Финальное звено пайплайна — вызов ``transport.run()`` или ``transport.run_bytes()``."""
         assert self._conn is not None
+        if request.output_format == "bytes":
+            t0 = time.monotonic()
+            raw = await self._conn.transport.run_bytes(
+                request.exec_command,
+                timeout=request.timeout,
+                raise_on_error=request.raise_on_error,
+                **request.transport_kwargs,
+            )
+            return Result(
+                exit_code=0,
+                stdout=raw.decode("utf-8", errors="replace"),
+                stderr="",
+                duration=time.monotonic() - t0,
+                command=request.command,
+                host=self._conn.config.host,
+                sensitive=request.sensitive,
+                raw_bytes=raw,
+            )
         return await self._conn.transport.run(
             request.exec_command,
             timeout=request.timeout,

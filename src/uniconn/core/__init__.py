@@ -26,6 +26,9 @@ from .pipeline import (
     prepare_sudo_command,
 )
 from .resilience import CircuitBreaker, CircuitState, RateLimiter
+from .scripts import ScriptExecutionManager
+from .shell_facade import ObserverContext
+from .temp import HostTempManager
 
 if TYPE_CHECKING:
     from .connection import Connection
@@ -58,10 +61,13 @@ __all__ = [
     "HookCallback",
     "HookEvent",
     "HookMiddleware",
+    "HostTempManager",
     "ObservabilityMiddleware",
+    "ObserverContext",
     "RateLimitMiddleware",
     "RateLimiter",
     "RetryMiddleware",
+    "ScriptExecutionManager",
     "SudoMiddleware",
     "SyncContextBridge",
     "TempDirContext",

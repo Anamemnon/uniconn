@@ -14,7 +14,7 @@
 - Documentation & Feature Matrix: `AGENTS.md` (architecture & rules), `FEATURES.md` (full catalog of implemented features — consult on-demand only)
 
 ## Public Exports (`from uniconn import ...`)
-- **Core & Facade**: `Connection`, `SyncConnection`, `ConnectionConfig`, `SecretResolver`, `URIParser`, `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `HostFacts`, `FactSpec`, `CustomCommandSpec`, `FileSourceSpec`, `ExternalToolSpec`, `ExternalToolRunner`, `FactsDiffReport`, `DiskInfo`, `NetworkInterface`, `diff_facts`, `render_template`, `OperationObserver`, `BeforeRunHook`, `AfterRunHook`, `OnErrorHook`, `HookCallback`, `HookEvent`
+- **Core & Facade**: `Connection`, `SyncConnection`, `ConnectionConfig`, `SecretResolver`, `URIParser`, `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `HostFacts`, `FactSpec`, `CustomCommandSpec`, `FileSourceSpec`, `ExternalToolSpec`, `ExternalToolRunner`, `FactsDiffReport`, `DiskInfo`, `NetworkInterface`, `diff_facts`, `render_template`, `OperationObserver`, `ObserverContext`, `HostTempManager`, `ScriptExecutionManager`, `BeforeRunHook`, `AfterRunHook`, `OnErrorHook`, `HookCallback`, `HookEvent`
 - **Resilience (`uniconn.core.resilience`)**: `CircuitBreaker`, `CircuitState`, `RateLimiter`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`
 - **Domain Services (`uniconn.services` / `uniconn.pool`)**: `FileOperationsService`, `DirectorySynchronizer`, `TemplateEngine`, `StateManagementService`, `FactCollector`, `TunnelService`, `PoolFileOperationsService`, `PoolStateManagementService`, `SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`, `SyncPoolFileOperationsService`, `SyncPoolStateManagementService`
 - **Strategies (`uniconn.services.provisioning`)**: `PackageManagerStrategy`, `AptStrategy`, `ApkStrategy`, `DnfYumStrategy`, `PacmanStrategy`, `ZypperStrategy`, `ServiceManagerStrategy`, `SystemdStrategy`, `OpenRCStrategy`, `SysVStrategy`
@@ -251,10 +251,14 @@ async with conn.use_cassette(
 
 diff_report: CassetteDiffReport = cassette.diff(other_cassette)
 
-# Lifecycle Hooks
+# Lifecycle Hooks & Operation Observers
 conn.add_hook("before_run", callback)  # callback(command_str, host, kwargs)
 conn.add_hook("after_run", callback)   # callback(result: Result)
 conn.add_hook("on_error", callback)    # callback(exc, command_str, host)
+conn.add_operation_observer(observer)
+conn.remove_operation_observer(observer)
+with conn.using_observer(observer):    # Also works with `async with conn.using_observer(observer):`
+    await conn.files.read_file("/etc/hostname")
 
 # File Operations, Smart Directory Sync & Templating via `conn.files` (SFTP & Local)
 content: str | bytes = await conn.files.read_file(remote_path, encoding="utf-8")  # encoding=None -> bytes
@@ -280,7 +284,7 @@ async with await conn.open_shell(term_type="xterm", term_size=(80, 24), init_pos
 ```
 
 ### `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `HostFacts`, `FactsDiffReport` & `CassetteDiffReport`
-- `Result`: `exit_code: int`, `stdout: str`, `stderr: str`, `duration: float`, `command: str`, `host: str | None`, `ok: bool`, `text: str` (`stdout.strip()`), `lines: list[str]`, `sensitive: bool`, `result.json() -> Any`, `result.raise_for_status() -> Self`, `result.to_dict() -> dict`
+- `Result`: `exit_code: int`, `stdout: str`, `stderr: str`, `duration: float`, `command: str`, `host: str | None`, `ok: bool`, `text: str` (`stdout.strip()`), `lines: list[str]`, `sensitive: bool`, `raw_bytes: bytes`, `result.json() -> Any`, `result.raise_for_status() -> Self`, `result.to_dict() -> dict`
 - `PingResult`: `host: str`, `alive: bool`, `latency_ms: float`, `transport: str`, `error: str | None`, `bool(ping_res) == ping_res.alive`, `ping_res.to_dict() -> dict`
 - `SyncResult`: `uploaded: list[str]`, `skipped: list[str]`, `deleted: list[str]`, `bytes_transferred: int`, `duration: float`, `dry_run: bool`, `total_checked: int`, `sync_res.to_dict() -> dict`
 - `EnsureResult`: `target: str`, `state: str`, `changed: bool`, `ok: bool`, `details: str`, `dry_run: bool`, `diff: str | None = None`, `ensure_res.to_dict() -> dict`

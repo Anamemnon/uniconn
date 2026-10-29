@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Literal
 from ...result import EnsureResult
 
 if TYPE_CHECKING:
-    from .service import StateManagementService
+    from .facade import StateManagementService
 
 PkgManagerName = Literal["auto", "apt", "dnf", "yum", "apk", "pacman", "zypper"]
 
@@ -205,9 +205,9 @@ async def ensure_package(
     """Идемпотентно обеспечить наличие или отсутствие пакета(ов) на хосте."""
     pkgs = [package] if isinstance(package, str) else [str(p) for p in package]
     target_str = ", ".join(pkgs)
-    is_dry_run = svc._conn.is_dry_run if dry_run is None else dry_run
+    is_dry_run = svc._conn.dry_run if dry_run is None else dry_run
 
-    if svc._conn.is_dry_run:
+    if svc._conn.dry_run:
         return EnsureResult(
             target=target_str,
             state=state,

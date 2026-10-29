@@ -16,7 +16,15 @@ import contextvars
 import functools
 import inspect
 import threading
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Mapping
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from contextlib import AbstractAsyncContextManager
 from typing import Any, ClassVar, Concatenate, Generic, ParamSpec, TypeVar, overload
 
@@ -820,6 +828,115 @@ def sync_iter(
         portal_attr=portal_attr,
         buffer_size=buffer_size,
     )
+
+
+class _SyncFactoryDescriptor(Generic[P]):
+    """Дескриптор классметода-фабрики ``SyncConnection``, оборачивающий результат ``Connection.from_*``."""
+
+    def __init__(self, async_factory: Callable[P, Any]) -> None:
+        self._async_factory = async_factory
+        functools.update_wrapper(self, async_factory)
+
+    def __get__(
+        self, instance: Any, owner: type[T] | None = None
+    ) -> Callable[P, T]:
+        cls: type[Any] = owner if owner is not None else type(instance)
+        factory = self._async_factory
+
+        @functools.wraps(factory)
+        def _bound_factory(*args: P.args, **kwargs: P.kwargs) -> T:
+            return cls(factory(*args, **kwargs))
+
+        return _bound_factory
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Any:
+        return self._async_factory(*args, **kwargs)
+
+
+class _SyncListFactoryDescriptor(Generic[P]):
+    """Дескриптор списочной фабрики ``SyncConnection.from_file``."""
+
+    def __init__(self, async_list_factory: Callable[P, Sequence[Any]]) -> None:
+        self._async_factory = async_list_factory
+        functools.update_wrapper(self, async_list_factory)
+
+    def __get__(
+        self, instance: Any, owner: type[T] | None = None
+    ) -> Callable[P, list[T]]:
+        cls: type[Any] = owner if owner is not None else type(instance)
+        factory = self._async_factory
+
+        @functools.wraps(factory)
+        def _bound_list_factory(*args: P.args, **kwargs: P.kwargs) -> list[T]:
+            return [cls(item) for item in factory(*args, **kwargs)]
+
+        return _bound_list_factory
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> Sequence[Any]:
+        return self._async_factory(*args, **kwargs)
+
+
+class _SyncCloneDescriptor(Generic[P]):
+    """Дескриптор методов клонирования (``copy``, ``with_overrides``) для ``SyncConnection``."""
+
+    def __init__(
+        self,
+        async_clone_fn: Callable[Concatenate[Any, P], Any],
+        *,
+        target_attr: str = "_async_target",
+    ) -> None:
+        self._async_clone_fn = async_clone_fn
+        self._method_name: str = getattr(async_clone_fn, "__name__", "")
+        self._target_attr = target_attr
+        functools.update_wrapper(self, async_clone_fn)
+
+    @overload
+    def __get__(
+        self, instance: None, owner: type | None = None
+    ) -> _SyncCloneDescriptor[P]: ...
+
+    @overload
+    def __get__(
+        self, instance: T, owner: type[T] | None = None
+    ) -> Callable[P, T]: ...
+
+    def __get__(self, instance: Any, owner: type | None = None) -> Any:
+        if instance is None:
+            return self
+        target = _resolve_attr_path(instance, self._target_attr)
+        bound_clone = getattr(target, self._method_name)
+        cls = type(instance)
+
+        @functools.wraps(self._async_clone_fn)
+        def _sync_clone(*args: P.args, **kwargs: P.kwargs) -> Any:
+            return cls(bound_clone(*args, **kwargs))
+
+        return _sync_clone
+
+    def __call__(self, instance: Any, /, *args: P.args, **kwargs: P.kwargs) -> Any:
+        bound = self.__get__(instance, type(instance))
+        return bound(*args, **kwargs)
+
+
+def sync_factory(async_factory: Callable[P, Any]) -> _SyncFactoryDescriptor[P]:
+    """Создать типизированный дескриптор классметода-фабрики ``SyncConnection``."""
+    return _SyncFactoryDescriptor(async_factory)
+
+
+def sync_list_factory(
+    async_list_factory: Callable[P, Sequence[Any]],
+) -> _SyncListFactoryDescriptor[P]:
+    """Создать типизированный дескриптор списочной фабрики ``SyncConnection.from_file``."""
+    return _SyncListFactoryDescriptor(async_list_factory)
+
+
+def sync_clone_method(
+    async_clone_fn: Callable[Concatenate[Any, P], Any],
+    *,
+    target_attr: str = "_async_target",
+) -> _SyncCloneDescriptor[P]:
+    """Создать типизированный дескриптор клонирующего метода ``SyncConnection``."""
+    return _SyncCloneDescriptor(async_clone_fn, target_attr=target_attr)
 
 
 class SyncProxyMixin:

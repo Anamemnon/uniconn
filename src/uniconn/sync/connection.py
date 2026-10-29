@@ -4,21 +4,23 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self
-
-from pydantic import SecretStr
 
 from ..config.models import ConnectionConfig
 from ..core.bridge import (
     EventLoopPortal,
     SyncProxyMixin,
+    sync_clone_method,
     sync_context,
+    sync_factory,
     sync_iter,
+    sync_list_factory,
     sync_method,
 )
-from ..core.connection import Connection, OperationObserver
+from ..core.connection import Connection, ObserverContext, OperationObserver
 from ..core.context import CwdContext, EnvContext, ExecutionContext
 from ..core.pipeline import CommandPipeline, HookCallback, HookEvent
 from ..core.resilience import CircuitBreaker, RateLimiter
@@ -53,7 +55,9 @@ class SyncConnection(SyncProxyMixin):
         self._async_conn = async_conn
         self._async_target = async_conn
         cfg_timeout = getattr(getattr(async_conn, "config", None), "timeout", None)
-        default_timeout = float(cfg_timeout) if isinstance(cfg_timeout, (int, float)) else None
+        default_timeout = (
+            float(cfg_timeout) if isinstance(cfg_timeout, (int, float)) else None
+        )
         self._portal = EventLoopPortal(
             owner_name="SyncConnection",
             default_timeout=default_timeout,
@@ -62,160 +66,15 @@ class SyncConnection(SyncProxyMixin):
         self.state = SyncStateManagementService(self)
         self.tunnels = SyncTunnelService(self)
 
-    # ─── Фабричные методы и клонирование ───────────────────────────
+    # ─── Фабричные методы и клонирование (ParamSpec-дескрипторы) ───
 
-    @classmethod
-    def from_uri(
-        cls,
-        uri: str,
-        retry_attempts: int = 3,
-        logger: logging.Logger | None = None,
-        dry_run: bool = False,
-        before_run: Sequence[HookCallback] | None = None,
-        after_run: Sequence[HookCallback] | None = None,
-        on_error: Sequence[HookCallback] | None = None,
-        rate_limit: float | RateLimiter | None = None,
-        circuit_breaker: CircuitBreaker | bool | None = None,
-    ) -> Self:
-        """Создать синхронное подключение напрямую из URI строки."""
-        return cls(
-            Connection.from_uri(
-                uri,
-                retry_attempts=retry_attempts,
-                logger=logger,
-                dry_run=dry_run,
-                before_run=before_run,
-                after_run=after_run,
-                on_error=on_error,
-                rate_limit=rate_limit,
-                circuit_breaker=circuit_breaker,
-            )
-        )
-
-    @classmethod
-    def from_config(
-        cls,
-        config: ConnectionConfig,
-        retry_attempts: int = 3,
-        logger: logging.Logger | None = None,
-        dry_run: bool = False,
-        before_run: Sequence[HookCallback] | None = None,
-        after_run: Sequence[HookCallback] | None = None,
-        on_error: Sequence[HookCallback] | None = None,
-        rate_limit: float | RateLimiter | None = None,
-        circuit_breaker: CircuitBreaker | bool | None = None,
-    ) -> Self:
-        """Создать синхронное подключение из объекта ``ConnectionConfig``."""
-        return cls(
-            Connection.from_config(
-                config,
-                retry_attempts=retry_attempts,
-                logger=logger,
-                dry_run=dry_run,
-                before_run=before_run,
-                after_run=after_run,
-                on_error=on_error,
-                rate_limit=rate_limit,
-                circuit_breaker=circuit_breaker,
-            )
-        )
-
-    @classmethod
-    def from_dict(
-        cls,
-        data: dict[str, Any],
-        retry_attempts: int = 3,
-        logger: logging.Logger | None = None,
-        dry_run: bool = False,
-    ) -> Self:
-        """Создать синхронное подключение из словаря."""
-        return cls(
-            Connection.from_dict(
-                data,
-                retry_attempts=retry_attempts,
-                logger=logger,
-                dry_run=dry_run,
-            )
-        )
-
-    @classmethod
-    def from_file(
-        cls,
-        path: str | Path,
-        retry_attempts: int = 3,
-        logger: logging.Logger | None = None,
-        *,
-        host: str | None = None,
-        group: str | None = None,
-    ) -> list[Self]:
-        """Создать список синхронных подключений из JSON/YAML/TOML файла."""
-        conns = Connection.from_file(
-            path,
-            retry_attempts=retry_attempts,
-            logger=logger,
-            host=host,
-            group=group,
-        )
-        return [cls(c) for c in conns]
-
-    @classmethod
-    def from_inventory(
-        cls,
-        path: str | Path,
-        host: str,
-        retry_attempts: int = 3,
-        logger: logging.Logger | None = None,
-    ) -> Self:
-        """Создать одиночное синхронное подключение по имени хоста из инвентарного файла."""
-        return cls(
-            Connection.from_inventory(
-                path,
-                host=host,
-                retry_attempts=retry_attempts,
-                logger=logger,
-            )
-        )
-
-    def copy(
-        self,
-        host: str | None = None,
-        port: int | None = None,
-        username: str | None = None,
-        password: str | SecretStr | None = None,
-        key_file: str | None = None,
-        passphrase: str | SecretStr | None = None,
-        ssh_config: str | bool | None = None,
-        timeout: float | None = None,
-        options: dict[str, Any] | None = None,
-        retry_attempts: int | None = None,
-        logger: logging.Logger | None = None,
-        dry_run: bool | None = None,
-        rate_limit: float | RateLimiter | None = None,
-        circuit_breaker: CircuitBreaker | bool | None = None,
-    ) -> Self:
-        """Создать копию синхронного подключения с возможностью изменения параметров."""
-        return type(self)(
-            self._async_conn.copy(
-                host=host,
-                port=port,
-                username=username,
-                password=password,
-                key_file=key_file,
-                passphrase=passphrase,
-                ssh_config=ssh_config,
-                timeout=timeout,
-                options=options,
-                retry_attempts=retry_attempts,
-                logger=logger,
-                dry_run=dry_run,
-                rate_limit=rate_limit,
-                circuit_breaker=circuit_breaker,
-            )
-        )
-
-    def with_overrides(self, **overrides: Any) -> Self:
-        """Создать копию синхронного подключения с переопределёнными параметрами."""
-        return type(self)(self._async_conn.with_overrides(**overrides))
+    from_uri = sync_factory(Connection.from_uri)
+    from_config = sync_factory(Connection.from_config)
+    from_dict = sync_factory(Connection.from_dict)
+    from_file = sync_list_factory(Connection.from_file)
+    from_inventory = sync_factory(Connection.from_inventory)
+    copy = sync_clone_method(Connection.copy)
+    with_overrides = sync_clone_method(Connection.with_overrides)
 
     # ─── Свойства и контекст ───────────────────────────────────────
 
@@ -254,13 +113,18 @@ class SyncConnection(SyncProxyMixin):
         return self._async_conn.retry_attempts
 
     @property
-    def is_dry_run(self) -> bool:
-        """Включён ли глобальный режим симуляции (``dry_run``)."""
-        return self._async_conn.is_dry_run
+    def dry_run(self) -> bool:
+        """Включён ли режим ``dry_run`` для данного подключения."""
+        return self._async_conn.dry_run
 
     @property
-    def dry_run(self) -> bool:
-        """Включён ли режим dry_run для данного подключения."""
+    def is_dry_run(self) -> bool:
+        """Устаревший псевдоним для ``sync_conn.dry_run``."""
+        warnings.warn(
+            "SyncConnection.is_dry_run is deprecated, use SyncConnection.dry_run instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self._async_conn.dry_run
 
     @property
@@ -296,6 +160,15 @@ class SyncConnection(SyncProxyMixin):
         """Зарегистрировать наблюдателя за файловыми и интерактивными операциями."""
         self._async_conn.add_operation_observer(observer)
         return self
+
+    def remove_operation_observer(self, observer: OperationObserver) -> Self:
+        """Удалить ранее зарегистрированного наблюдателя сквозных операций."""
+        self._async_conn.remove_operation_observer(observer)
+        return self
+
+    def using_observer(self, observer: OperationObserver) -> ObserverContext:
+        """Контекстный менеджер временной регистрации наблюдателя с гарантированным удалением."""
+        return self._async_conn.using_observer(observer)
 
     def _run_coro(self, coro: Any) -> Any:
         """Запустить корутину синхронно через ``EventLoopPortal``."""
