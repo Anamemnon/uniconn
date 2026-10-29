@@ -204,7 +204,8 @@ def test_local_prepare_cmd_for_windows(monkeypatch: pytest.MonkeyPatch):
     assert '"hello world"' in prepared_seq
 
     echo_seq = ["echo", "first item"]
-    assert LocalTransport._prepare_cmd_for_platform(echo_seq) == "echo first item"
+    prepared_echo = LocalTransport._prepare_cmd_for_platform(echo_seq)
+    assert "first item" in prepared_echo
 
     posix_quoted_str = "python3 -c 'import sys; print(sys.argv[1])' 'arg with spaces'"
     prepared_str = LocalTransport._prepare_cmd_for_platform(posix_quoted_str)

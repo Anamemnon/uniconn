@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import builtins
-import codecs
 import contextlib
 import os
 import shlex
@@ -117,65 +117,218 @@ def _safe_which(binary: str) -> str | None:
         return None
 
 
-def _apply_windows_polyfills(parts: list[str]) -> str | None:
-    """Эмулировать стандартные POSIX-команды на Windows через Python или встроенные утилиты."""
+def _py_cmd(script: str, args: Sequence[str] = ()) -> list[str]:
+    """Сформировать команду Python без переводов строк для безопасного исполнения через cmd.exe."""
+    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    runner = f"import base64; exec(base64.b64decode('{encoded}'))"
+    return [sys.executable, "-c", runner, *args]
+
+
+_PWD_POLYFILL_SCRIPT = r"""import os, sys
+sys.stdout.buffer.write((os.getcwd() + "\n").encode("utf-8"))
+"""
+
+_ECHO_POLYFILL_SCRIPT = r"""import sys, re
+args = sys.argv[1:]
+newline = True
+escapes = False
+while args and args[0].startswith("-") and len(args[0]) > 1:
+    flag = args[0]
+    if all(c in "neE" for c in flag[1:]):
+        if "n" in flag:
+            newline = False
+        if "e" in flag:
+            escapes = True
+        if "E" in flag:
+            escapes = False
+        args = args[1:]
+    else:
+        break
+text = " ".join(args)
+if escapes:
+    text = re.sub(
+        r'\\([abfnrtv\'"]|[0-7]{1,3}|x[0-9a-fA-F]{1,2})',
+        lambda m: bytes(m.group(0), 'ascii').decode('unicode_escape', errors='replace'),
+        text,
+    )
+sys.stdout.buffer.write(text.encode("utf-8") + (b"\n" if newline else b""))
+"""
+
+_TOUCH_POLYFILL_SCRIPT = r"""import sys, pathlib
+args = sys.argv[1:]
+no_create = False
+files = []
+for a in args:
+    if a in ("-c", "--no-create"):
+        no_create = True
+    elif not a.startswith("-"):
+        files.append(a)
+if not files:
+    sys.stderr.write("touch: missing file operand\n")
+    sys.exit(1)
+for f in files:
+    p = pathlib.Path(f)
+    if p.exists():
+        p.touch()
+    elif not no_create:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch()
+"""
+
+_CAT_POLYFILL_SCRIPT = r"""import sys, shutil, pathlib
+files = sys.argv[1:] or ["-"]
+exit_code = 0
+for f in files:
+    if f == "-":
+        shutil.copyfileobj(sys.stdin.buffer, sys.stdout.buffer)
+    else:
+        p = pathlib.Path(f)
+        if not p.is_file():
+            sys.stderr.write(f"cat: {f}: No such file or directory\n")
+            exit_code = 1
+        else:
+            try:
+                with open(p, "rb") as fp:
+                    shutil.copyfileobj(fp, sys.stdout.buffer)
+            except OSError as e:
+                sys.stderr.write(f"cat: {f}: {e}\n")
+                exit_code = 1
+sys.exit(exit_code)
+"""
+
+_TAIL_POLYFILL_SCRIPT = r"""import sys, collections, pathlib
+args = sys.argv[1:]
+n = 10
+files = []
+i = 0
+while i < len(args):
+    a = args[i]
+    if a == "-n" and i + 1 < len(args):
+        try:
+            n = int(args[i + 1])
+        except ValueError:
+            pass
+        i += 2
+    elif a.startswith("-n") and len(a) > 2:
+        try:
+            n = int(a[2:])
+        except ValueError:
+            pass
+        i += 1
+    elif a.startswith("-") and a[1:].isdigit():
+        n = int(a[1:])
+        i += 1
+    elif a.startswith("-") and a != "-":
+        i += 1
+    else:
+        files.append(a)
+        i += 1
+def _tail(stream):
+    d = collections.deque(stream, maxlen=max(0, n))
+    for line in d:
+        sys.stdout.buffer.write(line)
+if not files or files == ["-"]:
+    _tail(sys.stdin.buffer)
+else:
+    for f in files:
+        if f == "-":
+            _tail(sys.stdin.buffer)
+        else:
+            try:
+                with open(f, "rb") as fp:
+                    _tail(fp)
+            except OSError as e:
+                sys.stderr.write(f"tail: cannot open {f}: {e}\n")
+                sys.exit(1)
+"""
+
+_PRINTF_POLYFILL_SCRIPT = r"""import sys, re
+if len(sys.argv) < 2:
+    sys.stderr.buffer.write(b"printf: usage: printf format [arguments...]\n")
+    sys.exit(1)
+fmt = sys.argv[1]
+args = list(sys.argv[2:])
+def _unescape(s: str) -> str:
+    return re.sub(
+        r'\\([abfnrtv\'"]|[0-7]{1,3}|x[0-9a-fA-F]{1,2})',
+        lambda m: bytes(m.group(0), 'ascii').decode('unicode_escape', errors='replace'),
+        s,
+    )
+fmt = _unescape(fmt)
+spec_re = re.compile(r'%(?:[-+ #0])?(?:\d+)?(?:\.\d+)?[diufFeExXsb%]')
+arg_idx = 0
+out = []
+last_end = 0
+for m in spec_re.finditer(fmt):
+    out.append(fmt[last_end:m.start()])
+    spec = m.group(0)
+    last_end = m.end()
+    if spec == "%%":
+        out.append("%")
+    elif spec.endswith("b"):
+        val = args[arg_idx] if arg_idx < len(args) else ""
+        arg_idx += 1
+        out.append(_unescape(str(val)))
+    elif spec.endswith(("d", "i", "u")):
+        val = args[arg_idx] if arg_idx < len(args) else "0"
+        arg_idx += 1
+        try:
+            ival = int(float(val))
+        except ValueError:
+            ival = 0
+        conv = spec[:-1] + "d"
+        out.append(conv % ival)
+    elif spec.endswith(("f", "F")):
+        val = args[arg_idx] if arg_idx < len(args) else "0.0"
+        arg_idx += 1
+        try:
+            fval = float(val)
+        except ValueError:
+            fval = 0.0
+        out.append(spec % fval)
+    else:
+        val = args[arg_idx] if arg_idx < len(args) else ""
+        arg_idx += 1
+        out.append(spec % val)
+out.append(fmt[last_end:])
+sys.stdout.buffer.write("".join(out).encode("utf-8"))
+"""
+
+
+def _apply_windows_polyfills(parts: list[str]) -> list[str] | None:
+    """Эмулировать стандартные POSIX-команды на Windows через Python или встроенные утилиты.
+
+    Возвращает список аргументов для безопасного запуска через subprocess (с sys.executable)
+    или None, если полифилл не требуется. Исходный список `parts` не модифицируется.
+    Все пользовательские аргументы передаются исключительно через sys.argv (без интерполяции).
+    """
     if not parts:
         return None
 
     first = parts[0].lower()
-    if first == "echo":
-        return "echo " + " ".join(p.strip("'\"") for p in parts[1:])
-
-    if first == "cat" and _safe_which("cat") is None:
-        if len(parts) == 1:
-            return (
-                f'"{sys.executable}" -c '
-                '"import sys, shutil; shutil.copyfileobj(sys.stdin.buffer, sys.stdout.buffer)"'
-            )
-        files = parts[1:]
-        return (
-            f'"{sys.executable}" -c '
-            '"import sys, pathlib; [sys.stdout.buffer.write(pathlib.Path(f).read_bytes()) for f in sys.argv[1:]]" '
-            f"{subprocess.list2cmdline(files)}"
-        )
-
-    if first == "pwd" and _safe_which("pwd") is None:
-        return f'"{sys.executable}" -c "import os, sys; sys.stdout.write(os.getcwd())"'
-
-    if first == "touch" and _safe_which("touch") is None:
-        files = parts[1:]
-        return (
-            f'"{sys.executable}" -c '
-            '"import sys, pathlib; [pathlib.Path(f).touch() for f in sys.argv[1:]]" '
-            f"{subprocess.list2cmdline(files)}"
-        )
-
-    if first == "printf" and _safe_which("printf") is None:
-        raw_arg = parts[1] if len(parts) > 1 else ""
-        try:
-            decoded = codecs.decode(raw_arg, "unicode_escape")
-        except Exception:
-            decoded = raw_arg
-        return f'"{sys.executable}" -c "import sys; sys.stdout.write({decoded!r})"'
-
-    if first == "tail" and _safe_which("tail") is None:
-        n = 10
-        for i, p in enumerate(parts):
-            if p == "-n" and i + 1 < len(parts):
-                with contextlib.suppress(ValueError):
-                    n = int(parts[i + 1])
-        target_file = parts[-1]
-        return (
-            f'"{sys.executable}" -c '
-            f'"import sys; lines = open(sys.argv[1], encoding=\'utf-8\', errors=\'replace\').readlines(); '
-            f'sys.stdout.write(\'\'.join(lines[-{n}:]))" {subprocess.list2cmdline([target_file])}'
-        )
 
     if first == "python3" and _safe_which("python3") is None:
-        parts[0] = sys.executable
+        return [sys.executable, *parts[1:]]
+
+    if first == "pwd" and _safe_which("pwd") is None:
+        return _py_cmd(_PWD_POLYFILL_SCRIPT)
+
+    if first == "echo":
+        return _py_cmd(_ECHO_POLYFILL_SCRIPT, parts[1:])
+
+    if first == "touch" and _safe_which("touch") is None:
+        return _py_cmd(_TOUCH_POLYFILL_SCRIPT, parts[1:])
+
+    if first == "cat" and _safe_which("cat") is None:
+        return _py_cmd(_CAT_POLYFILL_SCRIPT, parts[1:])
+
+    if first == "tail" and _safe_which("tail") is None:
+        return _py_cmd(_TAIL_POLYFILL_SCRIPT, parts[1:])
+
+    if first == "printf" and _safe_which("printf") is None:
+        return _py_cmd(_PRINTF_POLYFILL_SCRIPT, parts[1:])
 
     return None
-
 
 class LocalTransport(BaseTransport):
     """Выполнение команд локально через subprocess."""
@@ -216,31 +369,34 @@ class LocalTransport(BaseTransport):
         if isinstance(command, (list, tuple)):
             parts = [str(c) for c in command]
             polyfilled = _apply_windows_polyfills(parts)
-            return polyfilled if polyfilled is not None else subprocess.list2cmdline(parts)
+            final_parts = polyfilled if polyfilled is not None else parts
+            return subprocess.list2cmdline(final_parts)
 
         if not isinstance(command, str):
             return str(command)
 
         cmd_stripped = command.strip()
-        # Быстрый путь для echo с кавычками
-        if cmd_stripped.lower().startswith("echo "):
-            rest = cmd_stripped[5:].strip()
-            if (rest.startswith("'") and rest.endswith("'")) or (rest.startswith('"') and rest.endswith('"')):
-                return f"echo {rest[1:-1]}"
-
-        # Токенизация команд с POSIX-кавычками или полифиллами
         cmd_first = cmd_stripped.split(None, 1)[0].lower() if cmd_stripped else ""
         needs_tokenization = (
             "'" in command
-            or cmd_first in ("cat", "printf", "tail", "pwd", "touch")
-            or any(cmd_stripped.lower().startswith(f"{cmd} ") for cmd in ("cat", "printf", "tail", "pwd", "touch"))
+            or cmd_first in ("cat", "printf", "tail", "pwd", "touch", "echo", "python3")
+            or any(
+                cmd_stripped.lower().startswith(f"{cmd} ")
+                for cmd in ("cat", "printf", "tail", "pwd", "touch", "echo", "python3")
+            )
         )
         if needs_tokenization:
             try:
                 parts = shlex.split(command, posix=True)
                 if parts:
-                    polyfilled = _apply_windows_polyfills(parts)
-                    return polyfilled if polyfilled is not None else subprocess.list2cmdline(parts)
+                    has_shell_operators = any(
+                        token in ("&&", "||", "|", ";", "&") or token.startswith((">", "<"))
+                        for token in parts
+                    )
+                    if not has_shell_operators:
+                        polyfilled = _apply_windows_polyfills(parts)
+                        final_parts = polyfilled if polyfilled is not None else parts
+                        return subprocess.list2cmdline(final_parts)
             except ValueError:
                 pass
 
@@ -283,7 +439,33 @@ class LocalTransport(BaseTransport):
         if stdin_bytes is not None:
             proc_kwargs["stdin"] = asyncio.subprocess.PIPE
 
-        proc = await asyncio.create_subprocess_shell(cmd_to_exec, **proc_kwargs)
+        # Определение способа запуска: exec (без shell) vs shell
+        exec_parts: list[str] | None = None
+        if isinstance(command, (list, tuple)):
+            parts = [str(c) for c in command]
+            if sys.platform == "win32":
+                polyfilled = _apply_windows_polyfills(parts)
+                exec_parts = polyfilled if polyfilled is not None else parts
+            else:
+                exec_parts = parts
+        elif isinstance(command, str) and sys.platform == "win32":
+            cmd_stripped = command.strip()
+            cmd_first = cmd_stripped.split(None, 1)[0].lower() if cmd_stripped else ""
+            if "'" in command or cmd_first in ("cat", "printf", "tail", "pwd", "touch", "echo", "python3"):
+                with contextlib.suppress(ValueError):
+                    sh_parts = shlex.split(command, posix=True)
+                    has_ops = any(t in ("&&", "||", "|", ";", "&") or t.startswith((">", "<")) for t in sh_parts)
+                    if not has_ops:
+                        exec_parts = _apply_windows_polyfills(sh_parts)
+
+        if exec_parts is not None and exec_parts:
+            proc = await asyncio.create_subprocess_exec(
+                exec_parts[0],
+                *exec_parts[1:],
+                **proc_kwargs,
+            )
+        else:
+            proc = await asyncio.create_subprocess_shell(cmd_to_exec, **proc_kwargs)
 
         try:
             comm_coro = (
@@ -531,12 +713,30 @@ class LocalTransport(BaseTransport):
         **kwargs: Any,
     ) -> AsyncIterator[str]:
         cmd_to_exec = self._prepare_cmd_for_platform(command)
-        proc = await asyncio.create_subprocess_shell(
-            cmd_to_exec,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            **kwargs,
-        )
+        exec_parts: list[str] | None = None
+        if isinstance(command, (list, tuple)):
+            parts = [str(c) for c in command]
+            if sys.platform == "win32":
+                polyfilled = _apply_windows_polyfills(parts)
+                exec_parts = polyfilled if polyfilled is not None else parts
+            else:
+                exec_parts = parts
+
+        if exec_parts is not None and exec_parts:
+            proc = await asyncio.create_subprocess_exec(
+                exec_parts[0],
+                *exec_parts[1:],
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                **kwargs,
+            )
+        else:
+            proc = await asyncio.create_subprocess_shell(
+                cmd_to_exec,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                **kwargs,
+            )
         try:
             if proc.stdout is not None:
                 async for line in proc.stdout:
