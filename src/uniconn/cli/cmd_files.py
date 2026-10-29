@@ -4,12 +4,18 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 from typing import Annotated, Any
 
 from .._logging import get_logger
-from .renderers import CLIOutputRenderer, Parameter, Table, box, build_cli_pool
+from .renderers import (
+    CLIOutputRenderer,
+    Parameter,
+    Table,
+    box,
+    build_cli_pool,
+    print_json,
+)
 
 
 def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -> None:
@@ -134,17 +140,15 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                     )
 
                 if output_format == "json":
-                    console.print(
-                        json.dumps(
-                            {
-                                "action": "upload",
-                                "local_path": local_path,
-                                "remote_path": remote_path,
-                                "hosts": target_labels,
-                                "ok": True,
-                            },
-                            indent=2,
-                        )
+                    print_json(
+                        console,
+                        {
+                            "action": "upload",
+                            "local_path": local_path,
+                            "remote_path": remote_path,
+                            "hosts": target_labels,
+                            "ok": True,
+                        },
                     )
                 else:
                     console.print(
@@ -273,16 +277,14 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                     )
 
                 if output_format == "json":
-                    console.print(
-                        json.dumps(
-                            {
-                                "action": "download",
-                                "remote_path": remote_path,
-                                "saved": saved,
-                                "ok": True,
-                            },
-                            indent=2,
-                        )
+                    print_json(
+                        console,
+                        {
+                            "action": "download",
+                            "remote_path": remote_path,
+                            "saved": saved,
+                            "ok": True,
+                        },
                     )
                 else:
                     for host_key, dest in saved.items():
@@ -403,11 +405,9 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                 )
 
                 if output_format == "json":
-                    console.print(
-                        json.dumps(
-                            {k: v.to_dict() for k, v in results.items()},
-                            indent=2,
-                        )
+                    print_json(
+                        console,
+                        {k: v.to_dict() for k, v in results.items()},
                     )
                 else:
                     table = Table(
@@ -544,17 +544,15 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                 )
 
                 if output_format == "json":
-                    console.print(
-                        json.dumps(
-                            {
-                                "action": "template",
-                                "remote_path": remote_path,
-                                "hosts": list(rendered_map.keys()),
-                                "rendered": next(iter(rendered_map.values()), ""),
-                                "ok": True,
-                            },
-                            indent=2,
-                        )
+                    print_json(
+                        console,
+                        {
+                            "action": "template",
+                            "remote_path": remote_path,
+                            "hosts": list(rendered_map.keys()),
+                            "rendered": next(iter(rendered_map.values()), ""),
+                            "ok": True,
+                        },
                     )
                 else:
                     console.print(
@@ -618,16 +616,14 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                     remote_path, algorithm=alg_val, sudo=sudo
                 )
                 if output_format == "json":
-                    console.print(
-                        json.dumps(
-                            {
-                                "action": "checksum",
-                                "remote_path": remote_path,
-                                "algorithm": alg_val,
-                                "checksums": digests,
-                            },
-                            indent=2,
-                        )
+                    print_json(
+                        console,
+                        {
+                            "action": "checksum",
+                            "remote_path": remote_path,
+                            "algorithm": alg_val,
+                            "checksums": digests,
+                        },
                     )
                     return
 

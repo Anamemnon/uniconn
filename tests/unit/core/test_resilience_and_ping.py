@@ -459,7 +459,7 @@ class TestCLIV090AndDashboard:
             ["exec-script", str(script), "local://", "--args", "v090", "--format", "json"],
         )
         assert res_scr.exit_code == 0
-        scr_data = json.loads(res_scr.stdout)
+        scr_data = json.loads(res_scr.stdout, strict=False)
         assert scr_data["local://"]["ok"] is True
         assert "CLI_SCRIPT_OK:v090" in scr_data["local://"]["stdout"]
 

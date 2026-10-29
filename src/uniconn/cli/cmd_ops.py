@@ -4,14 +4,21 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import shlex
 import sys
 from typing import Annotated, Any
 
 from .._logging import get_logger
 from ..services.facts_models import diff_facts
-from .renderers import CLIOutputRenderer, Panel, Parameter, Table, box, build_cli_pool
+from .renderers import (
+    CLIOutputRenderer,
+    Panel,
+    Parameter,
+    Table,
+    box,
+    build_cli_pool,
+    print_json,
+)
 
 
 def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -> None:
@@ -60,7 +67,7 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
 
                 if output_format == "json":
                     payload = {k: v.to_dict() for k, v in ping_map.items()}
-                    console.print(json.dumps(payload, indent=2))
+                    print_json(console, payload)
                     if dead_count > 0:
                         sys.exit(1)
                     return
@@ -129,7 +136,7 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                     result = await conn.run(operation, timeout=timeout)
 
                     if output_format == "json":
-                        console.print(json.dumps(result.to_dict(), indent=2))
+                        print_json(console, result.to_dict())
                         return
 
                     console.print(
@@ -210,7 +217,7 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                 if diff:
                     report = diff_facts(facts_map, baseline_host=baseline)
                     if output_format == "json":
-                        console.print(json.dumps(report.to_dict(), indent=2))
+                        print_json(console, report.to_dict())
                         return
 
                     if not report.has_drift:
@@ -251,7 +258,7 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
 
                 if output_format == "json":
                     payload = {k: v.to_dict() for k, v in facts_map.items()}
-                    console.print(json.dumps(payload, indent=2))
+                    print_json(console, payload)
                     return
 
                 table = Table(
@@ -396,15 +403,13 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                         break
 
                 if output_format == "json":
-                    console.print(
-                        json.dumps(
-                            {
-                                "command": stream_cmd,
-                                "count": len(collected),
-                                "lines": collected,
-                            },
-                            indent=2,
-                        )
+                    print_json(
+                        console,
+                        {
+                            "command": stream_cmd,
+                            "count": len(collected),
+                            "lines": collected,
+                        },
                     )
             except Exception as e:
                 renderer.print_error_and_exit(e, title="Tail Stream Error")
@@ -418,7 +423,7 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
     ) -> None:
         if output_format == "json":
             payload = {k: v.to_dict() for k, v in results_map.items()}
-            console.print(json.dumps(payload, indent=2))
+            print_json(console, payload)
             return
 
         table = Table(
@@ -951,7 +956,7 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                     )
                     if output_format == "json":
                         payload = {k: v.to_dict() for k, v in ping_map.items()}
-                        console.print(json.dumps(payload, indent=2))
+                        print_json(console, payload)
                         return
                     table = Table(
                         title=f"Wait For Connection ({len(ping_map)} host(s))",
@@ -987,16 +992,14 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                         delay=delay,
                     )
                     if output_format == "json":
-                        console.print(
-                            json.dumps(
-                                {
-                                    "kind": "port",
-                                    "port": port_num,
-                                    "state": port_state,
-                                    "elapsed": elapsed_map,
-                                },
-                                indent=2,
-                            )
+                        print_json(
+                            console,
+                            {
+                                "kind": "port",
+                                "port": port_num,
+                                "state": port_state,
+                                "elapsed": elapsed_map,
+                            },
                         )
                         return
                     table = Table(
@@ -1026,16 +1029,14 @@ def register_ops_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                         sudo=sudo,
                     )
                     if output_format == "json":
-                        console.print(
-                            json.dumps(
-                                {
-                                    "kind": "path",
-                                    "path": target_arg,
-                                    "state": path_state,
-                                    "elapsed": elapsed_map,
-                                },
-                                indent=2,
-                            )
+                        print_json(
+                            console,
+                            {
+                                "kind": "path",
+                                "path": target_arg,
+                                "state": path_state,
+                                "elapsed": elapsed_map,
+                            },
                         )
                         return
                     table = Table(

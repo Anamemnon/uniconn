@@ -4,14 +4,21 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import shlex
 import sys
 from typing import Annotated, Any
 
 from .._logging import get_logger
 from ..plugins._loader import TransportLoader
-from .renderers import CLIOutputRenderer, Panel, Parameter, Table, box, build_cli_pool
+from .renderers import (
+    CLIOutputRenderer,
+    Panel,
+    Parameter,
+    Table,
+    box,
+    build_cli_pool,
+    print_json,
+)
 
 
 def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -> None:
@@ -190,7 +197,7 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                         }
                         for label, result in zip(target_labels, results, strict=False)
                     ]
-                    console.print(json.dumps(output, indent=2))
+                    print_json(console, output)
                 elif output_format == "plain":
                     for label, result in zip(target_labels, results, strict=False):
                         status = "OK" if result.ok else "FAIL"
@@ -331,7 +338,7 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
 
                 if output_format == "json":
                     payload = {k: v.to_dict() for k, v in results_map.items()}
-                    console.print(json.dumps(payload, indent=2))
+                    print_json(console, payload)
                 elif output_format == "plain":
                     for host_key, res in results_map.items():
                         status = "OK" if res.ok else "FAIL"
@@ -474,7 +481,7 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                         timeout=timeout,
                     )
                     if output_format == "json":
-                        console.print(json.dumps(res.to_dict(), indent=2))
+                        print_json(console, res.to_dict())
                     elif output_format == "plain":
                         if res.stdout:
                             console.print(res.stdout.rstrip())

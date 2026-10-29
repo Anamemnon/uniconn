@@ -4,14 +4,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import shlex
 import sys
 from typing import Annotated, Any, cast
 
 from .._logging import get_logger
 from ..background._backends import BackgroundBackendType, resolve_backend
-from .renderers import CLIOutputRenderer, Parameter, Table, box
+from .renderers import CLIOutputRenderer, Parameter, Table, box, print_json
 
 
 def register_bg_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -> None:
@@ -235,19 +234,17 @@ def register_bg_commands(app: Any, console: Any, renderer: CLIOutputRenderer) ->
                 ]
 
                 if output_format == "json":
-                    console.print(
-                        json.dumps(
-                            [
-                                {
-                                    "session_id": name,
-                                    "pid": pid,
-                                    "status": status,
-                                    "backend": bname,
-                                }
-                                for name, pid, status, bname in sessions
-                            ],
-                            indent=2,
-                        )
+                    print_json(
+                        console,
+                        [
+                            {
+                                "session_id": name,
+                                "pid": pid,
+                                "status": status,
+                                "backend": bname,
+                            }
+                            for name, pid, status, bname in sessions
+                        ],
                     )
                     return
 

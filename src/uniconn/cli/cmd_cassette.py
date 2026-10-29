@@ -14,7 +14,15 @@ from typing import Annotated, Any
 from .._logging import get_logger
 from ..core.connection import Connection
 from ..transports.replay.models import Cassette, RecordMode
-from .renderers import CLIOutputRenderer, Panel, Parameter, Table, box, cyclopts
+from .renderers import (
+    CLIOutputRenderer,
+    Panel,
+    Parameter,
+    Table,
+    box,
+    cyclopts,
+    print_json,
+)
 
 
 def _format_command(command: list[str] | None, command_args: tuple[str, ...]) -> str | None:
@@ -255,7 +263,7 @@ def register_cassette_commands(app: Any, console: Any, renderer: CLIOutputRender
 
         cass_obj = Cassette.load(cass_path)
         if output_format == "json":
-            console.print(json.dumps(cass_obj.model_dump(mode="json"), indent=2, ensure_ascii=False))
+            print_json(console, cass_obj.model_dump(mode="json"))
         else:
             _render_cassette_info(cass_obj, cass_path, console)
 

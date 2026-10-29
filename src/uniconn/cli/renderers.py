@@ -97,12 +97,26 @@ class CliRunner:
         )
 
 
+def print_json(console: Any, data: Any) -> None:
+    """Вывести сериализованные данные в формате JSON без переноса строк Rich и без подсветки."""
+    console.print(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        soft_wrap=True,
+        highlight=False,
+        markup=False,
+    )
+
+
 class CLIOutputRenderer:
     """Отвечает за форматирование результатов команд и ошибок в CLI."""
 
     def __init__(self, console: Any) -> None:
         """Инициализировать рендерер с экземпляром Rich Console."""
         self.console = console
+
+    def print_json(self, data: Any) -> None:
+        """Вывести JSON без переноса строк Rich."""
+        print_json(self.console, data)
 
     def print_error_and_exit(self, error: BaseException, title: str = "Exception") -> None:
         """Вывести панель с ошибкой и завершить процесс с кодом 1."""
@@ -118,7 +132,7 @@ class CLIOutputRenderer:
     def render_single_result(self, result: Any, output_format: str = "panel") -> None:
         """Вывести результат одиночной команды в формате ``json``, ``plain`` или ``panel``."""
         if output_format == "json":
-            self.console.print(json.dumps(result.to_dict(), indent=2))
+            self.print_json(result.to_dict())
             if not result.ok:
                 sys.exit(result.exit_code)
             return
