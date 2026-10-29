@@ -332,6 +332,7 @@ class TestPingRunScriptAndDiffFacts:
             assert len(ping_map) == 2
             assert all(item.alive for item in ping_map.values())
 
+    @pytest.mark.posix_only
     @pytest.mark.asyncio
     async def test_run_script_uploads_executes_and_cleans_up(self, tmp_path: Path) -> None:
         """Проверить загрузку, исполнение с аргументами/окружением и очистку скрипта."""

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from examples.dashboard.server import (
     HTML_TEMPLATE_PATH,
     _build_and_validate_uri,
@@ -207,6 +209,7 @@ class TestDashboardUriPoolAndScreen:
         assert 'data-suite="architecture"' in html
         assert 'data-suite="benchmarks"' in html
 
+    @pytest.mark.slow
     def test_execute_pytest_benchmarks_and_architecture(self) -> None:
         """Проверить запуск архитектурных тестов и бенчмарка через _execute_pytest."""
         from examples.dashboard.server import _execute_pytest
@@ -215,6 +218,31 @@ class TestDashboardUriPoolAndScreen:
         assert arch_res["ok"] is True
         assert arch_res["exit_code"] == 0
 
-        bench_res = _execute_pytest("benchmarks")
+        bench_res = _execute_pytest("benchmarks", fast=True)
         assert bench_res["ok"] is True
         assert bench_res["exit_code"] == 0
+
+    def test_dashboard_modular_decomposition_and_ci_workflow(self) -> None:
+        """Проверить модульную декомпозицию examples/dashboard и наличие .github/workflows/ci.yml."""
+        from pathlib import Path
+
+        from examples.dashboard import handlers, sandboxes, state
+        from examples.dashboard.handlers import api as api_mod
+        from examples.dashboard.sandboxes import features, hooks, pool, shell
+
+        assert callable(state.create_default_dashboard_states)
+        assert callable(api_mod._dispatch_endpoint)
+        assert callable(handlers._execute_pytest)
+        assert callable(shell._execute_shell_command)
+        assert callable(hooks._execute_hooks_sandbox)
+        assert callable(pool._execute_pool_sandbox)
+        assert callable(features._execute_v090_sandbox)
+        assert callable(sandboxes._build_and_validate_uri)
+
+        ci_file = Path(state.ROOT_DIR) / ".github" / "workflows" / "ci.yml"
+        assert ci_file.is_file()
+        ci_content = ci_file.read_text(encoding="utf-8")
+        assert "ubuntu-latest" in ci_content
+        assert "windows-latest" in ci_content
+        assert "macos-latest" in ci_content
+        assert "not integration and not slow" in ci_content

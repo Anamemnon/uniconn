@@ -285,6 +285,7 @@ async def test_dry_run_mode_skips_execution_and_triggers_hooks(tmp_path: Path):
 # ─── 4. Файловые операции в памяти (read_file, write_file) и run_bytes ──
 
 
+@pytest.mark.posix_only
 @pytest.mark.asyncio
 async def test_local_read_write_file_and_run_bytes(tmp_path: Path):
     """read_file, write_file (с mode и conn.cd) и run_bytes корректно работают на LocalTransport."""

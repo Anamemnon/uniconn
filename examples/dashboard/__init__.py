@@ -1,7 +1,7 @@
-"""Интерактивная панель предпросмотра и тестирования uniconn."""
+"""Интерактивная веб-панель предпросмотра и тестирования uniconn."""
 
 from __future__ import annotations
 
-from .server import serve_dev_dashboard
+from examples.dashboard.server import serve_dev_dashboard
 
 __all__ = ["serve_dev_dashboard"]

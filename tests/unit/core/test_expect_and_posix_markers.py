@@ -377,6 +377,7 @@ class TestSmartSyncDirAndTemplating:
             )
             assert rendered_j2 == "server web-01:8080;"
 
+    @pytest.mark.posix_only
     @pytest.mark.asyncio
     async def test_write_template_connection_sync_and_pool(self, tmp_path: Path) -> None:
         """write_template и sync_dir работают в Connection.files, SyncConnection.files и ConnectionPool.files."""

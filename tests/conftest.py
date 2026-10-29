@@ -64,11 +64,3 @@ def mock_transport(mocker):
     transport.connect = mocker.AsyncMock()
     transport.disconnect = mocker.AsyncMock()
     return transport
-
-@pytest.fixture
-def event_loop():
-    """Event loop для async тестов"""
-    import asyncio
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
