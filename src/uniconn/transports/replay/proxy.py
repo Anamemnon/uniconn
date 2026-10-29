@@ -874,6 +874,11 @@ class CassetteTransportProxy(BaseTransport):
                     command=f"upload {remote_path}",
                     host=self.config.host,
                 )
+                progress_cb = kwargs.get("progress_callback")
+                if callable(progress_cb):
+                    p = Path(local_path)
+                    sz = p.stat().st_size if p.is_file() else 0
+                    progress_cb(sz, sz)
                 return
             if not self._can_record():
                 self._raise_fs_miss("upload", remote_path)
@@ -905,6 +910,11 @@ class CassetteTransportProxy(BaseTransport):
                     Path(local_path).write_bytes(base64.b64decode(matched.content_base64))
                 elif matched.content_utf8 is not None:
                     Path(local_path).write_text(matched.content_utf8, encoding="utf-8")
+                progress_cb = kwargs.get("progress_callback")
+                if callable(progress_cb):
+                    p = Path(local_path)
+                    sz = p.stat().st_size if p.is_file() else 0
+                    progress_cb(sz, sz)
                 return
             if not self._can_record():
                 self._raise_fs_miss("download", remote_path)
@@ -925,6 +935,92 @@ class CassetteTransportProxy(BaseTransport):
             )
         )
         self._dirty = True
+
+    def _supports_capability(self, protocol: type[Any]) -> bool:
+        """Точная проверка поддержки протокола возможностей кассетой или обёрнутым транспортом."""
+        from ..base import TunnelCapableTransport
+
+        if self._wrapped is not None and not self._can_replay():
+            return supports_capability(self._wrapped, protocol)
+        if protocol is FileCapableTransport:
+            return "file" in self._cassette.capabilities
+        if protocol is ShellCapableTransport:
+            return "shell" in self._cassette.capabilities
+        if protocol is TunnelCapableTransport:
+            if "tunnel" in self._cassette.capabilities:
+                return True
+            if self._wrapped is not None:
+                return supports_capability(self._wrapped, TunnelCapableTransport)
+            return self.name in ("ssh", "kubectl", "docker", "podman")
+        return isinstance(self, protocol)
+
+    @contextlib.asynccontextmanager
+    async def forward_local_port(
+        self,
+        remote_host: str = "127.0.0.1",
+        remote_port: int = 80,
+        local_host: str = "127.0.0.1",
+        local_port: int = 0,
+    ) -> AsyncIterator[int]:
+        """Открыть прямой проброс порта через обёрнутый транспорт или эмулировать в кассете."""
+        from ..base import TunnelCapableTransport
+
+        if self._can_replay():
+            if not self._supports_capability(TunnelCapableTransport):
+                raise CapabilityNotSupportedError(
+                    f"forward_local_port not supported for {self.name} transport",
+                    host=self.config.host,
+                )
+            yield local_port if local_port > 0 else 49152
+            return
+
+        real = await self._ensure_real_connected()
+        if not supports_capability(real, TunnelCapableTransport):
+            raise CapabilityNotSupportedError(
+                f"forward_local_port not supported for {real.name} transport",
+                host=self.config.host,
+            )
+        async with real.forward_local_port(
+            remote_host=remote_host,
+            remote_port=remote_port,
+            local_host=local_host,
+            local_port=local_port,
+        ) as bound_port:
+            yield bound_port
+
+    @contextlib.asynccontextmanager
+    async def forward_remote_port(
+        self,
+        remote_host: str = "127.0.0.1",
+        remote_port: int = 0,
+        local_host: str = "127.0.0.1",
+        local_port: int = 80,
+    ) -> AsyncIterator[int]:
+        """Открыть обратный проброс порта через обёрнутый транспорт или эмулировать в кассете."""
+        from ..base import TunnelCapableTransport
+
+        if self._can_replay():
+            if not self._supports_capability(TunnelCapableTransport) or self.name in ("docker", "podman", "kubectl"):
+                raise CapabilityNotSupportedError(
+                    f"forward_remote_port not supported for {self.name} transport",
+                    host=self.config.host,
+                )
+            yield remote_port if remote_port > 0 else 49153
+            return
+
+        real = await self._ensure_real_connected()
+        if not supports_capability(real, TunnelCapableTransport):
+            raise CapabilityNotSupportedError(
+                f"forward_remote_port not supported for {real.name} transport",
+                host=self.config.host,
+            )
+        async with real.forward_remote_port(
+            remote_host=remote_host,
+            remote_port=remote_port,
+            local_host=local_host,
+            local_port=local_port,
+        ) as bound_port:
+            yield bound_port
 
     async def open_shell(
         self,

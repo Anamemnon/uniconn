@@ -340,14 +340,14 @@ class ArchiveHandler(LogHandler):
                 if src.exists():
                     for item in sorted(src.rglob("*")):
                         if item.is_file() and item.resolve() != resolved_dest:
-                            zf.write(item, arcname=str(item.relative_to(src)))
+                            zf.write(item, arcname=item.relative_to(src).as_posix())
             return dest
 
         with tarfile.open(dest, "w:gz") as tf:
             if src.exists():
                 for item in sorted(src.rglob("*")):
                     if item.is_file() and item.resolve() != resolved_dest:
-                        tf.add(item, arcname=str(item.relative_to(src)))
+                        tf.add(item, arcname=item.relative_to(src).as_posix())
         return dest
 
 

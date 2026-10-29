@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -222,6 +223,12 @@ async def expect_command(
 ) -> Result:
     """Выполнить интерактивную команду с декларативным сопоставлением regex-паттернов."""
     cmd_str = format_command(command)
+    if (
+        sys.platform == "win32"
+        and conn.transport_name == "local"
+        and cmd_str.startswith("python3 ")
+    ):
+        cmd_str = f'"{sys.executable}" {cmd_str[len("python3 "):]}'
     if conn.dry_run:
         conn.logger.info(
             f"[DRY-RUN] Skipping expect {cmd_str!r} on {conn.config.uri_safe}"

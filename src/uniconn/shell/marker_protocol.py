@@ -13,7 +13,7 @@ class PosixMarkerProtocol:
     def __init__(self, session_uuid: str | None = None) -> None:
         """Инициализировать протокол с уникальным маркером сессии."""
         self.uuid = session_uuid or uuid.uuid4().hex[:12]
-        self.pattern = re.compile(rf"__UNICONN_{re.escape(self.uuid)}__(\d+)")
+        self.pattern = re.compile(rf"(?:\\n)?__UNICONN_{re.escape(self.uuid)}__(\d+)")
 
     def wrap_command(self, cmd_str: str) -> str:
         """Обернуть команду в выражение с выводом маркера и кода возврата ``$?``."""
@@ -40,6 +40,8 @@ class PosixMarkerProtocol:
                 lines = lines[1:]
         cleaned = "\n".join(lines)
 
+        if cleaned.endswith("\\n"):
+            cleaned = cleaned[:-2]
         if cleaned.endswith("\n"):
             cleaned = cleaned[:-1]
 

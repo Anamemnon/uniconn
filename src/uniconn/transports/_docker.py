@@ -470,6 +470,16 @@ class DockerTransport(BaseTransport):
                 host=self.container,
             )
 
+    @staticmethod
+    def _compute_local_size(path_str: str) -> int:
+        """Вычислить размер локального файла или директории для progress_callback."""
+        p = Path(path_str)
+        if not p.exists():
+            return 0
+        if p.is_file():
+            return p.stat().st_size
+        return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+
     async def upload(
         self,
         local_path: str,
@@ -477,7 +487,10 @@ class DockerTransport(BaseTransport):
         **kwargs: Any,
     ) -> None:
         """Скопировать локальный файл или директорию в контейнер через ``docker/podman cp``."""
-        _ = kwargs
+        progress_cb = kwargs.get("progress_callback")
+        total_bytes = self._compute_local_size(local_path) if callable(progress_cb) else 0
+        if callable(progress_cb):
+            progress_cb(0, total_bytes)
         parent = str(Path(remote_path).parent)
         if parent and parent not in (".", "/"):
             await self.mkdir(parent, parents=True, exist_ok=True)
@@ -497,6 +510,8 @@ class DockerTransport(BaseTransport):
                 f"{self.name} upload failed from {local_path} to {remote_path}: {err}",
                 host=self.container,
             )
+        if callable(progress_cb):
+            progress_cb(total_bytes, total_bytes)
 
     async def download(
         self,
@@ -505,7 +520,7 @@ class DockerTransport(BaseTransport):
         **kwargs: Any,
     ) -> None:
         """Скопировать файл или директорию из контейнера на локальный хост через ``cp``."""
-        _ = kwargs
+        progress_cb = kwargs.get("progress_callback")
         Path(local_path).parent.mkdir(parents=True, exist_ok=True)
         cp_args = [
             *self._base_cli_args(),
@@ -523,6 +538,9 @@ class DockerTransport(BaseTransport):
                 f"{self.name} download failed from {remote_path} to {local_path}: {err}",
                 host=self.container,
             )
+        if callable(progress_cb):
+            total_bytes = self._compute_local_size(local_path)
+            progress_cb(total_bytes, total_bytes)
 
     async def chmod(self, remote_path: str, mode: int) -> None:
         """Изменить права доступа к файлу внутри контейнера."""

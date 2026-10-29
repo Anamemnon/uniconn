@@ -427,7 +427,15 @@ class KubectlTransport(BaseTransport):
         **kwargs: Any,
     ) -> None:
         """Скопировать локальный файл или директорию в под через ``kubectl cp``."""
-        _ = kwargs
+        progress_cb = kwargs.get("progress_callback")
+        total_bytes = 0
+        if callable(progress_cb):
+            p = Path(local_path)
+            if p.is_file():
+                total_bytes = p.stat().st_size
+            elif p.is_dir():
+                total_bytes = sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+            progress_cb(0, total_bytes)
         parent = str(Path(remote_path).parent)
         if parent and parent not in (".", "/"):
             await self.mkdir(parent, parents=True, exist_ok=True)
@@ -445,6 +453,8 @@ class KubectlTransport(BaseTransport):
                 f"kubectl upload failed from {local_path} to {remote_path}: {err}",
                 host=self.pod,
             )
+        if callable(progress_cb):
+            progress_cb(total_bytes, total_bytes)
 
     async def download(
         self,
@@ -453,7 +463,7 @@ class KubectlTransport(BaseTransport):
         **kwargs: Any,
     ) -> None:
         """Скопировать файл или директорию из пода на локальный хост через ``kubectl cp``."""
-        _ = kwargs
+        progress_cb = kwargs.get("progress_callback")
         Path(local_path).parent.mkdir(parents=True, exist_ok=True)
         cp_args = [*self._base_cli_args(), "cp"]
         if self.container:
@@ -469,6 +479,14 @@ class KubectlTransport(BaseTransport):
                 f"kubectl download failed from {remote_path} to {local_path}: {err}",
                 host=self.pod,
             )
+        if callable(progress_cb):
+            p = Path(local_path)
+            total_bytes = (
+                p.stat().st_size
+                if p.is_file()
+                else (sum(f.stat().st_size for f in p.rglob("*") if f.is_file()) if p.is_dir() else 0)
+            )
+            progress_cb(total_bytes, total_bytes)
 
     async def chmod(self, remote_path: str, mode: int) -> None:
         """Изменить права доступа к файлу внутри пода."""

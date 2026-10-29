@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -668,7 +670,8 @@ class TestCrossPlatformChecksumProgressAndSyncEnhancements:
             )
             assert res_fast.skipped == ["run.sh"]
             # Но права 0o755 синхронизированы благодаря preserve_permissions=True
-            assert (script_dst.stat().st_mode & 0o777) == 0o755
+            if sys.platform != "win32":
+                assert (script_dst.stat().st_mode & 0o777) == 0o755
             assert script_dst.read_text(encoding="utf-8") == "#!/bin/sh\necho v2\n"
 
             # С checksum_check=True обнаруживается расхождение SHA-256 и файл перезаписывается
@@ -680,4 +683,110 @@ class TestCrossPlatformChecksumProgressAndSyncEnhancements:
             )
             assert res_hash.uploaded == ["run.sh"]
             assert script_dst.read_text(encoding="utf-8") == "#!/bin/sh\necho v1\n"
+
+
+class TestV100AuditStabilization:
+    """Тесты стабилизации v1.0.0: progress_callback в Docker/Kubectl/Cassette, BSD stat, supports_capability и ttl."""
+
+    @pytest.mark.asyncio
+    async def test_docker_and_kubectl_progress_callback(self, tmp_path: Path) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        from uniconn.config.models import ConnectionConfig
+        from uniconn.transports._docker import DockerTransport
+        from uniconn.transports._kubectl import KubectlTransport
+
+        src_file = tmp_path / "payload.bin"
+        src_file.write_bytes(b"0123456789" * 5)
+        dst_file = tmp_path / "downloaded.bin"
+
+        docker_cfg = ConnectionConfig(transport="docker", host="my-container")
+        docker_tr = DockerTransport(docker_cfg)
+        docker_tr._connected = True
+        docker_events: list[tuple[int, int]] = []
+        with patch.object(docker_tr, "_run_host_cli", new=AsyncMock(return_value=(0, b"", b"", 0.01))):
+            await docker_tr.upload(
+                str(src_file),
+                "/tmp/payload.bin",
+                progress_callback=lambda done, total: docker_events.append((done, total)),
+            )
+        assert docker_events[-1] == (50, 50)
+
+        k8s_cfg = ConnectionConfig(transport="kubectl", host="my-pod")
+        k8s_tr = KubectlTransport(k8s_cfg)
+        k8s_tr._connected = True
+        k8s_events: list[tuple[int, int]] = []
+
+        async def _fake_k8s_cli(args: list[str], **kwargs: Any) -> tuple[int, bytes, bytes, float]:
+            dst_file.write_bytes(b"abcdef")
+            return (0, b"", b"", 0.01)
+
+        with patch.object(k8s_tr, "_run_host_cli", side_effect=_fake_k8s_cli):
+            await k8s_tr.download(
+                "/tmp/remote.bin",
+                str(dst_file),
+                progress_callback=lambda done, total: k8s_events.append((done, total)),
+            )
+        assert k8s_events[-1] == (6, 6)
+
+    @pytest.mark.asyncio
+    async def test_cassette_proxy_supports_capability_and_tunnels(self, tmp_path: Path) -> None:
+        from uniconn.config.models import ConnectionConfig
+        from uniconn.transports.base import (
+            FileCapableTransport,
+            TunnelCapableTransport,
+            supports_capability,
+        )
+        from uniconn.transports.replay.models import Cassette, RecordMode
+        from uniconn.transports.replay.proxy import CassetteTransportProxy
+
+        cfg = ConnectionConfig(transport="local", host="localhost")
+        cassette = Cassette(transport="local", target="local://")
+        # В автономном режиме без wrapped транспорта TunnelCapableTransport не поддерживается
+        proxy_standalone = CassetteTransportProxy(
+            cfg,
+            cassette,
+            wrapped=None,
+            mode=RecordMode.NONE,
+            cassette_exists=True,
+        )
+        assert supports_capability(proxy_standalone, FileCapableTransport) is True
+        assert supports_capability(proxy_standalone, TunnelCapableTransport) is False
+
+        async with Connection.from_uri("local://") as conn:
+            cassette_file = tmp_path / "cap_test.json"
+            async with conn.use_cassette(cassette_file, mode="all"):
+                # LocalTransport не поддерживает туннели -> прокси корректно отражает возможности wrapped
+                assert supports_capability(conn._transport, TunnelCapableTransport) is False
+
+    @pytest.mark.asyncio
+    async def test_state_gather_facts_ttl_and_bsd_stat_owner_group(self) -> None:
+        from uniconn.result import Result
+        from uniconn.services.provisioning._plan import get_owner_group
+
+        conn = Connection.from_uri("ssh://bsd-host")
+        conn.gather_facts = AsyncMock(return_value=MagicMock())  # type: ignore[method-assign]
+        await conn.state.gather_facts(refresh=True, ttl=42.5)
+        conn.gather_facts.assert_awaited_once_with(
+            refresh=True,
+            timeout=None,
+            spec=None,
+            ttl=42.5,
+        )
+
+        conn.run = AsyncMock(  # type: ignore[method-assign]
+            return_value=Result(
+                exit_code=0,
+                stdout="root:wheel\n",
+                stderr="",
+                duration=0.01,
+                command="stat",
+                host="bsd-host",
+            )
+        )
+        owner, group = await get_owner_group(conn, "/etc/hosts")
+        assert (owner, group) == ("root", "wheel")
+        called_cmd = conn.run.call_args[0][0]
+        assert "-f '%Su:%Sg'" in called_cmd
+
 

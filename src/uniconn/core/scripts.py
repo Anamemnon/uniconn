@@ -38,7 +38,10 @@ async def run_script(
 
     effective_dry_run = conn.dry_run if dry_run is None else dry_run
     async with conn.temp_dir() as remote_dir:
-        remote_script = f"{remote_dir.rstrip('/')}/{script_path.name}"
+        if conn.transport_name == "local" and not effective_dry_run:
+            remote_script = str(Path(remote_dir) / script_path.name)
+        else:
+            remote_script = f"{remote_dir.rstrip('/')}/{script_path.name}"
         if not effective_dry_run:
             await conn.files.upload(str(script_path), remote_script)
             await conn.files.chmod(remote_script, 0o700)

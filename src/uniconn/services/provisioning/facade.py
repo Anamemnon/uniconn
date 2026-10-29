@@ -72,9 +72,15 @@ class StateManagementService:
         refresh: bool = False,
         timeout: float | None = None,
         spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
+        ttl: float | None = None,
     ) -> HostFacts:
         """Собрать системные факты о хосте (делегирует в ``conn.gather_facts``)."""
-        return await self._conn.gather_facts(refresh=refresh, timeout=timeout, spec=spec)
+        return await self._conn.gather_facts(
+            refresh=refresh,
+            timeout=timeout,
+            spec=spec,
+            ttl=ttl,
+        )
 
     async def resolve_pkg_manager(self, manager: PkgManagerName = "auto") -> str:
         """Определить пакетный менеджер хоста при ``manager='auto'``."""

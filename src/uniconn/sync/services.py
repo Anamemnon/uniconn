@@ -3,14 +3,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
 from ..background._diagnostic import DiagnosticResult, DiagnosticSession
 from ..core.bridge import EventLoopPortal, SyncProxyMixin, sync_context, sync_method
 from ..pool.services import PoolFileOperationsService, PoolStateManagementService
-from ..services.facts_models import FactsDiffReport, FactSpec, HostFacts
+from ..services.facts_models import FactsDiffReport, HostFacts
 from ..services.files import FileOperationsService
 from ..services.provisioning import StateManagementService
 from ..services.tunnels import TunnelService
@@ -64,18 +63,7 @@ class SyncStateManagementService(SyncProxyMixin):
     def _portal(self) -> EventLoopPortal:
         return self._sync_conn._portal
 
-    def gather_facts(
-        self,
-        *,
-        refresh: bool = False,
-        timeout: float | None = None,
-        spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
-    ) -> HostFacts:
-        """Собрать системные факты о хосте (синхронно)."""
-        return self._sync_conn.gather_facts(
-            refresh=refresh, timeout=timeout, spec=spec
-        )
-
+    gather_facts = sync_method(StateManagementService.gather_facts)
     resolve_pkg_manager = sync_method(StateManagementService.resolve_pkg_manager)
     ensure_package = sync_method(StateManagementService.ensure_package)
     ensure_service = sync_method(StateManagementService.ensure_service)

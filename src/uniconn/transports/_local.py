@@ -128,7 +128,7 @@ _PWD_POLYFILL_SCRIPT = r"""import os, sys
 sys.stdout.buffer.write((os.getcwd() + "\n").encode("utf-8"))
 """
 
-_ECHO_POLYFILL_SCRIPT = r"""import sys, re
+_ECHO_POLYFILL_SCRIPT = r"""import os, sys, re
 args = sys.argv[1:]
 newline = True
 escapes = False
@@ -145,6 +145,11 @@ while args and args[0].startswith("-") and len(args[0]) > 1:
     else:
         break
 text = " ".join(args)
+text = re.sub(
+    r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)",
+    lambda m: os.environ.get(m.group(1) or m.group(2), m.group(0)),
+    text,
+)
 if escapes:
     text = re.sub(
         r'\\([abfnrtv\'"]|[0-7]{1,3}|x[0-9a-fA-F]{1,2})',
@@ -295,6 +300,9 @@ sys.stdout.buffer.write("".join(out).encode("utf-8"))
 """
 
 
+_POLYFILL_CMDS = ("cat", "printf", "tail", "pwd", "touch", "echo", "python3", "true", "false")
+
+
 def _apply_windows_polyfills(parts: list[str]) -> list[str] | None:
     """Эмулировать стандартные POSIX-команды на Windows через Python или встроенные утилиты.
 
@@ -307,26 +315,32 @@ def _apply_windows_polyfills(parts: list[str]) -> list[str] | None:
 
     first = parts[0].lower()
 
-    if first == "python3" and _safe_which("python3") is None:
+    if first == "python3":
         return [sys.executable, *parts[1:]]
 
-    if first == "pwd" and _safe_which("pwd") is None:
+    if first == "pwd":
         return _py_cmd(_PWD_POLYFILL_SCRIPT)
 
     if first == "echo":
         return _py_cmd(_ECHO_POLYFILL_SCRIPT, parts[1:])
 
-    if first == "touch" and _safe_which("touch") is None:
+    if first == "touch":
         return _py_cmd(_TOUCH_POLYFILL_SCRIPT, parts[1:])
 
-    if first == "cat" and _safe_which("cat") is None:
+    if first == "cat":
         return _py_cmd(_CAT_POLYFILL_SCRIPT, parts[1:])
 
-    if first == "tail" and _safe_which("tail") is None:
+    if first == "tail":
         return _py_cmd(_TAIL_POLYFILL_SCRIPT, parts[1:])
 
-    if first == "printf" and _safe_which("printf") is None:
+    if first == "printf":
         return _py_cmd(_PRINTF_POLYFILL_SCRIPT, parts[1:])
+
+    if first == "true":
+        return [sys.executable, "-c", ""]
+
+    if first == "false":
+        return [sys.executable, "-c", "import sys; sys.exit(1)"]
 
     return None
 
@@ -379,10 +393,10 @@ class LocalTransport(BaseTransport):
         cmd_first = cmd_stripped.split(None, 1)[0].lower() if cmd_stripped else ""
         needs_tokenization = (
             "'" in command
-            or cmd_first in ("cat", "printf", "tail", "pwd", "touch", "echo", "python3")
+            or cmd_first in _POLYFILL_CMDS
             or any(
                 cmd_stripped.lower().startswith(f"{cmd} ")
-                for cmd in ("cat", "printf", "tail", "pwd", "touch", "echo", "python3")
+                for cmd in _POLYFILL_CMDS
             )
         )
         if needs_tokenization:
@@ -451,7 +465,7 @@ class LocalTransport(BaseTransport):
         elif isinstance(command, str) and sys.platform == "win32":
             cmd_stripped = command.strip()
             cmd_first = cmd_stripped.split(None, 1)[0].lower() if cmd_stripped else ""
-            if "'" in command or cmd_first in ("cat", "printf", "tail", "pwd", "touch", "echo", "python3"):
+            if "'" in command or cmd_first in _POLYFILL_CMDS:
                 with contextlib.suppress(ValueError):
                     sh_parts = shlex.split(command, posix=True)
                     has_ops = any(t in ("&&", "||", "|", ";", "&") or t.startswith((">", "<")) for t in sh_parts)
@@ -702,8 +716,12 @@ class LocalTransport(BaseTransport):
             "COLUMNS": str(term_size[0]),
             "LINES": str(term_size[1]),
         }
+        shell_args: list[str] = []
+        if sys.platform == "win32" and Path(shell_bin).stem.lower() == "cmd":
+            shell_args.append("/Q")
         proc = await asyncio.create_subprocess_exec(
             shell_bin,
+            *shell_args,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
@@ -728,6 +746,15 @@ class LocalTransport(BaseTransport):
                 exec_parts = polyfilled if polyfilled is not None else parts
             else:
                 exec_parts = parts
+        elif isinstance(command, str) and sys.platform == "win32":
+            cmd_stripped = command.strip()
+            cmd_first = cmd_stripped.split(None, 1)[0].lower() if cmd_stripped else ""
+            if "'" in command or cmd_first in _POLYFILL_CMDS:
+                with contextlib.suppress(ValueError):
+                    sh_parts = shlex.split(command, posix=True)
+                    has_ops = any(t in ("&&", "||", "|", ";", "&") or t.startswith((">", "<")) for t in sh_parts)
+                    if not has_ops:
+                        exec_parts = _apply_windows_polyfills(sh_parts)
 
         if exec_parts is not None and exec_parts:
             proc = await asyncio.create_subprocess_exec(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -327,11 +328,18 @@ def _execute_v090_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
 
             if feature == "run_script":
                 with tempfile.TemporaryDirectory(prefix="uniconn_v090_scr_") as tmp:
-                    script_file = Path(tmp) / "deploy_hook.sh"
-                    script_file.write_text(
-                        "#!/bin/sh\necho \"deploy_hook args=$* user=$(whoami)\"\n",
-                        encoding="utf-8",
-                    )
+                    if os.name == "nt":
+                        script_file = Path(tmp) / "deploy_hook.bat"
+                        script_file.write_text(
+                            "@echo off\necho deploy_hook args=%*\n",
+                            encoding="utf-8",
+                        )
+                    else:
+                        script_file = Path(tmp) / "deploy_hook.sh"
+                        script_file.write_text(
+                            "#!/bin/sh\necho \"deploy_hook args=$* user=$(whoami)\"\n",
+                            encoding="utf-8",
+                        )
                     async with Connection.from_uri("local://") as conn:
                         res = await conn.run_script(script_file, args=["--release", "v0.9.0"])
                     return {

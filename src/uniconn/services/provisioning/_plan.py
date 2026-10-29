@@ -169,16 +169,29 @@ async def get_owner_group(
             except Exception:
                 return None, None
 
-    deref_flag = "" if is_link else "-L "
+    q_path = shlex.quote(path_str)
+    gnu_flag = "" if is_link else "-L "
+    bsd_flag = "-L " if not is_link else ""
+    ls_flag = "-ld" if is_link else "-ldL"
+    cmd = (
+        f"stat {gnu_flag}-c '%U:%G' {q_path} 2>/dev/null "
+        f"|| stat {bsd_flag}-f '%Su:%Sg' {q_path} 2>/dev/null "
+        f"|| ls {ls_flag} {q_path}"
+    )
     res = await conn.run(
-        f"stat {deref_flag}-c '%U:%G' {shlex.quote(path_str)}",
+        cmd,
         sudo=sudo,
         raise_on_error=False,
         dry_run=False,
     )
-    if res.ok and ":" in res.text:
-        u_str, g_str = res.text.split(":", 1)
-        return u_str.strip(), g_str.strip()
+    if res.ok and res.text:
+        first_line = res.text.splitlines()[0].strip()
+        if ":" in first_line and " " not in first_line:
+            u_str, g_str = first_line.split(":", 1)
+            return u_str.strip(), g_str.strip()
+        parts = first_line.split()
+        if len(parts) >= 4:
+            return parts[2].strip(), parts[3].strip()
     return None, None
 
 

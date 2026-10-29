@@ -309,7 +309,9 @@ class TestTransportsOpenShell:
             async with await conn.open_shell() as shell:
                 await shell.execute(f"cd {tmp_path}")
                 pwd_res = await shell.execute("pwd")
-                assert pwd_res.text == str(tmp_path)
+                from pathlib import Path
+
+                assert Path(pwd_res.text).resolve() == tmp_path.resolve()
 
                 await shell.execute("export LOCAL_SHELL_VAR=hello_v060")
                 env_res = await shell.execute("echo $LOCAL_SHELL_VAR")

@@ -220,6 +220,9 @@ _PROTOCOL_PRIMARY_METHODS: dict[type[Any], str] = {
 
 def supports_capability(transport: Any, protocol: type[Any]) -> bool:
     """Проверить, поддерживает ли транспорт указанный протокол возможностей."""
+    custom_check = getattr(type(transport), "_supports_capability", None)
+    if callable(custom_check):
+        return bool(custom_check(transport, protocol))
     if not isinstance(transport, protocol):
         return False
     primary_method = _PROTOCOL_PRIMARY_METHODS.get(protocol)

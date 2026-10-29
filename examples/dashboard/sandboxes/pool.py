@@ -259,11 +259,18 @@ def _execute_pool_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
                     return cards_diff
                 elif operation == "run_script":
                     with tempfile.TemporaryDirectory(prefix="uniconn_scr_") as tmp_root:
-                        scr_path = Path(tmp_root) / "health_probe.sh"
-                        scr_path.write_text(
-                            "#!/bin/sh\necho \"[$UNICONN_HOST] script executed with args: $*\"\n",
-                            encoding="utf-8",
-                        )
+                        if os.name == "nt":
+                            scr_path = Path(tmp_root) / "health_probe.bat"
+                            scr_path.write_text(
+                                "@echo off\necho [%UNICONN_HOST%] script executed with args: %*\n",
+                                encoding="utf-8",
+                            )
+                        else:
+                            scr_path = Path(tmp_root) / "health_probe.sh"
+                            scr_path.write_text(
+                                "#!/bin/sh\necho \"[$UNICONN_HOST] script executed with args: $*\"\n",
+                                encoding="utf-8",
+                            )
                         scr_map = await pool.run_script(scr_path, args=["--check", "v0.9.0"])
                         cards_scr: list[dict[str, Any]] = []
                         for idx, (_key, s_res) in enumerate(scr_map.items()):
