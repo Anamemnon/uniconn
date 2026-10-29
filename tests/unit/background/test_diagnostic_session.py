@@ -346,7 +346,10 @@ class TestDiagnosticSessionLifecycle:
         async with conn.diagnostic_session(
             config=config, forward_to=backup_conn
         ) as diag:
-            await asyncio.sleep(0.03)
+            for _ in range(50):
+                if any(c.lines_collected >= 1 for c in diag._stream_collectors):
+                    break
+                await asyncio.sleep(0.01)
             await diag.emit_custom_log("test_runner", "stress step 1 completed")
             snap = await diag.snapshot("mid_test")
             assert snap.hostname == "node-01"

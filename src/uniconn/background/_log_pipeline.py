@@ -170,7 +170,7 @@ class LocalFileHandler(LogHandler):
         payload = "".join(lines)
         incoming_bytes = len(payload.encode("utf-8", errors="replace"))
         self._rotate_if_needed(path, incoming_bytes)
-        with path.open("a", encoding="utf-8") as f:
+        with path.open("a", encoding="utf-8", newline="") as f:
             f.write(payload)
             if self._fsync:
                 f.flush()
