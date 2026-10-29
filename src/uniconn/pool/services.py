@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -29,11 +30,14 @@ class PoolFileOperationsService:
         recurse: bool = False,
         *,
         verify: bool = False,
+        progress_callback: Callable[[int, int], None] | None = None,
         batch_size: int | None = None,
         max_fail_ratio: float | None = None,
         **kwargs: Any,
     ) -> None:
         """Параллельно загрузить файл или директорию на все хосты пула."""
+        if progress_callback is not None:
+            kwargs["progress_callback"] = progress_callback
         await self._pool._fan_out_list(
             lambda conn: conn.files.upload(
                 str(local_path),
@@ -53,11 +57,14 @@ class PoolFileOperationsService:
         recurse: bool = False,
         *,
         verify: bool = False,
+        progress_callback: Callable[[int, int], None] | None = None,
         batch_size: int | None = None,
         max_fail_ratio: float | None = None,
         **kwargs: Any,
     ) -> dict[str, str]:
         """Параллельно скачать файл или директорию со всех хостов пула."""
+        if progress_callback is not None:
+            kwargs["progress_callback"] = progress_callback
         local_str = str(local_path)
         remote_name = Path(str(remote_path)).name
 

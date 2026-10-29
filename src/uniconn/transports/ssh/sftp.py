@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import stat as stat_module
+from collections.abc import Callable
 from typing import Any
 
 from ...exceptions import ConnectionError
@@ -30,12 +31,19 @@ class SFTPClientAdapter:
         local_path: str,
         remote_path: str,
         recurse: bool = False,
+        *,
+        progress_callback: Callable[[int, int], None] | None = None,
         **kwargs: Any,
     ) -> None:
         """Загрузить файл или директорию через SFTP."""
         conn = self._require_conn(asyncssh_mod)
         if recurse is False and os.path.isdir(local_path):
             recurse = True
+
+        if progress_callback is not None and "progress_handler" not in kwargs:
+            kwargs["progress_handler"] = (
+                lambda _src, _dst, copied, total: progress_callback(int(copied), int(total))
+            )
 
         try:
             async with conn.start_sftp_client() as sftp:
@@ -55,10 +63,17 @@ class SFTPClientAdapter:
         remote_path: str,
         local_path: str,
         recurse: bool = False,
+        *,
+        progress_callback: Callable[[int, int], None] | None = None,
         **kwargs: Any,
     ) -> None:
         """Скачать файл или директорию через SFTP."""
         conn = self._require_conn(asyncssh_mod)
+        if progress_callback is not None and "progress_handler" not in kwargs:
+            kwargs["progress_handler"] = (
+                lambda _src, _dst, copied, total: progress_callback(int(copied), int(total))
+            )
+
         try:
             async with conn.start_sftp_client() as sftp:
                 if recurse:

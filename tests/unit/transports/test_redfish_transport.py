@@ -832,3 +832,30 @@ class TestRedfishSyncConnectionAndLiveHTTPServer:
         finally:
             server.shutdown()
             server.server_close()
+
+    @pytest.mark.asyncio
+    async def test_redfish_session_token_auto_refresh_on_401(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """При истечении X-Auth-Token (HTTP 401) RedfishTransport автоматически пересоздаёт сессию."""
+        fake_session = _build_fake_redfish_session(session_auth_supported=True)
+        orig_get = fake_session.get.side_effect
+        first_call = {"expired": True}
+
+        async def _flaky_get(path: str, **kw: Any) -> MagicMock:
+            if path == "/redfish/v1/Systems" and first_call["expired"]:
+                first_call["expired"] = False
+                return _make_niq_response(401, {"error": "Session token expired"})
+            return await orig_get(path, **kw)
+
+        fake_session.get = AsyncMock(side_effect=_flaky_get)
+        conn = Connection.from_uri("redfish://admin:calvin@10.0.0.100")
+        monkeypatch.setattr(conn._transport, "_create_async_session", lambda: fake_session)
+
+        async with conn:
+            res = await conn.run("power status")
+            assert res.ok
+            assert json.loads(res.stdout)["PowerState"] == "On"
+            # 1-й POST при connect() + 2-й POST при auto-refresh после HTTP 401
+            assert fake_session.post.await_count == 2
+

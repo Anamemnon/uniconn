@@ -512,3 +512,172 @@ class TestCLIV060:
             assert res_bmc.exit_code == 0, res_bmc.output
             bmc_data = json.loads(res_bmc.output)
             assert bmc_data["exit_code"] == 0
+
+
+class TestCrossPlatformChecksumProgressAndSyncEnhancements:
+    """Тесты кроссплатформенного checksum, progress_callback и расширений sync_dir."""
+
+    def test_build_checksum_command_and_extract_digest_variants(self) -> None:
+        from uniconn.services.files import (
+            _build_checksum_command,
+            _extract_checksum_digest,
+        )
+
+        posix_sha256 = _build_checksum_command("/etc/hosts", "sha256")
+        assert "sha256sum" in posix_sha256
+        assert "shasum -a 256" in posix_sha256
+        assert "openssl dgst -sha256" in posix_sha256
+
+        posix_md5 = _build_checksum_command("/etc/hosts", "md5")
+        assert "md5sum" in posix_md5
+        assert "md5 -q" in posix_md5
+
+        win_cmd = _build_checksum_command("C:\\app\\config.json", "sha256", os_family="Windows")
+        assert "certutil -hashfile" in win_cmd
+        assert "SHA256" in win_cmd
+
+        gnu_digest = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        # GNU / shasum output
+        assert (
+            _extract_checksum_digest(f"{gnu_digest}  /etc/hosts\n", "sha256")
+            == gnu_digest
+        )
+        # OpenSSL dgst output
+        assert (
+            _extract_checksum_digest(f"SHA2-256(/etc/hosts)= {gnu_digest}\n", "sha256")
+            == gnu_digest
+        )
+        # Windows certutil output (with spaces)
+        spaced = " ".join(gnu_digest[i : i + 2] for i in range(0, len(gnu_digest), 2))
+        certutil_out = (
+            "SHA256 hash of C:\\app\\config.json:\n"
+            f"{spaced}\n"
+            "CertUtil: -hashfile command completed successfully.\n"
+        )
+        assert _extract_checksum_digest(certutil_out, "sha256") == gnu_digest
+
+    @pytest.mark.asyncio
+    async def test_remote_checksum_uses_cached_windows_os_family(self) -> None:
+        from uniconn.services.facts_models import HostFacts
+
+        conn = Connection.from_uri("ssh://win-admin@10.0.0.50")
+        conn._facts_collector.cached = HostFacts(os_family="Windows", hostname="win-50")
+        digest = "a" * 64
+        conn.run = AsyncMock(  # type: ignore[method-assign]
+            return_value=Result(
+                exit_code=0,
+                stdout=f"SHA256 hash of C:\\test.txt:\n{digest}\nCertUtil: ok\n",
+                stderr="",
+                duration=0.05,
+                command="certutil",
+            )
+        )
+        res = await conn.files.checksum("C:\\test.txt", algorithm="sha256")
+        assert res == digest
+        called_cmd = conn.run.call_args.args[0]
+        assert "certutil -hashfile" in called_cmd
+
+    @pytest.mark.asyncio
+    async def test_upload_and_download_progress_callback_local_and_sftp(
+        self, tmp_path: Path
+    ) -> None:
+        from uniconn.transports.ssh.sftp import SFTPClientAdapter
+
+        src_file = tmp_path / "source.bin"
+        src_file.write_bytes(b"0123456789abcdef")
+        dst_file = tmp_path / "dest.bin"
+        back_file = tmp_path / "back.bin"
+
+        up_events: list[tuple[int, int]] = []
+        down_events: list[tuple[int, int]] = []
+
+        async with Connection.from_uri("local://") as conn:
+            await conn.files.upload(
+                src_file,
+                dst_file,
+                verify=True,
+                progress_callback=lambda done, total: up_events.append((done, total)),
+            )
+            await conn.files.download(
+                dst_file,
+                back_file,
+                verify=True,
+                progress_callback=lambda done, total: down_events.append((done, total)),
+            )
+
+        assert up_events == [(16, 16)]
+        assert down_events == [(16, 16)]
+        assert back_file.read_bytes() == b"0123456789abcdef"
+
+        # Проверка проброса progress_handler в SFTPClientAdapter
+        sftp = MagicMock()
+
+        async def _fake_put(lpath: str, rpath: str, **kwargs):
+            handler = kwargs.get("progress_handler")
+            if handler is not None:
+                handler(b"src", b"dst", 50, 100)
+                handler(b"src", b"dst", 100, 100)
+
+        sftp.put = AsyncMock(side_effect=_fake_put)
+        sftp_cm = MagicMock()
+        sftp_cm.__aenter__ = AsyncMock(return_value=sftp)
+        sftp_cm.__aexit__ = AsyncMock(return_value=None)
+        raw_conn = MagicMock()
+        raw_conn.start_sftp_client = MagicMock(return_value=sftp_cm)
+
+        fake_transport = MagicMock(_connected=True, _conn=raw_conn)
+        adapter = SFTPClientAdapter(fake_transport)
+        sftp_events: list[tuple[int, int]] = []
+        await adapter.upload(
+            MagicMock(),
+            str(src_file),
+            "/remote/dest.bin",
+            progress_callback=lambda b, t: sftp_events.append((b, t)),
+        )
+        assert sftp_events == [(50, 100), (100, 100)]
+
+    @pytest.mark.asyncio
+    async def test_sync_dir_checksum_check_and_preserve_permissions(
+        self, tmp_path: Path
+    ) -> None:
+        import os
+
+        src_dir = tmp_path / "src_sync"
+        dst_dir = tmp_path / "dst_sync"
+        src_dir.mkdir()
+        dst_dir.mkdir()
+
+        script_src = src_dir / "run.sh"
+        script_src.write_text("#!/bin/sh\necho v1\n", encoding="utf-8")
+        os.chmod(script_src, 0o755)
+
+        script_dst = dst_dir / "run.sh"
+        # Тот же размер (18 байт), но другое содержимое и более старый/равный mtime на источнике
+        script_dst.write_text("#!/bin/sh\necho v2\n", encoding="utf-8")
+        os.chmod(script_dst, 0o600)
+        os.utime(script_src, (1_700_000_000, 1_700_000_000))
+        os.utime(script_dst, (1_700_000_100, 1_700_000_100))
+
+        async with Connection.from_uri("local://") as conn:
+            # Без checksum_check файл пропускается (размер 18 == 18 и src_mtime <= dst_mtime)
+            res_fast = await conn.files.sync_dir(
+                src_dir,
+                dst_dir,
+                checksum_check=False,
+                preserve_permissions=True,
+            )
+            assert res_fast.skipped == ["run.sh"]
+            # Но права 0o755 синхронизированы благодаря preserve_permissions=True
+            assert (script_dst.stat().st_mode & 0o777) == 0o755
+            assert script_dst.read_text(encoding="utf-8") == "#!/bin/sh\necho v2\n"
+
+            # С checksum_check=True обнаруживается расхождение SHA-256 и файл перезаписывается
+            res_hash = await conn.files.sync_dir(
+                src_dir,
+                dst_dir,
+                checksum_check=True,
+                preserve_permissions=True,
+            )
+            assert res_hash.uploaded == ["run.sh"]
+            assert script_dst.read_text(encoding="utf-8") == "#!/bin/sh\necho v1\n"
+

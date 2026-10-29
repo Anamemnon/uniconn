@@ -64,6 +64,10 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
             str,
             Parameter(name=["--format", "-f"], help="Output format: table, json"),
         ] = "table",
+        no_progress: Annotated[
+            bool,
+            Parameter(name="--no-progress", negative="", help="Disable progress bar"),
+        ] = False,
         verbose: Annotated[
             bool, Parameter(name=["--verbose", "-v"], negative="", help="Verbose output")
         ] = False,
@@ -88,9 +92,46 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                     max_fail_ratio=max_fail_ratio,
                 )
                 target_labels = [pool._target_key(t) for t in pool._uris]
-                await pool.files.upload(
-                    local_path, remote_path, recurse=recurse, **({"verify": True} if verify else {})
-                )
+                extra_kw: dict[str, Any] = {"verify": True} if verify else {}
+                if output_format == "table" and not no_progress:
+                    from rich.progress import (
+                        BarColumn,
+                        DownloadColumn,
+                        Progress,
+                        TextColumn,
+                        TimeRemainingColumn,
+                        TransferSpeedColumn,
+                    )
+
+                    with Progress(
+                        TextColumn("[bold cyan]{task.description}"),
+                        BarColumn(),
+                        DownloadColumn(),
+                        TransferSpeedColumn(),
+                        TimeRemainingColumn(),
+                        console=console,
+                        transient=True,
+                    ) as progress:
+                        task_id = progress.add_task(f"Uploading {local_path}", total=None)
+
+                        def _on_progress(copied: int, total: int) -> None:
+                            progress.update(
+                                task_id,
+                                completed=copied,
+                                total=total if total > 0 else None,
+                            )
+
+                        await pool.files.upload(
+                            local_path,
+                            remote_path,
+                            recurse=recurse,
+                            progress_callback=_on_progress,
+                            **extra_kw,
+                        )
+                else:
+                    await pool.files.upload(
+                        local_path, remote_path, recurse=recurse, **extra_kw
+                    )
 
                 if output_format == "json":
                     console.print(
@@ -163,6 +204,10 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
             str,
             Parameter(name=["--format", "-f"], help="Output format: table, json"),
         ] = "table",
+        no_progress: Annotated[
+            bool,
+            Parameter(name="--no-progress", negative="", help="Disable progress bar"),
+        ] = False,
         verbose: Annotated[
             bool, Parameter(name=["--verbose", "-v"], negative="", help="Verbose output")
         ] = False,
@@ -186,9 +231,46 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                     batch_size=batch_size,
                     max_fail_ratio=max_fail_ratio,
                 )
-                saved = await pool.files.download(
-                    remote_path, local_path, recurse=recurse, **({"verify": True} if verify else {})
-                )
+                extra_kw: dict[str, Any] = {"verify": True} if verify else {}
+                if output_format == "table" and not no_progress:
+                    from rich.progress import (
+                        BarColumn,
+                        DownloadColumn,
+                        Progress,
+                        TextColumn,
+                        TimeRemainingColumn,
+                        TransferSpeedColumn,
+                    )
+
+                    with Progress(
+                        TextColumn("[bold cyan]{task.description}"),
+                        BarColumn(),
+                        DownloadColumn(),
+                        TransferSpeedColumn(),
+                        TimeRemainingColumn(),
+                        console=console,
+                        transient=True,
+                    ) as progress:
+                        task_id = progress.add_task(f"Downloading {remote_path}", total=None)
+
+                        def _on_progress(copied: int, total: int) -> None:
+                            progress.update(
+                                task_id,
+                                completed=copied,
+                                total=total if total > 0 else None,
+                            )
+
+                        saved = await pool.files.download(
+                            remote_path,
+                            local_path,
+                            recurse=recurse,
+                            progress_callback=_on_progress,
+                            **extra_kw,
+                        )
+                else:
+                    saved = await pool.files.download(
+                        remote_path, local_path, recurse=recurse, **extra_kw
+                    )
 
                 if output_format == "json":
                     console.print(
@@ -240,6 +322,22 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                 name=["--exclude", "-x"], help="Exclude glob pattern (repeatable)"
             ),
         ] = None,
+        checksum_check: Annotated[
+            bool,
+            Parameter(
+                name=["--checksum", "-c"],
+                negative="",
+                help="Compare SHA-256 checksums when file sizes match",
+            ),
+        ] = False,
+        preserve_permissions: Annotated[
+            bool,
+            Parameter(
+                name=["--preserve-permissions", "-p"],
+                negative="",
+                help="Preserve local file permissions on remote host",
+            ),
+        ] = False,
         dry_run: Annotated[
             bool,
             Parameter(
@@ -290,12 +388,18 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                     batch_size=batch_size,
                     max_fail_ratio=max_fail_ratio,
                 )
+                extra_sync_kw: dict[str, Any] = {}
+                if checksum_check:
+                    extra_sync_kw["checksum_check"] = True
+                if preserve_permissions:
+                    extra_sync_kw["preserve_permissions"] = True
                 results = await pool.files.sync_dir(
                     local_dir=local_dir,
                     remote_dir=remote_dir,
                     delete=delete,
                     exclude=list(exclude or []),
                     dry_run=dry_run,
+                    **extra_sync_kw,
                 )
 
                 if output_format == "json":

@@ -33,6 +33,8 @@ class LogConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="ignore")
 
     local_dir: str = "./logs"
+    max_bytes: int = 10 * 1024 * 1024
+    backup_count: int = 3
     rules: list[LogRule] = Field(default_factory=list)
 
     def match_rule(self, command: str) -> LogRule | None:

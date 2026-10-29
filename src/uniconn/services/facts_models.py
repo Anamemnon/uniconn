@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import time
 import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -221,13 +222,13 @@ FACT_COLLECTION_SCRIPT = (
     'echo "===UNICONN_SECTION:HOSTNAME==="; '
     'hostname 2>/dev/null || cat /proc/sys/kernel/hostname 2>/dev/null || true; '
     'echo "===UNICONN_SECTION:OS_RELEASE==="; '
-    'cat /etc/os-release 2>/dev/null || true; '
+    'cat /etc/os-release 2>/dev/null || sw_vers 2>/dev/null || true; '
     'echo "===UNICONN_SECTION:UPTIME==="; '
-    'cat /proc/uptime 2>/dev/null || true; '
+    'cat /proc/uptime 2>/dev/null || sysctl -n kern.boottime 2>/dev/null || true; '
     'echo "===UNICONN_SECTION:CPU==="; '
-    'nproc 2>/dev/null || grep -c "^processor" /proc/cpuinfo 2>/dev/null || echo 1; '
+    'nproc 2>/dev/null || grep -c "^processor" /proc/cpuinfo 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1; '
     'echo "===UNICONN_SECTION:MEMINFO==="; '
-    'cat /proc/meminfo 2>/dev/null || free -b 2>/dev/null || true; '
+    'cat /proc/meminfo 2>/dev/null || free -b 2>/dev/null || sysctl -n hw.memsize 2>/dev/null || true; '
     'echo "===UNICONN_SECTION:DISKS==="; '
     'df -PTk 2>/dev/null || df -Pk 2>/dev/null || true; '
     'echo "===UNICONN_SECTION:NET_JSON==="; '
@@ -237,7 +238,28 @@ FACT_COLLECTION_SCRIPT = (
     'echo "===UNICONN_SECTION:END==="'
 )
 
+WINDOWS_FACT_POWERSHELL_SCRIPT = (
+    'powershell -NoProfile -NonInteractive -Command "'
+    "$os = Get-CimInstance Win32_OperatingSystem; "
+    "$cs = Get-CimInstance Win32_ComputerSystem; "
+    "$disks = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | "
+    "ForEach-Object { @{ device=$_.DeviceID; total=[int64]$_.Size; free=[int64]$_.FreeSpace; fstype=$_.FileSystem } }; "
+    "$uptime = [math]::Round(((Get-Date) - $os.LastBootUpTime).TotalSeconds, 1); "
+    "@{ "
+    "hostname=$env:COMPUTERNAME; "
+    "distro=$os.Caption; "
+    "kernel=$os.Version; "
+    "arch=$os.OSArchitecture; "
+    "cpu_count=[int]$cs.NumberOfLogicalProcessors; "
+    "mem_total=[int64]$cs.TotalPhysicalMemory; "
+    "mem_avail=[int64]($os.FreePhysicalMemory * 1024); "
+    "uptime=$uptime; "
+    "disks=@($disks) "
+    '} | ConvertTo-Json -Compress"'
+)
+
 _SECTION_RE = re.compile(r"^===UNICONN_SECTION:([A-Z_]+)===$", re.MULTILINE)
+_BOOTTIME_SEC_RE = re.compile(r"sec\s*=\s*(\d+)")
 
 _DEBIAN_DISTROS = {"debian", "ubuntu", "linuxmint", "pop", "kali", "raspbian"}
 _REDHAT_DISTROS = {"rhel", "centos", "fedora", "rocky", "almalinux", "ol", "amzn"}
@@ -273,15 +295,29 @@ def _split_sections(raw_stdout: str) -> dict[str, str]:
 
 
 def _parse_os_release(text: str) -> dict[str, str]:
-    """Парсит содержимое /etc/os-release."""
+    """Парсит содержимое /etc/os-release или вывод macOS sw_vers."""
     result: dict[str, str] = {}
+    sw_vers: dict[str, str] = {}
     for line in text.splitlines():
         line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+        if not line or line.startswith("#"):
             continue
-        key, val = line.split("=", 1)
-        val = val.strip().strip('"').strip("'")
-        result[key.strip()] = val
+        if "=" in line:
+            key, val = line.split("=", 1)
+            val = val.strip().strip('"').strip("'")
+            result[key.strip()] = val
+        elif ":" in line:
+            key, val = line.split(":", 1)
+            sw_vers[key.strip()] = val.strip()
+
+    if sw_vers and "PRETTY_NAME" not in result and "NAME" not in result:
+        prod_name = sw_vers.get("ProductName", "macOS")
+        prod_ver = sw_vers.get("ProductVersion", "")
+        result["NAME"] = prod_name
+        if prod_ver:
+            result["VERSION_ID"] = prod_ver
+        result["PRETTY_NAME"] = f"{prod_name} {prod_ver}".strip()
+        result.setdefault("ID", "macos")
     return result
 
 
@@ -310,8 +346,29 @@ def _detect_os_family(os_rel: dict[str, str], kernel_sys: str) -> str:
     return kernel_sys or "Unknown"
 
 
+def _parse_uptime(text: str) -> float:
+    """Извлекает uptime в секундах из /proc/uptime или macOS sysctl kern.boottime."""
+    raw = text.strip()
+    if not raw:
+        return 0.0
+    m = _BOOTTIME_SEC_RE.search(raw)
+    if m:
+        try:
+            boot_sec = float(m.group(1))
+            return max(0.0, round(time.time() - boot_sec, 1))
+        except ValueError:
+            return 0.0
+    tokens = raw.split()
+    if tokens:
+        try:
+            return float(tokens[0])
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
 def _parse_meminfo(text: str) -> tuple[int, int]:
-    """Извлекает (memory_total_bytes, memory_available_bytes) из /proc/meminfo или free -b."""
+    """Извлекает (memory_total_bytes, memory_available_bytes) из /proc/meminfo, free -b или sysctl hw.memsize."""
     mem_kb: dict[str, int] = {}
     for line in text.splitlines():
         if ":" in line:
@@ -343,6 +400,12 @@ def _parse_meminfo(text: str) -> tuple[int, int]:
                     else int(parts[3])
                 )
                 return total, avail
+
+    for line in text.splitlines():
+        clean = line.strip()
+        if clean.isdigit() and int(clean) > 0:
+            total = int(clean)
+            return total, total
     return 0, 0
 
 
@@ -487,7 +550,8 @@ def parse_facts_output(raw_stdout: str, default_host: str | None = None) -> Host
         else ""
     )
     uname_parts = uname_line.split()
-    kernel_sys = uname_parts[0] if len(uname_parts) >= 1 else "Linux"
+    os_rel = _parse_os_release(sections.get("OS_RELEASE", ""))
+    kernel_sys = uname_parts[0] if len(uname_parts) >= 1 else ("Linux" if os_rel else "")
     kernel_rel = uname_parts[1] if len(uname_parts) >= 2 else "Unknown"
     arch = uname_parts[2] if len(uname_parts) >= 3 else "Unknown"
     uname_host = uname_parts[3] if len(uname_parts) >= 4 else ""
@@ -499,19 +563,11 @@ def parse_facts_output(raw_stdout: str, default_host: str | None = None) -> Host
     )
     hostname = hostname_sec or uname_host or default_host or "localhost"
 
-    os_rel = _parse_os_release(sections.get("OS_RELEASE", ""))
     distro = (
         os_rel.get("PRETTY_NAME") or os_rel.get("NAME") or kernel_sys or "Unknown"
     )
     os_family = _detect_os_family(os_rel, kernel_sys)
-
-    uptime_seconds = 0.0
-    uptime_raw = sections.get("UPTIME", "").split()
-    if uptime_raw:
-        try:
-            uptime_seconds = float(uptime_raw[0])
-        except ValueError:
-            uptime_seconds = 0.0
+    uptime_seconds = _parse_uptime(sections.get("UPTIME", ""))
 
     cpu_count = 1
     cpu_lines = [
@@ -541,6 +597,99 @@ def parse_facts_output(raw_stdout: str, default_host: str | None = None) -> Host
         memory_available_bytes=mem_avail,
         disks=disks,
         interfaces=interfaces,
+    )
+
+
+def parse_windows_facts_output(
+    raw_stdout: str, default_host: str | None = None
+) -> HostFacts:
+    """Преобразует JSON-вывод `WINDOWS_FACT_POWERSHELL_SCRIPT` в `HostFacts`."""
+    payload: dict[str, Any] = {}
+    clean = raw_stdout.strip()
+    if clean:
+        try:
+            loaded = json.loads(clean)
+            if isinstance(loaded, dict):
+                payload = loaded
+        except ValueError:
+            pass
+
+    if not payload:
+        return HostFacts(hostname=default_host or "localhost")
+
+    hostname = str(payload.get("hostname") or default_host or "localhost").strip()
+    distro = str(payload.get("distro") or "Windows").strip()
+    kernel = str(payload.get("kernel") or "Windows").strip()
+    raw_arch = str(payload.get("arch") or "x86_64").strip()
+    if "64" in raw_arch and "arm" not in raw_arch.lower():
+        arch = "x86_64"
+    elif "arm" in raw_arch.lower():
+        arch = "aarch64"
+    else:
+        arch = raw_arch or "x86_64"
+
+    try:
+        cpu_count = max(1, int(payload.get("cpu_count") or 1))
+    except (ValueError, TypeError):
+        cpu_count = 1
+
+    try:
+        mem_total = max(0, int(payload.get("mem_total") or 0))
+    except (ValueError, TypeError):
+        mem_total = 0
+
+    try:
+        mem_avail = max(0, int(payload.get("mem_avail") or 0))
+    except (ValueError, TypeError):
+        mem_avail = 0
+
+    try:
+        uptime_seconds = max(0.0, float(payload.get("uptime") or 0.0))
+    except (ValueError, TypeError):
+        uptime_seconds = 0.0
+
+    raw_disks = payload.get("disks") or []
+    if isinstance(raw_disks, dict):
+        raw_disks = [raw_disks]
+
+    disks: list[DiskInfo] = []
+    if isinstance(raw_disks, list):
+        for item in raw_disks:
+            if not isinstance(item, dict):
+                continue
+            dev = str(item.get("device") or "C:").strip()
+            mount = f"{dev}\\" if not dev.endswith("\\") else dev
+            fstype = str(item.get("fstype") or "NTFS").strip()
+            try:
+                total_b = max(0, int(item.get("total") or 0))
+                free_b = max(0, int(item.get("free") or 0))
+            except (ValueError, TypeError):
+                continue
+            used_b = max(0, total_b - free_b)
+            pct = round((used_b / total_b) * 100.0, 1) if total_b > 0 else 0.0
+            disks.append(
+                DiskInfo(
+                    device=dev.rstrip("\\"),
+                    mountpoint=mount,
+                    fstype=fstype,
+                    total_bytes=total_b,
+                    used_bytes=used_b,
+                    available_bytes=free_b,
+                    use_percent=pct,
+                )
+            )
+
+    return HostFacts(
+        os_family="Windows",
+        distro=distro,
+        kernel=kernel,
+        arch=arch,
+        hostname=hostname,
+        uptime_seconds=uptime_seconds,
+        cpu_count=cpu_count,
+        memory_total_bytes=mem_total,
+        memory_available_bytes=mem_avail,
+        disks=disks,
     )
 
 
@@ -730,6 +879,7 @@ def diff_facts(
 __all__ = [
     "DEFAULT_DIFF_FIELDS",
     "FACT_COLLECTION_SCRIPT",
+    "WINDOWS_FACT_POWERSHELL_SCRIPT",
     "CustomCommandSpec",
     "DiskInfo",
     "ExternalToolSpec",
@@ -741,4 +891,5 @@ __all__ = [
     "diff_facts",
     "parse_facts_output",
     "parse_redfish_facts",
+    "parse_windows_facts_output",
 ]

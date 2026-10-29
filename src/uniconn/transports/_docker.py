@@ -29,10 +29,85 @@ from ..result import Result
 from ._local import _LocalShellProcess
 from .base import BaseTransport, FileStat
 
+_FILETYPE_MAP: dict[str, int] = {
+    "-": stat_module.S_IFREG,
+    "d": stat_module.S_IFDIR,
+    "l": stat_module.S_IFLNK,
+    "c": stat_module.S_IFCHR,
+    "b": stat_module.S_IFBLK,
+    "p": stat_module.S_IFIFO,
+    "s": stat_module.S_IFSOCK,
+}
+
+
+def _symbolic_mode_to_int(perm_str: str) -> int:
+    """Преобразовать символическую строку прав ``ls -ldn`` (например, ``drwxr-xr-x``) в целочисленный mode."""
+    if len(perm_str) < 10 or perm_str[0] not in _FILETYPE_MAP:
+        raise ValueError(f"Invalid symbolic permission string: {perm_str!r}")
+    mode = _FILETYPE_MAP[perm_str[0]]
+    # Owner
+    if perm_str[1] == "r":
+        mode |= stat_module.S_IRUSR
+    if perm_str[2] == "w":
+        mode |= stat_module.S_IWUSR
+    if perm_str[3] in ("x", "s"):
+        mode |= stat_module.S_IXUSR
+    if perm_str[3] in ("s", "S"):
+        mode |= stat_module.S_ISUID
+    # Group
+    if perm_str[4] == "r":
+        mode |= stat_module.S_IRGRP
+    if perm_str[5] == "w":
+        mode |= stat_module.S_IWGRP
+    if perm_str[6] in ("x", "s"):
+        mode |= stat_module.S_IXGRP
+    if perm_str[6] in ("s", "S"):
+        mode |= stat_module.S_ISGID
+    # Other
+    if perm_str[7] == "r":
+        mode |= stat_module.S_IROTH
+    if perm_str[8] == "w":
+        mode |= stat_module.S_IWOTH
+    if perm_str[9] in ("x", "t"):
+        mode |= stat_module.S_IXOTH
+    if perm_str[9] in ("t", "T"):
+        mode |= stat_module.S_ISVTX
+    return mode
+
+
+def _parse_ls_stat_output(raw: str) -> FileStat:
+    """Разобрать строку вывода ``ls -ldn`` в ``FileStat``."""
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    if not lines:
+        raise ValueError(f"Empty ls -ldn output: {raw!r}")
+    parts = lines[0].split()
+    if len(parts) < 5:
+        raise ValueError(f"Unexpected ls -ldn output format: {raw!r}")
+    mode = _symbolic_mode_to_int(parts[0])
+    uid = int(parts[2]) if parts[2].isdigit() else 0
+    gid = int(parts[3]) if parts[3].isdigit() else 0
+    size = int(parts[4]) if parts[4].isdigit() else 0
+    return {
+        "size": size,
+        "uid": uid,
+        "gid": gid,
+        "permissions": oct(mode),
+        "mode": mode,
+        "atime": 0.0,
+        "mtime": 0.0,
+        "is_file": stat_module.S_ISREG(mode),
+        "is_dir": stat_module.S_ISDIR(mode),
+        "is_symlink": stat_module.S_ISLNK(mode),
+    }
+
 
 def _parse_stat_output(raw: str) -> FileStat:
-    """Разобрать строку вывода ``stat -c '%s|%u|%g|%f|%X|%Y'`` в ``FileStat``."""
-    parts = raw.strip().split("|")
+    """Разобрать строку вывода ``stat -c '%s|%u|%g|%f|%X|%Y'`` или ``ls -ldn`` в ``FileStat``."""
+    stripped = raw.strip()
+    if "|" not in stripped:
+        return _parse_ls_stat_output(stripped)
+    first_line = stripped.splitlines()[0].strip()
+    parts = first_line.split("|")
     if len(parts) < 6:
         raise ValueError(f"Unexpected stat output format: {raw!r}")
     size = int(parts[0])
@@ -53,6 +128,21 @@ def _parse_stat_output(raw: str) -> FileStat:
         "is_dir": stat_module.S_ISDIR(mode),
         "is_symlink": stat_module.S_ISLNK(mode),
     }
+
+
+def _build_stat_fallback_command(remote_path: str) -> str:
+    """Сформировать резервную команду получения метаданных файла через Python или ``ls -ldn``."""
+    q_path = shlex.quote(remote_path)
+    py_expr = (
+        "import os,sys; s=os.lstat(sys.argv[1]); "
+        "print(f'{s.st_size}|{s.st_uid}|{s.st_gid}|{s.st_mode:x}|{int(s.st_atime)}|{int(s.st_mtime)}')"
+    )
+    q_py = shlex.quote(py_expr)
+    return (
+        f"python3 -c {q_py} {q_path} 2>/dev/null "
+        f"|| python -c {q_py} {q_path} 2>/dev/null "
+        f"|| ls -ldn -- {q_path} 2>/dev/null || ls -ldn {q_path}"
+    )
 
 
 class DockerTransport(BaseTransport):
@@ -444,21 +534,35 @@ class DockerTransport(BaseTransport):
             )
 
     async def stat(self, remote_path: str) -> FileStat:
-        """Получить метаданные файла или директории внутри контейнера."""
+        """Получить метаданные файла или директории внутри контейнера (с fallback на Python и ls -ldn)."""
         q_path = shlex.quote(remote_path)
         res = await self.run(f"stat -c '%s|%u|%g|%f|%X|%Y' -- {q_path}")
-        if not res.ok:
+        if res.ok and res.stdout.strip():
+            try:
+                return _parse_stat_output(res.stdout)
+            except ValueError:
+                pass
+
+        fb_res = await self.run(_build_stat_fallback_command(remote_path))
+        if fb_res.ok and fb_res.stdout.strip():
+            try:
+                return _parse_stat_output(fb_res.stdout)
+            except ValueError as exc:
+                raise ConnectionError(
+                    f"{self.name} stat parse failed for {remote_path}: {exc}",
+                    host=self.container,
+                ) from exc
+
+        err_msg = (res.stderr or fb_res.stderr).strip()
+        if res.ok and res.stdout.strip():
             raise ConnectionError(
-                f"{self.name} stat failed for {remote_path}: {res.stderr.strip()}",
+                f"{self.name} stat parse failed for {remote_path}: Unexpected stat output format: {res.stdout!r}",
                 host=self.container,
             )
-        try:
-            return _parse_stat_output(res.stdout)
-        except ValueError as exc:
-            raise ConnectionError(
-                f"{self.name} stat parse failed for {remote_path}: {exc}",
-                host=self.container,
-            ) from exc
+        raise ConnectionError(
+            f"{self.name} stat failed for {remote_path}: {err_msg}",
+            host=self.container,
+        )
 
     async def listdir(self, remote_path: str = ".") -> list[str]:
         """Список имён файлов в директории внутри контейнера."""

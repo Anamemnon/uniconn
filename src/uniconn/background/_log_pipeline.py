@@ -86,6 +86,8 @@ class LocalFileHandler(LogHandler):
         strategy: str = "on_complete",
         periodic_interval: float = 5.0,
         fsync: bool = False,
+        max_bytes: int = 10 * 1024 * 1024,
+        backup_count: int = 3,
         logger: logging.Logger | None = None,
     ):
         self._local_dir = Path(local_dir)
@@ -97,6 +99,8 @@ class LocalFileHandler(LogHandler):
         self._strategy = strategy
         self._periodic_interval = periodic_interval
         self._fsync = fsync
+        self._max_bytes = max_bytes
+        self._backup_count = backup_count
         self._logger = logger or logging.getLogger(__name__)
         self._paths: dict[str, Path] = {}
         self._buffers: dict[str, list[str]] = {}
@@ -126,12 +130,48 @@ class LocalFileHandler(LogHandler):
         """Словарь всех созданных файлов логов ``{session_id: Path}``."""
         return dict(self._paths)
 
+    def _rotate_if_needed(self, path: Path, incoming_bytes: int) -> None:
+        """Выполнить ротацию файла лога при превышении ``max_bytes``."""
+        if self._max_bytes <= 0 or not path.exists():
+            return
+        try:
+            current_size = path.stat().st_size
+        except OSError:
+            return
+        if current_size + incoming_bytes <= self._max_bytes:
+            return
+
+        if self._backup_count <= 0:
+            with contextlib.suppress(OSError):
+                path.unlink(missing_ok=True)
+            return
+
+        oldest = path.with_name(f"{path.name}.{self._backup_count}")
+        with contextlib.suppress(OSError):
+            oldest.unlink(missing_ok=True)
+
+        for idx in range(self._backup_count - 1, 0, -1):
+            src = path.with_name(f"{path.name}.{idx}")
+            dst = path.with_name(f"{path.name}.{idx + 1}")
+            if src.exists():
+                with contextlib.suppress(OSError):
+                    src.replace(dst)
+
+        first_backup = path.with_name(f"{path.name}.1")
+        with contextlib.suppress(OSError):
+            path.replace(first_backup)
+
     def _write(self, session_id: str, lines: list[str]) -> None:
-        """Дописать строки в локальный файл (создаёт директории)."""
+        """Дописать строки в локальный файл (создаёт директории и выполняет ротацию)."""
+        if not lines:
+            return
         path = self.local_path(session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
+        payload = "".join(lines)
+        incoming_bytes = len(payload.encode("utf-8", errors="replace"))
+        self._rotate_if_needed(path, incoming_bytes)
         with path.open("a", encoding="utf-8") as f:
-            f.writelines(lines)
+            f.write(payload)
             if self._fsync:
                 f.flush()
                 os.fsync(f.fileno())

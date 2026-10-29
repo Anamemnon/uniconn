@@ -431,3 +431,70 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
             assert f_res.ok is True
             assert f_res.changed is True
             assert sync_file.read_text(encoding="utf-8") == "sync_world\n"
+
+    @pytest.mark.asyncio
+    async def test_docker_and_kubectl_stat_ls_fallback_and_ipv6_port_forward(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from unittest.mock import AsyncMock
+
+        from uniconn import Result
+        from uniconn.transports._docker import (
+            DockerTransport,
+            _parse_stat_output,
+            _symbolic_mode_to_int,
+        )
+        from uniconn.transports._kubectl import _PORT_FORWARD_RE, KubectlTransport
+
+        assert (_symbolic_mode_to_int("drwxr-xr-x") & 0o777) == 0o755
+        assert (_symbolic_mode_to_int("-rw-r-----") & 0o777) == 0o640
+        ls_stat = _parse_stat_output("-rwxr-xr-x 1 1000 1000 2048 Jan  1 00:00 /app/bin")
+        assert ls_stat["size"] == 2048
+        assert ls_stat["uid"] == 1000
+        assert ls_stat["is_file"] is True
+        assert (ls_stat["mode"] & 0o777) == 0o755
+
+        # Docker stat fallback когда stat -c недоступен (BusyBox/minimal container)
+        d_conn = Connection.from_uri("docker://busybox-app")
+        d_tr = d_conn._transport
+        assert isinstance(d_tr, DockerTransport)
+        d_tr.run = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[
+                Result(exit_code=1, stdout="", stderr="stat: unrecognized option", duration=0.01, command="stat"),
+                Result(
+                    exit_code=0,
+                    stdout="drwxr-x--- 2 0 0 4096 Jan 1 00:00 /var/data\n",
+                    stderr="",
+                    duration=0.01,
+                    command="ls -ldn",
+                ),
+            ]
+        )
+        st = await d_tr.stat("/var/data")
+        assert st["is_dir"] is True
+        assert st["size"] == 4096
+        assert (st["mode"] & 0o777) == 0o750
+
+        # Kubectl stat fallback + IPv6 _PORT_FORWARD_RE
+        k_conn = Connection.from_uri("kubectl://default/web-pod")
+        k_tr = k_conn._transport
+        assert isinstance(k_tr, KubectlTransport)
+        k_tr.run = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[
+                Result(exit_code=127, stdout="", stderr="stat: not found", duration=0.01, command="stat"),
+                Result(
+                    exit_code=0,
+                    stdout="512|0|0|81a4|1700000000|1700000000\n",
+                    stderr="",
+                    duration=0.01,
+                    command="python3",
+                ),
+            ]
+        )
+        k_st = await k_tr.stat("/etc/config.yaml")
+        assert k_st["size"] == 512
+        assert k_st["is_file"] is True
+
+        m_v6 = _PORT_FORWARD_RE.search("Forwarding from [::1]:54321 -> 8080")
+        assert m_v6 is not None and int(m_v6.group(1)) == 54321
+

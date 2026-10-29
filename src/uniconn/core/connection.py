@@ -353,8 +353,16 @@ class Connection:
         refresh: bool = False,
         timeout: float | None = None,
         spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
+        artifact_dir: str | Path | None = None,
+        ttl: float | None = None,
     ) -> HostFacts:
-        return await self._facts_collector.gather(refresh=refresh, timeout=timeout, spec=spec)
+        return await self._facts_collector.gather(
+            refresh=refresh,
+            timeout=timeout,
+            spec=spec,
+            artifact_dir=artifact_dir,
+            ttl=ttl,
+        )
 
     async def __aenter__(self) -> Self:
         await self._transport.connect()

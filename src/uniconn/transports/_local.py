@@ -651,14 +651,21 @@ class LocalTransport(BaseTransport):
         """Скопировать локальный файл или директорию."""
         import shutil
 
+        progress_callback = kwargs.pop("progress_callback", None)
         try:
             src = Path(local_path)
             dst = Path(remote_path)
             if src.is_dir():
                 shutil.copytree(src, dst, dirs_exist_ok=True)
+                if callable(progress_callback):
+                    total = sum(p.stat().st_size for p in src.rglob("*") if p.is_file())
+                    progress_callback(int(total), int(total))
             else:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
+                if callable(progress_callback):
+                    size = int(src.stat().st_size)
+                    progress_callback(size, size)
         except OSError as e:
             raise ConnectionError(
                 f"Local upload failed from {local_path} to {remote_path}: {e}",

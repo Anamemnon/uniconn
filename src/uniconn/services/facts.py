@@ -8,6 +8,7 @@ import json
 import re
 import shlex
 import sys
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -15,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from .facts_models import (
     DEFAULT_DIFF_FIELDS,
     FACT_COLLECTION_SCRIPT,
+    WINDOWS_FACT_POWERSHELL_SCRIPT,
     CustomCommandSpec,
     DiskInfo,
     ExternalToolSpec,
@@ -26,6 +28,7 @@ from .facts_models import (
     diff_facts,
     parse_facts_output,
     parse_redfish_facts,
+    parse_windows_facts_output,
 )
 
 if TYPE_CHECKING:
@@ -248,6 +251,7 @@ class FactCollector:
         """Инициализировать сборщик фактов для подключения."""
         self._conn = conn
         self.cached: HostFacts | None = None
+        self._cached_at: float | None = None
         self._tool_runner = ExternalToolRunner(conn)
 
     def _is_run_mocked(self) -> bool:
@@ -283,16 +287,29 @@ class FactCollector:
         timeout: float | None = None,
         spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
         artifact_dir: str | Path | None = None,
+        ttl: float | None = None,
     ) -> HostFacts:
         """Собрать системные факты (базовые + декларативные источники ``FactSpec``)."""
         resolved_spec = FactSpec.coerce(spec)
-        if not refresh and resolved_spec is None and self.cached is not None:
+        if (
+            not refresh
+            and resolved_spec is None
+            and self.cached is not None
+            and (
+                ttl is None
+                or (
+                    self._cached_at is not None
+                    and (time.monotonic() - self._cached_at) <= ttl
+                )
+            )
+        ):
             return self.cached
 
         default_host = self._conn.config.host or "localhost"
         if self._conn.dry_run:
             facts = HostFacts(hostname=default_host)
             self.cached = facts
+            self._cached_at = time.monotonic()
             return facts
 
         include_builtin = (
@@ -319,6 +336,18 @@ class FactCollector:
                     raise_on_error=False,
                 )
                 facts = parse_facts_output(res.stdout, default_host=default_host)
+                if facts.os_family == "Unknown":
+                    win_res = await self._conn.run(
+                        WINDOWS_FACT_POWERSHELL_SCRIPT,
+                        timeout=timeout,
+                        raise_on_error=False,
+                    )
+                    if win_res.ok and win_res.stdout.strip():
+                        win_facts = parse_windows_facts_output(
+                            win_res.stdout, default_host=default_host
+                        )
+                        if win_facts.os_family == "Windows":
+                            facts = win_facts
         else:
             facts = HostFacts(hostname=default_host)
 
@@ -332,6 +361,7 @@ class FactCollector:
 
         if include_builtin:
             self.cached = facts
+            self._cached_at = time.monotonic()
         return facts
 
     @staticmethod
@@ -399,6 +429,7 @@ class FactCollector:
 __all__ = [
     "DEFAULT_DIFF_FIELDS",
     "FACT_COLLECTION_SCRIPT",
+    "WINDOWS_FACT_POWERSHELL_SCRIPT",
     "CustomCommandSpec",
     "DiskInfo",
     "ExternalToolRunner",
@@ -412,5 +443,6 @@ __all__ = [
     "diff_facts",
     "parse_facts_output",
     "parse_redfish_facts",
+    "parse_windows_facts_output",
 ]
 

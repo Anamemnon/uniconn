@@ -656,12 +656,14 @@ class ConnectionPool:
         refresh: bool = False,
         timeout: float | None = None,
         spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
+        ttl: float | None = None,
     ) -> FactsDiffReport:
         """Собрать системные факты со всех хостов пула и найти расхождения с эталоном."""
         facts_map = await self.gather_facts(
             refresh=refresh,
             timeout=timeout,
             spec=spec,
+            ttl=ttl,
         )
         return diff_facts(
             facts_map,

@@ -12,7 +12,7 @@ from ..exceptions import BackgroundBackendError, ConfigurationError
 if TYPE_CHECKING:
     from ..core.connection import Connection
 
-BackgroundBackendType = Literal["auto", "tmux", "screen", "nohup"]
+BackgroundBackendType = Literal["auto", "tmux", "screen", "nohup", "windows_job"]
 
 
 @runtime_checkable
@@ -21,7 +21,7 @@ class BackgroundBackendStrategy(Protocol):
 
     @property
     def name(self) -> str:
-        """Имя бэкенда ('tmux', 'screen', 'nohup')."""
+        """Имя бэкенда ('tmux', 'screen', 'nohup', 'windows_job')."""
         ...
 
     async def is_available(self, conn: Connection) -> bool:
@@ -477,19 +477,198 @@ class NohupBackend:
         await conn.run(cmd, raise_on_error=False)
 
 
+class WindowsJobBackend:
+    """Стратегия запуска фоновых задач на Windows через PowerShell Start-Process."""
+
+    @property
+    def name(self) -> str:
+        """Имя бэкенда."""
+        return "windows_job"
+
+    async def is_available(self, conn: Connection) -> bool:
+        """Проверить наличие PowerShell на целевом Windows-хосте."""
+        res = await conn.run(
+            'powershell -NoProfile -NonInteractive -Command "$PSVersionTable.PSVersion.Major"',
+            raise_on_error=False,
+        )
+        return res.ok and bool(res.stdout.strip())
+
+    @staticmethod
+    def _ps_quote(value: str) -> str:
+        """Экранировать строку для одинарных кавычек PowerShell."""
+        return "'" + value.replace("'", "''") + "'"
+
+    async def start_session(
+        self,
+        conn: Connection,
+        session_id: str,
+        script_path: str,
+        log_path: str,
+        exit_file_path: str,
+        pid_path: str,
+    ) -> None:
+        """Запустить фоновый процесс PowerShell с перенаправлением лога и записью PID."""
+        ps_script = self._ps_quote(script_path)
+        ps_log = self._ps_quote(log_path)
+        ps_exit = self._ps_quote(exit_file_path)
+        ps_pid = self._ps_quote(pid_path)
+        inner_cmd = (
+            f"& {ps_script} *> {ps_log}; "
+            f"$rc = if ($null -ne $LASTEXITCODE) {{ $LASTEXITCODE }} else {{ 0 }}; "
+            f"Set-Content -Path {ps_exit} -Value $rc -NoNewline"
+        )
+        encoded_inner = self._ps_quote(inner_cmd)
+        cmd = (
+            'powershell -NoProfile -NonInteractive -Command "'
+            f"$p = Start-Process -FilePath 'powershell' "
+            f"-ArgumentList @('-NoProfile', '-NonInteractive', '-Command', {encoded_inner}) "
+            "-WindowStyle Hidden -PassThru; "
+            f'Set-Content -Path {ps_pid} -Value $p.Id -NoNewline"'
+        )
+        res = await conn.run(cmd, raise_on_error=False)
+        if not res.ok:
+            raise BackgroundBackendError(
+                f"Не удалось запустить фоновую задачу windows_job {session_id!r}: {res.stderr.strip()}",
+                command=cmd,
+                exit_code=res.exit_code,
+                stdout=res.stdout,
+                stderr=res.stderr,
+            )
+
+    async def is_alive(
+        self,
+        conn: Connection,
+        session_id: str,
+        pid_path: str,
+        exit_file_path: str,
+    ) -> bool:
+        """Проверить активность фонового процесса Windows по PID-файлу и отсутствию exit-файла."""
+        del session_id
+        ps_pid = self._ps_quote(pid_path)
+        ps_exit = self._ps_quote(exit_file_path)
+        cmd = (
+            'powershell -NoProfile -NonInteractive -Command "'
+            f"if ((Test-Path {ps_exit}) -or -not (Test-Path {ps_pid})) {{ exit 1 }}; "
+            f"$procId = [int](Get-Content {ps_pid} -Raw).Trim(); "
+            '$p = Get-Process -Id $procId -ErrorAction SilentlyContinue; '
+            'if ($null -ne $p) { exit 0 } else { exit 1 }"'
+        )
+        res = await conn.run(cmd, raise_on_error=False)
+        return res.ok
+
+    async def get_pid(
+        self,
+        conn: Connection,
+        session_id: str,
+        pid_path: str,
+        exit_file_path: str,
+    ) -> int | None:
+        """Вернуть PID активного процесса Windows или None, если он завершён."""
+        del session_id
+        ps_pid = self._ps_quote(pid_path)
+        ps_exit = self._ps_quote(exit_file_path)
+        cmd = (
+            'powershell -NoProfile -NonInteractive -Command "'
+            f"if (-not (Test-Path {ps_exit}) -and (Test-Path {ps_pid})) {{ "
+            f"$procId = [int](Get-Content {ps_pid} -Raw).Trim(); "
+            "$p = Get-Process -Id $procId -ErrorAction SilentlyContinue; "
+            'if ($null -ne $p) { Write-Output $procId } }"'
+        )
+        res = await conn.run(cmd, raise_on_error=False)
+        if not res.ok or not res.stdout.strip():
+            return None
+        try:
+            return int(res.stdout.strip().splitlines()[0].strip())
+        except ValueError:
+            return None
+
+    async def list_sessions(
+        self,
+        conn: Connection,
+        prefix: str = "",
+    ) -> dict[str, int]:
+        """Найти активные сессии windows_job по PID-файлам."""
+        glob_prefix = (
+            f"uniconn_{prefix}"
+            if prefix and not prefix.startswith("uniconn_")
+            else (prefix or "uniconn_")
+        )
+        safe_glob = re.sub(r"[^A-Za-z0-9._-]", "", glob_prefix)
+        cmd = (
+            'powershell -NoProfile -NonInteractive -Command "'
+            f"Get-ChildItem -Path '/tmp/{safe_glob}*.pid' -ErrorAction SilentlyContinue | ForEach-Object {{ "
+            "$sid = $_.BaseName -replace '^uniconn_', ''; "
+            "$exitFile = Join-Path $_.DirectoryName ('uniconn_' + $sid + '.exit'); "
+            "if (-not (Test-Path $exitFile)) { "
+            "$procId = [int](Get-Content $_.FullName -Raw).Trim(); "
+            "if ($null -ne (Get-Process -Id $procId -ErrorAction SilentlyContinue)) { "
+            'Write-Output \\"$sid $procId\\" } } }"'
+        )
+        res = await conn.run(cmd, raise_on_error=False)
+        if not res.ok:
+            return {}
+        sessions: dict[str, int] = {}
+        for line in res.stdout.splitlines():
+            parts = line.strip().split(maxsplit=1)
+            if len(parts) == 2:
+                sid, pid_str = parts
+                if prefix and not sid.startswith(prefix):
+                    continue
+                try:
+                    sessions[sid] = int(pid_str)
+                except ValueError:
+                    continue
+        return sessions
+
+    async def send_interrupt(
+        self,
+        conn: Connection,
+        session_id: str,
+        pid_path: str,
+        exit_file_path: str,
+    ) -> None:
+        """Остановить процесс Windows через Stop-Process."""
+        pid = await self.get_pid(conn, session_id, pid_path, exit_file_path)
+        if pid is not None:
+            ps_cmd = f"Stop-Process -Id {pid} -ErrorAction SilentlyContinue"
+            await conn.run(
+                f'powershell -NoProfile -NonInteractive -Command "{ps_cmd}"',
+                raise_on_error=False,
+            )
+
+    async def terminate(
+        self,
+        conn: Connection,
+        session_id: str,
+        pid_path: str,
+    ) -> None:
+        """Принудительно завершить процесс Windows через Stop-Process -Force."""
+        del session_id
+        ps_pid = self._ps_quote(pid_path)
+        cmd = (
+            'powershell -NoProfile -NonInteractive -Command "'
+            f"if (Test-Path {ps_pid}) {{ "
+            f"$procId = [int](Get-Content {ps_pid} -Raw).Trim(); "
+            'Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue }"'
+        )
+        await conn.run(cmd, raise_on_error=False)
+
+
 _BACKENDS: dict[str, BackgroundBackendStrategy] = {
     "tmux": TmuxBackend(),
     "screen": ScreenBackend(),
     "nohup": NohupBackend(),
+    "windows_job": WindowsJobBackend(),
 }
 
 
 def get_backend_by_name(name: str) -> BackgroundBackendStrategy:
-    """Получить экземпляр стратегии бэкенда по имени ('tmux', 'screen', 'nohup')."""
+    """Получить экземпляр стратегии бэкенда по имени ('tmux', 'screen', 'nohup', 'windows_job')."""
     strategy = _BACKENDS.get(name)
     if strategy is None:
         raise ConfigurationError(
-            f"Неизвестный фоновый бэкенд {name!r}. Допустимые значения: 'auto', 'tmux', 'screen', 'nohup'"
+            f"Неизвестный фоновый бэкенд {name!r}. "
+            "Допустимые значения: 'auto', 'tmux', 'screen', 'nohup', 'windows_job'"
         )
     return strategy
 
@@ -534,6 +713,7 @@ __all__ = [
     "NohupBackend",
     "ScreenBackend",
     "TmuxBackend",
+    "WindowsJobBackend",
     "get_backend_by_name",
     "resolve_backend",
 ]

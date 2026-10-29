@@ -12,7 +12,7 @@ import re
 import shlex
 import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -27,6 +27,63 @@ if TYPE_CHECKING:
 STREAM_UPLOAD_THRESHOLD = 4 * 1024 * 1024  # 4 МБ
 ChecksumAlgorithm = Literal["sha256", "sha1", "md5"]
 _SUPPORTED_CHECKSUMS: frozenset[str] = frozenset(("sha256", "sha1", "md5"))
+_CHECKSUM_HEX_LENGTHS: dict[str, int] = {
+    "sha256": 64,
+    "sha1": 40,
+    "md5": 32,
+}
+
+
+def _build_checksum_command(
+    path: str,
+    algo: ChecksumAlgorithm = "sha256",
+    os_family: str | None = None,
+) -> str:
+    """Построить кроссплатформенную команду расчёта хеша (Linux/macOS/BSD/OpenSSL/Windows)."""
+    q_path = shlex.quote(path)
+    if os_family and os_family.lower() == "windows":
+        win_algo = algo.upper()
+        return f"certutil -hashfile {q_path} {win_algo}"
+
+    if algo == "sha256":
+        return (
+            f"if command -v sha256sum >/dev/null 2>&1; then sha256sum {q_path}; "
+            f"elif command -v shasum >/dev/null 2>&1; then shasum -a 256 {q_path}; "
+            f"elif command -v sha256 >/dev/null 2>&1; then sha256 -q {q_path}; "
+            f"elif command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 -r {q_path}; "
+            f"else certutil -hashfile {q_path} SHA256; fi"
+        )
+    if algo == "sha1":
+        return (
+            f"if command -v sha1sum >/dev/null 2>&1; then sha1sum {q_path}; "
+            f"elif command -v shasum >/dev/null 2>&1; then shasum -a 1 {q_path}; "
+            f"elif command -v sha1 >/dev/null 2>&1; then sha1 -q {q_path}; "
+            f"elif command -v openssl >/dev/null 2>&1; then openssl dgst -sha1 -r {q_path}; "
+            f"else certutil -hashfile {q_path} SHA1; fi"
+        )
+    return (
+        f"if command -v md5sum >/dev/null 2>&1; then md5sum {q_path}; "
+        f"elif command -v md5 >/dev/null 2>&1; then md5 -q {q_path}; "
+        f"elif command -v openssl >/dev/null 2>&1; then openssl dgst -md5 -r {q_path}; "
+        f"else certutil -hashfile {q_path} MD5; fi"
+    )
+
+
+def _extract_checksum_digest(stdout: str, algo: ChecksumAlgorithm = "sha256") -> str | None:
+    """Извлечь hex-дайджест из вывода GNU coreutils, shasum, BSD md5/sha256, openssl или certutil."""
+    expected_len = _CHECKSUM_HEX_LENGTHS.get(algo, 64)
+    hex_re = re.compile(rf"\b([0-9a-fA-F]{{{expected_len}}})\b")
+    for line in stdout.strip().splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        match = hex_re.search(stripped)
+        if match:
+            return match.group(1).lower()
+        compact = re.sub(r"\s+", "", stripped)
+        if len(compact) == expected_len and all(c in "0123456789abcdefABCDEF" for c in compact):
+            return compact.lower()
+    return None
 
 
 def _local_file_digest(path: str | Path, algorithm: ChecksumAlgorithm = "sha256") -> str:
@@ -89,6 +146,9 @@ class DirectorySynchronizer:
         exclude: Sequence[str] | None = None,
         mtime_tolerance: float = 1.0,
         dry_run: bool | None = None,
+        *,
+        checksum_check: bool = False,
+        preserve_permissions: bool = False,
     ) -> SyncResult:
         """Выполнить инкрементальную синхронизацию ``local_dir -> remote_dir``."""
         start_time = time.monotonic()
@@ -146,22 +206,27 @@ class DirectorySynchronizer:
         for rel_path, (full_local, l_size, l_mtime) in sorted(local_files.items()):
             target_file = f"{effective_remote.rstrip('/')}/{rel_path}"
             needs_upload = True
+            r_stat: FileStat | dict[str, Any] = {}
             if not is_dry or transport.is_connected:
                 with contextlib.suppress(OSError, ExecutionError):
                     if await transport.exists(target_file):
                         r_stat = await transport.stat(target_file)
                         r_size = int(r_stat.get("size", -1))
                         r_mtime = float(r_stat.get("mtime") or 0.0)
-                        if (
-                            r_size == l_size
-                            and r_mtime > 0
-                            and (r_mtime + mtime_tolerance) >= l_mtime
-                        ):
-                            needs_upload = False
+                        if r_size == l_size:
+                            if checksum_check:
+                                l_hash = _local_file_digest(full_local, "sha256")
+                                r_hash = await self._conn.files.checksum(
+                                    target_file, "sha256"
+                                )
+                                if l_hash == r_hash:
+                                    needs_upload = False
+                            elif r_mtime > 0 and (r_mtime + mtime_tolerance) >= l_mtime:
+                                needs_upload = False
 
+            mode = full_local.stat().st_mode & 0o777
             if needs_upload:
                 if not is_dry:
-                    mode = full_local.stat().st_mode & 0o777
                     if l_size > STREAM_UPLOAD_THRESHOLD:
                         await transport.upload(str(full_local), target_file)
                         with contextlib.suppress(OSError, ExecutionError):
@@ -169,9 +234,24 @@ class DirectorySynchronizer:
                     else:
                         data = full_local.read_bytes()
                         await transport.write_file(target_file, data, mode=mode)
+                        if preserve_permissions:
+                            with contextlib.suppress(OSError, ExecutionError):
+                                await transport.chmod(target_file, mode)
                 uploaded.append(rel_path)
                 bytes_transferred += l_size
             else:
+                if preserve_permissions and not is_dry:
+                    r_perms_raw = r_stat.get("permissions")
+                    raw_mode = r_stat.get("mode")
+                    r_mode: int | None = None
+                    if isinstance(r_perms_raw, str):
+                        with contextlib.suppress(ValueError):
+                            r_mode = int(r_perms_raw, 8) & 0o777
+                    elif isinstance(raw_mode, int):
+                        r_mode = raw_mode & 0o777
+                    if r_mode != mode:
+                        with contextlib.suppress(OSError, ExecutionError):
+                            await transport.chmod(target_file, mode)
                 skipped.append(rel_path)
 
         if delete and (not is_dry or transport.is_connected):
@@ -262,9 +342,13 @@ class FileOperationsService:
         recurse: bool = False,
         *,
         verify: bool = False,
+        progress_callback: Callable[[int, int], None] | None = None,
         **kwargs: Any,
     ) -> None:
-        """Загрузить файл или директорию на удалённый хост (с опциональной проверкой SHA-256)."""
+        """Загрузить файл или директорию на удалённый хост (с опциональной проверкой SHA-256 и прогрессом)."""
+        if progress_callback is not None:
+            kwargs["progress_callback"] = progress_callback
+
         handler = self._raw_upload
         for obs in reversed(self._conn.operation_observers):
             prev_fn = handler
@@ -320,9 +404,13 @@ class FileOperationsService:
         recurse: bool = False,
         *,
         verify: bool = False,
+        progress_callback: Callable[[int, int], None] | None = None,
         **kwargs: Any,
     ) -> None:
-        """Скачать файл или директорию с удалённого хоста (с опциональной проверкой SHA-256)."""
+        """Скачать файл или директорию с удалённого хостa (с опциональной проверкой SHA-256 и прогрессом)."""
+        if progress_callback is not None:
+            kwargs["progress_callback"] = progress_callback
+
         handler = self._raw_download
         for obs in reversed(self._conn.operation_observers):
             prev_fn = handler
@@ -516,7 +604,9 @@ class FileOperationsService:
         if self._conn.transport_name == "local" and not sudo:
             return _local_file_digest(effective_path, algorithm)
 
-        cmd = f"{algorithm}sum {shlex.quote(effective_path)}"
+        cached_facts = getattr(self._conn, "_cached_facts", None)
+        os_family = getattr(cached_facts, "os_family", None)
+        cmd = _build_checksum_command(effective_path, algorithm, os_family=os_family)
         res = await self._conn.run(
             cmd,
             sudo=sudo,
@@ -524,6 +614,9 @@ class FileOperationsService:
             dry_run=False,
         )
         if res.ok and res.stdout.strip():
+            extracted = _extract_checksum_digest(res.stdout, algorithm)
+            if extracted is not None:
+                return extracted
             return res.stdout.strip().split()[0].lower()
 
         if not sudo:
@@ -640,6 +733,9 @@ class FileOperationsService:
         exclude: Sequence[str] | None = None,
         mtime_tolerance: float = 1.0,
         dry_run: bool | None = None,
+        *,
+        checksum_check: bool = False,
+        preserve_permissions: bool = False,
     ) -> SyncResult:
         return await self._synchronizer.sync(
             local_dir=local_dir,
@@ -648,6 +744,8 @@ class FileOperationsService:
             exclude=exclude,
             mtime_tolerance=mtime_tolerance,
             dry_run=dry_run,
+            checksum_check=checksum_check,
+            preserve_permissions=preserve_permissions,
         )
 
     async def sync_dir(
@@ -658,9 +756,33 @@ class FileOperationsService:
         exclude: Sequence[str] | None = None,
         mtime_tolerance: float = 1.0,
         dry_run: bool | None = None,
+        *,
+        checksum_check: bool = False,
+        preserve_permissions: bool = False,
     ) -> SyncResult:
         """Инкрементально синхронизировать локальную директорию с удалённой."""
-        handler = self._raw_sync_dir
+
+        async def _base_sync(
+            *,
+            local_dir: str | Path,
+            remote_dir: str | Path,
+            delete: bool = False,
+            exclude: Sequence[str] | None = None,
+            mtime_tolerance: float = 1.0,
+            dry_run: bool | None = None,
+        ) -> SyncResult:
+            return await self._raw_sync_dir(
+                local_dir=local_dir,
+                remote_dir=remote_dir,
+                delete=delete,
+                exclude=exclude,
+                mtime_tolerance=mtime_tolerance,
+                dry_run=dry_run,
+                checksum_check=checksum_check,
+                preserve_permissions=preserve_permissions,
+            )
+
+        handler = _base_sync
         for obs in reversed(self._conn.operation_observers):
             prev_fn = handler
 

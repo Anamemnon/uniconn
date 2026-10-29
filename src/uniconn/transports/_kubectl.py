@@ -26,11 +26,41 @@ from typing import Any
 from ..config.models import ConnectionConfig
 from ..exceptions import ConfigurationError, ConnectionError, ExecutionError, TimeoutError
 from ..result import Result
-from ._docker import _parse_stat_output
+from ._docker import _build_stat_fallback_command, _parse_stat_output
 from ._local import _LocalShellProcess
 from .base import BaseTransport, FileStat
 
-_PORT_FORWARD_RE = re.compile(r"Forwarding from .+:(\d+)\s*->")
+_PORT_FORWARD_RE = re.compile(
+    r"(?:Forwarding from\s+.+:|127\.0\.0\.1:|\[::1\]:)(\d+)\s*->\s*\d+",
+    re.IGNORECASE,
+)
+
+
+async def _wait_for_local_port_ready(
+    local_host: str,
+    port: int,
+    proc: asyncio.subprocess.Process,
+) -> None:
+    """Дождаться готовности локального TCP-порта port-forward (неблокирующая проверка)."""
+    if port <= 0:
+        return
+    probe_host = "127.0.0.1" if local_host in ("0.0.0.0", "") else local_host
+    for _ in range(3):
+        if proc.returncode is not None and proc.returncode != 0:
+            raise ConnectionError(
+                f"kubectl port-forward exited prematurely with code {proc.returncode}"
+            )
+        try:
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(probe_host, port),
+                timeout=0.05,
+            )
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+            return
+        except Exception:
+            await asyncio.sleep(0.01)
 
 
 class KubectlTransport(BaseTransport):
@@ -450,21 +480,35 @@ class KubectlTransport(BaseTransport):
             )
 
     async def stat(self, remote_path: str) -> FileStat:
-        """Получить метаданные файла или директории внутри пода."""
+        """Получить метаданные файла или директории внутри пода (с fallback на Python и ls -ldn)."""
         q_path = shlex.quote(remote_path)
         res = await self.run(f"stat -c '%s|%u|%g|%f|%X|%Y' -- {q_path}")
-        if not res.ok:
+        if res.ok and res.stdout.strip():
+            try:
+                return _parse_stat_output(res.stdout)
+            except ValueError:
+                pass
+
+        fb_res = await self.run(_build_stat_fallback_command(remote_path))
+        if fb_res.ok and fb_res.stdout.strip():
+            try:
+                return _parse_stat_output(fb_res.stdout)
+            except ValueError as exc:
+                raise ConnectionError(
+                    f"kubectl stat parse failed for {remote_path}: {exc}",
+                    host=self.pod,
+                ) from exc
+
+        err_msg = (res.stderr or fb_res.stderr).strip()
+        if res.ok and res.stdout.strip():
             raise ConnectionError(
-                f"kubectl stat failed for {remote_path}: {res.stderr.strip()}",
+                f"kubectl stat parse failed for {remote_path}: Unexpected stat output format: {res.stdout!r}",
                 host=self.pod,
             )
-        try:
-            return _parse_stat_output(res.stdout)
-        except ValueError as exc:
-            raise ConnectionError(
-                f"kubectl stat parse failed for {remote_path}: {exc}",
-                host=self.pod,
-            ) from exc
+        raise ConnectionError(
+            f"kubectl stat failed for {remote_path}: {err_msg}",
+            host=self.pod,
+        )
 
     async def listdir(self, remote_path: str = ".") -> list[str]:
         """Список имён файлов в директории внутри пода."""
@@ -570,6 +614,7 @@ class KubectlTransport(BaseTransport):
                         f"kubectl port-forward failed for pod {self.pod!r}: {line_str}",
                         host=self.pod,
                     )
+            await _wait_for_local_port_ready(local_host, bound_port, proc)
             yield bound_port
         finally:
             if proc in self._port_forward_procs:

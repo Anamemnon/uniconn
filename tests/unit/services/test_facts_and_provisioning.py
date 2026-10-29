@@ -258,6 +258,86 @@ class TestHostFactsParsingAndCollection:
             assert facts.custom["version"] == "v2.5.1"
             assert facts.custom["meta"] == {"env": "production", "tier": 1}
 
+    def test_parse_macos_darwin_facts_fallbacks(self) -> None:
+        """Парсер фактов корректно разбирает вывод macOS sw_vers и sysctl."""
+        raw_macos = (
+            "===UNICONN_SECTION:UNAME===\n"
+            "Darwin 23.5.0 arm64 macbook-pro\n"
+            "===UNICONN_SECTION:HOSTNAME===\n"
+            "macbook-pro.local\n"
+            "===UNICONN_SECTION:OS_RELEASE===\n"
+            "ProductName:\tmacOS\n"
+            "ProductVersion:\t14.5\n"
+            "BuildVersion:\t23F79\n"
+            "===UNICONN_SECTION:UPTIME===\n"
+            "{ sec = 1700000000, usec = 0 } Tue Nov 14 22:13:20 2023\n"
+            "===UNICONN_SECTION:CPU===\n"
+            "12\n"
+            "===UNICONN_SECTION:MEMINFO===\n"
+            "34359738368\n"
+            "===UNICONN_SECTION:DISKS===\n"
+            "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+            "/dev/disk3s1s1 482797652 120000000 362797652 25% /\n"
+            "===UNICONN_SECTION:NET_JSON===\n"
+            "===UNICONN_SECTION:NET_TEXT===\n"
+            "===UNICONN_SECTION:END===\n"
+        )
+        facts = parse_facts_output(raw_macos)
+        assert facts.os_family == "Darwin"
+        assert facts.distro == "macOS 14.5"
+        assert facts.kernel == "23.5.0"
+        assert facts.arch == "arm64"
+        assert facts.hostname == "macbook-pro.local"
+        assert facts.cpu_count == 12
+        assert facts.memory_total_bytes == 34359738368
+        assert facts.uptime_seconds > 0.0
+        assert len(facts.disks) == 1
+        assert facts.disks[0].mountpoint == "/"
+
+    @pytest.mark.asyncio
+    async def test_remote_windows_ssh_powershell_fallback_and_ttl(self) -> None:
+        """FactCollector переключается на PowerShell при сбое POSIX-скрипта и соблюдает TTL кэша."""
+        import time as time_mod
+
+        win_json = (
+            '{"hostname":"WIN-SRV-01","distro":"Microsoft Windows Server 2022 Standard",'
+            '"kernel":"10.0.20348","arch":"64-bit","cpu_count":16,'
+            '"mem_total":68719476736,"mem_avail":34359738368,"uptime":7200.5,'
+            '"disks":[{"device":"C:","total":500000000000,"free":250000000000,"fstype":"NTFS"}]}'
+        )
+        conn = Connection.from_uri("ssh://Administrator@10.0.0.77")
+        conn.run = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[
+                # 1. POSIX FACT_COLLECTION_SCRIPT возвращает ошибку/пусто на Windows
+                Result(exit_code=1, stdout="", stderr="not recognized", duration=0.02, command="uname"),
+                # 2. WINDOWS_FACT_POWERSHELL_SCRIPT возвращает JSON
+                Result(exit_code=0, stdout=win_json, stderr="", duration=0.1, command="powershell"),
+                # 3. Повторный сбор после истечения TTL
+                Result(exit_code=1, stdout="", stderr="", duration=0.02, command="uname"),
+                Result(exit_code=0, stdout=win_json, stderr="", duration=0.1, command="powershell"),
+            ]
+        )
+
+        facts1 = await conn.gather_facts(ttl=60.0)
+        assert facts1.os_family == "Windows"
+        assert facts1.distro == "Microsoft Windows Server 2022 Standard"
+        assert facts1.arch == "x86_64"
+        assert facts1.cpu_count == 16
+        assert len(facts1.disks) == 1
+        assert facts1.disks[0].mountpoint == "C:\\"
+        assert conn.run.await_count == 2
+
+        # В пределах TTL возвращается кэш без сетевых вызовов
+        facts_cached = await conn.gather_facts(ttl=60.0)
+        assert facts_cached is facts1
+        assert conn.run.await_count == 2
+
+        # Сдвигаем _cached_at в прошлое -> TTL истёк -> выполняется повторный опрос
+        conn._facts_collector._cached_at = time_mod.monotonic() - 120.0
+        facts_refreshed = await conn.gather_facts(ttl=60.0)
+        assert facts_refreshed.hostname == "WIN-SRV-01"
+        assert conn.run.await_count == 4
+
 
 class TestIdempotentEnsureMethods:
     """Тесты идемпотентных проверок ensure_line, ensure_package, ensure_service."""

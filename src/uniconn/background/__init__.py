@@ -12,6 +12,7 @@ from ._backends import (
     NohupBackend,
     ScreenBackend,
     TmuxBackend,
+    WindowsJobBackend,
     get_backend_by_name,
     resolve_backend,
 )
@@ -66,6 +67,7 @@ __all__ = [
     "StreamHandler",
     "StreamSourceSpec",
     "TmuxBackend",
+    "WindowsJobBackend",
     "get_backend_by_name",
     "resolve_backend",
 ]

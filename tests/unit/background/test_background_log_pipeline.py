@@ -267,3 +267,58 @@ class TestBackgroundLogCollector:
         assert lines == []
         assert offset == 0
         assert not any("tail" in c.args[0] for c in conn.run.call_args_list)
+
+
+class TestLocalFileHandlerRotationAndWindowsJobBackend:
+    """Тесты ротации локальных логов LocalFileHandler и стратегии WindowsJobBackend."""
+
+    async def test_local_file_handler_rotates_backups(self, tmp_path) -> None:
+        from uniconn.background import LocalFileHandler
+
+        handler = LocalFileHandler(
+            local_dir=tmp_path,
+            strategy="realtime",
+            max_bytes=20,
+            backup_count=2,
+        )
+        # 1-я запись: 15 байт <= 20
+        await handler.handle("sess1", ["12345678901234\n"])
+        log_file = tmp_path / "sess1.log"
+        assert log_file.read_text(encoding="utf-8") == "12345678901234\n"
+        assert not (tmp_path / "sess1.log.1").exists()
+
+        # 2-я запись: 15 + 15 > 20 -> ротация в sess1.log.1
+        await handler.handle("sess1", ["abcdefghijklmn\n"])
+        assert (tmp_path / "sess1.log.1").read_text(encoding="utf-8") == "12345678901234\n"
+        assert log_file.read_text(encoding="utf-8") == "abcdefghijklmn\n"
+
+        # 3-я запись: ротация в sess1.log.2 и sess1.log.1
+        await handler.handle("sess1", ["ABCDEFGHIJKLMN\n"])
+        assert (tmp_path / "sess1.log.2").read_text(encoding="utf-8") == "12345678901234\n"
+        assert (tmp_path / "sess1.log.1").read_text(encoding="utf-8") == "abcdefghijklmn\n"
+        assert log_file.read_text(encoding="utf-8") == "ABCDEFGHIJKLMN\n"
+
+    async def test_windows_job_backend_lifecycle(self) -> None:
+        from uniconn.background import WindowsJobBackend, get_backend_by_name
+
+        backend = get_backend_by_name("windows_job")
+        assert isinstance(backend, WindowsJobBackend)
+        assert backend.name == "windows_job"
+
+        conn = make_connection(
+            lambda cmd, **kw: make_result(
+                "5\n" if "PSVersionTable" in cmd else ("4321\n" if "Write-Output $procId" in cmd else "s1 4321\n"),
+                exit_code=0,
+                command=cmd,
+            )
+        )
+        assert await backend.is_available(conn) is True
+        await backend.start_session(
+            conn, "s1", "C:\\tmp\\s1.ps1", "C:\\tmp\\s1.log", "C:\\tmp\\s1.exit", "C:\\tmp\\s1.pid"
+        )
+        assert await backend.is_alive(conn, "s1", "C:\\tmp\\s1.pid", "C:\\tmp\\s1.exit") is True
+        assert await backend.get_pid(conn, "s1", "C:\\tmp\\s1.pid", "C:\\tmp\\s1.exit") == 4321
+        assert await backend.list_sessions(conn, prefix="s") == {"s1": 4321}
+        await backend.send_interrupt(conn, "s1", "C:\\tmp\\s1.pid", "C:\\tmp\\s1.exit")
+        await backend.terminate(conn, "s1", "C:\\tmp\\s1.pid")
+

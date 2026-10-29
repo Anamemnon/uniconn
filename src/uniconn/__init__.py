@@ -43,6 +43,7 @@ from .background import (
     StreamHandler,
     StreamSourceSpec,
     TmuxBackend,
+    WindowsJobBackend,
     resolve_backend,
 )
 from .config import ConnectionConfig, InventoryLoader, SecretResolver, URIParser
@@ -367,6 +368,7 @@ __all__ = [
     "URIParser",
     "UniconnCassetteFixture",
     "UniconnError",
+    "WindowsJobBackend",
     "ZypperStrategy",
     "allowlist_hook",
     "audit_log_hook",

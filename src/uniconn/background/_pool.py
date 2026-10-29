@@ -208,6 +208,8 @@ class BackgroundPool:
                     host=self._host(),
                     command=command,
                     strategy=rule.download_strategy if rule else "on_complete",
+                    max_bytes=self._log_config.max_bytes,
+                    backup_count=self._log_config.backup_count,
                     logger=self._logger,
                 )
                 handlers.append(local_handler)

@@ -347,6 +347,7 @@ class RedfishTransport(BaseTransport):
         *,
         payload: dict[str, Any] | None = None,
         timeout: float | None = None,
+        _retry_on_401: bool = True,
     ) -> tuple[int, dict[str, Any]]:
         """Выполнить HTTP-запрос через ``niquests.AsyncSession`` и вернуть (status, json_dict)."""
         if not self._connected or self._session is None:
@@ -373,6 +374,29 @@ class RedfishTransport(BaseTransport):
             ) from exc
 
         status = int(getattr(resp, "status_code", 0) or 0)
+        if (
+            status == 401
+            and _retry_on_401
+            and self._auth_mode == "session"
+            and self.config.username
+        ):
+            with contextlib.suppress(Exception):
+                self._session.headers.pop("X-Auth-Token", None)
+                refreshed = await self._try_create_redfish_session(
+                    self._session,
+                    self.config.username,
+                    self._password_str(),
+                    eff_timeout,
+                )
+                if refreshed:
+                    return await self._request_json(
+                        method,
+                        path,
+                        payload=payload,
+                        timeout=timeout,
+                        _retry_on_401=False,
+                    )
+
         if status in (401, 403):
             raise AuthenticationError(
                 f"Redfish {method.upper()} {norm_path} unauthorized (HTTP {status})"

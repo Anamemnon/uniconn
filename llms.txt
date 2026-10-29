@@ -22,7 +22,7 @@
 - **Transport Protocols, BMC, Container/K8s, Replay/Cassette & Helpers (`uniconn.transports` / `uniconn.pytest_plugin`)**: `BaseTransport`, `CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `ShellStdinProtocol`, `ShellStdoutProtocol`, `TunnelCapableTransport`, `require_capability`, `supports_capability`, `IPMITransport`, `RedfishTransport`, `DockerTransport`, `PodmanTransport`, `KubectlTransport`, `LocalTransport`, `ReplayTransport`, `CassetteTransportProxy`, `Cassette`, `CassetteDiffReport`, `InteractionDiff`, `CassetteContext`, `SyncCassetteContext`, `UniconnCassetteFixture`, `RecordMode`, `RecordedExecInteraction`, `RecordedStreamInteraction`, `RecordedFsInteraction`, `RecordedShellInteraction`, `ShellDialogStep`, `ReplayShellProcess`, `normalize_temp_paths`, `OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`
 - **Pools**: `ConnectionPool`, `SyncConnectionPool`, `PoolFileOperationsService`, `PoolStateManagementService`, `SyncPoolFileOperationsService`, `SyncPoolStateManagementService`, `PoolStreamMultiplexer`, `SSHSessionPool`
 - **Interactive PTY Shell (`uniconn.shell`)**: `ShellSession`, `SyncShellSession`, `PosixMarkerProtocol`, `ExpectStateMachine`
-- **Background Diagnostics, Streaming Logs & Pluggable Backends (`uniconn.background`)**: `DiagnosticSession`, `SyncDiagnosticSession`, `DiagnosticConfig`, `DiagnosticResult`, `StreamSourceSpec`, `DirectStreamCollector`, `LogPipeline`, `LogHandler`, `LocalFileHandler`, `ForwardHandler`, `StreamHandler`, `ArchiveHandler`, `BackgroundPool`, `BackgroundPoolConfig`, `BackgroundSession`, `BackgroundResult`, `BackgroundCleanupManager`, `BackgroundLogCollector`, `BackgroundBackendStrategy`, `TmuxBackend`, `ScreenBackend`, `NohupBackend`, `resolve_backend`, `LogConfig`
+- **Background Diagnostics, Streaming Logs & Pluggable Backends (`uniconn.background`)**: `DiagnosticSession`, `SyncDiagnosticSession`, `DiagnosticConfig`, `DiagnosticResult`, `StreamSourceSpec`, `DirectStreamCollector`, `LogPipeline`, `LogHandler`, `LocalFileHandler`, `ForwardHandler`, `StreamHandler`, `ArchiveHandler`, `BackgroundPool`, `BackgroundPoolConfig`, `BackgroundSession`, `BackgroundResult`, `BackgroundCleanupManager`, `BackgroundLogCollector`, `BackgroundBackendStrategy`, `TmuxBackend`, `ScreenBackend`, `NohupBackend`, `WindowsJobBackend`, `resolve_backend`, `LogConfig`
 - **Hooks & OpenTelemetry (`uniconn.hooks` / `uniconn.telemetry`)**: `audit_log_hook`, `allowlist_hook`, `blocklist_hook`, `MetricsCollector`, `metrics_collector_hook`, `structured_log_hook`, `OtelTracingHook`, `otel_tracing_hook`, `InMemoryTracer`, `RecordedSpan`, `SpanProtocol`, `TracerProtocol`, `get_current_span`
 - **Logging (`structlog` + `stdlib`)**: `configure_logging`, `get_struct_logger`, `log_context`, `bind_log_context`, `unbind_log_context`, `clear_log_context`, `get_log_context`, `get_logger`, `setup_file_logging`, `SecretMaskingFilter`
 - **Exceptions**: `UniconnError`, `ConfigurationError`, `ConnectionError`, `CircuitOpenError`, `BatchAbortedError`, `CassetteError`, `CassetteMissError`, `AuthenticationError`, `ExecutionError`, `FileTransferError`, `TimeoutError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `BackgroundError`, `BackgroundBackendError`, `BackgroundSessionExistsError`, `BackgroundPoolFullError`
@@ -120,6 +120,8 @@ facts: HostFacts = await conn.gather_facts(
     refresh: bool = False,
     timeout: float | None = None,
     spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
+    artifact_dir: str | Path | None = None,
+    ttl: float | None = None,
 )
 async with conn.diagnostic_session(
     config: DiagnosticConfig | Mapping[str, Any] | str | Path | None = None,
@@ -266,13 +268,21 @@ await conn.files.write_file(remote_path, content: str | bytes, mode: int | None 
 await conn.files.remove_file(remote_path)
 exists: bool = await conn.files.exists(remote_path)
 await conn.files.mkdir(remote_path, parents=True, exist_ok=True, mode=None)
-await conn.files.upload(local_path, remote_path, recurse=False, *, verify: bool = False)
-await conn.files.download(remote_path, local_path, recurse=False, *, verify: bool = False)
+await conn.files.upload(local_path, remote_path, recurse=False, *, verify: bool = False, progress_callback=None)
+await conn.files.download(remote_path, local_path, recurse=False, *, verify: bool = False, progress_callback=None)
 digest: str = await conn.files.checksum(remote_path, algorithm="sha256", *, sudo=False)
 await conn.files.chmod(remote_path, 0o755)
 info: dict = await conn.files.stat(remote_path)
 names: list[str] = await conn.files.listdir(remote_path=".")
-sync_res: SyncResult = await conn.files.sync_dir(local_dir, remote_dir, delete=False, exclude=["*.pyc", ".git"])
+sync_res: SyncResult = await conn.files.sync_dir(
+    local_dir,
+    remote_dir,
+    delete=False,
+    exclude=["*.pyc", ".git"],
+    *,
+    checksum_check: bool = False,
+    preserve_permissions: bool = False,
+)
 rendered: str = await conn.files.write_template(remote_path, template_str_or_path, context={...}, mode=0o644, engine="auto", *, atomic: bool = False)
 
 # Stateful PTY Shell (SSH, Local, Telnet, Serial)
