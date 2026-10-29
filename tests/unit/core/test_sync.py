@@ -241,3 +241,130 @@ class TestEventLoopPortalDeadlockProtection:
         assert items == [0, 1, 2, 3, 4]
 
 
+class TestEventLoopPortalStabilityAndResilience:
+    """Расширенные тесты устойчивости EventLoopPortal: таймауты, aclose, shutdown и многопоточность."""
+
+    def test_call_timeout_cancels_task_and_raises_domain_timeout(self):
+        """portal.call() с timeout выбрасывает uniconn.exceptions.TimeoutError и отменяет корутину."""
+        from uniconn.exceptions import TimeoutError as UniconnTimeoutError
+
+        portal = EventLoopPortal(owner_name="TimeoutTestPortal")
+        cancelled = False
+
+        async def _hanging_task():
+            nonlocal cancelled
+            try:
+                await asyncio.sleep(10.0)
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+
+        with pytest.raises(UniconnTimeoutError, match=r"timed out after 0\.05s"):
+            portal.call(_hanging_task(), timeout=0.05)
+
+        time.sleep(0.05)
+        assert cancelled, "Зависшая корутина не была отменена при таймауте portal.call"
+
+    def test_iter_async_timeout_raises_domain_timeout(self):
+        """portal.iter_async() с timeout выбрасывает TimeoutError при задержке следующего элемента."""
+        from uniconn.exceptions import TimeoutError as UniconnTimeoutError
+
+        portal = EventLoopPortal(owner_name="IterTimeoutPortal")
+
+        async def _slow_generator():
+            yield 1
+            await asyncio.sleep(10.0)
+            yield 2
+
+        it = portal.iter_async(_slow_generator(), timeout=0.05)
+        assert next(it) == 1
+        with pytest.raises(UniconnTimeoutError, match=r"timed out waiting for next item"):
+            next(it)
+
+    def test_iter_async_early_break_triggers_aclose(self):
+        """При досрочном выходе из синхронного цикла вызывается aclose() асинхронного генератора."""
+        portal = EventLoopPortal(owner_name="AclosePortal")
+        aclose_called = False
+
+        class TrackedGen:
+            def __aiter__(self):
+                self.i = 0
+                return self
+
+            async def __anext__(self):
+                self.i += 1
+                if self.i > 10:
+                    raise StopAsyncIteration
+                await asyncio.sleep(0.01)
+                return self.i
+
+            async def aclose(self):
+                nonlocal aclose_called
+                aclose_called = True
+
+        for item in portal.iter_async(TrackedGen(), buffer_size=5):
+            if item == 3:
+                break
+
+        time.sleep(0.05)
+        assert aclose_called, "aclose() не был вызван при досрочном прерывании iter_async"
+
+    def test_concurrent_threads_deterministic_loop_initialization(self):
+        """Множество потоков ОС одновременно вызывают get_loop() — цикл стартует без race condition."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        loops: list[asyncio.AbstractEventLoop] = []
+        errors: list[Exception] = []
+
+        def _worker():
+            try:
+                p = EventLoopPortal("ThreadWorker")
+                loops.append(p.get_loop())
+            except Exception as e:
+                errors.append(e)
+
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            futures = [executor.submit(_worker) for _ in range(20)]
+            for f in futures:
+                f.result()
+
+        assert not errors
+        assert len(loops) == 20
+        assert all(loop is loops[0] for loop in loops)
+
+    def test_sync_connection_50_threads_stress(self):
+        """Стресс-тест: 50 параллельных потоков ОС выполняют команды через SyncConnection."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        sync_conn = _make_sync(_make_transport())
+        results: list[int] = []
+
+        def _task(thread_id: int) -> int:
+            res = sync_conn.run(f"echo thread_{thread_id}")
+            assert res.ok
+            return thread_id
+
+        try:
+            with ThreadPoolExecutor(max_workers=50) as executor:
+                futures = [executor.submit(_task, i) for i in range(50)]
+                for f in futures:
+                    results.append(f.result())
+
+            assert sorted(results) == list(range(50))
+        finally:
+            sync_conn.close()
+
+    def test_shutdown_all_and_restart_cleanly(self):
+        """EventLoopPortal.shutdown_all() корректно завершает поток, и следующий вызов создаёт свежий цикл."""
+        portal1 = EventLoopPortal("BeforeShutdown")
+        loop1 = portal1.get_loop()
+        assert loop1.is_running()
+
+        EventLoopPortal.shutdown_all(timeout=2.0)
+        assert loop1.is_closed()
+
+        portal2 = EventLoopPortal("AfterShutdown")
+        loop2 = portal2.get_loop()
+        assert loop2.is_running()
+        assert loop2 is not loop1
+        assert portal2.call(asyncio.sleep(0.01, result="fresh_ok")) == "fresh_ok"

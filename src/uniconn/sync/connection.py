@@ -52,7 +52,12 @@ class SyncConnection(SyncProxyMixin):
     def __init__(self, async_conn: Connection) -> None:
         self._async_conn = async_conn
         self._async_target = async_conn
-        self._portal = EventLoopPortal(owner_name="SyncConnection")
+        cfg_timeout = getattr(getattr(async_conn, "config", None), "timeout", None)
+        default_timeout = float(cfg_timeout) if isinstance(cfg_timeout, (int, float)) else None
+        self._portal = EventLoopPortal(
+            owner_name="SyncConnection",
+            default_timeout=default_timeout,
+        )
         self.files = SyncFileOperationsService(self)
         self.state = SyncStateManagementService(self)
         self.tunnels = SyncTunnelService(self)

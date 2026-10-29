@@ -9,19 +9,128 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
+import concurrent.futures
 import contextlib
 import contextvars
 import functools
 import inspect
 import threading
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Mapping
 from contextlib import AbstractAsyncContextManager
 from typing import Any, ClassVar, Concatenate, Generic, ParamSpec, TypeVar, overload
+
+from ..exceptions import TimeoutError
 
 P = ParamSpec("P")
 R = TypeVar("R")
 T = TypeVar("T")
 _STREAM_DONE = object()
+
+
+def _extract_timeout(kwargs: Mapping[str, Any]) -> float | None:
+    """Извлечь и преобразовать параметр timeout в float | None."""
+    val = kwargs.get("timeout")
+    return float(val) if isinstance(val, (int, float)) else None
+
+
+def _extract_buffer_size(kwargs: dict[str, Any], default: int = 1000) -> int:
+    """Извлечь и преобразовать параметр buffer_size в int."""
+    val = kwargs.pop("buffer_size", default)
+    if isinstance(val, int):
+        return val
+    if isinstance(val, (float, str)):
+        with contextlib.suppress(ValueError, TypeError):
+            return int(val)
+    return default
+
+
+class _SharedLoopManager:
+    """Синглтон управления фоновым daemon-потоком с asyncio event loop."""
+
+    def __init__(self) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._ready_event: threading.Event | None = None
+
+    @property
+    def loop(self) -> asyncio.AbstractEventLoop | None:
+        return self._loop
+
+    @property
+    def thread(self) -> threading.Thread | None:
+        return self._thread
+
+    def is_running(self) -> bool:
+        return (
+            self._loop is not None
+            and not self._loop.is_closed()
+            and self._thread is not None
+            and self._thread.is_alive()
+        )
+
+    def get_or_create_loop(self) -> tuple[asyncio.AbstractEventLoop, threading.Thread]:
+        with self._lock:
+            if not self.is_running():
+                loop = asyncio.new_event_loop()
+                ready_event = threading.Event()
+                self._ready_event = ready_event
+
+                def _run_loop_worker() -> None:
+                    asyncio.set_event_loop(loop)
+                    loop.call_soon(ready_event.set)
+                    try:
+                        loop.run_forever()
+                    finally:
+                        asyncio.set_event_loop(None)
+
+                thread = threading.Thread(
+                    target=_run_loop_worker,
+                    name="uniconn-event-loop-portal",
+                    daemon=True,
+                )
+                thread.start()
+
+                if not ready_event.wait(timeout=5.0):
+                    raise RuntimeError(
+                        "EventLoopPortal failed to start background event loop within 5.0s"
+                    )
+
+                self._loop = loop
+                self._thread = thread
+
+            assert self._loop is not None
+            assert self._thread is not None
+            return self._loop, self._thread
+
+    def shutdown(self, timeout: float = 3.0) -> None:
+        with self._lock:
+            if self._loop is not None and not self._loop.is_closed():
+                try:
+                    for task in asyncio.all_tasks(self._loop):
+                        task.cancel()
+                except Exception:
+                    pass
+                self._loop.call_soon_threadsafe(self._loop.stop)
+
+            if (
+                self._thread is not None
+                and self._thread.is_alive()
+                and threading.current_thread() is not self._thread
+            ):
+                self._thread.join(timeout=timeout)
+
+            if self._loop is not None and not self._loop.is_closed():
+                with contextlib.suppress(Exception):
+                    self._loop.close()
+
+            self._loop = None
+            self._thread = None
+            self._ready_event = None
+
+
+_SHARED_LOOP_MANAGER = _SharedLoopManager()
 
 
 class EventLoopPortal:
@@ -35,11 +144,18 @@ class EventLoopPortal:
 
     _shared_loop: ClassVar[asyncio.AbstractEventLoop | None] = None
     _shared_thread: ClassVar[threading.Thread | None] = None
-    _shared_lock: ClassVar[threading.Lock] = threading.Lock()
+    _shared_lock: ClassVar[threading.Lock] = _SHARED_LOOP_MANAGER._lock
 
-    def __init__(self, owner_name: str = "SyncPortal") -> None:
+    def __init__(
+        self,
+        owner_name: str = "SyncPortal",
+        default_timeout: float | None = None,
+    ) -> None:
         """Инициализировать портал фонового цикла событий."""
         self._owner_name = owner_name
+        self._default_timeout = (
+            float(default_timeout) if isinstance(default_timeout, (int, float)) else None
+        )
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._loop_lock = self._shared_lock
@@ -68,24 +184,17 @@ class EventLoopPortal:
         cls,
     ) -> tuple[asyncio.AbstractEventLoop, threading.Thread]:
         """Лениво создать и запустить единый фоновый event loop в daemon-потоке."""
-        with cls._shared_lock:
-            if (
-                cls._shared_loop is None
-                or cls._shared_loop.is_closed()
-                or cls._shared_thread is None
-                or not cls._shared_thread.is_alive()
-            ):
-                loop = asyncio.new_event_loop()
-                thread = threading.Thread(
-                    target=cls._run_loop_forever,
-                    args=(loop,),
-                    name="uniconn-event-loop-portal",
-                    daemon=True,
-                )
-                thread.start()
-                cls._shared_loop = loop
-                cls._shared_thread = thread
-            return cls._shared_loop, cls._shared_thread
+        loop, thread = _SHARED_LOOP_MANAGER.get_or_create_loop()
+        cls._shared_loop = loop
+        cls._shared_thread = thread
+        return loop, thread
+
+    @classmethod
+    def shutdown_all(cls, timeout: float = 3.0) -> None:
+        """Остановить общий фоновый event loop и завершить поток (для тестов или shutdown)."""
+        _SHARED_LOOP_MANAGER.shutdown(timeout=timeout)
+        cls._shared_loop = None
+        cls._shared_thread = None
 
     def get_loop(self) -> asyncio.AbstractEventLoop:
         """Вернуть активный фоновый event loop в daemon-потоке."""
@@ -94,11 +203,18 @@ class EventLoopPortal:
         self._loop_thread = thread
         return loop
 
-    def call(self, coro: Any) -> Any:
+    def call(self, coro: Any, timeout: float | None = None) -> Any:
         """Синхронно выполнить корутину в фоновом event loop и вернуть результат."""
-        if self._loop_thread is None and self._shared_thread is not None:
-            self._loop_thread = self._shared_thread
-        if self._loop_thread is not None and threading.current_thread() is self._loop_thread:
+        shared_thread = _SHARED_LOOP_MANAGER.thread
+        current_thread = threading.current_thread()
+
+        if self._loop_thread is None and shared_thread is not None:
+            self._loop_thread = shared_thread
+
+        if (
+            (self._loop_thread is not None and current_thread is self._loop_thread)
+            or (shared_thread is not None and current_thread is shared_thread)
+        ):
             with contextlib.suppress(Exception):
                 coro.close()
             raise RuntimeError(
@@ -111,6 +227,10 @@ class EventLoopPortal:
                 coro.close()
             raise RuntimeError(f"{self._owner_name} уже закрыт")
 
+        raw_timeout = timeout if timeout is not None else self._default_timeout
+        effective_timeout = (
+            float(raw_timeout) if isinstance(raw_timeout, (int, float)) else None
+        )
         loop = self.get_loop()
         caller_ctx = contextvars.copy_context()
 
@@ -120,13 +240,31 @@ class EventLoopPortal:
             return await coro
 
         future = asyncio.run_coroutine_threadsafe(_run_in_caller_context(), loop)
-        return future.result()
+        try:
+            return future.result(timeout=effective_timeout)
+        except (concurrent.futures.TimeoutError, builtins.TimeoutError):
+            future.cancel()
+            raise TimeoutError(
+                f"{self._owner_name}.call() timed out after {effective_timeout}s"
+            ) from None
 
-    def iter_async(self, async_gen: AsyncIterator[T]) -> Iterator[T]:
+    def iter_async(
+        self,
+        async_gen: AsyncIterator[T],
+        buffer_size: int = 1000,
+        timeout: float | None = None,
+    ) -> Iterator[T]:
         """Преобразовать асинхронный генератор в синхронный итератор через очередь."""
-        if self._loop_thread is None and self._shared_thread is not None:
-            self._loop_thread = self._shared_thread
-        if self._loop_thread is not None and threading.current_thread() is self._loop_thread:
+        shared_thread = _SHARED_LOOP_MANAGER.thread
+        current_thread = threading.current_thread()
+
+        if self._loop_thread is None and shared_thread is not None:
+            self._loop_thread = shared_thread
+
+        if (
+            (self._loop_thread is not None and current_thread is self._loop_thread)
+            or (shared_thread is not None and current_thread is shared_thread)
+        ):
             raise RuntimeError(
                 f"Deadlock detected: {self._owner_name}.iter_async() cannot be called "
                 "from within the portal event loop thread. Iterate with 'async for' directly instead."
@@ -142,9 +280,13 @@ class EventLoopPortal:
                         coro_close()
             raise RuntimeError(f"{self._owner_name} уже закрыт")
 
+        raw_timeout = timeout if timeout is not None else self._default_timeout
+        effective_timeout = (
+            float(raw_timeout) if isinstance(raw_timeout, (int, float)) else None
+        )
         loop = self.get_loop()
         caller_ctx = contextvars.copy_context()
-        q: asyncio.Queue[Any] = asyncio.Queue(maxsize=1000)
+        q: asyncio.Queue[Any] = asyncio.Queue(maxsize=max(1, buffer_size))
 
         async def _pump() -> None:
             for var, val in caller_ctx.items():
@@ -163,7 +305,14 @@ class EventLoopPortal:
 
         try:
             while True:
-                item = asyncio.run_coroutine_threadsafe(q.get(), loop).result()
+                get_future = asyncio.run_coroutine_threadsafe(q.get(), loop)
+                try:
+                    item = get_future.result(timeout=effective_timeout)
+                except (concurrent.futures.TimeoutError, builtins.TimeoutError):
+                    get_future.cancel()
+                    raise TimeoutError(
+                        f"{self._owner_name}.iter_async() timed out waiting for next item after {effective_timeout}s"
+                    ) from None
                 if item is _STREAM_DONE:
                     break
                 if isinstance(item, Exception):
@@ -174,6 +323,17 @@ class EventLoopPortal:
                 pump_future.cancel()
                 with contextlib.suppress(BaseException):
                     pump_future.result(timeout=2.0)
+            close_fn = getattr(async_gen, "aclose", None)
+            if callable(close_fn):
+                async def _do_aclose() -> None:
+                    res = close_fn()
+                    if inspect.isawaitable(res):
+                        await res
+
+                with contextlib.suppress(Exception):
+                    aclose_fut = asyncio.run_coroutine_threadsafe(_do_aclose(), loop)
+                    with contextlib.suppress(BaseException):
+                        aclose_fut.result(timeout=2.0)
 
     def close(self, cleanup_coro: Any = None) -> None:
         """Выполнить финальную корутину очистки и пометить портал закрытым."""
@@ -429,7 +589,8 @@ class _SyncMethodDescriptor(Generic[P, R]):
 
         @functools.wraps(self._async_fn)
         def _sync_call(*args: P.args, **kwargs: P.kwargs) -> R:
-            return portal.call(bound_async(*args, **kwargs))
+            timeout = _extract_timeout(kwargs)
+            return portal.call(bound_async(*args, **kwargs), timeout=timeout)
 
         return _sync_call
 
@@ -509,11 +670,13 @@ class _SyncIterDescriptor(Generic[P, R]):
         *,
         target_attr: str = "_async_target",
         portal_attr: str = "_portal",
+        buffer_size: int = 1000,
     ) -> None:
         self._async_gen_fn = async_gen_fn
         self._method_name: str = getattr(async_gen_fn, "__name__", "")
         self._target_attr = target_attr
         self._portal_attr = portal_attr
+        self._buffer_size = buffer_size
         functools.update_wrapper(self, async_gen_fn)
 
     @overload
@@ -535,7 +698,14 @@ class _SyncIterDescriptor(Generic[P, R]):
 
         @functools.wraps(self._async_gen_fn)
         def _sync_iter(*args: P.args, **kwargs: P.kwargs) -> Iterator[R]:
-            return portal.iter_async(bound_gen_fn(*args, **kwargs))
+            kw = dict(kwargs)
+            buf_size = _extract_buffer_size(kw, self._buffer_size)
+            timeout = _extract_timeout(kw)
+            return portal.iter_async(
+                bound_gen_fn(*args, **kw),  # type: ignore[arg-type]
+                buffer_size=buf_size,
+                timeout=timeout,
+            )
 
         return _sync_iter
 
@@ -641,12 +811,14 @@ def sync_iter(
     *,
     target_attr: str = "_async_target",
     portal_attr: str = "_portal",
+    buffer_size: int = 1000,
 ) -> _SyncIterDescriptor[P, R]:
     """Создать типизированный синхронный дескриптор для async-генератора."""
     return _SyncIterDescriptor(
         async_gen_fn,
         target_attr=target_attr,
         portal_attr=portal_attr,
+        buffer_size=buffer_size,
     )
 
 
@@ -680,7 +852,8 @@ class SyncProxyMixin:
 
             @functools.wraps(attr)
             def _sync_fallback(*args: Any, **kwargs: Any) -> Any:
-                return portal.call(attr(*args, **kwargs))
+                timeout = _extract_timeout(kwargs)
+                return portal.call(attr(*args, **kwargs), timeout=timeout)
 
             return _sync_fallback
 
@@ -689,7 +862,14 @@ class SyncProxyMixin:
 
             @functools.wraps(attr)
             def _sync_gen_fallback(*args: Any, **kwargs: Any) -> Iterator[Any]:
-                return portal.iter_async(attr(*args, **kwargs))
+                kw = dict(kwargs)
+                buf_size = _extract_buffer_size(kw, 1000)
+                timeout = _extract_timeout(kw)
+                return portal.iter_async(
+                    attr(*args, **kw),
+                    buffer_size=buf_size,
+                    timeout=timeout,
+                )
 
             return _sync_gen_fallback
 
