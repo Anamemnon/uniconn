@@ -409,7 +409,10 @@ class TestDiagnosticSessionLifecycle:
             local_dir=tmp_path / "crash_work",
             archive_path=tmp_path / "crash_bundle.tar.gz",
         ) as diag:
-            await asyncio.sleep(0.03)
+            for _ in range(50):
+                if any(c.lines_collected >= 2 for c in diag._stream_collectors):
+                    break
+                await asyncio.sleep(0.01)
 
         assert diag.result is not None
         assert diag.result.host_survived is False
