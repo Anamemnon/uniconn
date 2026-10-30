@@ -55,9 +55,7 @@ if TYPE_CHECKING:
     from ..sync.connection import SyncConnection
 
 logger = logging.getLogger(__name__)
-_CwdContext = CwdContext
-_EnvContext = EnvContext
-_TempDirContext = TempDirContext
+_CwdContext, _EnvContext, _TempDirContext = CwdContext, EnvContext, TempDirContext
 _format_command = format_command
 _parse_inventory_data = InventoryLoader.parse_data
 _wait_exponential_jitter = wait_exponential_jitter
@@ -311,22 +309,22 @@ class Connection:
         return results
 
     async def _raw_stream(
-        self, command: str | Sequence[str], timeout: float | None = None, **kwargs: Any
+        self, command: str | Sequence[str] | None = None, timeout: float | None = None, **kwargs: Any
     ) -> AsyncIterator[str]:
-        cmd_str = format_command(command)
+        cmd_str = format_command(command) if command is not None else None
         self._context.apply_to_kwargs(kwargs)
         if not self._transport.is_connected:
             await self._transport.connect()
-        async for line in self._transport.stream(cmd_str, timeout=timeout or self._config.timeout, **kwargs):
+        async for line in self._transport.stream(cmd_str, timeout=timeout or self._config.timeout, **kwargs):  # type: ignore[arg-type]
             yield line
 
     async def stream(
-        self, command: str | Sequence[str], timeout: float | None = None, **kwargs: Any
+        self, command: str | Sequence[str] | None = None, timeout: float | None = None, **kwargs: Any
     ) -> AsyncIterator[str]:
-        """Потоковое получение вывода команды."""
+        """Потоковое получение вывода команды (или пассивный мониторинг, если command=None)."""
         gen = self._raw_stream(command, timeout=timeout, **kwargs)
         for obs in self._operation_observers:
-            gen = obs.observe_stream(self, command, gen)
+            gen = obs.observe_stream(self, command or "", gen)
         async for line in gen:
             yield line
 

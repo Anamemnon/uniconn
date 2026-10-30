@@ -619,7 +619,9 @@ class SerialTransport(BaseTransport):
             raise ConnectionError("Not connected", host=self._device)
 
         start_time = time.monotonic()
-        cmd_timeout = float(timeout or self.config.timeout or self.DEFAULT_TIMEOUT)
+        cmd_timeout = float(
+            timeout if timeout is not None else (self.config.timeout or self.DEFAULT_TIMEOUT)
+        )
 
         line_ending: str = kwargs.get("line_ending", "\n")
         read_until_str: str | None = kwargs.get("read_until")
@@ -685,7 +687,9 @@ class SerialTransport(BaseTransport):
         if not self._reader or not self._writer:
             raise ConnectionError("Not connected", host=self._device)
 
-        cmd_timeout = float(timeout or self.config.timeout or self.DEFAULT_TIMEOUT)
+        cmd_timeout = float(
+            timeout if timeout is not None else (self.config.timeout or self.DEFAULT_TIMEOUT)
+        )
         read_until: bytes | None = kwargs.get("read_until")
         inter_byte = float(
             kwargs.get(
@@ -725,7 +729,11 @@ class SerialTransport(BaseTransport):
         if not self._reader or not self._writer:
             raise ConnectionError("Not connected", host=self._device)
 
-        cmd_timeout = timeout if command is None else (timeout or self.config.timeout)
+        cmd_timeout = (
+            timeout
+            if timeout is not None
+            else (None if command is None else (self.config.timeout or self.DEFAULT_TIMEOUT))
+        )
         line_ending = kwargs.get("line_ending", "\n")
         encoding = kwargs.get("encoding", self.config.options.get("encoding", "utf-8"))
 
@@ -784,7 +792,11 @@ class SerialTransport(BaseTransport):
         if not self._reader or not self._writer:
             raise ConnectionError("Not connected", host=self._device)
 
-        cmd_timeout = timeout if command is None else (timeout or self.config.timeout)
+        cmd_timeout = (
+            timeout
+            if timeout is not None
+            else (None if command is None else (self.config.timeout or self.DEFAULT_TIMEOUT))
+        )
         if command is not None:
             try:
                 data = command if isinstance(command, bytes) else command.encode("utf-8")

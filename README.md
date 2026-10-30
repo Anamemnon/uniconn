@@ -542,27 +542,54 @@ conn = Connection.from_uri("telnet://host?term_type=vt100&timeout=60")
 
 ### Serial/UART
 
+Поддерживает схемы `serial://` и `uart://`, автоматический поиск по USB VID:PID, аппаратные сигналы (DTR/RTS/BREAK), бинарный ввод-вывод и потоковый пассивный мониторинг.
+
 ```python
-# Linux
+# Linux / macOS (схема serial:// или uart://)
 conn = Connection.from_uri("serial:///dev/ttyUSB0?baudrate=9600")
+conn = Connection.from_uri("uart:///dev/ttyUSB0:115200")
 
-# Windows
-conn = Connection.from_uri("serial://COM3?baudrate=115200")
+# Windows (COM-порты, краткая запись скорости через двоеточие)
+conn = Connection.from_uri("uart://COM3:115200?parity=even&stopbits=1.5")
 
-# С полными настройками
-conn = Connection.from_uri(
-    "serial:///dev/ttyUSB0?baudrate=9600&parity=N&stopbits=1"
+# Авто-поиск по USB VID:PID (например, Silicon Labs CP2102 или FTDI)
+conn = Connection.from_uri("uart://?vid=10c4&pid=ea60")
+
+# Бинарный ввод-вывод Modbus RTU без перекодирования в UTF-8
+response: bytes = await conn.run_bytes(
+    b"\x01\x03\x00\x00\x00\x02\xC4\x0B",
+    inter_byte_timeout=0.02,
 )
+
+# Пассивный мониторинг датчиков и GPS/GNSS (NMEA-0183)
+async for line in conn.stream():
+    print("NMEA:", line)
+
+# Аппаратный сброс платы (ESP32, Arduino, STM32) импульсом DTR/RTS
+await conn.transport.pulse_dtr_rts(dtr=False, rts=True, duration=0.1)
+
+# Перехват загрузчика (U-Boot, ROMMON) аппаратным сигналом BREAK
+conn.transport.send_break(duration=0.25)
+cts_ready: bool = conn.transport.get_cts()
+
+# Перечисление доступных в системе портов
+from uniconn import list_serial_ports
+for port in list_serial_ports():
+    print(port.device, port.description, port.vid_pid_hex)
 ```
 
 **Параметры:**
-- `baudrate`: Скорость (по умолчанию 9600)
-- `parity`: Чётность (N, E, O)
-- `stopbits`: Стоп-биты (1, 2)
-- `xonxoff`: Программный flow control (true/false)
-- `rtscts`: Аппаратный flow control (true/false)
+- `baudrate` / `:baudrate`: Скорость (115200, 9600, 57600 и др., по умолчанию 9600)
+- `parity`: Чётность (`N` / `NONE`, `E` / `EVEN`, `O` / `ODD`, `M` / `MARK`, `S` / `SPACE`)
+- `stopbits`: Стоп-биты (1, 1.5, 2)
+- `bytesize`: Длина байта (5, 6, 7, 8; по умолчанию 8)
+- `xonxoff`: Программный flow control (`true`/`false`)
+- `rtscts`: Аппаратный flow control RTS/CTS (`true`/`false`)
+- `dsrdtr`: Аппаратный flow control DSR/DTR (`true`/`false`)
+- `inter_byte_timeout`: Межсимвольный таймаут кадрирования пакетов (по умолчанию 0.05 с)
+- `vid`, `pid`, `vid_pid`: Фильтрация USB-устройства по VID/PID (например, `10c4:ea60`)
 
-**Зависимости:** `pip install uniconn[serial]` (pyserial-asyncio)
+**Зависимости:** `pip install "uniconn[serial]"` или `pip install "uniconn[uart]"` (`pyserial-asyncio`)
 
 ### IPMI (BMC)
 
@@ -675,6 +702,16 @@ uniconn shell "ssh://user:pass@host"
 
 ```bash
 uniconn transports
+```
+
+#### Перечисление Serial / COM портов
+
+```bash
+# Табличный вывод обнаруженных USB/UART устройств
+uniconn serial-ports
+
+# Машиночитаемый JSON-формат
+uniconn serial-ports --format json
 ```
 
 #### Версия

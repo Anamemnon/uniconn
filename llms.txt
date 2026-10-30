@@ -291,6 +291,18 @@ async with await conn.open_shell(term_type="xterm", term_size=(80, 24), init_pos
     r = await shell.execute("pwd")  # r.text == "/var/log"
     r_exp = await shell.expect("fdisk /dev/sda", patterns={r"Command \(m for help\):": "q\n"})
     await shell.resize(120, 40)
+
+# Serial / UART Hardware Controls, Binary I/O & Sensor Streaming
+async with Connection.from_uri("uart://COM3:115200?parity=even&stopbits=1.5") as s_conn:
+    # Binary I/O (Modbus RTU, framing with inter_byte_timeout)
+    pdu_resp: bytes = await s_conn.run_bytes(b"\x01\x03\x00\x00\x00\x02\xc4\x0b", inter_byte_timeout=0.02)
+    # Passive stream (NMEA GPS, sensor stream)
+    async for line in s_conn.stream():
+        print("Sensor:", line)
+    # Hardware reset (ESP32/Arduino) and BREAK signal (U-Boot/ROMMON)
+    await s_conn.transport.pulse_dtr_rts(dtr=False, rts=True, duration=0.1)
+    s_conn.transport.send_break(duration=0.25)
+    cts_active: bool = s_conn.transport.get_cts()
 ```
 
 ### `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `HostFacts`, `FactsDiffReport` & `CassetteDiffReport`

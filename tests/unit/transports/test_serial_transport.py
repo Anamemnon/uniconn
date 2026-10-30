@@ -871,3 +871,50 @@ class TestSerialPortDiscovery:
             assert session is not None
             mock_init.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_flush_input_buffer_resets_hardware_buffer(self, serial_config):
+        """_flush_input_buffer вызывает reset_input_buffer на аппаратном дескрипторе."""
+        reader = asyncio.StreamReader()
+        writer = MagicMock()
+        writer.drain = AsyncMock()
+
+        mock_hw_serial = MagicMock()
+        writer.get_extra_info.return_value = mock_hw_serial
+
+        serial_mock = MagicMock()
+        serial_mock.open_serial_connection = AsyncMock(return_value=(reader, writer))
+
+        with patch("uniconn.transports._serial.serial_asyncio", serial_mock):
+            from uniconn.transports._serial import SerialTransport
+
+            t = SerialTransport(serial_config)
+            await t.connect()
+
+            t._flush_input_buffer()
+            mock_hw_serial.reset_input_buffer.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_connection_passive_stream_without_command(self):
+        """Connection.stream() без передачи command запускает пассивный режим прослушивания."""
+        from uniconn import Connection
+
+        mock_transport = MagicMock()
+        mock_transport.is_connected = True
+        mock_transport.name = "serial"
+
+        async def fake_stream(cmd=None, **kwargs):
+            assert cmd is None
+            yield "NMEA sentence 1"
+            yield "NMEA sentence 2"
+
+        mock_transport.stream = fake_stream
+
+        conn = Connection.from_uri("serial:///dev/ttyUSB0")
+        conn._transport = mock_transport
+
+        lines = []
+        async for line in conn.stream():
+            lines.append(line)
+
+        assert lines == ["NMEA sentence 1", "NMEA sentence 2"]
+
