@@ -1,35 +1,27 @@
-"""
-Создание кастомного транспорта.
+"""Создание кастомного транспорта на базе публичного API uniconn.
 
 Демонстрирует:
-- Наследование от BaseTransport
-- Реализация абстрактных методов
-- Регистрация через entry-points
+- Наследование от публичного класса BaseTransport (from uniconn import BaseTransport)
+- Реализацию методов connect(), disconnect(), run(), stream() и ping()
+- Использование кастомного транспорта и регистрацию через entry-points
 """
+
+from __future__ import annotations
 
 import asyncio
 import time
 from collections.abc import AsyncIterator
 from typing import Any
 
-from uniconn._config import ConnectionConfig
-from uniconn.result import Result
-from uniconn.transports._base import BaseTransport
+from uniconn import BaseTransport, ConnectionConfig, Result
 
 
 class WebSocketTransport(BaseTransport):
-    """Пример кастомного транспорта — WebSocket.
+    """Пример кастомного транспорта (WebSocket RPC)."""
 
-    Этот транспорт показывает минимальную реализацию:
-    - connect / disconnect
-    - run (выполнение "команды" как отправка сообщения)
-    - stream (потоковый приём сообщений)
-    - is_alive (ping через WebSocket)
-    """
-
-    def __init__(self, config: ConnectionConfig):
+    def __init__(self, config: ConnectionConfig, logger: Any = None) -> None:
         super().__init__(config)
-        # Здесь был бы реальный WebSocket клиент
+        self._logger = logger
         self._ws: Any = None
 
     @property
@@ -37,35 +29,23 @@ class WebSocketTransport(BaseTransport):
         return "websocket"
 
     async def connect(self) -> None:
-        """Подключение к WebSocket серверу."""
-        # import websockets
-        # self._ws = await websockets.connect(
-        #     f"wss://{self.config.host}:{self.config.port or 443}"
-        # )
+        """Установить соединение с сервером."""
         self._connected = True
 
     async def disconnect(self) -> None:
-        """Закрытие WebSocket соединения."""
-        # if self._ws:
-        #     await self._ws.close()
+        """Закрыть соединение с сервером."""
         self._connected = False
 
     async def run(
         self,
         command: str,
         timeout: float | None = None,
-        **kwargs
+        **kwargs: Any,
     ) -> Result:
-        """Отправить команду как WebSocket сообщение и ждать ответ."""
+        """Отправить команду как сообщение и вернуть типизированный Result."""
         start = time.monotonic()
-
-        # await self._ws.send(command)
-        # response = await asyncio.wait_for(
-        #     self._ws.recv(), timeout=timeout
-        # )
-
-        response = f"Echo: {command}"  # mock
-
+        _ = timeout, kwargs
+        response = f"Echo from {self.config.host}:{self.config.port}: {command}"
         return Result(
             exit_code=0,
             stdout=response,
@@ -77,52 +57,41 @@ class WebSocketTransport(BaseTransport):
 
     async def stream(
         self,
-        command: str,
+        command: str | None = None,
         timeout: float | None = None,
-        **kwargs
+        **kwargs: Any,
     ) -> AsyncIterator[str]:
-        """Потоковый приём WebSocket сообщений."""
-        # await self._ws.send(command)
-        # while True:
-        #     msg = await asyncio.wait_for(
-        #         self._ws.recv(), timeout=timeout
-        #     )
-        #     yield msg
-
-        yield f"Stream echo: {command}"
+        """Потоковый приём сообщений от транспорта."""
+        _ = timeout, kwargs
+        yield f"[frame-1] {command or 'passive'}\n"
+        yield f"[frame-2] {command or 'passive'}\n"
 
 
-# ─── Регистрация через entry-points ─────────────────────────────────
+# ─── Регистрация через entry-points в pyproject.toml ────────────────
 #
-# В pyproject.toml добавьте:
-#
-#   [project.entry-points."uniconn.transports"]
-#   websocket = "your_package.websocket_transport:WebSocketTransport"
-#
-# После установки пакета транспорт станет доступен:
-#
-#   conn = Connection.from_uri("ws://myserver?port=8080")
-#
+# [project.entry-points."uniconn.transports"]
+# websocket = "your_package.websocket_transport:WebSocketTransport"
 # ────────────────────────────────────────────────────────────────────
 
 
-async def main():
-    """Пример использования кастомного транспорта напрямую."""
+async def main() -> None:
+    """Локальная демонстрация работы кастомного транспорта."""
     config = ConnectionConfig(
         transport="websocket",
-        host="localhost",
-        port=8080,
+        host="ws.internal.local",
+        port=8443,
     )
     transport = WebSocketTransport(config)
 
     async with transport:
-        # Выполнение "команды"
-        result = await transport.run("Hello, WebSocket!")
-        print(result.stdout)
+        result = await transport.run("status --json")
+        print(f"Run output: {result.text}")
 
-        # Проверка alive
+        frames = [line.strip() async for line in transport.stream("subscribe metrics")]
+        print(f"Stream frames: {frames}")
+
         alive = await transport.ping()
-        print(f"Ping: {alive}")
+        print(f"Transport ping alive: {alive}")
 
 
 if __name__ == "__main__":

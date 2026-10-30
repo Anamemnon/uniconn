@@ -1,108 +1,115 @@
-"""
-Передача файлов через SFTP.
+"""Файловые операции, SFTP, контрольные суммы, дельта-синхронизация и шаблоны (conn.files).
 
 Демонстрирует:
-- upload / download файлов
-- Рекурсивная передача директорий
-- Смена прав (chmod)
-- Информация о файле (stat)
-- Список файлов (listdir)
+- Чтение и атомарную запись файлов в памяти (write_file с atomic=True, read_file)
+- Загрузку и скачивание с проверкой целостности SHA-256 (upload / download с verify=True)
+- Вычисление криптографических хешей (checksum: sha256, sha1, md5)
+- Инкрементальную дельта-синхронизацию директорий (sync_dir -> SyncResult)
+- Рендеринг конфигурационных шаблонов (write_template: string.Template и Jinja2)
+- Управление правами и метаданными (chmod, stat, listdir, mkdir, exists)
 """
 
+from __future__ import annotations
+
 import asyncio
+import tempfile
+from pathlib import Path
 
 from uniconn import Connection
 
-# ─── Upload / Download ──────────────────────────────────────────────
+# ─── Справочный пример для удалённого SSH / SFTP сервера ────────────
 
-async def basic_file_transfer():
-    """Базовая передача файлов."""
-    async with Connection.from_uri("ssh://user:pass@host") as conn:
-        # Загрузка файла на сервер
-        await conn.files.upload(
-            "/local/config.yaml",
-            "/etc/app/config.yaml",
+
+async def ssh_sftp_transfer_example() -> None:
+    """Пример передачи файлов и синхронизации директорий по SSH SFTP."""
+    async with Connection.from_uri("ssh://admin:env://SSH_PASS@node-01") as conn:
+        # Загрузка и скачивание с автоматической сверкой SHA-256 хеша
+        await conn.files.upload("./local/app.tar.gz", "/opt/releases/app.tar.gz", verify=True)
+        await conn.files.download("/var/log/syslog", "./logs/syslog.log", verify=True)
+
+        # Инкрементальная дельта-синхронизация директории
+        sync_res = await conn.files.sync_dir(
+            "./dist",
+            "/var/www/app",
+            delete=True,
+            exclude=["*.pyc", ".git"],
+            checksum_check=True,
         )
-        print("Uploaded config.yaml")
-
-        # Скачивание файла
-        await conn.files.download(
-            "/var/log/app.log",
-            "/local/app.log",
-        )
-        print("Downloaded app.log")
+        print(f"Synced: uploaded={len(sync_res.uploaded)}, skipped={len(sync_res.skipped)}")
 
 
-# ─── Recursive Directory Transfer ───────────────────────────────────
-
-async def recursive_transfer():
-    """Рекурсивная передача директорий."""
-    async with Connection.from_uri("ssh://user:pass@host") as conn:
-        # Явная рекурсия
-        await conn.files.upload(
-            "/local/project",
-            "/remote/project",
-            recurse=True,
-        )
-        print("Uploaded project directory recursively")
-
-        # Автоопределение (local_path — директория → recurse=True)
-        await conn.files.download(
-            "/var/log",
-            "/local/logs",
-        )
-        print("Downloaded log directory (auto-detected recursion)")
+# ─── Самодостаточная демонстрация всех возможностей conn.files ──────
 
 
-# ─── File Permissions ───────────────────────────────────────────────
+async def main() -> None:
+    """Локальная демонстрация сервиса conn.files во временной директории."""
+    with tempfile.TemporaryDirectory(prefix="uniconn_files_") as tmp_root:
+        root = Path(tmp_root)
+        src_dir = root / "src_bundle"
+        dst_dir = root / "remote_root"
+        src_dir.mkdir()
+        dst_dir.mkdir()
 
-async def file_permissions():
-    """Смена прав доступа к файлам."""
-    async with Connection.from_uri("ssh://user:pass@host") as conn:
-        # Исполняемый скрипт
-        await conn.files.chmod("/opt/scripts/deploy.sh", 0o755)
-        print("deploy.sh: rwxr-xr-x")
+        async with Connection.local() as conn:
+            print("=== 1. Атомарная запись, чтение и контрольная сумма (checksum) ===")
+            conf_path = str(dst_dir / "app.conf")
+            await conn.files.write_file(
+                conf_path,
+                "listen_port = 8080\nworkers = 4\n",
+                mode=0o640,
+                atomic=True,
+            )
+            content = await conn.files.read_file(conf_path)
+            sha256 = await conn.files.checksum(conf_path, algorithm="sha256")
+            info = await conn.files.stat(conf_path)
+            print(f"Содержимое ({info.get('size', 0)} байт): {content!r}")
+            print(f"SHA-256: {sha256}")
 
-        # Приватный конфиг
-        await conn.files.chmod("/etc/app/secrets.yaml", 0o600)
-        print("secrets.yaml: rw-------")
+            print("\n=== 2. Upload / Download с проверкой целостности (verify=True) ===")
+            local_artifact = src_dir / "payload.bin"
+            local_artifact.write_bytes(b"binary-release-payload-v1")
+            remote_artifact = str(dst_dir / "payload.bin")
+            downloaded_artifact = str(root / "downloaded_payload.bin")
 
-        # Конфиг приложения
-        await conn.files.chmod("/etc/app/config.yaml", 0o644)
-        print("config.yaml: rw-r--r--")
+            await conn.files.upload(str(local_artifact), remote_artifact, verify=True)
+            await conn.files.download(remote_artifact, downloaded_artifact, verify=True)
+            print(f"Файл успешно загружен и скачан с проверкой SHA-256: {Path(downloaded_artifact).exists()}")
 
+            print("\n=== 3. Рендеринг шаблонов (write_template с atomic=True) ===")
+            rendered_path = str(dst_dir / "service.env")
+            rendered = await conn.files.write_template(
+                rendered_path,
+                "SERVICE_NAME=${service}\nPORT=${port}\n",
+                context={"service": "billing-api", "port": 9090},
+                mode=0o600,
+                engine="string",
+                atomic=True,
+            )
+            print(f"Сгенерированный конфиг:\n{rendered.strip()}")
 
-# ─── File Metadata ──────────────────────────────────────────────────
+            print("\n=== 4. Дельта-синхронизация директорий (sync_dir) ===")
+            (src_dir / "index.html").write_text("<h1>Hello v1</h1>\n", encoding="utf-8")
+            (src_dir / "ignore.pyc").write_bytes(b"\x00\x01")
+            sync_target = str(dst_dir / "www")
 
-async def file_metadata():
-    """Получение метаданных файлов."""
-    async with Connection.from_uri("ssh://user:pass@host") as conn:
-        info = await conn.files.stat("/var/log/syslog")
+            sync1 = await conn.files.sync_dir(
+                str(src_dir),
+                sync_target,
+                delete=True,
+                exclude=["*.pyc"],
+                checksum_check=True,
+            )
+            print(f"Первый прогон sync_dir: uploaded={sync1.uploaded}, skipped={sync1.skipped}")
 
-        print("File: /var/log/syslog")
-        print(f"  Size:     {info['size']:,} bytes")
-        print(f"  Owner:    uid={info['uid']}, gid={info['gid']}")
-        print(f"  Perms:    {info['permissions']}")
-        print(f"  Modified: {info['mtime']}")
-        print(f"  Type:     file={info['is_file']}, dir={info['is_dir']}")
+            sync2 = await conn.files.sync_dir(
+                str(src_dir),
+                sync_target,
+                delete=True,
+                exclude=["*.pyc"],
+                checksum_check=True,
+            )
+            print(f"Повторный прогон (идемпотентно): uploaded={sync2.uploaded}, skipped={sync2.skipped}")
 
-
-# ─── Directory Listing ──────────────────────────────────────────────
-
-async def directory_listing():
-    """Список файлов в директории."""
-    async with Connection.from_uri("ssh://user:pass@host") as conn:
-        files = await conn.files.listdir("/var/log")
-        print("Files in /var/log:")
-        for name in files:
-            print(f"  {name}")
-
-
-# ─── Main ───────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("=== File Metadata ===")
-    asyncio.run(file_metadata())
-
-    print("\n=== Directory Listing ===")
-    asyncio.run(directory_listing())
+    asyncio.run(main())

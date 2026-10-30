@@ -1,9 +1,10 @@
 uniconn documentation
 =====================
 
-**uniconn** — универсальная Python-библиотека для выполнения команд на удалённых
-хостах через различные транспорты: SSH, Telnet, Serial, IPMI и локальное
-выполнение.
+**uniconn** — универсальная async-first Python-библиотека (Python 3.11+) и CLI для
+выполнения команд, инспекции хостов, идемпотентного управления состоянием, передачи
+файлов и контрактного тестирования через различные транспорты: **SSH, Telnet,
+Serial/UART, IPMI BMC, Redfish BMC, Docker, Podman, Kubernetes (kubectl), Replay и Local**.
 
 .. image:: https://img.shields.io/badge/python-3.11+-blue.svg
    :target: https://www.python.org/downloads/
@@ -16,14 +17,15 @@ uniconn documentation
 Features
 --------
 
-- 🚀 **5 транспортов**: SSH, Telnet, Serial, Local, IPMI
-- ⚡ **Async-first**: asyncio с синхронной обёрткой
-- 🔌 **Плагины**: динамическая загрузка через entry-points
-- 🔒 **Безопасность**: маскирование секретов, known_hosts
-- 🔄 **Retry**: exponential backoff с настраиваемыми попытками
-- 📊 **ConnectionPool**: параллельное выполнение на множестве хостов
-- 📁 **SFTP**: upload/download, chmod, stat, listdir, recursive transfer
-- 🏥 **Health check**: ``is_alive()`` / ``ping()`` для всех транспортов
+- 🚀 **10 транспортов**: SSH, Telnet, Serial/UART, IPMI, Redfish, Docker, Podman, Kubectl, Replay, Local
+- ⚡ **Async-first + Sync паритет**: ``Connection`` и ``SyncConnection`` через единый ``EventLoopPortal``
+- 🧩 **Доменные сервисы**: ``conn.files``, ``conn.state``, ``conn.tunnels`` (и ``pool.files``, ``pool.state``)
+- 🔒 **Безопасность**: ``SecretResolver`` (``env://``, ``file://``), ``SecretStr``, безопасный ``sudo``, ``sensitive=True``
+- 🛡️ **Отказоустойчивость**: ``CircuitBreaker``, ``RateLimiter``, retry и волновой роллаут ``ConnectionPool`` (``batch_size``, ``max_fail_ratio``)
+- 🔎 **Факты и идемпотентность**: ``gather_facts()``, ``diff_facts()`` и примитивы ``conn.state.ensure_*`` с unified diff
+- 📁 **Файловый сервис**: ``atomic=True``, ``verify=True``, ``checksum()``, ``sync_dir()``, ``write_template()``
+- 📼 **Кассеты и контрактные тесты**: ``use_cassette()``, ``cassette.diff()`` и ``pytest``-плагин ``@pytest.mark.uniconn_cassette``
+- 🏥 **Ожидание и диагностика**: ``ping()``, ``is_alive()``, ``wait_for_connection()``, ``wait_for_port()``, ``wait_for_path()``
 
 Quick Start
 -----------
@@ -31,6 +33,8 @@ Quick Start
 Установка::
 
     pip install uniconn
+    # или полная установка со всеми транспортами и CLI:
+    pip install "uniconn[all]"
 
 Базовое использование::
 
@@ -38,47 +42,49 @@ Quick Start
     from uniconn import Connection
 
     async def main():
-        async with Connection.from_uri("ssh://user:pass@host") as conn:
-            # Проверка подключения
-            if await conn.is_alive():
-                print("Host is alive!")
+        async with Connection.from_uri("ssh://admin:env://SSH_PASS@host") as conn:
+            # Проверка доступности и измерение RTT
+            ping = await conn.ping()
+            if ping.alive:
+                print(f"Host is alive ({ping.latency_ms:.1f} ms)")
 
             # Выполнение команды
-            result = await conn.run("uptime")
-            print(result.stdout)
+            result = await conn.run(["uptime"])
+            print(result.text)
 
-            # Передача файла
-            await conn.upload("/local/config.yaml", "/etc/app/config.yaml")
+            # Передача файла и смена прав через сервис conn.files
+            await conn.files.upload("/local/config.yaml", "/etc/app/config.yaml", verify=True)
+            await conn.files.chmod("/etc/app/config.yaml", 0o600)
 
-            # Смена прав
-            await conn.chmod("/etc/app/config.yaml", 0o600)
+            # Метаданные и контрольная сумма
+            info = await conn.files.stat("/etc/app/config.yaml")
+            digest = await conn.files.checksum("/etc/app/config.yaml")
+            print(f"Size: {info['size']} bytes, SHA-256: {digest}")
 
-            # Информация о файле
-            info = await conn.stat("/etc/app/config.yaml")
-            print(f"Size: {info['size']} bytes")
+            # Идемпотентное управление сервисом через conn.state
+            await conn.state.ensure_service("nginx", state="started", enabled=True, sudo=True)
 
     asyncio.run(main())
 
 Синхронный API::
 
-    from uniconn import Connection
+    from uniconn import SyncConnection
 
-    with Connection.from_uri("ssh://user@host").to_sync() as conn:
+    with SyncConnection.from_uri("ssh://user@host") as conn:
         result = conn.run("whoami")
-        print(result.stdout)
+        print(result.text)
 
-Параллельное выполнение::
+Параллельное выполнение и батч-роллаут::
 
     import asyncio
     from uniconn import ConnectionPool
 
     async def main():
         hosts = ["ssh://node1", "ssh://node2", "ssh://node3"]
-        pool = ConnectionPool(hosts, max_concurrent=5)
-        results = await pool.map("uptime")
-
-        for host, result in zip(hosts, results):
-            print(f"{host}: {result.stdout.strip()}")
+        async with ConnectionPool(hosts, max_concurrent=5, batch_size=2, max_fail_ratio=0.0) as pool:
+            results = await pool.map("uptime")
+            for res in results:
+                print(f"{res.host}: {res.text}")
 
     asyncio.run(main())
 

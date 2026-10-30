@@ -1,85 +1,82 @@
-"""
-Мониторинг долгоживущих процессов через BackgroundPool.
+"""Мониторинг долгоживущих фоновых процессов через BackgroundPool.
 
 Демонстрирует:
-- BackgroundPool.from_file() — загрузка конфигурации из YAML
-- pool.start() — запуск команд в фоновых сессиях (tmux / screen / nohup)
-- pool.poll_status() — периодический опрос статуса сессий
-- pool.poll_logs() — потоковое чтение логов
-- pool.wait_all() — ожидание завершения с результатами
-- pool.stop_all() — остановка всех сессий
+- BackgroundPool.from_file() — загрузка конфигурации пула и правил логов из YAML
+- pool.start() — запуск отсоединяемых фоновых задач (auto: tmux -> screen -> nohup)
+- pool.poll_status() — периодический опрос статуса фоновых сессий
+- pool.poll_logs() — потоковое чтение логов в реальном времени
+- pool.wait_all() и pool.stop_all() — ожидание завершения и корректная остановка
 """
 
+from __future__ import annotations
+
 import asyncio
+import tempfile
+from pathlib import Path
 
-from uniconn import BackgroundPool
+from uniconn import BackgroundPool, BackgroundPoolConfig, LogConfig
 
-# ─── Мониторинг статуса уже запущенных сессий ──────────────────────
+# ─── Справочные примеры для удалённого SSH-сервера ──────────────────
 
 
-async def monitor_status():
-    """Запуск сессий и опрос их статуса в цикле."""
-    pool = BackgroundPool.from_file("screen_pool_config.yaml")
-    async with pool:
+async def ssh_monitor_status_from_yaml() -> None:
+    """Запуск сессий из YAML-конфигурации и опрос их статуса на SSH-хосте."""
+    config_path = Path(__file__).with_name("screen_pool_config.yaml")
+    async with BackgroundPool.from_file(config_path) as pool:
         await pool.start("tail -f /var/log/nginx/access.log")
         await pool.start("sysbench --test=cpu --cpu-max-prime=20000 run")
 
-        # Печатаем статус всех сессий каждые poll_interval секунд
         checks = 0
         async for event in pool.poll_status(interval=5.0):
             state = "alive" if event.alive else f"done (exit={event.exit_code})"
             print(f"[{event.session_id}] {state}, pid={event.pid}")
             checks += 1
-            if checks >= 10:  # два полных цикла опроса
+            if checks >= 4:
                 break
 
         results = await pool.wait_all(timeout=3600.0)
         for session_id, result in results.items():
-            print(
-                f"{session_id} ({result.backend}): "
-                f"exit={result.exit_code}, log={result.local_log_path}"
-            )
+            print(f"{session_id} ({result.backend}): exit={result.exit_code}, log={result.local_log_path}")
 
 
-# ─── Потоковое чтение логов ────────────────────────────────────────
-
-
-async def stream_logs():
-    """Чтение логов сессий в реальном времени (polling + tail)."""
-    async with BackgroundPool("ssh://admin@server", max_sessions=4) as pool:
+async def ssh_stream_background_logs() -> None:
+    """Потоковое чтение логов фоновых задач в реальном времени."""
+    async with BackgroundPool("ssh://admin@server", backend="auto", max_sessions=4) as pool:
         await pool.start("tail -f /var/log/syslog")
-
         async for event in pool.poll_logs(interval=2.0):
             print(f"[{event.session_id}] {event.line.rstrip()}")
-            # Прерывание по Ctrl+C: cleanup остановит все сессии
 
 
-# ─── Ad-hoc запуск с ограничением по времени ───────────────────────
+# ─── Самодостаточная локальная демонстрация (nohup на local://) ─────
 
 
-async def ad_hoc():
-    """Запуск N воркеров и ожидание с таймаутом (force kill по таймауту)."""
-    async with BackgroundPool("ssh://admin@server", max_sessions=4) as pool:
-        for i in range(4):
-            await pool.start(f"python3 long_running_task.py --worker {i}")
+async def main() -> None:
+    """Локальная демонстрация BackgroundPool (валидация YAML-конфига + запуск задачи через nohup)."""
+    config_path = Path(__file__).with_name("screen_pool_config.yaml")
+    parsed_cfg = BackgroundPoolConfig.from_file(config_path)
+    print("=== 1. Загружен BackgroundPoolConfig из screen_pool_config.yaml ===")
+    print(
+        f"URI={parsed_cfg.uri}, backend={parsed_cfg.backend}, "
+        f"max_sessions={parsed_cfg.max_sessions}, rules={len(parsed_cfg.log_config.rules)}"
+    )
 
-        results = await pool.wait_all(timeout=600.0)
-        failed = {sid: r for sid, r in results.items() if r.exit_code != 0}
-        print(f"Завершено: {len(results)}, с ошибками: {len(failed)}")
+    print("\n=== 2. Запуск и ожидание фоновой сессии на local:// (backend='nohup') ===")
+    with tempfile.TemporaryDirectory(prefix="uniconn_bg_logs_") as tmp_logs:
+        async with BackgroundPool(
+            "local://",
+            backend="nohup",
+            max_sessions=2,
+            poll_interval=0.1,
+            log_config=LogConfig(local_dir=tmp_logs),
+        ) as pool:
+            cmd = "python3 -c \"print('background-worker-started'); print('background-worker-done')\""
+            session = await pool.start(cmd)
+            print(f"Запущена сессия: id={session.session_id}, backend={session.backend_name}")
 
+            results = await pool.wait_all(timeout=10.0)
+            for sid, res in results.items():
+                print(f"Результат сессии {sid}: exit_code={res.exit_code}, backend={res.backend}")
 
-# ─── Принудительная остановка ──────────────────────────────────────
-
-
-async def stop_everything():
-    """Остановка всех сессий: graceful (SIGINT/Ctrl+C), затем force kill."""
-    async with BackgroundPool("ssh://admin@server") as pool:
-        await pool.start("stress-ng --cpu 4")
-        await pool.stop_all(graceful=True)
-
-
-# ─── Main ───────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("=== Monitor Status ===")
-    asyncio.run(monitor_status())
+    asyncio.run(main())

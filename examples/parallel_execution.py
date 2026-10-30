@@ -1,130 +1,97 @@
-"""
-Параллельное выполнение команд на множестве хостов.
+"""Параллельное выполнение, групповые сервисы и волновой роллаут в ConnectionPool.
 
 Демонстрирует:
-- ConnectionPool.map()
-- ConnectionPool.map_safe()
-- ConnectionPool.map_with_callback()
-- Ограничение параллелизма
+- ConnectionPool.map(), map_safe(), map_with_callback() и apply()
+- Каскадный/волновой роллаут (batch_size, max_fail_ratio, BatchAbortedError)
+- Выборку подмножества хостов через pool.select() без закрытия родительского пула
+- Групповые доменные сервисы pool.files и pool.state
+- Мультиплексированный стриминг вывода со всех хостов через pool.stream()
 """
 
+from __future__ import annotations
+
 import asyncio
+import tempfile
+from pathlib import Path
 
-from uniconn import Connection, ConnectionPool
+from uniconn import BatchAbortedError, Connection, ConnectionPool, Result
 
-# ─── Basic parallel execution ──────────────────────────────────────
+# ─── Справочный пример для продакшн SSH-кластера ────────────────────
 
-async def basic_parallel():
-    """Параллельное выполнение на нескольких хостах."""
+
+async def ssh_fleet_rollout_example() -> None:
+    """Пример волнового деплоя на группу SSH-хостов из YAML-инвентаря."""
+    # Загрузка группы хостов из инвентаря с раскаткой волнами по 2 узла
+    async with ConnectionPool.from_file(
+        "inventory.yaml",
+        group="web",
+        max_concurrent=10,
+        batch_size=2,
+        max_fail_ratio=0.0,
+    ) as pool:
+        # 1. Канареечная проверка на первом узле
+        canary = pool.select(["web-1"])
+        await canary.ping()
+
+        # 2. Синхронизация статики и перезапуск сервиса на всём пуле
+        await pool.files.sync_dir("./dist", "/var/www/html", delete=True)
+        await pool.state.ensure_service("nginx", state="restarted", sudo=True)
+
+
+# ─── Самодостаточная локальная демонстрация ConnectionPool ──────────
+
+
+async def main() -> None:
+    """Локальный запуск параллельных операций, пула сервисов и батч-роллаута."""
     hosts = [
-        "ssh://user:pass@node1",
-        "ssh://user:pass@node2",
-        "ssh://user:pass@node3",
+        Connection.from_uri("local://", logger=None).with_overrides(host="node-1"),
+        Connection.from_uri("local://", logger=None).with_overrides(host="node-2"),
+        Connection.from_uri("local://", logger=None).with_overrides(host="node-3"),
     ]
 
-    pool = ConnectionPool(hosts, max_concurrent=5)
-    results = await pool.map("uptime")
+    async with ConnectionPool(hosts, max_concurrent=3, batch_size=2, max_fail_ratio=0.0) as pool:
+        print("=== 1. Параллельный запуск map() и выборка подмножества select() ===")
+        results = await pool.map(["echo", "cluster-ready"])
+        for res in results:
+            print(f"  [{res.host}] exit={res.exit_code} text={res.text!r}")
 
-    for host, result in zip(hosts, results, strict=False):
-        print(f"{host}: {result.stdout.strip()}")
+        canary_pool = pool.select(predicate=lambda key, _conn: "node-1" in key)
+        canary_ping = await canary_pool.ping()
+        print("Canary ping:", {k: p.alive for k, p in canary_ping.items()})
 
+        print("\n=== 2. Callback по мере готовности и мультиплексированный stream() ===")
+        completed: list[str] = []
 
-# ─── map_safe — ошибки как значения ────────────────────────────────
+        def on_done(uri: str, result: Result) -> None:
+            completed.append(f"{uri}:{result.text}")
 
-async def map_safe():
-    """Безопасное выполнение — ошибки не выбрасываются."""
-    hosts = [
-        "ssh://user:pass@node1",
-        "ssh://user:pass@nonexistent-host",  # этот упадёт
-        "ssh://user:pass@node3",
-    ]
+        await pool.map_with_callback(["echo", "done"], on_done)
+        print("Callback results:", completed)
 
-    pool = ConnectionPool(hosts, max_concurrent=3)
-    results = await pool.map_safe("hostname")
+        stream_events: list[str] = []
+        async for host_key, line in pool.stream(["echo", "log-line"]):
+            stream_events.append(f"{host_key}->{line.strip()}")
+        print("Multiplexed stream:", stream_events)
 
-    for uri, result in results.items():
-        if isinstance(result, Exception):
-            print(f"  {uri}: ERROR — {result}")
-        else:
-            print(f"  {uri}: {result.stdout.strip()}")
+        print("\n=== 3. Групповые операции pool.files и pool.state ===")
+        with tempfile.TemporaryDirectory(prefix="uniconn_pool_") as tmpdir:
+            target_file = str(Path(tmpdir) / "cluster_hosts.txt")
+            ens_map = await pool.state.ensure_line(target_file, "10.0.0.10 internal.service")
+            hashes = await pool.files.checksum(target_file)
+            print("ensure_line across pool:", {k: v.ok for k, v in ens_map.items()})
+            print("SHA-256 across pool:", {k: h[:12] for k, h in hashes.items()})
 
+        print("\n=== 4. Защита релиза при сбое батча (BatchAbortedError) ===")
+        try:
+            await pool.map(
+                ["python3", "-c", "import sys; sys.exit(1)"],
+                raise_on_error=True,
+                batch_size=1,
+                max_fail_ratio=0.0,
+            )
+        except BatchAbortedError as err:
+            print(f"Роллаут остановлен на батче #{err.batch_index}: fail_ratio={err.fail_ratio:.0%}")
 
-# ─── Callback по мере готовности ────────────────────────────────────
-
-async def with_callback():
-    """Выполнение с callback."""
-    hosts = [
-        "ssh://user:pass@node1",
-        "ssh://user:pass@node2",
-        "ssh://user:pass@node3",
-    ]
-
-    def on_complete(uri, result):
-        status = "OK" if result.ok else "FAIL"
-        print(f"[{status}] {uri}: {result.stdout.strip()}")
-
-    pool = ConnectionPool(hosts, max_concurrent=5)
-    await pool.map_with_callback("hostname", on_complete)
-
-
-# ─── Limited concurrency ───────────────────────────────────────────
-
-async def limited_concurrency():
-    """Ограничение параллелизма."""
-    hosts = [f"ssh://user:pass@node{i}" for i in range(1, 51)]
-
-    # Не более 10 одновременных подключений
-    pool = ConnectionPool(hosts, max_concurrent=10)
-    results = await pool.map("uptime")
-
-    successful = sum(1 for r in results if r.ok)
-    print(f"Successful: {successful}/{len(hosts)}")
-
-
-# ─── Retry per pool ─────────────────────────────────────────────────
-
-async def with_retry():
-    """Пул с retry при ошибках подключения."""
-    hosts = [
-        "ssh://user:pass@unstable-host",
-        "ssh://user:pass@stable-host",
-    ]
-
-    pool = ConnectionPool(
-        hosts,
-        max_concurrent=5,
-        retry_attempts=3,  # 3 попытки на каждый хост
-    )
-    results = await pool.map("uptime")
-
-    for host, result in zip(hosts, results, strict=False):
-        print(f"  {host}: exit_code={result.exit_code}")
-
-
-# ─── From file ──────────────────────────────────────────────────────
-
-async def from_file():
-    """Загрузка хостов из файла и параллельное выполнение.
-
-    Файл hosts.json:
-    [
-        {"transport": "ssh", "host": "node1", "username": "admin"},
-        {"transport": "ssh", "host": "node2", "username": "admin"}
-    ]
-    """
-    conns = Connection.from_file("hosts.json")
-
-    # Извлекаем URI из подключений для пула
-    uris = [f"ssh://{c.config.host}" for c in conns]
-    pool = ConnectionPool(uris, max_concurrent=5)
-    results = await pool.map("hostname")
-
-    for uri, result in zip(uris, results, strict=False):
-        print(f"  {uri}: {result.stdout.strip()}")
-
-
-# ─── Main ───────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("=== Basic Parallel ===")
-    asyncio.run(basic_parallel())
+    asyncio.run(main())

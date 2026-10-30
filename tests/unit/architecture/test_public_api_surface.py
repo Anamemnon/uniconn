@@ -69,3 +69,68 @@ def test_public_version_matches_pyproject() -> None:
         assert uniconn.__version__ == match.group(1)
 
 
+def test_readme_and_docs_contain_no_outdated_api_patterns() -> None:
+    """Убедиться, что README.md и docs/*.rst используют актуальные доменные сервисы и CLI."""
+    from pathlib import Path
+
+    root_dir = Path(__file__).resolve().parents[3]
+    doc_files = [
+        root_dir / "README.md",
+        *(root_dir / "docs").rglob("*.rst"),
+    ]
+    forbidden_patterns = (
+        "conn.upload(",
+        "conn.download(",
+        "conn.write_file(",
+        "conn.read_file(",
+        "conn.chmod(",
+        "conn.stat(",
+        "conn.listdir(",
+        "pool.upload(",
+        "pool.download(",
+        "from uniconn import ScreenPool",
+        "uniconn screen-run",
+        "uniconn screen-logs",
+        "uniconn screen-status",
+        "uniconn screen-kill",
+        "uniconn.transports._base",
+        "uniconn._config",
+    )
+
+    for doc_path in doc_files:
+        text = doc_path.read_text(encoding="utf-8")
+        for pattern in forbidden_patterns:
+            assert pattern not in text, f"Outdated pattern {pattern!r} found in {doc_path.name}"
+
+
+def test_examples_use_only_public_uniconn_imports() -> None:
+    """Все скрипты в examples/*.py не должны импортировать приватные подмодули uniconn._*."""
+    from pathlib import Path
+
+    root_dir = Path(__file__).resolve().parents[3]
+    examples_dir = root_dir / "examples"
+    py_files = sorted(p for p in examples_dir.glob("*.py") if p.name != "__init__.py")
+    assert len(py_files) >= 13
+
+    for py_path in py_files:
+        source = py_path.read_text(encoding="utf-8")
+        assert "from uniconn._" not in source, f"Private import in {py_path.name}"
+        assert "from uniconn.transports._" not in source, f"Private transport import in {py_path.name}"
+
+
+async def test_all_examples_execute_main_cleanly() -> None:
+    """Проверить, что каждый пример в examples/*.py успешно импортируется и выполняет main()."""
+    import importlib.util
+    from pathlib import Path
+
+    root_dir = Path(__file__).resolve().parents[3]
+    examples_dir = root_dir / "examples"
+    py_files = sorted(p for p in examples_dir.glob("*.py") if p.name != "__init__.py")
+
+    for py_path in py_files:
+        spec = importlib.util.spec_from_file_location(f"examples.{py_path.stem}", py_path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert hasattr(module, "main"), f"{py_path.name} must define an async main() entrypoint"
+        await module.main()

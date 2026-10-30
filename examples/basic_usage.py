@@ -1,159 +1,116 @@
-"""
-Базовое использование uniconn.
+"""Базовое использование uniconn.
 
 Демонстрирует:
-- Подключение через URI и Config
-- Async и Sync API
-- Выполнение команд
-- Потоковый вывод
-- Клонирование подключений
+- Подключение через URI, Connection.local(), ConnectionConfig и словарь
+- Разрешение секретов через SecretResolver (env:// и file:// с ?default=)
+- Async и Sync API (Connection и SyncConnection)
+- Выполнение команд (run, run_commands, run_script) и потоковый вывод (stream)
+- Клонирование подключений (copy, with_overrides)
 """
 
+from __future__ import annotations
+
 import asyncio
+import tempfile
+from pathlib import Path
 
-from uniconn import Connection, ConnectionConfig
+from uniconn import Connection, ConnectionConfig, ExecutionError, SyncConnection, TimeoutError
 
-# ─── Async API ──────────────────────────────────────────────────────
-
-async def async_basic():
-    """Базовое async подключение."""
-    async with Connection.from_uri("ssh://user:pass@host") as conn:
-        result = await conn.run("uptime")
-        print(f"Exit code: {result.exit_code}")
-        print(f"Duration: {result.duration:.2f}s")
-        print(f"Output: {result.stdout}")
+# ─── Async API (SSH / Удалённые хосты) ──────────────────────────────
 
 
-async def async_with_timeout():
-    """Выполнение с таймаутом."""
-    async with Connection.from_uri("ssh://user@host") as conn:
+async def async_ssh_basic() -> None:
+    """Базовое async подключение по SSH (с разрешением пароля из переменной окружения)."""
+    # В продакшне: ssh://user:env://SSH_PASS@host:22?ssh_config=true
+    async with Connection.from_uri("ssh://admin:env://SSH_PASS?default=secret@node-01") as conn:
+        result = await conn.run(["uptime"])
+        print(f"Exit code: {result.exit_code}, duration: {result.duration:.2f}s")
+        print(f"Output: {result.text}")
+
+
+async def async_with_timeout_and_errors() -> None:
+    """Выполнение с таймаутом и перехватом ExecutionError."""
+    async with Connection.local(retry_attempts=1) as conn:
         try:
-            await conn.run("sleep 100", timeout=5.0)
+            await conn.run(["python3", "-c", "import time; time.sleep(10)"], timeout=0.1)
         except TimeoutError:
-            print("Command timed out!")
+            print("Команда ожидаемо прервана по таймауту!")
 
-
-async def async_raise_on_error():
-    """Исключение при ошибке."""
-    async with Connection.from_uri("ssh://user@host") as conn:
         try:
-            await conn.run("false", raise_on_error=True)
-        except Exception as e:
-            print(f"Command failed: {e}")
+            await conn.run(["python3", "-c", "import sys; sys.exit(2)"], raise_on_error=True)
+        except ExecutionError as exc:
+            print(f"Перехвачен ExecutionError (exit_code={exc.exit_code})")
 
 
-# ─── Sync API ───────────────────────────────────────────────────────
-
-def sync_basic():
-    """Базовое синхронное подключение."""
-    with Connection.from_uri("ssh://user@host").to_sync() as conn:
-        result = conn.run("whoami")
-        print(result.stdout)
+# ─── Sync API (SyncConnection / .to_sync()) ─────────────────────────
 
 
-def sync_with_config():
-    """Синхронное подключение из Config."""
-    config = ConnectionConfig(
-        transport="local",
-        host="localhost",
-        timeout=30.0,
-    )
-    with Connection.from_config(config).to_sync() as conn:
-        result = conn.run("echo hello from local")
-        print(result.stdout)
+def sync_basic() -> None:
+    """Базовое синхронное подключение через SyncConnection.local() и .to_sync()."""
+    # Вариант для SSH: with SyncConnection.from_uri("ssh://user@host") as conn:
+    with SyncConnection.local() as conn:
+        result = conn.run(["python3", "-c", "print('Hello from SyncConnection!')"])
+        print(f"Sync result: {result.text}")
+
+    config = ConnectionConfig(transport="local", host="localhost", timeout=30.0)
+    with Connection.from_config(config).to_sync() as sync_conn:
+        res = sync_conn.run(["echo", "Configured local connection"])
+        print(f"From config: {res.text}")
 
 
-# ─── Streaming ──────────────────────────────────────────────────────
-
-async def streaming():
-    """Потоковый вывод команды."""
-    async with Connection.from_uri("ssh://user@host") as conn:
-        async for line in conn.stream("tail -f /var/log/syslog"):
-            print(line)
+# ─── Выполнение скриптов, потоков и клонирование ────────────────────
 
 
-# ─── Config ─────────────────────────────────────────────────────────
+async def local_full_walkthrough() -> None:
+    """Самодостаточная демонстрация ключевых возможностей Connection на local://."""
+    uri = "local://?timeout=30&token=env://DEMO_TOKEN?default=fallback_token"
+    async with Connection.from_uri(uri) as conn:
+        print(f"Resolved option from env://: {conn.config.options.get('token')}")
 
-async def from_config():
-    """Подключение из ConnectionConfig."""
-    config = ConnectionConfig(
-        transport="ssh",
-        host="example.com",
-        port=22,
-        username="admin",
-        timeout=60.0,
-        options={"compress": True},
-    )
+        # 1. Пакетное выполнение нескольких команд
+        results = await conn.run_commands(
+            [
+                ["echo", "step-1: prepare"],
+                ["echo", "step-2: verify"],
+            ]
+        )
+        print("run_commands:", [r.text for r in results])
 
-    async with Connection.from_config(config) as conn:
-        result = await conn.run("uname -a")
-        print(result.stdout)
+        # 2. Выполнение локального скрипта через run_script()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False, encoding="utf-8") as tmp:
+            tmp.write("#!/bin/sh\necho \"Script arg1=$1\"\n")
+            script_path = Path(tmp.name)
 
+        try:
+            script_res = await conn.run_script(script_path, args=["production"])
+            print(f"run_script output: {script_res.text}")
+        finally:
+            script_path.unlink(missing_ok=True)
 
-async def from_dict():
-    """Подключение из словаря."""
-    async with Connection.from_dict({
-        "transport": "ssh",
-        "host": "example.com",
-        "username": "admin",
-        "timeout": 60,
-    }) as conn:
-        result = await conn.run("date")
-        print(result.stdout)
+        # 3. Построчный стриминг вывода
+        streamed: list[str] = []
+        async for line in conn.stream(["python3", "-c", "for i in range(3): print(f'line-{i}')"]):
+            streamed.append(line.strip())
+        print(f"Streamed lines: {streamed}")
 
-
-async def from_file():
-    """Подключение из JSON файла.
-
-    Файл hosts.json:
-    [
-        {"transport": "ssh", "host": "node1"},
-        {"transport": "ssh", "host": "node2", "username": "admin"}
-    ]
-    """
-    conns = Connection.from_file("hosts.json")
-    for conn in conns:
-        async with conn:
-            result = await conn.run("hostname")
-            print(result.stdout)
+        # 4. Клонирование подключения с переопределением параметров
+        dry_clone = conn.copy(dry_run=True, timeout=15.0)
+        async with dry_clone:
+            dry_res = await dry_clone.run(["rm", "-rf", "/nonexistent"])
+            print(f"Cloned dry_run connection executed safely: ok={dry_res.ok}")
 
 
-# ─── Clone / Override ───────────────────────────────────────────────
-
-async def copy_connection():
-    """Клонирование подключения."""
-    prod = Connection.from_uri("ssh://admin@prod-server")
-
-    # Клон с другим хостом
-    dev = prod.copy(host="dev-server", timeout=120)
-
-    async with dev:
-        result = await dev.run("hostname")
-        print(result.stdout)
-
-
-async def with_overrides():
-    """Override через словарь."""
-    prod = Connection.from_uri("ssh://admin@prod:22")
-
-    staging = prod.with_overrides(
-        host="staging",
-        timeout=60,
-        options={"compress": True},
-    )
-
-    async with staging:
-        result = await staging.run("hostname")
-        print(result.stdout)
-
-
-# ─── Main ───────────────────────────────────────────────────────────
-
-if __name__ == "__main__":
-    # Синхронный пример
-    print("=== Sync API ===")
+async def main() -> None:
+    """Точка входа примера (выполняется локально без внешних серверов)."""
+    print("=== 1. Sync API ===")
     sync_basic()
 
-    # Асинхронный пример
-    print("\n=== Async API ===")
-    asyncio.run(async_basic())
+    print("\n=== 2. Async Walkthrough (run_commands, run_script, stream, copy) ===")
+    await local_full_walkthrough()
+
+    print("\n=== 3. Timeouts & Error Handling ===")
+    await async_with_timeout_and_errors()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

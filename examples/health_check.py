@@ -1,98 +1,92 @@
-"""
-Проверка доступности хостов (health check).
+"""Проверка доступности хостов (ping, is_alive) и примитивы ожидания (wait_for_*).
 
 Демонстрирует:
-- is_alive() для одного хоста
-- ping() для транспорта
-- Массовая проверка пула хостов
+- conn.ping() и pool.ping() -> PingResult (alive, latency_ms, transport, error)
+- conn.is_alive() — быстрая булева проверка живости транспорта
+- conn.wait_for_connection() — ожидание готовности соединения
+- conn.wait_for_port() — ожидание открытия или закрытия TCP-порта
+- conn.wait_for_path() — ожидание появления файла и паттерна (content_regex)
 """
 
+from __future__ import annotations
+
 import asyncio
+import socket
+import tempfile
+from pathlib import Path
 
 from uniconn import Connection, ConnectionPool
 
-# ─── Single host ────────────────────────────────────────────────────
-
-async def check_single_host():
-    """Проверка одного хоста."""
-    async with Connection.from_uri("ssh://user@host") as conn:
-        if await conn.is_alive():
-            print("Host is alive!")
-        else:
-            print("Host is unreachable")
+# ─── Справочный пример для удалённых SSH-хостов ─────────────────────
 
 
-async def check_single_host_timeout():
-    """Проверка с таймаутом."""
-    async with Connection.from_uri("ssh://user@host") as conn:
+async def ssh_wait_after_reboot_example() -> None:
+    """Ожидание возвращения сервера после перезагрузки и старта PostgreSQL."""
+    async with Connection.from_uri("ssh://admin@db-node-01") as conn:
+        # 1. Дождаться доступности SSH-транспорта
+        ping_res = await conn.wait_for_connection(timeout=120.0, interval=2.0)
+        print(f"Host is back online ({ping_res.latency_ms:.1f} ms)")
+
+        # 2. Дождаться открытия порта PostgreSQL (5432) на самом сервере
+        elapsed = await conn.wait_for_port(5432, state="open", check_from="remote", timeout=60.0)
+        print(f"PostgreSQL port 5432 opened in {elapsed:.2f}s")
+
+
+# ─── Самодостаточная локальная демонстрация ─────────────────────────
+
+
+async def main() -> None:
+    """Локальная демонстрация ping(), is_alive() и примитивов wait_for_*."""
+    async with Connection.local() as conn:
+        print("=== 1. Проверка доступности и задержки через ping() и is_alive() ===")
         alive = await conn.is_alive(timeout=5.0)
-        print(f"Alive: {alive}")
+        ping_res = await conn.ping(timeout=5.0)
+        print(f"is_alive={alive}, ping: alive={ping_res.alive}, rtt={ping_res.latency_ms:.2f}ms")
 
+        print("\n=== 2. Ожидание соединения и появления файла с regex (wait_for_path) ===")
+        await conn.wait_for_connection(timeout=5.0, interval=0.1)
 
-# ─── Pool health check ──────────────────────────────────────────────
+        with tempfile.TemporaryDirectory(prefix="uniconn_wait_") as tmpdir:
+            status_file = Path(tmpdir) / "service.status"
 
-async def check_pool():
-    """Массовая проверка хостов через ConnectionPool."""
-    hosts = [
-        "ssh://user:pass@node1",
-        "ssh://user:pass@node2",
-        "ssh://user:pass@node3",
-        "ssh://user:pass@down-node",  # этот будет недоступен
-    ]
+            async def _delayed_writer() -> None:
+                await asyncio.sleep(0.05)
+                status_file.write_text("BOOTING...\nSTATUS=READY\n", encoding="utf-8")
 
-    results = {}
-    for host in hosts:
-        try:
-            async with Connection.from_uri(host) as conn:
-                alive = await conn.is_alive(timeout=5.0)
-                results[host] = "✅ alive" if alive else "❌ dead"
-        except Exception as e:
-            results[host] = f"❌ error: {e}"
+            writer_task = asyncio.create_task(_delayed_writer())
+            elapsed_path = await conn.wait_for_path(
+                status_file,
+                state="present",
+                content_regex=r"STATUS=READY",
+                timeout=5.0,
+                interval=0.02,
+            )
+            await writer_task
+            print(f"Файл готовности обнаружен за {elapsed_path:.3f}s")
 
-    for host, status in results.items():
-        print(f"  {host}: {status}")
+        print("\n=== 3. Ожидание открытия TCP-порта (wait_for_port) ===")
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as srv:
+            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            srv.bind(("127.0.0.1", 0))
+            srv.listen(1)
+            bound_port = srv.getsockname()[1]
 
+            elapsed_port = await conn.wait_for_port(
+                bound_port,
+                host="127.0.0.1",
+                state="open",
+                check_from="local",
+                timeout=5.0,
+                interval=0.05,
+            )
+            print(f"TCP-порт 127.0.0.1:{bound_port} открыт (проверено за {elapsed_port:.3f}s)")
 
-# ─── Pool with map_safe ─────────────────────────────────────────────
+    print("\n=== 4. Пакетный ping() по пулу хостов (ConnectionPool.ping) ===")
+    pool = ConnectionPool(["local://", "local://?timeout=10"], max_concurrent=2)
+    ping_map = await pool.ping(timeout=5.0)
+    for host_key, pr in ping_map.items():
+        print(f"  [{host_key}] alive={pr.alive} ({pr.latency_ms:.2f} ms)")
 
-async def check_pool_map_safe():
-    """Проверка через map_safe — ошибки как значения."""
-    hosts = [
-        "ssh://user:pass@node1",
-        "ssh://user:pass@down-node",
-        "ssh://user:pass@node3",
-    ]
-
-    pool = ConnectionPool(hosts, max_concurrent=5)
-    results = await pool.map_safe("echo alive")
-
-    for uri, result in results.items():
-        if isinstance(result, Exception):
-            print(f"  {uri}: ❌ {type(result).__name__}")
-        elif result.ok:
-            print(f"  {uri}: ✅ alive")
-        else:
-            print(f"  {uri}: ❌ dead")
-
-
-# ─── Before command ─────────────────────────────────────────────────
-
-async def check_before_command():
-    """Проверка перед выполнением команды."""
-    async with Connection.from_uri("ssh://user@host") as conn:
-        if not await conn.is_alive():
-            print("Skipping — host is down")
-            return
-
-        result = await conn.run("uptime")
-        print(result.stdout)
-
-
-# ─── Main ───────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print("=== Single Host Check ===")
-    asyncio.run(check_single_host())
-
-    print("\n=== Pool Check ===")
-    asyncio.run(check_pool())
+    asyncio.run(main())
