@@ -33,6 +33,7 @@ from .factories import (
     build_from_file,
     build_from_inventory,
     build_from_uri,
+    build_local,
     clone_connection,
     open_cassette_context,
     open_diagnostic_session,
@@ -188,6 +189,7 @@ class Connection:
     from_dict = classmethod(build_from_dict)
     from_file = classmethod(build_from_file)
     from_inventory = classmethod(build_from_inventory)
+    local = classmethod(build_local)
     copy = clone_connection
     with_overrides = with_overrides_connection
 

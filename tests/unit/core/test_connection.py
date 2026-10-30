@@ -196,3 +196,33 @@ def test_sync_run_commands(mocker):
     assert len(results) == 1
     assert results[0].exit_code == 0
     mock_async_conn.run_commands.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_connection_local_factory():
+    """Тест фабрики Connection.local()."""
+    conn = Connection.local(timeout=15.0)
+    assert conn.config.transport == "local"
+    assert conn.config.host == "localhost"
+    assert conn.config.timeout == 15.0
+
+    async with conn as c:
+        res = await c.run("echo uniconn_local_test")
+        assert res.exit_code == 0
+        assert "uniconn_local_test" in res.stdout
+
+
+def test_sync_connection_local_factory():
+    """Тест фабрики SyncConnection.local()."""
+    from uniconn import SyncConnection
+
+    conn = SyncConnection.local(timeout=15.0)
+    assert conn.config.transport == "local"
+    assert conn.config.host == "localhost"
+    assert conn.config.timeout == 15.0
+
+    with conn as c:
+        res = c.run("echo sync_local_test")
+        assert res.exit_code == 0
+        assert "sync_local_test" in res.stdout
+

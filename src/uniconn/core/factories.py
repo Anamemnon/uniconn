@@ -124,6 +124,44 @@ def build_from_uri(
     )
 
 
+def build_local(
+    cls: type[ConnT],
+    timeout: float = 30.0,
+    retry_attempts: int = 3,
+    logger: logging.Logger | None = None,
+    dry_run: bool = False,
+    before_run: Sequence[HookCallback] | None = None,
+    after_run: Sequence[HookCallback] | None = None,
+    on_error: Sequence[HookCallback] | None = None,
+    rate_limit: float | RateLimiter | None = None,
+    circuit_breaker: CircuitBreaker | bool | None = None,
+    **options: Any,
+) -> ConnT:
+    """Создать подключение к локальному хосту (local://)."""
+    merged_opts = dict(options)
+    config = ConnectionConfig(
+        transport="local",
+        host="localhost",
+        port=None,
+        timeout=timeout,
+        options=merged_opts,
+    )
+    transport_class = TransportLoader.get("local")
+    transport = transport_class(config)
+    return cls(
+        transport,
+        config,
+        retry_attempts,
+        logger,
+        dry_run=dry_run,
+        before_run=before_run,
+        after_run=after_run,
+        on_error=on_error,
+        rate_limit=rate_limit,
+        circuit_breaker=circuit_breaker,
+    )
+
+
 def build_from_config(
     cls: type[ConnT],
     config: ConnectionConfig,

@@ -73,6 +73,7 @@ class SyncConnection(SyncProxyMixin):
     from_dict = sync_factory(Connection.from_dict)
     from_file = sync_list_factory(Connection.from_file)
     from_inventory = sync_factory(Connection.from_inventory)
+    local = sync_factory(Connection.local)
     copy = sync_clone_method(Connection.copy)
     with_overrides = sync_clone_method(Connection.with_overrides)
 
