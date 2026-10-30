@@ -134,3 +134,23 @@ async def test_all_examples_execute_main_cleanly() -> None:
         spec.loader.exec_module(module)
         assert hasattr(module, "main"), f"{py_path.name} must define an async main() entrypoint"
         await module.main()
+
+
+async def test_shell_and_screen_examples_win32_branches(monkeypatch) -> None:
+    """Проверить Windows-ветки в interactive_shell.py и screen_monitoring.py (без /bin/sh и nohup)."""
+    import importlib.util
+    import types
+    from pathlib import Path
+
+    root_dir = Path(__file__).resolve().parents[3]
+    examples_dir = root_dir / "examples"
+
+    for name in ("interactive_shell.py", "screen_monitoring.py"):
+        py_path = examples_dir / name
+        spec = importlib.util.spec_from_file_location(f"examples_win.{py_path.stem}", py_path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        monkeypatch.setattr(module, "sys", types.SimpleNamespace(platform="win32"))
+        await module.main()
+

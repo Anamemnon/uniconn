@@ -30,9 +30,9 @@ async def async_ssh_basic() -> None:
 
 async def async_with_timeout_and_errors() -> None:
     """Выполнение с таймаутом и перехватом ExecutionError."""
-    async with Connection.local(retry_attempts=1) as conn:
+    async with Connection.local(retry_attempts=1, retry_delay=0.01) as conn:
         try:
-            await conn.run(["python3", "-c", "import time; time.sleep(10)"], timeout=0.1)
+            await conn.run(["python3", "-c", "import time; time.sleep(2)"], timeout=0.05)
         except TimeoutError:
             print("Команда ожидаемо прервана по таймауту!")
 
@@ -77,12 +77,16 @@ async def local_full_walkthrough() -> None:
         print("run_commands:", [r.text for r in results])
 
         # 2. Выполнение локального скрипта через run_script()
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".sh", delete=False, encoding="utf-8") as tmp:
-            tmp.write("#!/bin/sh\necho \"Script arg1=$1\"\n")
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as tmp:
+            tmp.write("import sys\nprint(f'Script arg1={sys.argv[1]}')\n")
             script_path = Path(tmp.name)
 
         try:
-            script_res = await conn.run_script(script_path, args=["production"])
+            script_res = await conn.run_script(
+                script_path,
+                args=["production"],
+                interpreter="python3",
+            )
             print(f"run_script output: {script_res.text}")
         finally:
             script_path.unlink(missing_ok=True)

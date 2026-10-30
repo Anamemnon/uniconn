@@ -11,9 +11,11 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import tempfile
+from pathlib import Path
 
-from uniconn import Connection, SyncConnection
+from uniconn import Cassette, Connection, RecordedExecInteraction, SyncConnection
 
 # ─── Справочный пример для удалённого SSH-сервера ───────────────────
 
@@ -29,14 +31,36 @@ async def ssh_interactive_shell_example() -> None:
         print(pwd_res.text)
 
 
+def _write_posix_shell_cassette(path: Path, workdir: str) -> Path:
+    """Создать кассету POSIX PTY-сессии для платформ без /bin/sh (Windows)."""
+    cassette = Cassette(
+        transport="local",
+        host="localhost",
+        capabilities=["exec", "file", "shell"],
+        interactions=[
+            RecordedExecInteraction(command=f"cd {workdir}", exit_code=0, stdout=""),
+            RecordedExecInteraction(command="pwd", exit_code=0, stdout=workdir),
+            RecordedExecInteraction(command="export DEPLOY_STAGE=canary", exit_code=0, stdout=""),
+            RecordedExecInteraction(command="echo $DEPLOY_STAGE", exit_code=0, stdout="canary"),
+            RecordedExecInteraction(command="export SYNC_SHELL_OK=1", exit_code=0, stdout=""),
+            RecordedExecInteraction(command="echo $SYNC_SHELL_OK", exit_code=0, stdout="1"),
+        ],
+    )
+    cassette.save(path)
+    return path
+
+
 # ─── Самодостаточная локальная демонстрация (open_shell + expect) ───
 
 
 async def async_local_shell_and_expect() -> None:
     """Локальная демонстрация stateful ShellSession и автомата диалогов expect()."""
     with tempfile.TemporaryDirectory(prefix="uniconn_shell_") as tmpdir:
-        async with Connection.local() as conn:
-            print("=== 1. Stateful PTY ShellSession (сохранение cd, export и shell.expect) ===")
+        cassette_file = _write_posix_shell_cassette(Path(tmpdir) / "posix_shell.yaml", tmpdir)
+        uri = f"replay://localhost?cassette={cassette_file}" if sys.platform == "win32" else "local://"
+
+        async with Connection.from_uri(uri) as conn:
+            print("=== 1. Stateful PTY ShellSession (сохранение cd и export) ===")
             async with await conn.open_shell(term_type="xterm", term_size=(100, 30)) as shell:
                 await shell.execute(f"cd {tmpdir}")
                 pwd_res = await shell.execute("pwd")
@@ -48,33 +72,37 @@ async def async_local_shell_and_expect() -> None:
 
                 await shell.resize(120, 40)
 
-                print("\n=== 2. Декларативный диалог shell.expect() ===")
-                interactive_py = (
-                    "import sys; "
-                    "sys.stdout.write('Target' + ' env: '); sys.stdout.flush(); "
-                    "env = sys.stdin.readline().strip(); "
-                    "sys.stdout.write('Proceed' + ' (y/n): '); sys.stdout.flush(); "
-                    "ans = sys.stdin.readline().strip(); "
-                    "print(f'Configured {env} ({ans})')"
-                )
-                expect_res = await shell.expect(
-                    ["python3", "-c", interactive_py],
-                    patterns={
-                        r"Target env:": "production\n",
-                        r"Proceed \(y/n\):": "y\n",
-                    },
-                    timeout=5.0,
-                )
-                print(f"Результат диалога expect(): {expect_res.lines[-1]}")
+        async with Connection.local() as local_conn:
+            print("\n=== 2. Декларативный диалог conn.expect() ===")
+            py_cmd = (
+                "python3 -u -c \""
+                "env = input('Target env: '); "
+                "ans = input('Proceed (y/n): '); "
+                "print(f'Configured {env} ({ans})')"
+                "\""
+            )
+            expect_res = await local_conn.expect(
+                py_cmd,
+                patterns={
+                    r"Target env:": "production\n",
+                    r"Proceed \(y/n\):": "y\n",
+                },
+                final_prompt=r"Configured production \(y\)",
+                timeout=5.0,
+            )
+            print(f"Результат диалога expect(): {expect_res.lines[-1]}")
 
 
 def sync_local_shell() -> None:
     """Синхронная работа с PTY-оболочкой через SyncConnection."""
     print("\n=== 3. Синхронная PTY-сессия (SyncShellSession) ===")
-    with SyncConnection.local() as conn, conn.open_shell() as shell:
-        shell.execute("export SYNC_SHELL_OK=1")
-        res = shell.execute("echo $SYNC_SHELL_OK")
-        print(f"Sync shell variable: {res.text}")
+    with tempfile.TemporaryDirectory(prefix="uniconn_sync_shell_") as tmpdir:
+        cassette_file = _write_posix_shell_cassette(Path(tmpdir) / "sync_shell.yaml", tmpdir)
+        uri = f"replay://localhost?cassette={cassette_file}" if sys.platform == "win32" else "local://"
+        with SyncConnection.from_uri(uri) as conn, conn.open_shell() as shell:
+            shell.execute("export SYNC_SHELL_OK=1")
+            res = shell.execute("echo $SYNC_SHELL_OK")
+            print(f"Sync shell variable: {res.text}")
 
 
 async def main() -> None:
@@ -85,3 +113,4 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+

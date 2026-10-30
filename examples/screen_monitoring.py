@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import tempfile
 from pathlib import Path
 
@@ -61,6 +62,12 @@ async def main() -> None:
     )
 
     print("\n=== 2. Запуск и ожидание фоновой сессии на local:// (backend='nohup') ===")
+    if sys.platform == "win32":
+        matched_rule = parsed_cfg.log_config.match_rule("sysbench --test=cpu run")
+        pool_from_cfg = BackgroundPool.from_config(parsed_cfg)
+        print(f"Пул сконфигурирован: backend={pool_from_cfg.backend}, matched_rule={matched_rule is not None}")
+        return
+
     with tempfile.TemporaryDirectory(prefix="uniconn_bg_logs_") as tmp_logs:
         async with BackgroundPool(
             "local://",
@@ -80,3 +87,4 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+
