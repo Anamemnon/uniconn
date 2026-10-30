@@ -10,7 +10,7 @@
 """
 
 from ._ipmi import IPMITransport
-from ._redfish import RedfishTransport
+from .redfish import RedfishTransport
 
 __all__ = [
     "IPMITransport",

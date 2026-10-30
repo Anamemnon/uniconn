@@ -259,6 +259,71 @@ def _build_fake_redfish_session(
                 "ConnectedVia": "URI",
             },
         ),
+        "/redfish/v1/Systems/System.Embedded.1/Storage": (
+            200,
+            {
+                "Members": [
+                    {"@odata.id": "/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Integrated.1-1"}
+                ]
+            },
+        ),
+        "/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Integrated.1-1": (
+            200,
+            {
+                "Id": "RAID.Integrated.1-1",
+                "Name": "PERC H755 Front",
+                "Status": {"Health": "OK"},
+                "StorageControllers": [{"Model": "PERC H755", "Name": "PERC H755"}],
+                "Drives": [
+                    {"@odata.id": "/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Integrated.1-1/Drives/Disk.Bay.0"}
+                ],
+                "Volumes": {
+                    "@odata.id": "/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Integrated.1-1/Volumes"
+                },
+            },
+        ),
+        "/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Integrated.1-1/Drives/Disk.Bay.0": (
+            200,
+            {
+                "Id": "Disk.Bay.0",
+                "Name": "Solid State Disk 0:1:0",
+                "Model": "SAMSUNG MZILT1T9HAJQ",
+                "SerialNumber": "S64GNE0R901234",
+                "CapacityBytes": 1920383410176,
+                "MediaType": "SSD",
+                "Protocol": "NVMe",
+                "Status": {"Health": "OK"},
+                "PredictedMediaLifeLeftPercent": 99,
+            },
+        ),
+        "/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Integrated.1-1/Volumes": (
+            200,
+            {
+                "Members": [
+                    {"@odata.id": "/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Integrated.1-1/Volumes/Disk.Virtual.0"}
+                ]
+            },
+        ),
+        "/redfish/v1/Systems/System.Embedded.1/Storage/RAID.Integrated.1-1/Volumes/Disk.Virtual.0": (
+            200,
+            {
+                "Id": "Disk.Virtual.0",
+                "Name": "OS_RAID1",
+                "RAIDType": "RAID1",
+                "CapacityBytes": 1920000000000,
+                "Status": {"Health": "OK"},
+            },
+        ),
+        "/redfish/v1/Systems/System.Embedded.1/SecureBoot": (
+            200,
+            {
+                "@odata.etag": 'W/"sb-etag-1"',
+                "Id": "SecureBoot",
+                "SecureBootEnable": True,
+                "SecureBootCurrentBoot": "Enabled",
+                "SecureBootMode": "DeployedMode",
+            },
+        ),
     }
 
     async def _fake_get(path: str, timeout: float | None = None, **kwargs: Any) -> MagicMock:
@@ -858,4 +923,368 @@ class TestRedfishSyncConnectionAndLiveHTTPServer:
             assert json.loads(res.stdout)["PowerState"] == "On"
             # 1-й POST при connect() + 2-й POST при auto-refresh после HTTP 401
             assert fake_session.post.await_count == 2
+
+
+class TestRedfishAuditEnhancements:
+    """Tests for Redfish audit fixes and enterprise DC features."""
+
+    @pytest.mark.asyncio
+    async def test_auth_401_does_not_false_positive_on_anonymous_service_root(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Если /redfish/v1 публичен (200 OK), но пароль неверен (401), connect() выбрасывает AuthenticationError."""
+        fake_session = _build_fake_redfish_session()
+
+        async def _anon_root_but_protected_get(path: str, **kw: Any) -> MagicMock:
+            _ = kw
+            if path == "/redfish/v1":
+                return _make_niq_response(200, {"RedfishVersion": "1.18.0"})
+            return _make_niq_response(401, {"error": "Unauthorized"})
+
+        async def _reject_post(path: str, **kw: Any) -> MagicMock:
+            _ = (path, kw)
+            return _make_niq_response(401, {"error": "Invalid credentials"})
+
+        fake_session.get = AsyncMock(side_effect=_anon_root_but_protected_get)
+        fake_session.post = AsyncMock(side_effect=_reject_post)
+
+        conn = Connection.from_uri("redfish://admin:badpass@10.0.0.100")
+        monkeypatch.setattr(conn._transport, "_create_async_session", lambda: fake_session)
+
+        with pytest.raises(AuthenticationError):
+            async with conn:
+                pass
+
+        # Даже если SessionService отсутствует (404) и срабатывает Basic Auth fallback,
+        # проверка защищённого /redfish/v1/Systems перехватывает неверный пароль:
+        async def _no_session_svc_post(path: str, **kw: Any) -> MagicMock:
+            _ = (path, kw)
+            return _make_niq_response(404, {"error": "No SessionService"})
+
+        fake_session.post = AsyncMock(side_effect=_no_session_svc_post)
+        conn_basic = Connection.from_uri("redfish://admin:badpass@10.0.0.100")
+        monkeypatch.setattr(
+            conn_basic._transport, "_create_async_session", lambda: fake_session
+        )
+
+        with pytest.raises(AuthenticationError):
+            async with conn_basic:
+                pass
+
+    @pytest.mark.asyncio
+    async def test_modern_dsp0268_sensors_fallback_when_thermal_power_404(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Если /Thermal и /Power возвращают 404, транспорт автоматически опрашивает /Sensors."""
+        fake_session = _build_fake_redfish_session()
+        orig_get = fake_session.get.side_effect
+
+        async def _dsp0268_get(path: str, **kw: Any) -> MagicMock:
+            if path.endswith(("/Thermal", "/Power")):
+                return _make_niq_response(404, {"error": "Deprecated in DSP0268"})
+            if path == "/redfish/v1/Chassis/System.Embedded.1/Sensors":
+                return _make_niq_response(
+                    200,
+                    {
+                        "Members": [
+                            {"@odata.id": "/redfish/v1/Chassis/System.Embedded.1/Sensors/CPU1Temp"},
+                            {"@odata.id": "/redfish/v1/Chassis/System.Embedded.1/Sensors/SysFan1"},
+                            {"@odata.id": "/redfish/v1/Chassis/System.Embedded.1/Sensors/TotalPower"},
+                        ]
+                    },
+                )
+            if path.endswith("/Sensors/CPU1Temp"):
+                return _make_niq_response(
+                    200,
+                    {
+                        "Id": "CPU1Temp",
+                        "Name": "CPU1 Package Temp",
+                        "ReadingType": "Temperature",
+                        "Reading": 61.5,
+                        "ReadingUnits": "Cel",
+                        "Thresholds": {"UpperCritical": {"Reading": 98.0}},
+                        "Status": {"Health": "OK"},
+                    },
+                )
+            if path.endswith("/Sensors/SysFan1"):
+                return _make_niq_response(
+                    200,
+                    {
+                        "Id": "SysFan1",
+                        "Name": "System Fan 1",
+                        "ReadingType": "Rotational",
+                        "Reading": 7200,
+                        "ReadingUnits": "RPM",
+                        "Status": {"Health": "OK"},
+                    },
+                )
+            if path.endswith("/Sensors/TotalPower"):
+                return _make_niq_response(
+                    200,
+                    {
+                        "Id": "TotalPower",
+                        "Name": "System Total Power",
+                        "ReadingType": "Power",
+                        "Reading": 425,
+                        "ReadingUnits": "W",
+                        "Status": {"Health": "OK"},
+                    },
+                )
+            return await orig_get(path, **kw)
+
+        fake_session.get = AsyncMock(side_effect=_dsp0268_get)
+        conn = Connection.from_uri("redfish://admin:calvin@10.0.0.100")
+        monkeypatch.setattr(conn._transport, "_create_async_session", lambda: fake_session)
+
+        async with conn:
+            res = await conn.run("sensors")
+            assert res.ok
+            data = json.loads(res.stdout)
+            assert data["temperatures"][0]["name"] == "CPU1 Package Temp"
+            assert data["temperatures"][0]["reading_celsius"] == 61.5
+            assert data["temperatures"][0]["upper_threshold_critical"] == 98.0
+            assert data["fans"][0]["reading"] == 7200
+            assert data["power_consumed_watts"] == 425
+
+    @pytest.mark.asyncio
+    async def test_smart_discovery_prefers_sel_over_faultlist_and_cd_over_floppy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """LogServices предпочитает SEL вместо FaultList, а VirtualMedia — CD вместо Floppy."""
+        fake_session = _build_fake_redfish_session()
+        orig_get = fake_session.get.side_effect
+
+        async def _multi_member_get(path: str, **kw: Any) -> MagicMock:
+            if path == "/redfish/v1/Systems/System.Embedded.1/LogServices":
+                return _make_niq_response(
+                    200,
+                    {
+                        "Members": [
+                            {"@odata.id": "/redfish/v1/Systems/System.Embedded.1/LogServices/FaultList"},
+                            {"@odata.id": "/redfish/v1/Systems/System.Embedded.1/LogServices/Sel"},
+                        ]
+                    },
+                )
+            if path == "/redfish/v1/Managers/iDRAC.Embedded.1/VirtualMedia":
+                return _make_niq_response(
+                    200,
+                    {
+                        "Members": [
+                            {"@odata.id": "/redfish/v1/Managers/iDRAC.Embedded.1/VirtualMedia/Floppy1"},
+                            {"@odata.id": "/redfish/v1/Managers/iDRAC.Embedded.1/VirtualMedia/CD"},
+                        ]
+                    },
+                )
+            return await orig_get(path, **kw)
+
+        fake_session.get = AsyncMock(side_effect=_multi_member_get)
+        conn = Connection.from_uri("redfish://admin:calvin@10.0.0.100")
+        monkeypatch.setattr(conn._transport, "_create_async_session", lambda: fake_session)
+
+        async with conn:
+            sel_res = await conn.run("sel")
+            assert sel_res.ok
+            sel_data = json.loads(sel_res.stdout)
+            assert sel_data["log_service_uri"].endswith("/LogServices/Sel")
+            assert sel_data["count"] == 2
+
+            vm_res = await conn.run("virtual_media status")
+            assert vm_res.ok
+            vm_data = json.loads(vm_res.stdout)
+            assert vm_data["virtual_media_uri"].endswith("/VirtualMedia/CD")
+
+    @pytest.mark.asyncio
+    async def test_dynamic_action_target_and_etag_412_retry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Динамический резолвинг OEM Action target и авто-повтор PATCH с If-Match при HTTP 412."""
+        fake_session = _build_fake_redfish_session()
+        orig_get = fake_session.get.side_effect
+        orig_post = fake_session.post.side_effect
+        patch_calls: list[dict[str, Any]] = []
+
+        async def _custom_get(path: str, **kw: Any) -> MagicMock:
+            if path == "/redfish/v1/Systems/System.Embedded.1":
+                return _make_niq_response(
+                    200,
+                    {
+                        "@odata.id": "/redfish/v1/Systems/System.Embedded.1",
+                        "@odata.etag": 'W/"etag-sys-77"',
+                        "PowerState": "On",
+                        "Actions": {
+                            "#ComputerSystem.Reset": {
+                                "target": "/redfish/v1/Systems/System.Embedded.1/Actions/Oem/Vendor.Reset",
+                                "ResetType@Redfish.AllowableValues": ["On", "ForceRestart"],
+                            }
+                        },
+                    },
+                    headers={"ETag": 'W/"etag-sys-77"'},
+                )
+            return await orig_get(path, **kw)
+
+        async def _custom_post(path: str, json: dict[str, Any] | None = None, **kw: Any) -> MagicMock:
+            if path == "/redfish/v1/Systems/System.Embedded.1/Actions/ComputerSystem.Reset":
+                return _make_niq_response(404, {"error": "Standard target not used"})
+            if path == "/redfish/v1/Systems/System.Embedded.1/Actions/Oem/Vendor.Reset":
+                return _make_niq_response(200, {"reset": "ok", "payload": json})
+            return await orig_post(path, json=json, **kw)
+
+        async def _etag_requiring_patch(
+            path: str,
+            json: dict[str, Any] | None = None,
+            headers: dict[str, str] | None = None,
+            **kw: Any,
+        ) -> MagicMock:
+            _ = kw
+            patch_calls.append({"path": path, "headers": headers or {}, "json": json})
+            if not headers or headers.get("If-Match") != 'W/"etag-sys-77"':
+                return _make_niq_response(412, {"error": "Precondition Failed - ETag required"})
+            return _make_niq_response(200, {"patched": True})
+
+        fake_session.get = AsyncMock(side_effect=_custom_get)
+        fake_session.post = AsyncMock(side_effect=_custom_post)
+        fake_session.patch = AsyncMock(side_effect=_etag_requiring_patch)
+
+        conn = Connection.from_uri("redfish://admin:calvin@10.0.0.100")
+        monkeypatch.setattr(conn._transport, "_create_async_session", lambda: fake_session)
+
+        async with conn:
+            # 1. PATCH без предварительного GET получает 412, сам запрашивает ETag и повторяет с If-Match
+            boot_res = await conn.run("boot pxe once uefi")
+            assert boot_res.ok
+            assert len(patch_calls) == 2
+            assert patch_calls[1]["headers"].get("If-Match") == 'W/"etag-sys-77"'
+
+            # 2. Power cycle использует динамический OEM target из Actions
+            pw_res = await conn.run("power cycle")
+            assert pw_res.ok
+            pw_data = json.loads(pw_res.stdout)
+            assert pw_data["target"].endswith("/Actions/Oem/Vendor.Reset")
+
+    @pytest.mark.asyncio
+    async def test_storage_raid_inventory_and_host_facts_disks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Команда storage/disks и интеграция физических накопителей в HostFacts.disks."""
+        fake_session = _build_fake_redfish_session()
+        conn = Connection.from_uri("redfish://admin:calvin@10.0.0.100")
+        monkeypatch.setattr(conn._transport, "_create_async_session", lambda: fake_session)
+
+        async with conn:
+            st_res = await conn.run("storage")
+            assert st_res.ok
+            st_data = json.loads(st_res.stdout)
+            assert len(st_data["controllers"]) == 1
+            assert st_data["controllers"][0]["model"] == "PERC H755"
+            assert len(st_data["drives"]) == 1
+            assert st_data["drives"][0]["model"] == "SAMSUNG MZILT1T9HAJQ"
+            assert st_data["drives"][0]["protocol"] == "NVMe"
+            assert st_data["drives"][0]["media_type"] == "SSD"
+            assert len(st_data["volumes"]) == 1
+            assert st_data["volumes"][0]["raid_type"] == "RAID1"
+
+            facts = await conn.gather_facts(refresh=True)
+            assert len(facts.disks) == 1
+            assert facts.disks[0].device == "Disk.Bay.0"
+            assert facts.disks[0].mountpoint == "SAMSUNG MZILT1T9HAJQ"
+            assert facts.disks[0].fstype == "NVMe SSD"
+            assert facts.disks[0].total_bytes == 1920383410176
+
+    @pytest.mark.asyncio
+    async def test_manager_reset_and_secureboot_commands(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Проверка команд manager status, bmc reset и boot secureboot status/on/off."""
+        fake_session = _build_fake_redfish_session()
+        conn = Connection.from_uri("redfish://admin:calvin@10.0.0.100")
+        monkeypatch.setattr(conn._transport, "_create_async_session", lambda: fake_session)
+
+        async with conn:
+            mgr_st = await conn.run("manager status")
+            assert mgr_st.ok
+            assert json.loads(mgr_st.stdout)["Model"] == "iDRAC9"
+
+            mgr_rst = await conn.run("bmc reset force")
+            assert mgr_rst.ok
+            rst_data = json.loads(mgr_rst.stdout)
+            assert rst_data["action"] == "Manager.Reset"
+            assert rst_data["ResetType"] == "ForceRestart"
+
+            sb_st = await conn.run("boot secureboot status")
+            assert sb_st.ok
+            assert json.loads(sb_st.stdout)["SecureBootEnable"] is True
+
+            sb_off = await conn.run("boot secureboot off")
+            assert sb_off.ok
+            assert json.loads(sb_off.stdout)["SecureBootEnable"] is False
+
+    @pytest.mark.asyncio
+    async def test_http_202_task_polling_and_task_commands(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Автоматическое ожидание HTTP 202 Accepted через TaskService и команды tasks / task wait."""
+        fake_session = _build_fake_redfish_session()
+        orig_get = fake_session.get.side_effect
+        orig_post = fake_session.post.side_effect
+        poll_counter = {"count": 0}
+
+        async def _task_get(path: str, **kw: Any) -> MagicMock:
+            if path == "/redfish/v1/TaskService/Tasks":
+                return _make_niq_response(
+                    200,
+                    {"Members": [{"@odata.id": "/redfish/v1/TaskService/Tasks/JID_101"}]},
+                )
+            if path == "/redfish/v1/TaskService/Tasks/JID_101":
+                poll_counter["count"] += 1
+                state = "Running" if poll_counter["count"] < 2 else "Completed"
+                pct = 50 if state == "Running" else 100
+                return _make_niq_response(
+                    200,
+                    {
+                        "Id": "JID_101",
+                        "Name": "VirtualMedia Mount Task",
+                        "TaskState": state,
+                        "TaskStatus": "OK",
+                        "PercentComplete": pct,
+                        "Messages": [{"Message": "Job completed successfully."}],
+                    },
+                )
+            return await orig_get(path, **kw)
+
+        async def _task_post(path: str, json: dict[str, Any] | None = None, **kw: Any) -> MagicMock:
+            if path.endswith("/Actions/VirtualMedia.InsertMedia"):
+                return _make_niq_response(
+                    202,
+                    {
+                        "@odata.id": "/redfish/v1/TaskService/Tasks/JID_101",
+                        "Id": "JID_101",
+                        "TaskState": "Running",
+                    },
+                    headers={"Location": "/redfish/v1/TaskService/Tasks/JID_101"},
+                )
+            return await orig_post(path, json=json, **kw)
+
+        fake_session.get = AsyncMock(side_effect=_task_get)
+        fake_session.post = AsyncMock(side_effect=_task_post)
+
+        conn = Connection.from_uri(
+            "redfish://admin:calvin@10.0.0.100?task_poll_interval=0.01"
+        )
+        monkeypatch.setattr(conn._transport, "_create_async_session", lambda: fake_session)
+
+        async with conn:
+            vm_mount = await conn.run("virtual_media mount https://iso.local/rhel9.iso")
+            assert vm_mount.ok
+            mount_data = json.loads(vm_mount.stdout)
+            assert mount_data["response"]["task"]["task_state"] == "Completed"
+            assert mount_data["response"]["task"]["percent_complete"] == 100
+
+            tasks_res = await conn.run("tasks")
+            assert tasks_res.ok
+            assert json.loads(tasks_res.stdout)["count"] == 1
+
+            wait_res = await conn.run("task wait JID_101 5")
+            assert wait_res.ok
+            assert json.loads(wait_res.stdout)["task_state"] == "Completed"
+
 

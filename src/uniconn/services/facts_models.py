@@ -749,6 +749,39 @@ def parse_redfish_facts(
                 )
             )
 
+    disks: list[DiskInfo] = []
+    raw_disks = inv.get("disks")
+    if not isinstance(raw_disks, list):
+        storage_block = inv.get("storage")
+        raw_disks = (
+            storage_block.get("drives")
+            if isinstance(storage_block, dict)
+            else []
+        )
+    for idx, raw_d in enumerate(raw_disks or []):
+        if not isinstance(raw_d, dict):
+            continue
+        dev_name = str(raw_d.get("id") or raw_d.get("name") or f"drive{idx}")
+        try:
+            cap_bytes = max(0, int(raw_d.get("capacity_bytes") or 0))
+        except (ValueError, TypeError):
+            cap_bytes = 0
+        proto = str(raw_d.get("protocol") or "").strip()
+        mtype = str(raw_d.get("media_type") or "").strip()
+        fs_label = " ".join(p for p in (proto, mtype) if p and p != "Unknown") or "physical"
+        model_label = str(raw_d.get("model") or "").strip()
+        disks.append(
+            DiskInfo(
+                device=dev_name,
+                mountpoint=model_label,
+                fstype=fs_label,
+                total_bytes=cap_bytes,
+                used_bytes=0,
+                available_bytes=cap_bytes,
+                use_percent=0.0,
+            )
+        )
+
     return HostFacts(
         os_family="BMC",
         distro=distro,
@@ -759,7 +792,7 @@ def parse_redfish_facts(
         cpu_count=cpu_count,
         memory_total_bytes=mem_bytes,
         memory_available_bytes=mem_bytes,
-        disks=[],
+        disks=disks,
         interfaces=interfaces,
         custom={"redfish": inv} if inv else {},
     )
