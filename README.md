@@ -336,12 +336,19 @@ spec = FactSpec(
 facts = await conn.gather_facts(spec=spec)
 print(facts.os_family, facts.distro, facts.cpu_count, facts.custom.get("openssl_ver"))
 
-# Диагностическая сессия: снимки фактов + потоковый сбор логов в tar.gz архив
+# Диагностическая сессия для нагрузочных тестов (YAML-файл или dict):
+# Собирает статические pre/post факты + стримит логи в реальном времени на хост пользователя с os.fsync()
 async with conn.diagnostic_session(
+    config="examples/stress_test_diagnostics.yaml",  # или dict с секциями facts и streams
+    streams=[
+        {"name": "dmesg", "command": "dmesg -w", "timestamp_lines": True},
+        {"name": "nvme_smart", "command": "nvme smart-log /dev/nvme0n1", "interval": 5.0, "timestamp_lines": True},
+    ],
     local_dir="./diagnostics",
     archive_path="./diagnostics/incident_bundle.tar.gz",
+    fsync_realtime=True,
 ) as diag:
-    await diag.emit_custom_log("workload", "Running stress test")
+    await diag.emit_custom_log("workload", "Running fio NVMe stress test")
     await diag.snapshot("peak_load")
 ```
 
@@ -619,6 +626,7 @@ from uniconn.exceptions import (
 - `examples/basic_usage.py` — создание подключений, `SecretResolver` (`env://`), `run`, `run_script`, клонирование и синхронный API.
 - `examples/file_transfer.py` — `conn.files`: атомарная запись `atomic=True`, SFTP с `verify=True`, `checksum()`, дельта-синхронизация `sync_dir()` и шаблоны `write_template()`.
 - `examples/provisioning_and_facts.py` — идемпотентное управление состоянием `conn.state.ensure_*` с выводом unified diff, сбор фактов `gather_facts()`, поиск дрейфа `pool.diff_facts()` и `diagnostic_session()`.
+- `examples/stress_test_diagnostics.py` (и `examples/stress_test_diagnostics.yaml`) — нагрузочное тестирование NVMe (`fio`) и ОЗУ (`stress-ng`) по SSH со сбором статических (`facts`) и рантайм-логов (`streams`, периодический `interval`, `timestamp_lines=True`, `fsync_realtime=True`) и защитой от потери логов при зависании или ребуте хоста.
 - `examples/parallel_execution.py` — `ConnectionPool`: волновой роллаут (`batch_size`, `max_fail_ratio`), выборка `pool.select()`, `pool.files`, `pool.state` и потоковый мультиплексор `pool.stream()`.
 - `examples/resilience_rollout_and_waiters.py` — `CircuitBreaker`, `RateLimiter`, примитивы `ping()` и `wait_for_*`, адаптивный `SSHSessionPool` и проброс портов `conn.tunnels`.
 - `examples/contract_testing_cassettes.py` — запись и воспроизведение кассет `use_cassette()`, `pool.use_cassette()`, сравнение `cassette.diff()` и `pytest`-плагин.

@@ -1,0 +1,51 @@
+# Декларативный профиль сбора статических и рантайм-логов для нагрузочного теста NVMe (fio)
+# Используется в conn.diagnostic_session(config="examples/stress_test_diagnostics.yaml")
+
+local_dir: "./diagnostics/nvme_stress"
+archive_path: "./diagnostics/nvme_stress_{host}_{timestamp}.tar.gz"
+archive_format: "tar.gz"
+fsync_realtime: true
+gather_pre_facts: true
+gather_post_facts: true
+
+# 1. Статические логи и состояние хоста (собираются ДО запуска теста, по запросу snapshot() и ПОСЛЕ теста)
+facts:
+  include_builtin: true
+  commands:
+    nvme_list:
+      command: "nvme list -o json"
+      parse_json: true
+    nvme_smart:
+      command: "nvme smart-log /dev/nvme0n1 -o json"
+      parse_json: true
+    block_topology: "lsblk -o NAME,MODEL,SIZE,ROTA,DISC-MAX,MOUNTPOINT"
+    pcie_nvme_link: "lspci -vvv -d ::0108"
+  files:
+    nvme_io_scheduler: "/sys/block/nvme0n1/queue/scheduler"
+    kernel_cmdline: "/proc/cmdline"
+    meminfo_snapshot: "/proc/meminfo"
+  tools:
+    smartctl_nvme:
+      command: "smartctl -x /dev/nvme0n1 -j"
+      output_mode: "json"
+      timeout: 30.0
+
+# 2. Рантайм-логи (стримятся в реальном времени на хост пользователя с os.fsync() каждой строки)
+streams:
+  - name: "kernel_dmesg"
+    command: "dmesg -w"
+    timestamp_lines: true
+
+  - name: "nvme_iostat"
+    command: "iostat -xz 1"
+    timestamp_lines: true
+
+  - name: "system_vmstat"
+    command: "vmstat 1"
+    timestamp_lines: true
+
+  # Периодический опрос одноразовой команды каждые 5 секунд во время выполнения нагрузки
+  - name: "nvme_smart_poll"
+    command: "nvme smart-log /dev/nvme0n1"
+    interval: 5.0
+    timestamp_lines: true

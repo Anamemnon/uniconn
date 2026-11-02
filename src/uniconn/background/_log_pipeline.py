@@ -11,7 +11,7 @@ import time
 import zipfile
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -368,6 +368,7 @@ class DirectStreamCollector:
         timeout: float | None = None,
         restart_on_exit: bool = False,
         restart_delay: float = 1.0,
+        timestamp_lines: bool = False,
         logger: logging.Logger | None = None,
     ) -> None:
         self._connection = connection
@@ -377,6 +378,7 @@ class DirectStreamCollector:
         self._timeout = timeout
         self._restart_on_exit = restart_on_exit
         self._restart_delay = restart_delay
+        self._timestamp_lines = timestamp_lines
         self._logger = logger or logging.getLogger(__name__)
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
@@ -398,6 +400,24 @@ class DirectStreamCollector:
         )
         return self._task
 
+    async def _wait_restart_delay(self) -> bool:
+        """Подождать ``_restart_delay`` секунд или мгновенно прерваться по ``_stop_event``."""
+        if self._restart_delay <= 0:
+            return self._stop_event.is_set()
+        try:
+            await asyncio.wait_for(self._stop_event.wait(), timeout=self._restart_delay)
+            return True
+        except TimeoutError:
+            return self._stop_event.is_set()
+
+    def _format_line(self, line: str) -> str:
+        """Нормализовать перевод строки и опционально добавить ISO-8601 UTC таймстамп."""
+        normalized = line if line.endswith("\n") else f"{line}\n"
+        if not self._timestamp_lines:
+            return normalized
+        ts = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        return f"[{ts}] {normalized}"
+
     async def _run_loop(self) -> None:
         """Основной цикл чтения ``conn.stream`` с передачей строк в ``LogPipeline``."""
         while not self._stop_event.is_set():
@@ -407,12 +427,12 @@ class DirectStreamCollector:
                 ):
                     if self._stop_event.is_set():
                         break
-                    normalized = line if line.endswith("\n") else f"{line}\n"
-                    await self._pipeline.emit(self.name, [normalized])
+                    await self._pipeline.emit(self.name, [self._format_line(line)])
                     self.lines_collected += 1
                 if not self._restart_on_exit or self._stop_event.is_set():
                     break
-                await asyncio.sleep(self._restart_delay)
+                if await self._wait_restart_delay():
+                    break
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -422,7 +442,8 @@ class DirectStreamCollector:
                 )
                 if not self._restart_on_exit or self._stop_event.is_set():
                     break
-                await asyncio.sleep(self._restart_delay)
+                if await self._wait_restart_delay():
+                    break
 
     async def stop(self, timeout: float = 1.0) -> None:
         """Корректно остановить фоновую задачу чтения потока."""

@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 class StreamSourceSpec(BaseModel):
-    """Спецификация фонового потокового источника логов (dmesg -w, journalctl -f и т.д.)."""
+    """Спецификация фонового потокового или периодически опрашиваемого источника логов."""
 
     model_config = ConfigDict(frozen=True, extra="ignore")
 
@@ -46,6 +46,8 @@ class StreamSourceSpec(BaseModel):
     command: str
     mode: Literal["auto", "stream", "background"] = "auto"
     restart_on_exit: bool = False
+    interval: float | None = None
+    timestamp_lines: bool = False
     timeout: float | None = None
 
     @classmethod
@@ -419,13 +421,23 @@ class DiagnosticSession:
                     f"Не удалось запустить фоновый источник {bg_name!r}, откат на stream: {exc}"
                 )
 
+        effective_restart = spec.restart_on_exit or (
+            spec.interval is not None and spec.interval > 0
+        )
+        effective_delay = (
+            spec.interval
+            if (spec.interval is not None and spec.interval > 0)
+            else 1.0
+        )
         collector = DirectStreamCollector(
             connection=self._conn,
             name=spec.name,
             command=effective_command,
             pipeline=self._pipeline,
             timeout=spec.timeout,
-            restart_on_exit=spec.restart_on_exit,
+            restart_on_exit=effective_restart,
+            restart_delay=effective_delay,
+            timestamp_lines=spec.timestamp_lines,
         )
         collector.start()
         self._stream_collectors.append(collector)

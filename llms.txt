@@ -125,8 +125,9 @@ facts: HostFacts = await conn.gather_facts(
     artifact_dir: str | Path | None = None,
     ttl: float | None = None,
 )
+# StreamSourceSpec(name, command, mode="auto", restart_on_exit=False, interval=None, timestamp_lines=False, timeout=None)
 async with conn.diagnostic_session(
-    config: DiagnosticConfig | Mapping[str, Any] | str | Path | None = None,
+    config: DiagnosticConfig | Mapping[str, Any] | str | Path | None = None,  # YAML/JSON/TOML path, dict, or DiagnosticConfig
     *,
     spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
     streams: Sequence[StreamSourceSpec | Mapping[str, Any] | str] | None = None,

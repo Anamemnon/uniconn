@@ -484,3 +484,66 @@ class TestDiagnosticSessionLifecycle:
             assert (tmp_path / "sync_bundle.tar.gz").exists()
         finally:
             sync_conn.close()
+
+    async def test_stream_source_spec_periodic_interval_and_timestamp_lines(
+        self, tmp_path: Path
+    ) -> None:
+        """StreamSourceSpec с interval > 0 и timestamp_lines=True периодически опрашивает команду и ставит метки UTC."""
+        import re
+
+        conn = Connection.from_uri("local://")
+        poll_count = {"n": 0}
+
+        async def fake_run(cmd: Any, **kwargs: Any) -> Result:
+            cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
+            if "===UNICONN_SECTION:UNAME===" in cmd_str:
+                return _ok_res(SAMPLE_FACTS_STDOUT, cmd_str)
+            return _ok_res("", cmd_str)
+
+        async def fake_poll_stream(
+            command: str, timeout: float | None = None, **kwargs: Any
+        ) -> AsyncIterator[str]:
+            poll_count["n"] += 1
+            yield f"SMART poll #{poll_count['n']}: temp=48C\n"
+
+        conn.run = AsyncMock(side_effect=fake_run)  # type: ignore[method-assign]
+        conn.stream = fake_poll_stream  # type: ignore[method-assign]
+        conn.ping = AsyncMock(  # type: ignore[method-assign]
+            return_value=PingResult(
+                host="node-01", alive=True, latency_ms=0.5, transport="local"
+            )
+        )
+
+        profile_dict = {
+            "local_dir": str(tmp_path / "interval_work"),
+            "archive_path": str(tmp_path / "interval_bundle.tar.gz"),
+            "fsync_realtime": False,
+            "streams": [
+                {
+                    "name": "nvme_smart_poll",
+                    "command": "nvme smart-log /dev/nvme0n1",
+                    "interval": 0.03,
+                    "timestamp_lines": True,
+                }
+            ],
+        }
+
+        async with conn.diagnostic_session(config=profile_dict) as diag:
+            collector = diag._stream_collectors[0]
+            for _ in range(100):
+                if collector.lines_collected >= 2:
+                    break
+                await asyncio.sleep(0.01)
+
+        assert poll_count["n"] >= 2
+        with tarfile.open(tmp_path / "interval_bundle.tar.gz", "r:gz") as tf:
+            log_member = tf.extractfile("streams/nvme_smart_poll.log")
+            assert log_member is not None
+            lines = log_member.read().decode("utf-8").splitlines()
+            assert len(lines) >= 2
+            ts_pattern = re.compile(
+                r"^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] SMART poll #\d+: temp=48C$"
+            )
+            for line in lines:
+                assert ts_pattern.match(line), f"Line missing ISO-8601 timestamp: {line!r}"
+
