@@ -180,3 +180,40 @@ def test_sync_connection_pool_apply_supports_both_sync_and_async_callables() -> 
 
         async_results = pool.apply(async_worker)
         assert async_results == ["async_worker_ok", "async_worker_ok"]
+
+
+def test_event_loop_portal_fork_safety_and_pid_change(monkeypatch: pytest.MonkeyPatch) -> None:
+    """EventLoopPortal автоматически пересоздаёт цикл событий при смене PID после os.fork()."""
+    from uniconn.core.bridge import _SHARED_LOOP_MANAGER
+
+    with SyncConnection.from_uri("local://") as sync_conn:
+        res1 = sync_conn.run("echo before_fork")
+        assert res1.text == "before_fork"
+        old_loop = _SHARED_LOOP_MANAGER.loop
+        assert old_loop is not None
+        assert _SHARED_LOOP_MANAGER.pid is not None
+
+        # Эмулируем смену PID в дочернем процессе или вызов reset_after_fork()
+        EventLoopPortal.reset_after_fork()
+        assert _SHARED_LOOP_MANAGER.loop is None
+
+        res2 = sync_conn.run("echo after_fork")
+        assert res2.text == "after_fork"
+        new_loop = _SHARED_LOOP_MANAGER.loop
+        assert new_loop is not None
+        assert new_loop is not old_loop
+
+
+def test_sync_connection_multithreaded_concurrent_calls() -> None:
+    """Множество потоков ОС безопасно разделяют единый EventLoopPortal без гонок."""
+    import concurrent.futures
+
+    def _worker(idx: int) -> str:
+        with SyncConnection.from_uri("local://") as conn:
+            return conn.run(f"echo thread_{idx}").text
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        results = list(executor.map(_worker, range(12)))
+
+    assert results == [f"thread_{i}" for i in range(12)]
+

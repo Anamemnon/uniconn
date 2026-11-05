@@ -7,8 +7,10 @@ import logging
 import shlex
 import signal
 import threading
+import time
 from collections.abc import Callable, Iterable
 from types import FrameType
+from typing import Any
 
 from ..core.connection import Connection
 from ._session import BackgroundSession
@@ -32,13 +34,20 @@ class BackgroundCleanupManager:
         self,
         pool_id: str,
         logger: logging.Logger | None = None,
+        stale_ttl_seconds: float | None = None,
     ):
         self._pool_id = pool_id
         self._logger = logger or logging.getLogger(__name__)
+        self._stale_ttl_seconds = stale_ttl_seconds
         self._sessions: dict[str, BackgroundSession] = {}
         self._signal_count = 0
         self._installed = False
         self._previous_handlers: dict[int, signal.Handlers | Callable | int | None] = {}
+
+    @property
+    def stale_ttl_seconds(self) -> float | None:
+        """Максимальное время жизни (TTL) осиротевших сессий в секундах."""
+        return self._stale_ttl_seconds
 
     @property
     def sentinel_path(self) -> str:
@@ -215,12 +224,14 @@ rm -f "$0"
 
     async def install_server_side(self, connection: Connection) -> None:
         """Загрузить (или обновить) на сервере sentinel-файл и cleanup-скрипт."""
-        sentinel = json.dumps(
-            {
-                "pool_id": self._pool_id,
-                "sessions": sorted(self._sessions),
-            }
-        )
+        payload: dict[str, Any] = {
+            "pool_id": self._pool_id,
+            "sessions": sorted(self._sessions),
+            "created_at": round(time.time(), 3),
+        }
+        if self._stale_ttl_seconds is not None:
+            payload["stale_ttl_seconds"] = self._stale_ttl_seconds
+        sentinel = json.dumps(payload)
         q_sentinel_path = shlex.quote(self.sentinel_path)
         q_cleanup_path = shlex.quote(self.cleanup_script_path)
         await connection.run(
@@ -231,3 +242,81 @@ rm -f "$0"
             f"> {q_cleanup_path}"
         )
         await connection.run(f"chmod +x {q_cleanup_path}")
+
+    async def cleanup_stale(
+        self,
+        connection: Connection,
+        max_age_seconds: float | None = None,
+    ) -> list[str]:
+        """Очистить осиротевшие пулы сессий на сервере старше ``max_age_seconds`` секунд.
+
+        Анализирует sentinel-файлы ``/tmp/uniconn_*.active`` (исключая текущий пул).
+        Если возраст пула превышает порог TTL, выполняет соответствующий
+        ``/tmp/uniconn_cleanup_{pool_id}.sh`` или принудительно удаляет артефакты.
+
+        Returns:
+            Список ``pool_id`` очищенных устаревших пулов.
+
+        """
+        default_ttl = (
+            max_age_seconds
+            if max_age_seconds is not None
+            else self._stale_ttl_seconds
+        )
+        if default_ttl is not None and default_ttl <= 0:
+            return []
+
+        res = await connection.run(
+            "for f in /tmp/uniconn_*.active; do "
+            '[ -f "$f" ] && printf "%s\\t%s\\n" "$f" "$(cat "$f" 2>/dev/null)"; '
+            "done"
+        )
+        if not res.stdout.strip():
+            return []
+
+        now = time.time()
+        cleaned: list[str] = []
+
+        for line in res.stdout.splitlines():
+            if not line.strip():
+                continue
+            path_part, _, raw_json = line.partition("\t")
+            try:
+                data = json.loads(raw_json) if raw_json.strip() else {}
+            except Exception:
+                data = {}
+
+            pool_id = data.get("pool_id")
+            if not isinstance(pool_id, str) or not pool_id:
+                fname = path_part.rsplit("/", 1)[-1]
+                if fname.startswith("uniconn_") and fname.endswith(".active"):
+                    pool_id = fname[len("uniconn_") : -len(".active")]
+            if not pool_id or pool_id == self._pool_id:
+                continue
+
+            created_at = data.get("created_at")
+            file_ttl = (
+                max_age_seconds
+                if max_age_seconds is not None
+                else (
+                    data.get("stale_ttl_seconds")
+                    if isinstance(data.get("stale_ttl_seconds"), int | float)
+                    else default_ttl
+                )
+            )
+            if file_ttl is None or not isinstance(created_at, int | float):
+                continue
+
+            if (now - float(created_at)) >= float(file_ttl):
+                q_script = shlex.quote(f"/tmp/uniconn_cleanup_{pool_id}.sh")
+                q_sentinel = shlex.quote(path_part)
+                q_pid = shlex.quote(pool_id)
+                await connection.run(
+                    f"if [ -x {q_script} ]; then {q_script}; "
+                    f"else rm -f {q_sentinel} {q_script} "
+                    f"/tmp/uniconn_{q_pid}_*.log /tmp/uniconn_*{q_pid}_*.pid "
+                    f"/tmp/uniconn_*{q_pid}_*.exit /tmp/uniconn_*{q_pid}_*.sh; fi"
+                )
+                cleaned.append(pool_id)
+
+        return cleaned

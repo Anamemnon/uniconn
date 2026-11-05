@@ -137,3 +137,45 @@ class TestHooks:
         calls = manager.cleanup_local.call_args_list
         assert calls[0].kwargs["force"] is False
         assert calls[1].kwargs["force"] is True
+
+
+class TestCleanupStale:
+    """Тесты TTL-очистки осиротевших фоновых сессий (cleanup_stale)."""
+
+    async def test_cleanup_stale_removes_only_expired_pools(self):
+        """cleanup_stale очищает только пулы старше max_age_seconds и не трогает свежие и собственный."""
+        import json
+        import time
+
+        now = time.time()
+        own_json = json.dumps({"pool_id": "pool_own", "sessions": ["s1"], "created_at": now - 9999})
+        old_json = json.dumps({"pool_id": "pool_old", "sessions": ["s2"], "created_at": now - 7200})
+        fresh_json = json.dumps({"pool_id": "pool_fresh", "sessions": ["s3"], "created_at": now - 30})
+
+        listing_stdout = (
+            f"/tmp/uniconn_pool_own.active\t{own_json}\n"
+            f"/tmp/uniconn_pool_old.active\t{old_json}\n"
+            f"/tmp/uniconn_pool_fresh.active\t{fresh_json}\n"
+        )
+
+        executed_cmds: list[str] = []
+
+        async def _mock_run(command: str, **kwargs):
+            executed_cmds.append(command)
+            if "for f in /tmp/uniconn_*.active" in command:
+                return make_result(listing_stdout, command=command)
+            return make_result("", command=command)
+
+        conn = MagicMock()
+        conn.run = AsyncMock(side_effect=_mock_run)
+
+        manager = BackgroundCleanupManager("pool_own", stale_ttl_seconds=3600.0)
+        assert manager.stale_ttl_seconds == 3600.0
+        cleaned = await manager.cleanup_stale(conn)
+
+        assert cleaned == ["pool_old"]
+        assert len(executed_cmds) == 2
+        assert "/tmp/uniconn_cleanup_pool_old.sh" in executed_cmds[1]
+        assert "pool_fresh" not in executed_cmds[1]
+        assert "pool_own" not in executed_cmds[1]
+

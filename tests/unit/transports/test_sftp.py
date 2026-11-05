@@ -556,3 +556,81 @@ class TestConnectionFileOps:
 
         assert result == ["file1.txt", "subdir"]
         mock_transport.listdir.assert_called_once_with("/var/log")
+
+
+class TestSFTPClientAdapterExtended:
+    """Расширенные тесты SFTPClientAdapter: read_file, write_file, exists, mkdir, remove_file и progress."""
+
+    @pytest.mark.asyncio
+    async def test_sftp_read_write_exists_mkdir_remove_and_progress(
+        self, ssh_transport_with_mock
+    ):
+        """Проверка всех операций SFTPClientAdapter и обработки ошибок asyncssh.Error."""
+        SSHTransport, asyncssh_mock = ssh_transport_with_mock
+
+        mock_file = AsyncMock()
+        mock_file.read = AsyncMock(return_value=b"binary_payload")
+        mock_file.write = AsyncMock()
+        mock_file_ctx = AsyncMock()
+        mock_file_ctx.__aenter__ = AsyncMock(return_value=mock_file)
+        mock_file_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        mock_attrs = MagicMock()
+        mock_attrs.size = 14
+        mock_attrs.uid = 0
+        mock_attrs.gid = 0
+        mock_attrs.permissions = 0o100644
+        mock_attrs.atime = 100
+        mock_attrs.mtime = 200
+
+        mock_sftp = AsyncMock()
+        mock_sftp.open = MagicMock(return_value=mock_file_ctx)
+        mock_sftp.chmod = AsyncMock()
+        mock_sftp.makedirs = AsyncMock()
+        mock_sftp.remove = AsyncMock()
+        mock_sftp.stat = AsyncMock(return_value=mock_attrs)
+
+        async def _fake_put(src, dst, **kw):
+            if "progress_handler" in kw:
+                kw["progress_handler"](src, dst, 50, 100)
+
+        mock_sftp.put = AsyncMock(side_effect=_fake_put)
+
+        mock_context = AsyncMock()
+        mock_context.__aenter__ = AsyncMock(return_value=mock_sftp)
+        mock_context.__aexit__ = AsyncMock(return_value=None)
+
+        mock_conn = AsyncMock()
+        mock_conn.start_sftp_client = MagicMock(return_value=mock_context)
+
+        transport = SSHTransport(ConnectionConfig(transport="ssh", host="testhost"))
+        transport._conn = mock_conn
+        transport._connected = True
+
+        # read_file & write_file
+        data = await transport.read_file("/etc/conf")
+        assert data == b"binary_payload"
+        await transport.write_file("/etc/conf", b"new_data", mode=0o600)
+        mock_sftp.chmod.assert_awaited_with("/etc/conf", 0o600)
+
+        # exists (True and False on error)
+        assert await transport.exists("/etc/conf") is True
+        mock_sftp.stat.side_effect = asyncssh_mock.Error("No such file")
+        assert await transport.exists("/etc/missing") is False
+
+        # mkdir & remove_file
+        await transport.mkdir("/var/app/releases", parents=True, exist_ok=True, mode=0o755)
+        mock_sftp.makedirs.assert_awaited_once_with("/var/app/releases", exist_ok=True)
+        await transport.remove_file("/var/app/old.txt")
+        mock_sftp.remove.assert_awaited_once_with("/var/app/old.txt")
+
+        # progress_callback on upload
+        progress_events: list[tuple[int, int]] = []
+        with patch("os.path.isdir", return_value=False):
+            await transport.upload(
+                "/local/f",
+                "/remote/f",
+                progress_callback=lambda c, t: progress_events.append((c, t)),
+            )
+        assert progress_events == [(50, 100)]
+

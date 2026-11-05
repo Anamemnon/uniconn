@@ -255,3 +255,54 @@ class TestCassetteRecordAndReplayModes:
             with pytest.raises(CassetteError):
                 with sync_conn.use_cassette(tmp_path / "missing.yaml", mode="none"):
                     sync_conn.run("echo fail")
+
+    @pytest.mark.asyncio
+    async def test_cassette_unordered_diff_and_out_of_order_shell_steps(
+        self, tmp_path: Path
+    ) -> None:
+        """Cassette.diff(unordered=True) и ReplayShellProcess корректно обрабатывают перестановку шагов."""
+        c1 = Cassette(
+            transport="ssh",
+            host="node-1",
+            interactions=[
+                RecordedExecInteraction(command="uptime", stdout="up 1 day\n"),
+                RecordedExecInteraction(command="whoami", stdout="root\n"),
+            ],
+        )
+        c2 = Cassette(
+            transport="ssh",
+            host="node-1",
+            interactions=[
+                RecordedExecInteraction(command="whoami", stdout="root\n"),
+                RecordedExecInteraction(command="uptime", stdout="up 1 day\n"),
+            ],
+        )
+        assert c1.diff(c2, unordered=False).has_changes is True
+        unordered_report = c1.diff(c2, unordered=True)
+        assert unordered_report.is_identical is True
+        assert unordered_report.identical_count == 2
+
+        cassette_file = tmp_path / "shell_unordered.yaml"
+        Cassette(
+            transport="ssh",
+            host="node-1",
+            capabilities=["exec", "stream", "file", "shell"],
+            interactions=[
+                RecordedShellInteraction(
+                    term_type="xterm",
+                    term_size=(80, 24),
+                    steps=[
+                        ShellDialogStep(expect_input="echo first", response_output="1", exit_code=0),
+                        ShellDialogStep(expect_input="echo second", response_output="2", exit_code=0),
+                    ],
+                )
+            ],
+        ).save(cassette_file)
+
+        conn = Connection.from_uri(f"replay://node-1?cassette={cassette_file}")
+        async with await conn.open_shell() as shell:
+            r2 = await shell.execute("echo second")
+            r1 = await shell.execute("echo first")
+            assert r2.text == "2"
+            assert r1.text == "1"
+

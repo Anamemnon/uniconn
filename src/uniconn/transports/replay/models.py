@@ -327,18 +327,51 @@ class Cassette(BaseModel):
                 errors.append(f"Interaction #{idx} (shell): steps must be a list")
         return errors
 
-    def diff(self, other: Cassette) -> CassetteDiffReport:
+    def diff(
+        self, other: Cassette, *, unordered: bool = False
+    ) -> CassetteDiffReport:
         """Сравнить текущую кассету (baseline) с другой кассетой (candidate) и вернуть ``CassetteDiffReport``."""
-        max_len = max(len(self.interactions), len(other.interactions))
         diffs: list[InteractionDiff] = []
         identical_count = 0
         modified_count = 0
         added_count = 0
         removed_count = 0
 
-        for idx in range(max_len):
-            if idx >= len(self.interactions):
-                right_it = other.interactions[idx]
+        if unordered:
+            pairs: list[tuple[CassetteInteraction | None, CassetteInteraction | None]] = []
+            used_right: set[int] = set()
+            for left_it in self.interactions:
+                left_cmd = _interaction_summary(left_it)
+                matched_r_idx: int | None = None
+                for r_idx, right_it in enumerate(other.interactions):
+                    if r_idx in used_right:
+                        continue
+                    if (
+                        right_it.kind == left_it.kind
+                        and _interaction_summary(right_it) == left_cmd
+                    ):
+                        matched_r_idx = r_idx
+                        break
+                if matched_r_idx is not None:
+                    used_right.add(matched_r_idx)
+                    pairs.append((left_it, other.interactions[matched_r_idx]))
+                else:
+                    pairs.append((left_it, None))
+            for r_idx, right_it in enumerate(other.interactions):
+                if r_idx not in used_right:
+                    pairs.append((None, right_it))
+        else:
+            max_len = max(len(self.interactions), len(other.interactions))
+            pairs = [
+                (
+                    self.interactions[i] if i < len(self.interactions) else None,
+                    other.interactions[i] if i < len(other.interactions) else None,
+                )
+                for i in range(max_len)
+            ]
+
+        for idx, (left_it, right_it) in enumerate(pairs):
+            if left_it is None and right_it is not None:
                 added_count += 1
                 diffs.append(
                     InteractionDiff(
@@ -356,8 +389,7 @@ class Cassette(BaseModel):
                         duration_delta=round(_interaction_duration(right_it), 6),
                     )
                 )
-            elif idx >= len(other.interactions):
-                left_it = self.interactions[idx]
+            elif right_it is None and left_it is not None:
                 removed_count += 1
                 diffs.append(
                     InteractionDiff(
@@ -375,9 +407,7 @@ class Cassette(BaseModel):
                         duration_delta=round(-_interaction_duration(left_it), 6),
                     )
                 )
-            else:
-                left_it = self.interactions[idx]
-                right_it = other.interactions[idx]
+            elif left_it is not None and right_it is not None:
                 left_cmd = _interaction_summary(left_it)
                 right_cmd = _interaction_summary(right_it)
                 cmd_changed = (left_it.kind != right_it.kind) or (left_cmd != right_cmd)

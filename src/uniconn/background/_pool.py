@@ -58,6 +58,7 @@ class BackgroundPool:
         poll_interval: float = 5.0,
         log_config: LogConfig | None = None,
         logger: logging.Logger | None = None,
+        stale_ttl_seconds: float | None = None,
     ):
         self._uri = uri
         self._backend_spec: BackgroundBackendType = backend
@@ -65,6 +66,7 @@ class BackgroundPool:
         self._max_sessions = max_sessions
         self._max_monitors = max_monitors
         self._poll_interval = poll_interval
+        self._stale_ttl_seconds = stale_ttl_seconds
         self._log_config = log_config or LogConfig()
         self._logger = logger or logging.getLogger(__name__)
 
@@ -83,7 +85,9 @@ class BackgroundPool:
         self._connection: Connection | None = None
         self._collector: BackgroundLogCollector | None = None
         self._cleanup_manager = BackgroundCleanupManager(
-            self._pool_id, logger=self._logger
+            self._pool_id,
+            logger=self._logger,
+            stale_ttl_seconds=stale_ttl_seconds,
         )
 
     @classmethod
@@ -101,6 +105,7 @@ class BackgroundPool:
             poll_interval=config.poll_interval,
             log_config=config.log_config,
             logger=logger,
+            stale_ttl_seconds=config.stale_ttl_seconds,
         )
 
     @classmethod
@@ -478,6 +483,15 @@ class BackgroundPool:
             self._connection = None
             self._collector = None
         self._cleanup_manager.uninstall()
+
+    async def cleanup_stale(
+        self, max_age_seconds: float | None = None
+    ) -> list[str]:
+        """Очистить на сервере осиротевшие пулы сессий старше ``max_age_seconds`` секунд."""
+        connection = await self._ensure_connection()
+        return await self._cleanup_manager.cleanup_stale(
+            connection, max_age_seconds=max_age_seconds
+        )
 
     async def cleanup(self) -> None:
         """Остановить все сессии и удалить артефакты пула на сервере."""

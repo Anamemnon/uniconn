@@ -60,6 +60,7 @@ class ReplayShellProcess:
         self._exec_interactions = list(exec_interactions)
         self._normalize_temp = normalize_temp
         self._step_index = 0
+        self._consumed_steps: set[int] = set()
         self._out_queue: asyncio.Queue[str] = asyncio.Queue()
         self.stdin = _ReplayStdin(self)
         self.stdout = _ReplayStdout(self)
@@ -73,10 +74,10 @@ class ReplayShellProcess:
     def _find_step(self, cmd: str) -> tuple[str, int]:
         norm_cmd = self._norm(cmd.strip())
         steps = self._shell_interaction.steps
-        for idx in range(self._step_index, len(steps)):
-            step = steps[idx]
-            if self._norm(step.expect_input.strip()) == norm_cmd:
-                self._step_index = idx + 1
+        for idx, step in enumerate(steps):
+            if idx not in self._consumed_steps and self._norm(step.expect_input.strip()) == norm_cmd:
+                self._consumed_steps.add(idx)
+                self._step_index = len(self._consumed_steps)
                 return step.response_output, step.exit_code
         for step in steps:
             if self._norm(step.expect_input.strip()) == norm_cmd:
@@ -105,7 +106,7 @@ class ReplayShellProcess:
         out_text, _code = self._find_step(stripped)
         if out_text:
             self._out_queue.put_nowait(out_text)
-        if self._step_index >= len(self._shell_interaction.steps):
+        if len(self._consumed_steps) >= len(self._shell_interaction.steps):
             self._out_queue.put_nowait("")
 
     async def _on_stdout_read(self) -> str:

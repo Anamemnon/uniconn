@@ -55,6 +55,7 @@ class BackgroundPoolConfig(BaseModel):
     max_sessions: int = 16
     max_monitors: int = 4
     poll_interval: float = 5.0
+    stale_ttl_seconds: float | None = None
     log_config: LogConfig = Field(default_factory=LogConfig)
 
     @classmethod

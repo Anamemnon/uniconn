@@ -15,6 +15,7 @@ import contextlib
 import contextvars
 import functools
 import inspect
+import os
 import threading
 from collections.abc import (
     AsyncIterator,
@@ -61,6 +62,7 @@ class _SharedLoopManager:
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._ready_event: threading.Event | None = None
+        self._pid: int | None = None
 
     @property
     def loop(self) -> asyncio.AbstractEventLoop | None:
@@ -70,15 +72,31 @@ class _SharedLoopManager:
     def thread(self) -> threading.Thread | None:
         return self._thread
 
+    @property
+    def pid(self) -> int | None:
+        return self._pid
+
     def is_running(self) -> bool:
         return (
-            self._loop is not None
+            self._pid == os.getpid()
+            and self._loop is not None
             and not self._loop.is_closed()
             and self._thread is not None
             and self._thread.is_alive()
         )
 
+    def reset_after_fork(self) -> None:
+        """Сбросить состояние менеджера в дочернем процессе после os.fork()."""
+        self._lock = threading.Lock()
+        self._loop = None
+        self._thread = None
+        self._ready_event = None
+        self._pid = os.getpid()
+
     def get_or_create_loop(self) -> tuple[asyncio.AbstractEventLoop, threading.Thread]:
+        if self._pid is not None and self._pid != os.getpid():
+            self.reset_after_fork()
+
         with self._lock:
             if not self.is_running():
                 loop = asyncio.new_event_loop()
@@ -107,6 +125,7 @@ class _SharedLoopManager:
 
                 self._loop = loop
                 self._thread = thread
+                self._pid = os.getpid()
 
             assert self._loop is not None
             assert self._thread is not None
@@ -136,6 +155,7 @@ class _SharedLoopManager:
             self._loop = None
             self._thread = None
             self._ready_event = None
+            self._pid = None
 
 
 _SHARED_LOOP_MANAGER = _SharedLoopManager()
@@ -195,7 +215,16 @@ class EventLoopPortal:
         loop, thread = _SHARED_LOOP_MANAGER.get_or_create_loop()
         cls._shared_loop = loop
         cls._shared_thread = thread
+        cls._shared_lock = _SHARED_LOOP_MANAGER._lock
         return loop, thread
+
+    @classmethod
+    def reset_after_fork(cls) -> None:
+        """Сбросить разделяемый фоновый event loop в дочернем процессе после ``os.fork()``."""
+        _SHARED_LOOP_MANAGER.reset_after_fork()
+        cls._shared_loop = None
+        cls._shared_thread = None
+        cls._shared_lock = _SHARED_LOOP_MANAGER._lock
 
     @classmethod
     def shutdown_all(cls, timeout: float = 3.0) -> None:
@@ -213,10 +242,18 @@ class EventLoopPortal:
 
     def call(self, coro: Any, timeout: float | None = None) -> Any:
         """Синхронно выполнить корутину в фоновом event loop и вернуть результат."""
+        if (
+            self._loop_thread is not None
+            and not self._loop_thread.is_alive()
+            and threading.current_thread() is not self._loop_thread
+        ):
+            self._loop = None
+            self._loop_thread = None
+
         shared_thread = _SHARED_LOOP_MANAGER.thread
         current_thread = threading.current_thread()
 
-        if self._loop_thread is None and shared_thread is not None:
+        if self._loop_thread is None and shared_thread is not None and shared_thread.is_alive():
             self._loop_thread = shared_thread
 
         if (
@@ -263,10 +300,18 @@ class EventLoopPortal:
         timeout: float | None = None,
     ) -> Iterator[T]:
         """Преобразовать асинхронный генератор в синхронный итератор через очередь."""
+        if (
+            self._loop_thread is not None
+            and not self._loop_thread.is_alive()
+            and threading.current_thread() is not self._loop_thread
+        ):
+            self._loop = None
+            self._loop_thread = None
+
         shared_thread = _SHARED_LOOP_MANAGER.thread
         current_thread = threading.current_thread()
 
-        if self._loop_thread is None and shared_thread is not None:
+        if self._loop_thread is None and shared_thread is not None and shared_thread.is_alive():
             self._loop_thread = shared_thread
 
         if (
@@ -358,6 +403,10 @@ class EventLoopPortal:
         self._closed = True
         self._loop = None
         self._loop_thread = None
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=EventLoopPortal.reset_after_fork)
 
 
 class SyncContextBridge(Generic[T]):
