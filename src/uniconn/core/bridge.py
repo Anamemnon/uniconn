@@ -405,8 +405,9 @@ class EventLoopPortal:
         self._loop_thread = None
 
 
-if hasattr(os, "register_at_fork"):
-    os.register_at_fork(after_in_child=EventLoopPortal.reset_after_fork)
+_register_at_fork = getattr(os, "register_at_fork", None)
+if callable(_register_at_fork):
+    _register_at_fork(after_in_child=EventLoopPortal.reset_after_fork)
 
 
 class SyncContextBridge(Generic[T]):
