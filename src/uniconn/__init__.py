@@ -182,6 +182,7 @@ from .transports._docker import DockerTransport, PodmanTransport
 from .transports._kubectl import KubectlTransport
 from .transports._local import LocalTransport
 from .transports._serial import SerialPortInfo, SerialTransport, list_serial_ports
+from .transports._winrm import WinRMTransport
 from .transports.base import (
     BaseTransport,
     CommandTransport,
@@ -417,6 +418,7 @@ __all__ = [  # noqa: RUF022
     "URIParser",
     "UniconnCassetteFixture",
     "UniconnError",
+    "WinRMTransport",
     "WindowsJobBackend",
     "ZmodemSubprocessAdapter",
     "ZypperStrategy",

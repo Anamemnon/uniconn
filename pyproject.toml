@@ -34,11 +34,13 @@ bmc = ["pyghmi>=1.6", "niquests>=3.10"]
 serial = ["pyserial-asyncio>=0.6"]
 uart = ["pyserial-asyncio>=0.6"]
 telnet = ["telnetlib3>=5.0"]
+winrm = ["pywinrm>=0.5"]
+wsman = ["pywinrm>=0.5"]
 cli = ["cyclopts>=5.0", "rich>=15.0"]
 templates = ["jinja2>=3.1"]
 otel = ["opentelemetry-api>=1.25"]
 all = [
-    "uniconn[bmc,serial,telnet,cli,templates]",
+    "uniconn[bmc,serial,telnet,winrm,cli,templates]",
 ]
 dev = [
     "uniconn[all,otel]",
@@ -65,6 +67,8 @@ serial = "uniconn.transports._serial:SerialTransport"
 uart = "uniconn.transports._serial:SerialTransport"
 ipmi = "uniconn.transports.bmc._ipmi:IPMITransport"
 redfish = "uniconn.transports.bmc._redfish:RedfishTransport"
+winrm = "uniconn.transports._winrm:WinRMTransport"
+wsman = "uniconn.transports._winrm:WinRMTransport"
 replay = "uniconn.transports.replay:ReplayTransport"
 docker = "uniconn.transports._docker:DockerTransport"
 podman = "uniconn.transports._docker:PodmanTransport"

@@ -150,6 +150,21 @@ def _collect_windows_local_facts(default_host: str) -> HostFacts:
     )
 
 
+def _is_windows_remote_connection(conn: Connection) -> bool:
+    """Проверить, является ли подключение удалённым Windows-хостом (winrm/wsman, включая Cassette)."""
+    cfg = getattr(conn, "config", None)
+    if getattr(cfg, "transport", "") in ("winrm", "wsman"):
+        return True
+    tr = getattr(conn, "transport", None)
+    if getattr(tr, "name", "") in ("winrm", "wsman"):
+        return True
+    wrapped = getattr(tr, "_wrapped", None) or getattr(tr, "_inner", None)
+    if getattr(wrapped, "name", "") in ("winrm", "wsman"):
+        return True
+    cassette = getattr(tr, "cassette", None)
+    return getattr(cassette, "transport", "") in ("winrm", "wsman")
+
+
 class ExternalToolRunner:
     """Адаптер делегирования сбора информации внешним диагностическим утилитам."""
 
@@ -166,8 +181,13 @@ class ExternalToolRunner:
         """Выполнить внешнюю утилиту и вернуть структурированный результат или путь к артефакту."""
         binary = tool.resolved_binary()
         if binary:
+            if _is_windows_remote_connection(self._conn):
+                ps_bin = "'" + binary.replace("'", "''") + "'"
+                probe = f"if (Get-Command {ps_bin} -ErrorAction SilentlyContinue) {{ exit 0 }} else {{ exit 1 }}"
+            else:
+                probe = f"command -v {shlex.quote(binary)} >/dev/null 2>&1"
             chk = await self._conn.run(
-                f"command -v {shlex.quote(binary)} >/dev/null 2>&1",
+                probe,
                 raise_on_error=False,
             )
             if not chk.ok:
@@ -201,8 +221,16 @@ class ExternalToolRunner:
         if tool.output_mode == "artifact":
             remote_artifact = ""
             if tool.artifact_glob:
+                if _is_windows_remote_connection(self._conn):
+                    ps_glob = "'" + tool.artifact_glob.replace("'", "''") + "'"
+                    glob_cmd = (
+                        f"Get-ChildItem -Path {ps_glob} -ErrorAction SilentlyContinue | "
+                        "Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName"
+                    )
+                else:
+                    glob_cmd = f"ls -1td {tool.artifact_glob} 2>/dev/null | head -n 1"
                 glob_res = await self._conn.run(
-                    f"ls -1td {tool.artifact_glob} 2>/dev/null | head -n 1",
+                    glob_cmd,
                     raise_on_error=False,
                 )
                 if glob_res.ok and glob_res.stdout.strip():
@@ -224,7 +252,7 @@ class ExternalToolRunner:
 
             target_dir = Path(tool.local_dir or artifact_dir or "./artifacts")
             target_dir.mkdir(parents=True, exist_ok=True)
-            local_dest = target_dir / Path(remote_artifact).name
+            local_dest = target_dir / Path(remote_artifact.replace("\\", "/")).name
             await self._conn.files.download(remote_artifact, str(local_dest))
             if tool.cleanup_remote:
                 with contextlib.suppress(Exception):
@@ -281,6 +309,10 @@ class FactCollector:
         cassette = getattr(tr, "cassette", None)
         return getattr(cassette, "transport", "") == "redfish"
 
+    def _is_windows_connection(self) -> bool:
+        """Проверить, является ли целевое соединение WinRM/WSMan (включая Cassette/Replay)."""
+        return _is_windows_remote_connection(self._conn)
+
     async def gather(
         self,
         refresh: bool = False,
@@ -307,7 +339,8 @@ class FactCollector:
 
         default_host = self._conn.config.host or "localhost"
         if self._conn.dry_run:
-            facts = HostFacts(hostname=default_host)
+            os_fam = "Windows" if self._is_windows_connection() else "Unknown"
+            facts = HostFacts(os_family=os_fam, hostname=default_host)
             self.cached = facts
             self._cached_at = time.monotonic()
             return facts
@@ -323,6 +356,15 @@ class FactCollector:
                     raise_on_error=False,
                 )
                 facts = parse_redfish_facts(res.stdout, default_host=default_host)
+            elif self._is_windows_connection():
+                win_res = await self._conn.run(
+                    WINDOWS_FACT_POWERSHELL_SCRIPT,
+                    timeout=timeout,
+                    raise_on_error=False,
+                )
+                facts = parse_windows_facts_output(
+                    win_res.stdout, default_host=default_host
+                )
             elif (
                 sys.platform == "win32"
                 and self._conn.transport_name == "local"

@@ -10,6 +10,22 @@ if TYPE_CHECKING:
     from .connection import Connection
 
 
+def _is_remote_abs_path(path_str: str) -> bool:
+    r"""Проверить, является ли путь абсолютным (POSIX ``/``, Windows ``C:\`` или UNC ``\\``)."""
+    if Path(path_str).is_absolute() or path_str.startswith(("/", "\\\\")):
+        return True
+    return len(path_str) >= 3 and path_str[1] == ":" and path_str[2] in ("/", "\\")
+
+
+def _join_remote_paths(base: str, rel: str) -> str:
+    """Склеить базовый и относительный путь с сохранением стиля разделителей (Windows или POSIX)."""
+    if "\\" in base or (len(base) >= 2 and base[1] == ":"):
+        clean_base = base.rstrip("\\/")
+        clean_rel = rel.lstrip("\\/").replace("/", "\\")
+        return f"{clean_base}\\{clean_rel}" if clean_rel else clean_base
+    return str(Path(base) / rel)
+
+
 class CwdContext:
     """Универсальный (sync + async) контекстный менеджер смены рабочей директории."""
 
@@ -20,8 +36,8 @@ class CwdContext:
 
     def __enter__(self) -> None:
         """Добавить директорию в стек."""
-        if self._stack and not Path(self._new_cwd).is_absolute():
-            resolved = str(Path(self._stack[-1]) / self._new_cwd)
+        if self._stack and not _is_remote_abs_path(self._new_cwd):
+            resolved = _join_remote_paths(self._stack[-1], self._new_cwd)
         else:
             resolved = self._new_cwd
         self._stack.append(resolved)
@@ -137,8 +153,8 @@ class ExecutionContext:
         """Разрешить путь с учётом активного ``current_cwd`` (для относительных путей)."""
         path_str = str(remote_path)
         active_cwd = self.current_cwd
-        if active_cwd and not Path(path_str).is_absolute():
-            return str(Path(active_cwd) / path_str)
+        if active_cwd and not _is_remote_abs_path(path_str):
+            return _join_remote_paths(active_cwd, path_str)
         return path_str
 
     def apply_to_kwargs(self, kwargs: dict[str, Any]) -> None:
@@ -148,8 +164,8 @@ class ExecutionContext:
             explicit_cwd = kwargs.get("cwd")
             if explicit_cwd is None:
                 kwargs["cwd"] = active_cwd
-            elif not Path(str(explicit_cwd)).is_absolute():
-                kwargs["cwd"] = str(Path(active_cwd) / str(explicit_cwd))
+            elif not _is_remote_abs_path(str(explicit_cwd)):
+                kwargs["cwd"] = _join_remote_paths(active_cwd, str(explicit_cwd))
 
         active_env = self.current_env
         if active_env:

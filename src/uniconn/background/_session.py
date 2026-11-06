@@ -62,10 +62,24 @@ class BackgroundSession:
         """Путь к PID-файлу фонового процесса на удалённом хосте."""
         return f"/tmp/uniconn_{self._session_id}.pid"
 
+    def _is_windows_backend(self) -> bool:
+        """Проверить, используется ли WindowsJobBackend или WinRM/WSMan-подключение."""
+        if self._backend is not None and self._backend.name == "windows_job":
+            return True
+        if self._backend_spec == "windows_job":
+            return True
+        t_name = getattr(self._connection, "transport_name", None)
+        if isinstance(t_name, str) and t_name in ("winrm", "wsman"):
+            return True
+        cfg = getattr(self._connection, "config", None)
+        cfg_t = getattr(cfg, "transport", None)
+        return isinstance(cfg_t, str) and cfg_t in ("winrm", "wsman")
+
     @property
     def script_path(self) -> str:
         """Путь к wrapper-скрипту на удалённом хосте."""
-        return f"/tmp/uniconn_{self._session_id}.sh"
+        ext = "ps1" if self._is_windows_backend() else "sh"
+        return f"/tmp/uniconn_{self._session_id}.{ext}"
 
     @property
     def connection(self) -> Connection:
@@ -74,7 +88,7 @@ class BackgroundSession:
 
     @property
     def backend_name(self) -> str:
-        """Имя активного или сконфигурированного бэкенда ('tmux', 'screen', 'nohup', 'auto')."""
+        """Имя активного или сконфигурированного бэкенда ('tmux', 'screen', 'nohup', 'windows_job', 'auto')."""
         if self._backend is not None:
             return self._backend.name
         return self._backend_spec
@@ -89,7 +103,7 @@ class BackgroundSession:
         """Создать и запустить фоновую сессию с логированием в файл.
 
         Порядок действий:
-        1. Определение стратегии бэкенда (``tmux``, ``screen`` или ``nohup``).
+        1. Определение стратегии бэкенда (``tmux``, ``screen``, ``nohup`` или ``windows_job``).
         2. Проверка, что сессия с таким именем ещё не запущена.
         3. Загрузка wrapper-скрипта (запись PID + команда + запись exit code).
         4. Делегирование запуска в ``backend.start_session(...)``.
@@ -109,23 +123,35 @@ class BackgroundSession:
                 f"Фоновая сессия {self._session_id!r} уже существует"
             )
 
-        # Wrapper-скрипт решает проблему экранирования кавычек, фиксирует PID
-        # оболочки и гарантированно записывает код возврата (включая SIGINT/SIGTERM) в exit-файл.
-        q_pid = shlex.quote(self.pid_file_path)
-        q_exit = shlex.quote(self.exit_file_path)
-        script = (
-            "#!/bin/sh\n"
-            f"echo $$ > {q_pid}\n"
-            f'trap "rc=\\$?; [ -f {q_exit} ] || echo \\$rc > {q_exit}" EXIT\n'
-            'trap "exit 130" INT\n'
-            'trap "exit 143" TERM\n'
-            f"{command}\n"
-            f"echo $? > {q_exit}\n"
-        )
-        write_result = await self._connection.run(
-            f"rm -f {shlex.quote(self.exit_file_path)} {shlex.quote(self.pid_file_path)} && "
-            f"printf '%s' {shlex.quote(script)} > {shlex.quote(self.script_path)}"
-        )
+        if self._is_windows_backend():
+            ps_exit = "'" + self.exit_file_path.replace("'", "''") + "'"
+            ps_pid = "'" + self.pid_file_path.replace("'", "''") + "'"
+            ps_script_path = "'" + self.script_path.replace("'", "''") + "'"
+            ps_cmd_escaped = "'" + command.replace("'", "''") + "'"
+            write_cmd = (
+                "if (-not (Test-Path '/tmp')) { New-Item -ItemType Directory -Path '/tmp' -Force | Out-Null }; "
+                f"Remove-Item -Path {ps_exit}, {ps_pid} -Force -ErrorAction SilentlyContinue; "
+                f"Set-Content -Path {ps_script_path} -Value {ps_cmd_escaped} -Encoding UTF8"
+            )
+            write_result = await self._connection.run(write_cmd)
+        else:
+            # Wrapper-скрипт решает проблему экранирования кавычек, фиксирует PID
+            # оболочки и гарантированно записывает код возврата (включая SIGINT/SIGTERM) в exit-файл.
+            q_pid = shlex.quote(self.pid_file_path)
+            q_exit = shlex.quote(self.exit_file_path)
+            script = (
+                "#!/bin/sh\n"
+                f"echo $$ > {q_pid}\n"
+                f'trap "rc=\\$?; [ -f {q_exit} ] || echo \\$rc > {q_exit}" EXIT\n'
+                'trap "exit 130" INT\n'
+                'trap "exit 143" TERM\n'
+                f"{command}\n"
+                f"echo $? > {q_exit}\n"
+            )
+            write_result = await self._connection.run(
+                f"rm -f {shlex.quote(self.exit_file_path)} {shlex.quote(self.pid_file_path)} && "
+                f"printf '%s' {shlex.quote(script)} > {shlex.quote(self.script_path)}"
+            )
         if not write_result.ok:
             raise BackgroundBackendError(
                 f"Не удалось записать wrapper-скрипт {self.script_path}: "
@@ -174,7 +200,12 @@ class BackgroundSession:
             Exit code команды или None, если команда ещё выполняется
 
         """
-        result = await self._connection.run(f"cat {shlex.quote(self.exit_file_path)}")
+        if self._is_windows_backend():
+            ps_exit = "'" + self.exit_file_path.replace("'", "''") + "'"
+            cmd = f"if (Test-Path {ps_exit}) {{ (Get-Content -Path {ps_exit} -Raw).Trim() }} else {{ exit 1 }}"
+            result = await self._connection.run(cmd)
+        else:
+            result = await self._connection.run(f"cat {shlex.quote(self.exit_file_path)}")
         if not result.ok:
             return None
         try:
@@ -193,10 +224,13 @@ class BackgroundSession:
         )
 
     async def send_signal(self, sig: int) -> None:
-        """Отправить произвольный POSIX-сигнал процессу фоновой сессии по PID."""
+        """Отправить произвольный сигнал процессу фоновой сессии по PID."""
         pid = await self.get_pid()
         if pid is not None:
-            await self._connection.run(f"kill -{sig} {pid}")
+            if self._is_windows_backend():
+                await self._connection.run(f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue")
+            else:
+                await self._connection.run(f"kill -{sig} {pid}")
         else:
             self._logger.warning(
                 f"Не удалось отправить сигнал {sig}: PID сессии {self._session_id} не найден"
@@ -230,13 +264,25 @@ class BackgroundSession:
 
     async def cleanup(self) -> None:
         """Удалить артефакты сессии: лог-файл, exit-файл, PID-файл, wrapper-скрипт."""
-        paths = " ".join(
-            shlex.quote(p)
-            for p in (
-                self._remote_log_path,
-                self.exit_file_path,
-                self.pid_file_path,
-                self.script_path,
+        if self._is_windows_backend():
+            ps_paths = ", ".join(
+                "'" + p.replace("'", "''") + "'"
+                for p in (
+                    self._remote_log_path,
+                    self.exit_file_path,
+                    self.pid_file_path,
+                    self.script_path,
+                )
             )
-        )
-        await self._connection.run(f"rm -f {paths}")
+            await self._connection.run(f"Remove-Item -Path {ps_paths} -Force -ErrorAction SilentlyContinue")
+        else:
+            paths = " ".join(
+                shlex.quote(p)
+                for p in (
+                    self._remote_log_path,
+                    self.exit_file_path,
+                    self.pid_file_path,
+                    self.script_path,
+                )
+            )
+            await self._connection.run(f"rm -f {paths}")

@@ -43,7 +43,8 @@ def _build_checksum_command(
     q_path = shlex.quote(path)
     if os_family and os_family.lower() == "windows":
         win_algo = algo.upper()
-        return f"certutil -hashfile {q_path} {win_algo}"
+        ps_q = "'" + path.replace("'", "''") + "'"
+        return f"certutil -hashfile {ps_q} {win_algo}"
 
     if algo == "sha256":
         return (
@@ -194,17 +195,22 @@ class DirectorySynchronizer:
         deleted: list[str] = []
         bytes_transferred = 0
 
+        def _join_sync_path(base: str, rel: str) -> str:
+            if not rel:
+                return base
+            if "\\" in base or (len(base) >= 2 and base[1] == ":"):
+                clean_b = base.rstrip("\\/")
+                clean_r = rel.lstrip("\\/").replace("/", "\\")
+                return f"{clean_b}\\{clean_r}"
+            return f"{base.rstrip('/')}/{rel.lstrip('/')}"
+
         if not is_dry:
             for rel_d in sorted(local_rel_dirs):
-                target_d = (
-                    f"{effective_remote.rstrip('/')}/{rel_d}"
-                    if rel_d
-                    else effective_remote
-                )
+                target_d = _join_sync_path(effective_remote, rel_d)
                 await transport.mkdir(target_d, parents=True, exist_ok=True)
 
         for rel_path, (full_local, l_size, l_mtime) in sorted(local_files.items()):
-            target_file = f"{effective_remote.rstrip('/')}/{rel_path}"
+            target_file = _join_sync_path(effective_remote, rel_path)
             needs_upload = True
             r_stat: FileStat | dict[str, Any] = {}
             if not is_dry or transport.is_connected:
@@ -257,11 +263,7 @@ class DirectorySynchronizer:
         if delete and (not is_dry or transport.is_connected):
 
             async def _walk_remote(rel_prefix: str) -> None:
-                cur_remote = (
-                    f"{effective_remote.rstrip('/')}/{rel_prefix}"
-                    if rel_prefix
-                    else effective_remote
-                )
+                cur_remote = _join_sync_path(effective_remote, rel_prefix)
                 try:
                     entries = await transport.listdir(cur_remote)
                 except (OSError, ExecutionError):
@@ -273,7 +275,7 @@ class DirectorySynchronizer:
                     entry_rel = f"{rel_prefix}/{entry}" if rel_prefix else entry
                     if self.is_excluded(entry_rel, entry, patterns, compiled_exclude):
                         continue
-                    entry_full = f"{effective_remote.rstrip('/')}/{entry_rel}"
+                    entry_full = _join_sync_path(effective_remote, entry_rel)
                     try:
                         info = await transport.stat(entry_full)
                     except (OSError, ExecutionError):
@@ -781,6 +783,27 @@ class FileOperationsService:
                 raise
             return
 
+        if self._conn.transport_name in ("winrm", "wsman"):
+            sep = "\\" if ("\\" in effective_path or ":" in effective_path) else "/"
+            trimmed = effective_path.rstrip("\\/")
+            parent_win = (trimmed.rsplit(sep, 1)[0] or ".") if sep in trimmed else "."
+            tmp_name = f".uniconn_tmp_{uuid.uuid4().hex[:12]}"
+            staged_remote = f"{parent_win}{sep}{tmp_name}"
+            q_staged = "'" + staged_remote.replace("'", "''") + "'"
+            q_dest = "'" + effective_path.replace("'", "''") + "'"
+            try:
+                await self._conn.transport.write_file(staged_remote, data, mode=mode)
+                await self._conn.run(
+                    f"Move-Item -LiteralPath {q_staged} -Destination {q_dest} -Force -ErrorAction Stop",
+                    raise_on_error=True,
+                    dry_run=False,
+                )
+            except Exception:
+                with contextlib.suppress(Exception):
+                    await self._conn.transport.remove_file(staged_remote)
+                raise
+            return
+
         parent_dir = posixpath.dirname(effective_path.rstrip("/")) or "."
         tmp_name = f".uniconn_tmp_{uuid.uuid4().hex[:12]}"
         staged_remote = f"/{tmp_name}" if parent_dir == "/" else f"{parent_dir}/{tmp_name}"
@@ -865,6 +888,8 @@ class FileOperationsService:
 
         cached_facts = getattr(self._conn, "_cached_facts", None)
         os_family = getattr(cached_facts, "os_family", None)
+        if not os_family and self._conn.transport_name in ("winrm", "wsman"):
+            os_family = "windows"
         cmd = _build_checksum_command(effective_path, algorithm, os_family=os_family)
         res = await self._conn.run(
             cmd,

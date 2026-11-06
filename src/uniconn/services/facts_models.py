@@ -244,6 +244,13 @@ WINDOWS_FACT_POWERSHELL_SCRIPT = (
     "$cs = Get-CimInstance Win32_ComputerSystem; "
     "$disks = Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | "
     "ForEach-Object { @{ device=$_.DeviceID; total=[int64]$_.Size; free=[int64]$_.FreeSpace; fstype=$_.FileSystem } }; "
+    "$nics = Get-CimInstance Win32_NetworkAdapterConfiguration "
+    "-Filter 'IPEnabled=True' -ErrorAction SilentlyContinue | "
+    "ForEach-Object { "
+    "$ips = @($_.IPAddress); "
+    "$v4 = @($ips | Where-Object { $_ -match '^\\d+\\.' }); "
+    "$v6 = @($ips | Where-Object { $_ -match ':' }); "
+    "@{ name=$_.Description; mac=$_.MACAddress; ipv4=$v4; ipv6=$v6; state='UP'; mtu=1500 } }; "
     "$uptime = [math]::Round(((Get-Date) - $os.LastBootUpTime).TotalSeconds, 1); "
     "@{ "
     "hostname=$env:COMPUTERNAME; "
@@ -254,7 +261,8 @@ WINDOWS_FACT_POWERSHELL_SCRIPT = (
     "mem_total=[int64]$cs.TotalPhysicalMemory; "
     "mem_avail=[int64]($os.FreePhysicalMemory * 1024); "
     "uptime=$uptime; "
-    "disks=@($disks) "
+    "disks=@($disks); "
+    "interfaces=@($nics) "
     '} | ConvertTo-Json -Compress"'
 )
 
@@ -679,6 +687,40 @@ def parse_windows_facts_output(
                 )
             )
 
+    raw_ifaces = payload.get("interfaces") or []
+    if isinstance(raw_ifaces, dict):
+        raw_ifaces = [raw_ifaces]
+
+    interfaces: list[NetworkInterface] = []
+    if isinstance(raw_ifaces, list):
+        for item in raw_ifaces:
+            if not isinstance(item, dict):
+                continue
+            if_name = str(item.get("name") or "").strip()
+            if not if_name:
+                continue
+            mac_addr = str(item.get("mac") or "").strip()
+            raw_v4 = item.get("ipv4") or []
+            if isinstance(raw_v4, str):
+                raw_v4 = [raw_v4]
+            raw_v6 = item.get("ipv6") or []
+            if isinstance(raw_v6, str):
+                raw_v6 = [raw_v6]
+            try:
+                mtu_val = max(0, int(item.get("mtu") or 1500))
+            except (ValueError, TypeError):
+                mtu_val = 1500
+            interfaces.append(
+                NetworkInterface(
+                    name=if_name,
+                    mac=mac_addr,
+                    ipv4=[str(x) for x in raw_v4 if x],
+                    ipv6=[str(x) for x in raw_v6 if x],
+                    state=str(item.get("state") or "UP").upper(),
+                    mtu=mtu_val,
+                )
+            )
+
     return HostFacts(
         os_family="Windows",
         distro=distro,
@@ -690,6 +732,7 @@ def parse_windows_facts_output(
         memory_total_bytes=mem_total,
         memory_available_bytes=mem_avail,
         disks=disks,
+        interfaces=interfaces,
     )
 
 

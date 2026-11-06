@@ -45,6 +45,11 @@ def test_optional_dependencies_contain_required_extras() -> None:
     assert "telnet" in extras
     assert any("telnetlib3" in dep for dep in extras["telnet"])
 
+    assert "winrm" in extras
+    assert any("pywinrm" in dep for dep in extras["winrm"])
+    assert "wsman" in extras
+    assert any("pywinrm" in dep for dep in extras["wsman"])
+
     assert "cli" in extras
     assert any("cyclopts" in dep for dep in extras["cli"])
     assert any("rich" in dep for dep in extras["cli"])
@@ -53,7 +58,7 @@ def test_optional_dependencies_contain_required_extras() -> None:
     assert any("jinja2" in dep for dep in extras["templates"])
 
     assert "all" in extras
-    assert extras["all"] == ["uniconn[bmc,serial,telnet,cli,templates]"]
+    assert extras["all"] == ["uniconn[bmc,serial,telnet,winrm,cli,templates]"]
 
 
 def test_telnet_transport_missing_dependency_hint() -> None:
@@ -64,6 +69,16 @@ def test_telnet_transport_missing_dependency_hint() -> None:
         cfg = ConnectionConfig(transport="telnet", host="localhost")
         with pytest.raises(ImportError, match=r"uniconn\[telnet\]"):
             TelnetTransport(cfg)
+
+
+def test_winrm_transport_missing_dependency_hint() -> None:
+    """При отсутствии pywinrm выдаётся понятный ImportError с подсказкой uniconn[winrm]."""
+    with patch("uniconn.transports._winrm.winrm", None):
+        from uniconn.transports._winrm import WinRMTransport
+
+        cfg = ConnectionConfig(transport="winrm", host="win-srv", username="Administrator", password="pwd")
+        with pytest.raises(ImportError, match=r"uniconn\[winrm\]"):
+            WinRMTransport(cfg)
 
 
 def test_serial_transport_missing_dependency_hint() -> None:

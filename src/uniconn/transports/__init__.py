@@ -16,6 +16,7 @@ from ._docker import DockerTransport, PodmanTransport
 from ._kubectl import KubectlTransport
 from ._local import LocalTransport
 from ._serial import SerialPortInfo, SerialTransport, list_serial_ports
+from ._winrm import WinRMTransport
 from .base import BaseTransport
 from .bmc import IPMITransport, RedfishTransport
 from .replay import (
@@ -81,6 +82,7 @@ __all__ = [
     "SerialTransport",
     "ShellDialogStep",
     "SyncCassetteContext",
+    "WinRMTransport",
     "ZmodemSubprocessAdapter",
     "compute_checksum8",
     "compute_crc16",

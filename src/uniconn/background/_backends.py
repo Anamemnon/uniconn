@@ -520,6 +520,7 @@ class WindowsJobBackend:
         encoded_inner = self._ps_quote(inner_cmd)
         cmd = (
             'powershell -NoProfile -NonInteractive -Command "'
+            "if (-not (Test-Path '/tmp')) { New-Item -ItemType Directory -Path '/tmp' -Force | Out-Null }; "
             f"$p = Start-Process -FilePath 'powershell' "
             f"-ArgumentList @('-NoProfile', '-NonInteractive', '-Command', {encoded_inner}) "
             "-WindowStyle Hidden -PassThru; "
@@ -673,18 +674,30 @@ def get_backend_by_name(name: str) -> BackgroundBackendStrategy:
     return strategy
 
 
+def _is_windows_remote_conn(conn: Connection) -> bool:
+    """Проверить, является ли соединение WinRM/WSMan-подключением к Windows."""
+    t_name = getattr(conn, "transport_name", None)
+    if isinstance(t_name, str) and t_name in ("winrm", "wsman"):
+        return True
+    cfg = getattr(conn, "config", None)
+    cfg_t = getattr(cfg, "transport", None)
+    return isinstance(cfg_t, str) and cfg_t in ("winrm", "wsman")
+
+
 async def resolve_backend(
     conn: Connection,
     backend: BackgroundBackendType = "auto",
 ) -> BackgroundBackendStrategy:
     """Определить и проверить стратегию фонового бэкенда на целевом хосте.
 
-    В режиме ``"auto"`` за один SSH/локальный запрос проверяется цепочка
-    ``tmux -> screen -> nohup``. Если явно запрошен ``"tmux"`` или ``"screen"``,
-    проверяется наличие соответствующего бинарника, и при его отсутствии
-    выбрасывается ``BackgroundBackendError``.
+    В режиме ``"auto"`` для WinRM/WSMan выбирается ``windows_job``, а для POSIX
+    за один SSH/локальный запрос проверяется цепочка ``tmux -> screen -> nohup``.
+    Если явно запрошен ``"tmux"`` или ``"screen"``, проверяется наличие
+    соответствующего бинарника, и при его отсутствии выбрасывается ``BackgroundBackendError``.
     """
     if backend == "auto":
+        if _is_windows_remote_conn(conn):
+            return _BACKENDS["windows_job"]
         probe_cmd = (
             "if command -v tmux >/dev/null 2>&1; then echo tmux; "
             "elif command -v screen >/dev/null 2>&1; then echo screen; "

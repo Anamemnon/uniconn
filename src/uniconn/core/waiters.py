@@ -149,13 +149,23 @@ async def wait_for_port(
             except Exception:
                 is_open = False
         else:
-            q_host = shlex.quote(target_host)
-            probe_cmd = (
-                f"python3 -c 'import socket,sys; s=socket.socket(); s.settimeout(1.5); "
-                f"sys.exit(0 if s.connect_ex(({target_host!r},{port_num}))==0 else 1)' 2>/dev/null "
-                f"|| nc -z -w 2 {q_host} {port_num} 2>/dev/null "
-                f"|| (echo >/dev/tcp/{q_host}/{port_num}) >/dev/null 2>&1"
-            )
+            if conn.transport_name in ("winrm", "wsman"):
+                ps_host = "'" + target_host.replace("'", "''") + "'"
+                probe_cmd = (
+                    "$c = [System.Net.Sockets.TcpClient]::new(); "
+                    "try { "
+                    f"$ar = $c.BeginConnect({ps_host}, {port_num}, $null, $null); "
+                    "if ($ar.AsyncWaitHandle.WaitOne(1500, $false) -and $c.Connected) { exit 0 } else { exit 1 } "
+                    "} catch { exit 1 } finally { $c.Close() }"
+                )
+            else:
+                q_host = shlex.quote(target_host)
+                probe_cmd = (
+                    f"python3 -c 'import socket,sys; s=socket.socket(); s.settimeout(1.5); "
+                    f"sys.exit(0 if s.connect_ex(({target_host!r},{port_num}))==0 else 1)' 2>/dev/null "
+                    f"|| nc -z -w 2 {q_host} {port_num} 2>/dev/null "
+                    f"|| (echo >/dev/tcp/{q_host}/{port_num}) >/dev/null 2>&1"
+                )
             with contextlib.suppress(Exception):
                 res = await conn.run(probe_cmd, raise_on_error=False, dry_run=False)
                 is_open = res.ok

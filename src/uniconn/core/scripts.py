@@ -37,27 +37,45 @@ async def run_script(
         raise FileNotFoundError(f"Local script not found: {local_path}")
 
     effective_dry_run = conn.dry_run if dry_run is None else dry_run
+    is_winrm = conn.transport_name in ("winrm", "wsman")
     async with conn.temp_dir() as remote_dir:
         if conn.transport_name == "local" and not effective_dry_run:
             remote_script = str(Path(remote_dir) / script_path.name)
+        elif is_winrm and ("\\" in remote_dir or ":" in remote_dir):
+            clean_dir = remote_dir.rstrip("\\/")
+            remote_script = f"{clean_dir}\\{script_path.name}"
         else:
             remote_script = f"{remote_dir.rstrip('/')}/{script_path.name}"
         if not effective_dry_run:
             await conn.files.upload(str(script_path), remote_script)
             await conn.files.chmod(remote_script, 0o700)
 
-        if interpreter:
-            cmd_parts: list[str] = [*shlex.split(interpreter), remote_script]
-        else:
-            cmd_parts = [remote_script]
+        if is_winrm:
+            def _ps_q(val: str) -> str:
+                return "'" + val.replace("'", "''") + "'"
 
-        if args:
-            cmd_parts.extend(str(a) for a in args)
+            arg_tokens = [_ps_q(str(a)) for a in (args or ())]
+            if interpreter:
+                interp_parts = [_ps_q(p) for p in shlex.split(interpreter)]
+                exec_target: str | list[str] = " ".join(
+                    ["&", *interp_parts, _ps_q(remote_script), *arg_tokens]
+                )
+            else:
+                exec_target = " ".join(["&", _ps_q(remote_script), *arg_tokens])
+        else:
+            if interpreter:
+                cmd_parts: list[str] = [*shlex.split(interpreter), remote_script]
+            else:
+                cmd_parts = [remote_script]
+
+            if args:
+                cmd_parts.extend(str(a) for a in args)
+            exec_target = cmd_parts
 
         if env:
             with conn.env(dict(env)):
                 return await conn.run(
-                    cmd_parts,
+                    exec_target,
                     timeout=timeout,
                     raise_on_error=raise_on_error,
                     sudo=sudo,
@@ -67,7 +85,7 @@ async def run_script(
                     dry_run=dry_run,
                 )
         return await conn.run(
-            cmd_parts,
+            exec_target,
             timeout=timeout,
             raise_on_error=raise_on_error,
             sudo=sudo,

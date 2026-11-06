@@ -8,6 +8,8 @@
     - local://[?option=value]
     - ipmi://[user[:password]@]host[:port]
     - redfish://[user[:password]@]host[:port][?verify_ssl=false&system_id=1]
+    - winrm://[user[:password]@]host[:5985][?transport=ntlm&server_cert_validation=ignore]
+    - wsman://[user[:password]@]host[:5985][?transport=kerberos&ssl=true]
     - docker://[user@]container[/workdir]
     - podman://[user@]container[/workdir]
     - kubectl://[namespace/]pod[?container=name&context=ctx]
@@ -38,6 +40,8 @@ class URIParser:
         "telnet": 23,
         "ipmi": 623,
         "redfish": 443,
+        "winrm": 5985,
+        "wsman": 5985,
     }
 
     @classmethod
@@ -185,6 +189,12 @@ class URIParser:
                 and str(options.get("scheme", "https")).lower() == "http"
             ):
                 port = 80
+            elif transport in ("winrm", "wsman") and (
+                bool(options.get("ssl", False))
+                or str(options.get("scheme", "")).lower() == "https"
+                or str(options.get("transport", "")).lower() == "ssl"
+            ):
+                port = 5986
             else:
                 port = cls.DEFAULT_PORTS[transport]
         key_file = str(options.pop("key_file")) if "key_file" in options else None

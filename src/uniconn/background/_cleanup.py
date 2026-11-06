@@ -232,6 +232,18 @@ rm -f "$0"
         if self._stale_ttl_seconds is not None:
             payload["stale_ttl_seconds"] = self._stale_ttl_seconds
         sentinel = json.dumps(payload)
+        t_name = getattr(connection, "transport_name", None)
+        cfg_t = getattr(getattr(connection, "config", None), "transport", None)
+        if (isinstance(t_name, str) and t_name in ("winrm", "wsman")) or (
+            isinstance(cfg_t, str) and cfg_t in ("winrm", "wsman")
+        ):
+            ps_sentinel_path = "'" + self.sentinel_path.replace("'", "''") + "'"
+            ps_sentinel_val = "'" + sentinel.replace("'", "''") + "'"
+            await connection.run(
+                "if (-not (Test-Path '/tmp')) { New-Item -ItemType Directory -Path '/tmp' -Force | Out-Null }; "
+                f"Set-Content -Path {ps_sentinel_path} -Value {ps_sentinel_val} -Encoding UTF8 -NoNewline"
+            )
+            return
         q_sentinel_path = shlex.quote(self.sentinel_path)
         q_cleanup_path = shlex.quote(self.cleanup_script_path)
         await connection.run(
