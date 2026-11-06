@@ -71,9 +71,18 @@ RAM_STRESS_DIAGNOSTIC_DICT: dict[str, Any] = {
             "vmstat_counters": "/proc/vmstat",
         },
     },
+    "watch_rules": [
+        "kernel_panic",
+        "hardware_errors",
+    ],
     "streams": [
         {"name": "dmesg_live", "command": "dmesg -w", "timestamp_lines": True},
-        {"name": "vmstat_live", "command": "vmstat -SM 1", "timestamp_lines": True},
+        {
+            "name": "vmstat_live",
+            "command": "vmstat -SM 1",
+            "timestamp_lines": True,
+            "max_silence_seconds": 10.0,
+        },
         {
             "name": "memavailable_poll",
             "command": "grep -E 'MemAvailable|Committed_AS|AnonPages' /proc/meminfo",

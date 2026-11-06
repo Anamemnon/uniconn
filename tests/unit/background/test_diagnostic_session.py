@@ -547,3 +547,159 @@ class TestDiagnosticSessionLifecycle:
             for line in lines:
                 assert ts_pattern.match(line), f"Line missing ISO-8601 timestamp: {line!r}"
 
+    async def test_diagnostic_session_watch_rules_timeline_and_abort_on_exit(
+        self, tmp_path: Path
+    ) -> None:
+        """DiagnosticSession с watch_rules записывает timeline.jsonl, упаковывает архив и выбрасывает HardwareFaultDetectedError."""
+        import pytest
+
+        from uniconn import HardwareFaultDetectedError, LogMatchEvent, StallEvent
+
+        conn = Connection.from_uri("local://")
+
+        async def fake_run(cmd: Any, **kwargs: Any) -> Result:
+            cmd_str = cmd if isinstance(cmd, str) else " ".join(cmd)
+            if "===UNICONN_SECTION:UNAME===" in cmd_str:
+                return _ok_res(SAMPLE_FACTS_STDOUT, cmd_str)
+            return _ok_res("", cmd_str)
+
+        async def faulty_stream(
+            command: str, timeout: float | None = None, **kwargs: Any
+        ) -> AsyncIterator[str]:
+            if "ttyS0" in command:
+                yield "U-Boot 2024.04\n"
+                await asyncio.sleep(5.0)
+                return
+            yield "[ 10.001] eCPRI link 0 up\n"
+            yield "[ 10.002] PA temp=62C\n"
+            yield "[ 10.003] PLL unlocked on BBU clock domain 0\n"
+            await asyncio.sleep(5.0)
+
+        conn.run = AsyncMock(side_effect=fake_run)  # type: ignore[method-assign]
+        conn.stream = faulty_stream  # type: ignore[method-assign]
+        conn.ping = AsyncMock(  # type: ignore[method-assign]
+            return_value=PingResult(
+                host="node-01", alive=True, latency_ms=0.5, transport="local"
+            )
+        )
+
+        matches_seen: list[LogMatchEvent] = []
+        stalls_seen: list[StallEvent] = []
+        archive_path = tmp_path / "fault_bundle.tar.gz"
+
+        with pytest.raises(HardwareFaultDetectedError) as exc_info:
+            async with conn.diagnostic_session(
+                streams=[
+                    {"name": "bbu_dmesg", "command": "dmesg -w"},
+                    {
+                        "name": "uart_mon",
+                        "command": "cat /dev/ttyS0",
+                        "max_silence_seconds": 0.04,
+                    },
+                ],
+                watch_rules=["telecom_bs"],
+                on_match=lambda m: matches_seen.append(m),
+                on_stall=lambda s: stalls_seen.append(s),
+                local_dir=tmp_path / "fault_work",
+                archive_path=archive_path,
+                fsync_realtime=False,
+            ) as diag:
+                for _ in range(100):
+                    if len(diag.matches) >= 1 and len(diag.stalled_streams) >= 1:
+                        break
+                    await asyncio.sleep(0.02)
+
+        assert exc_info.value.match is not None
+        assert exc_info.value.match.rule_name == "pll_unlock"
+        assert len(matches_seen) == 1
+        assert len(stalls_seen) == 1
+        assert diag.result is not None
+        assert diag.result.aborted_by_rule == "pll_unlock"
+        assert diag.result.stalled_streams == ["uart_mon"]
+        assert diag.result.timeline_file is not None
+        assert archive_path.exists()
+
+        with tarfile.open(archive_path, "r:gz") as tf:
+            names = set(tf.getnames())
+            assert "timeline.jsonl" in names
+            assert "manifest.json" in names
+            manifest_f = tf.extractfile("manifest.json")
+            timeline_f = tf.extractfile("timeline.jsonl")
+            assert manifest_f is not None and timeline_f is not None
+            manifest = json.loads(manifest_f.read().decode("utf-8"))
+            assert manifest["aborted_by_rule"] == "pll_unlock"
+            assert manifest["stalled_streams"] == ["uart_mon"]
+            assert len(manifest["matches"]) == 1
+            assert manifest["matches"][0]["context_before"] == [
+                "[ 10.001] eCPRI link 0 up",
+                "[ 10.002] PA temp=62C",
+            ]
+            timeline_entries = [
+                json.loads(line)
+                for line in timeline_f.read().decode("utf-8").splitlines()
+            ]
+            kinds = {e["kind"] for e in timeline_entries}
+            assert {"line", "match", "stall"}.issubset(kinds)
+
+    async def test_diagnostic_session_check_abort_inside_workload(
+        self, tmp_path: Path
+    ) -> None:
+        """Вызов diag.check_abort() внутри блока сессии немедленно выбрасывает HardwareFaultDetectedError и сохраняет архив."""
+        import pytest
+
+        from uniconn import HardwareFaultDetectedError
+
+        conn = Connection.from_uri("local://")
+
+        async def fake_run(cmd: Any, **kwargs: Any) -> Result:
+            return _ok_res(SAMPLE_FACTS_STDOUT, str(cmd))
+
+        async def edac_stream(
+            command: str, timeout: float | None = None, **kwargs: Any
+        ) -> AsyncIterator[str]:
+            yield "EDAC MC0: 1 UE memory read error on CPU_SrcID#0\n"
+
+        conn.run = AsyncMock(side_effect=fake_run)  # type: ignore[method-assign]
+        conn.stream = edac_stream  # type: ignore[method-assign]
+        conn.ping = AsyncMock(  # type: ignore[method-assign]
+            return_value=PingResult(
+                host="node-01", alive=True, latency_ms=0.5, transport="local"
+            )
+        )
+
+        archive_path = tmp_path / "early_abort.tar.gz"
+        workload_aborted_early = False
+
+        with pytest.raises(HardwareFaultDetectedError):
+            async with conn.diagnostic_session(
+                streams=["dmesg -w"],
+                watch_rules=["hardware_errors"],
+                local_dir=tmp_path / "early_work",
+                archive_path=archive_path,
+                fsync_realtime=False,
+            ) as diag:
+                for _ in range(100):
+                    if diag.matches:
+                        break
+                    await asyncio.sleep(0.01)
+                diag.check_abort()
+                workload_aborted_early = True
+
+        assert workload_aborted_early is False
+        assert archive_path.exists()
+        assert diag.result is not None
+        assert diag.result.aborted_by_rule == "edac_uncorrected"
+        assert not any(
+            err.startswith("workload_exception:") for err in diag.result.errors
+        )
+
+        sct_yaml = (
+            Path(__file__).resolve().parents[3]
+            / "examples"
+            / "telecom_bs_sct_diagnostics.yaml"
+        )
+        sct_cfg = DiagnosticConfig.from_file(sct_yaml)
+        assert len(sct_cfg.watch_rules) >= 15
+        assert any(s.max_silence_seconds == 15.0 for s in sct_cfg.streams)
+
+

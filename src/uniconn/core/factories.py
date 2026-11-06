@@ -27,7 +27,12 @@ from .pipeline import (
 from .resilience import CircuitBreaker, RateLimiter
 
 if TYPE_CHECKING:
-    from ..background._diagnostic import DiagnosticConfig, DiagnosticSession, StreamSourceSpec
+    from ..background._diagnostic import (
+        DiagnosticConfig,
+        DiagnosticSession,
+        StreamSourceSpec,
+    )
+    from ..background._log_pipeline import LogWatchRule, MatchCallback, StallCallback
     from ..services.facts_models import FactSpec
     from ..transports.replay import CassetteContext
     from .connection import Connection
@@ -401,6 +406,13 @@ def open_diagnostic_session(
     *,
     spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
     streams: Sequence[StreamSourceSpec | Mapping[str, Any] | str] | None = None,
+    watch_rules: Sequence[LogWatchRule | Mapping[str, Any] | str]
+    | Mapping[str, Any]
+    | str
+    | None = None,
+    on_match: MatchCallback | None = None,
+    on_stall: StallCallback | None = None,
+    enable_timeline: bool | None = None,
     local_dir: str | Path | None = None,
     archive_path: str | Path | None = None,
     archive_format: Literal["tar.gz", "zip", "none"] | None = None,
@@ -418,6 +430,10 @@ def open_diagnostic_session(
         config=config,
         spec=spec,
         streams=streams,
+        watch_rules=watch_rules,
+        on_match=on_match,
+        on_stall=on_stall,
+        enable_timeline=enable_timeline,
         local_dir=local_dir,
         archive_path=archive_path,
         archive_format=archive_format,

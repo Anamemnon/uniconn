@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
 from ..background._diagnostic import DiagnosticResult, DiagnosticSession
+from ..background._models import LogMatchEvent, StallEvent
 from ..core.bridge import EventLoopPortal, SyncProxyMixin, sync_context, sync_method
 from ..pool.services import PoolFileOperationsService, PoolStateManagementService
 from ..services.facts_models import FactsDiffReport, HostFacts
@@ -203,6 +204,25 @@ class SyncDiagnosticSession(SyncProxyMixin):
     def errors(self) -> list[str]:
         """Список зафиксированных нефатальных ошибок сессии."""
         return self._async_session.errors
+
+    @property
+    def matches(self) -> list[LogMatchEvent]:
+        """Список зафиксированных совпадений по правилам ``watch_rules``."""
+        return self._async_session.matches
+
+    @property
+    def stalled_streams(self) -> list[str]:
+        """Список имён потоков, в которых сработал детектор зависания ``max_silence_seconds``."""
+        return self._async_session.stalled_streams
+
+    @property
+    def stall_events(self) -> list[StallEvent]:
+        """Список событий зависания потоков ``StallEvent``."""
+        return self._async_session.stall_events
+
+    def check_abort(self) -> None:
+        """Выбросить ``HardwareFaultDetectedError``, если сработало правило с ``abort_on_match=True``."""
+        self._async_session.check_abort()
 
     snapshot = sync_method(DiagnosticSession.snapshot)
     emit_custom_log = sync_method(DiagnosticSession.emit_custom_log)

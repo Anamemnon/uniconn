@@ -26,20 +26,38 @@ from ._diagnostic import (
 )
 from ._log_collector import BackgroundLogCollector
 from ._log_pipeline import (
+    BUILTIN_WATCH_RULES,
+    HARDWARE_ERROR_RULES,
+    KERNEL_PANIC_RULES,
+    TELECOM_BS_RULES,
     ArchiveHandler,
     DirectStreamCollector,
     ForwardHandler,
     LocalFileHandler,
     LogHandler,
     LogPipeline,
+    LogWatchRule,
     NullHandler,
+    PatternTriggerHandler,
     StreamHandler,
+    TimelineHandler,
+    resolve_watch_rules,
 )
-from ._models import BackgroundResult, LogEvent, StatusEvent
+from ._models import (
+    BackgroundResult,
+    LogEvent,
+    LogMatchEvent,
+    StallEvent,
+    StatusEvent,
+)
 from ._pool import BackgroundPool
 from ._session import BackgroundSession
 
 __all__ = [
+    "BUILTIN_WATCH_RULES",
+    "HARDWARE_ERROR_RULES",
+    "KERNEL_PANIC_RULES",
+    "TELECOM_BS_RULES",
     "ArchiveHandler",
     "BackgroundBackendStrategy",
     "BackgroundBackendType",
@@ -58,16 +76,22 @@ __all__ = [
     "LogConfig",
     "LogEvent",
     "LogHandler",
+    "LogMatchEvent",
     "LogPipeline",
     "LogRule",
+    "LogWatchRule",
     "NohupBackend",
     "NullHandler",
+    "PatternTriggerHandler",
     "ScreenBackend",
+    "StallEvent",
     "StatusEvent",
     "StreamHandler",
     "StreamSourceSpec",
+    "TimelineHandler",
     "TmuxBackend",
     "WindowsJobBackend",
     "get_backend_by_name",
     "resolve_backend",
+    "resolve_watch_rules",
 ]

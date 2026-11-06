@@ -30,7 +30,12 @@ facts:
       output_mode: "json"
       timeout: 30.0
 
-# 2. Рантайм-логи (стримятся в реальном времени на хост пользователя с os.fsync() каждой строки)
+# 2. Реактивные правила детекции аппаратных и ядерных сбоев во время теста
+watch_rules:
+  - "kernel_panic"
+  - "hardware_errors"
+
+# 3. Рантайм-логи (стримятся в реальном времени на хост пользователя с os.fsync() каждой строки)
 streams:
   - name: "kernel_dmesg"
     command: "dmesg -w"
@@ -39,10 +44,12 @@ streams:
   - name: "nvme_iostat"
     command: "iostat -xz 1"
     timestamp_lines: true
+    max_silence_seconds: 10.0
 
   - name: "system_vmstat"
     command: "vmstat 1"
     timestamp_lines: true
+    max_silence_seconds: 10.0
 
   # Периодический опрос одноразовой команды каждые 5 секунд во время выполнения нагрузки
   - name: "nvme_smart_poll"

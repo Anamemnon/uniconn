@@ -22,10 +22,10 @@
 - **Transport Protocols, BMC, Container/K8s, Serial Modem, Replay/Cassette & Helpers (`uniconn.transports` / `uniconn.pytest_plugin`)**: `BaseTransport`, `CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `ShellStdinProtocol`, `ShellStdoutProtocol`, `TunnelCapableTransport`, `require_capability`, `supports_capability`, `SerialTransport`, `SerialPortInfo`, `list_serial_ports`, `AsyncXmodemSender`, `AsyncXmodemReceiver`, `AsyncYmodemSender`, `AsyncYmodemReceiver`, `ZmodemSubprocessAdapter`, `compute_crc16`, `compute_checksum8`, `IPMITransport`, `RedfishTransport`, `DockerTransport`, `PodmanTransport`, `KubectlTransport`, `LocalTransport`, `ReplayTransport`, `CassetteTransportProxy`, `Cassette`, `CassetteDiffReport`, `InteractionDiff`, `CassetteContext`, `SyncCassetteContext`, `UniconnCassetteFixture`, `RecordMode`, `RecordedExecInteraction`, `RecordedStreamInteraction`, `RecordedFsInteraction`, `RecordedShellInteraction`, `ShellDialogStep`, `ReplayShellProcess`, `normalize_temp_paths`, `OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`
 - **Pools**: `ConnectionPool`, `SyncConnectionPool`, `PoolFileOperationsService`, `PoolStateManagementService`, `SyncPoolFileOperationsService`, `SyncPoolStateManagementService`, `PoolStreamMultiplexer`, `SSHSessionPool`
 - **Interactive PTY Shell (`uniconn.shell`)**: `ShellSession`, `SyncShellSession`, `PosixMarkerProtocol`, `ExpectStateMachine`
-- **Background Diagnostics, Streaming Logs & Pluggable Backends (`uniconn.background`)**: `DiagnosticSession`, `SyncDiagnosticSession`, `DiagnosticConfig`, `DiagnosticResult`, `StreamSourceSpec`, `DirectStreamCollector`, `LogPipeline`, `LogHandler`, `LocalFileHandler`, `ForwardHandler`, `StreamHandler`, `ArchiveHandler`, `BackgroundPool`, `BackgroundPoolConfig`, `BackgroundSession`, `BackgroundResult`, `BackgroundCleanupManager`, `BackgroundLogCollector`, `BackgroundBackendStrategy`, `TmuxBackend`, `ScreenBackend`, `NohupBackend`, `WindowsJobBackend`, `resolve_backend`, `LogConfig`
+- **Background Diagnostics, Streaming Logs & Pluggable Backends (`uniconn.background`)**: `DiagnosticSession`, `SyncDiagnosticSession`, `DiagnosticConfig`, `DiagnosticResult`, `StreamSourceSpec`, `DirectStreamCollector`, `LogPipeline`, `LogHandler`, `LocalFileHandler`, `ForwardHandler`, `StreamHandler`, `ArchiveHandler`, `TimelineHandler`, `PatternTriggerHandler`, `LogWatchRule`, `LogMatchEvent`, `StallEvent`, `BUILTIN_WATCH_RULES`, `KERNEL_PANIC_RULES`, `HARDWARE_ERROR_RULES`, `TELECOM_BS_RULES`, `resolve_watch_rules`, `BackgroundPool`, `BackgroundPoolConfig`, `BackgroundSession`, `BackgroundResult`, `BackgroundCleanupManager`, `BackgroundLogCollector`, `BackgroundBackendStrategy`, `TmuxBackend`, `ScreenBackend`, `NohupBackend`, `WindowsJobBackend`, `resolve_backend`, `LogConfig`
 - **Hooks & OpenTelemetry (`uniconn.hooks` / `uniconn.telemetry`)**: `audit_log_hook`, `allowlist_hook`, `blocklist_hook`, `MetricsCollector`, `metrics_collector_hook`, `structured_log_hook`, `OtelTracingHook`, `otel_tracing_hook`, `InMemoryTracer`, `RecordedSpan`, `SpanProtocol`, `TracerProtocol`, `get_current_span`
 - **Logging (`structlog` + `stdlib`)**: `configure_logging`, `get_struct_logger`, `log_context`, `bind_log_context`, `unbind_log_context`, `clear_log_context`, `get_log_context`, `get_logger`, `setup_file_logging`, `SecretMaskingFilter`
-- **Exceptions**: `UniconnError`, `ConfigurationError`, `ConnectionError`, `CircuitOpenError`, `BatchAbortedError`, `CassetteError`, `CassetteMissError`, `AuthenticationError`, `ExecutionError`, `FileTransferError`, `ModemTransferError`, `ModemHandshakeTimeoutError`, `ModemCancelledError`, `ModemMaxRetriesError`, `ModemProtocolError`, `ModemChecksumMismatchError`, `TimeoutError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `BackgroundError`, `BackgroundBackendError`, `BackgroundSessionExistsError`, `BackgroundPoolFullError`
+- **Exceptions**: `UniconnError`, `ConfigurationError`, `ConnectionError`, `CircuitOpenError`, `BatchAbortedError`, `CassetteError`, `CassetteMissError`, `AuthenticationError`, `ExecutionError`, `FileTransferError`, `ModemTransferError`, `ModemHandshakeTimeoutError`, `ModemCancelledError`, `ModemMaxRetriesError`, `ModemProtocolError`, `ModemChecksumMismatchError`, `TimeoutError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `BackgroundError`, `BackgroundBackendError`, `BackgroundSessionExistsError`, `BackgroundPoolFullError`, `HardwareFaultDetectedError`
 
 ## URI Schemes & Secret Resolution (`SecretResolver`)
 - `ssh://[user[:password]@]host[:22][?key_file=...&password=env://SSH_PASS&known_hosts=strict&keepalive=30&ssh_config=true&use_agent=true&proxy=jump1,jump2&proxy_command=...&rate_limit=10&circuit_breaker_threshold=5&circuit_breaker_timeout=30]`
@@ -84,7 +84,7 @@ script_res: Result = await conn.run_script(
     script_path: str | Path,
     args: Sequence[str] = (),
     *,
-    interpreter: str | None,
+    interpreter: str = None,
     sudo: bool = False,
     timeout: float | None = None,
     raise_on_error: bool = False,
@@ -125,12 +125,18 @@ facts: HostFacts = await conn.gather_facts(
     artifact_dir: str | Path | None = None,
     ttl: float | None = None,
 )
-# StreamSourceSpec(name, command, mode="auto", restart_on_exit=False, interval=None, timestamp_lines=False, timeout=None)
+# StreamSourceSpec(name, command, mode="auto", restart_on_exit=False, interval=None, timestamp_lines=False, timeout=None, max_silence_seconds=None)
+# LogWatchRule(name, pattern, severity="critical", abort_on_match=False, context_lines=5)
+# Built-in watch rule presets: "kernel_panic", "hardware_errors", "telecom_bs", "all"
 async with conn.diagnostic_session(
     config: DiagnosticConfig | Mapping[str, Any] | str | Path | None = None,  # YAML/JSON/TOML path, dict, or DiagnosticConfig
     *,
     spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
     streams: Sequence[StreamSourceSpec | Mapping[str, Any] | str] | None = None,
+    watch_rules: Sequence[LogWatchRule | Mapping[str, Any] | str] | Mapping[str, Any] | None = None,
+    on_match: Callable[[LogMatchEvent], Any] | None = None,
+    on_stall: Callable[[StallEvent], Any] | None = None,
+    enable_timeline: bool | None = True,
     local_dir: str | Path = "./diagnostics",
     archive_path: str | Path | None = None,
     archive_format: Literal["tar.gz", "zip", "none"] = "tar.gz",
@@ -139,6 +145,7 @@ async with conn.diagnostic_session(
     fsync_realtime: bool = True,
 ) as diag:
     await diag.emit_custom_log("stress", "Starting stress-ng workload")
+    diag.check_abort()  # raises HardwareFaultDetectedError if any abort_on_match=True rule fired
     await diag.snapshot("mid_load")
 
 # Idempotent State Management & Unified Diff via `conn.state` (v0.8.0 / v0.12.0 / v0.15.0)

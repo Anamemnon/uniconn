@@ -322,3 +322,209 @@ class TestLocalFileHandlerRotationAndWindowsJobBackend:
         await backend.send_interrupt(conn, "s1", "C:\\tmp\\s1.pid", "C:\\tmp\\s1.exit")
         await backend.terminate(conn, "s1", "C:\\tmp\\s1.pid")
 
+
+class TestPatternTriggerAndTimelineAndWatchdog:
+    """Тесты PatternTriggerHandler, LogWatchRule, BUILTIN_WATCH_RULES, TimelineHandler и Watchdog."""
+
+    async def test_pattern_trigger_ring_buffer_context_and_abort(
+        self, tmp_path: Path
+    ) -> None:
+        import json
+
+        import pytest
+
+        from uniconn import (
+            BUILTIN_WATCH_RULES,
+            ConfigurationError,
+            HardwareFaultDetectedError,
+            LogMatchEvent,
+            LogWatchRule,
+            PatternTriggerHandler,
+            TimelineHandler,
+            resolve_watch_rules,
+        )
+
+        with pytest.raises(ConfigurationError):
+            LogWatchRule(name="bad", pattern="[unclosed")
+
+        preset_rules = resolve_watch_rules(["kernel_panic", "telecom_bs"])
+        assert len(preset_rules) == (
+            len(BUILTIN_WATCH_RULES["kernel_panic"])
+            + len(BUILTIN_WATCH_RULES["telecom_bs"])
+        )
+
+        matched_events: list[LogMatchEvent] = []
+        timeline = TimelineHandler(tmp_path / "timeline.jsonl", fsync=False)
+        trigger = PatternTriggerHandler(
+            rules=[
+                LogWatchRule(
+                    name="aer_fatal",
+                    pattern=r"AER:\s*Uncorrected",
+                    severity="critical",
+                    abort_on_match=True,
+                    context_lines=2,
+                ),
+                {"name": "temp_warn", "pattern": r"temp=\d+C", "severity": "warning"},
+            ],
+            on_match=lambda ev: matched_events.append(ev),
+            timeline=timeline,
+            host="bbu-node-01",
+        )
+
+        pipeline = LogPipeline([timeline, trigger])
+        await pipeline.emit(
+            "dmesg",
+            [
+                "[1.0] pcieport 0000:00:01.0: normal init\n",
+                "[2.0] pcieport 0000:00:01.0: link speed 16GT/s\n",
+                "[3.0] pcieport 0000:00:01.0: device status check\n",
+                "[4.0] pcieport 0000:00:01.0: AER: Uncorrected (Fatal) error received\n",
+            ],
+        )
+
+        assert len(trigger.matches) == 1
+        assert len(matched_events) == 1
+        ev = trigger.matches[0]
+        assert ev.rule_name == "aer_fatal"
+        assert ev.session_id == "dmesg"
+        assert ev.abort_triggered is True
+        assert list(ev.context_before) == [
+            "[2.0] pcieport 0000:00:01.0: link speed 16GT/s",
+            "[3.0] pcieport 0000:00:01.0: device status check",
+        ]
+
+        with pytest.raises(HardwareFaultDetectedError) as exc_info:
+            trigger.check_abort()
+        assert exc_info.value.match == ev
+        assert exc_info.value.host == "bbu-node-01"
+
+        await pipeline.finalize()
+        records = [
+            json.loads(ln)
+            for ln in (tmp_path / "timeline.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert any(r["kind"] == "match" and r["rule_name"] == "aer_fatal" for r in records)
+
+    async def test_direct_stream_collector_watchdog_silence_stall(
+        self, tmp_path: Path
+    ) -> None:
+        import asyncio
+        import json
+
+        from uniconn import (
+            Connection,
+            DirectStreamCollector,
+            StallEvent,
+            TimelineHandler,
+        )
+
+        conn = Connection.from_uri("local://")
+
+        async def hanging_stream(command: str, timeout=None, **kwargs):
+            yield "boot step 1\n"
+            yield "boot step 2 (entering FPGA init)\n"
+            await asyncio.sleep(10.0)
+
+        conn.stream = hanging_stream  # type: ignore[method-assign]
+
+        stalled_events: list[StallEvent] = []
+        timeline = TimelineHandler(tmp_path / "timeline.jsonl")
+        pipeline = LogPipeline([timeline])
+
+        collector = DirectStreamCollector(
+            connection=conn,
+            name="uart_console",
+            command="cat /dev/ttyUSB0",
+            pipeline=pipeline,
+            max_silence_seconds=0.05,
+            on_stall=lambda sev: stalled_events.append(sev),
+            timeline=timeline,
+        )
+        task = collector.start()
+        await task
+        await collector.stop()
+
+        assert collector.lines_collected == 2
+        assert collector.stalled is True
+        assert collector.stall_event is not None
+        assert len(stalled_events) == 1
+        assert stalled_events[0].session_id == "uart_console"
+        assert "stalled" in (collector.error or "")
+
+        records = [
+            json.loads(ln)
+            for ln in (tmp_path / "timeline.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert [r["kind"] for r in records] == ["line", "line", "stall"]
+
+    async def test_resolve_watch_rules_variants_and_multiline_chunks(
+        self, tmp_path: Path
+    ) -> None:
+        import pytest
+
+        from uniconn import (
+            BUILTIN_WATCH_RULES,
+            ConfigurationError,
+            Connection,
+            DirectStreamCollector,
+            LogPipeline,
+            PatternTriggerHandler,
+            StreamSourceSpec,
+            TimelineHandler,
+            resolve_watch_rules,
+        )
+
+        # Single preset string (not iterated char-by-char)
+        single_preset = resolve_watch_rules("kernel_panic")
+        assert len(single_preset) == len(BUILTIN_WATCH_RULES["kernel_panic"])
+
+        # Single rule dict with name & pattern
+        single_dict = resolve_watch_rules(
+            {"name": "custom_err", "pattern": "FATAL_ERR", "abort_on_match": True}
+        )
+        assert len(single_dict) == 1
+        assert single_dict[0].name == "custom_err"
+        assert single_dict[0].abort_on_match is True
+
+        # Mapping of {rule_name: pattern_or_dict}
+        mapped_rules = resolve_watch_rules(
+            {
+                "r1": "ERR_1",
+                "r2": {"pattern": "ERR_2", "severity": "warning"},
+            }
+        )
+        assert [r.name for r in mapped_rules] == ["r1", "r2"]
+        assert mapped_rules[1].severity == "warning"
+
+        # Invalid max_silence_seconds <= 0 raises ConfigurationError
+        with pytest.raises(ConfigurationError):
+            StreamSourceSpec(name="bad", command="dmesg -w", max_silence_seconds=0)
+        with pytest.raises(ConfigurationError):
+            DirectStreamCollector(
+                connection=Connection.from_uri("local://"),
+                name="bad",
+                command="dmesg -w",
+                pipeline=LogPipeline([]),
+                max_silence_seconds=-1.0,
+            )
+
+        # Multi-line chunk splitting in TimelineHandler and PatternTriggerHandler
+        timeline = TimelineHandler(tmp_path / "multi.jsonl")
+        trigger = PatternTriggerHandler(
+            rules=[{"name": "panic", "pattern": "Kernel panic", "context_lines": 2}],
+            timeline=timeline,
+        )
+        pipeline = LogPipeline([timeline, trigger])
+        await pipeline.emit(
+            "uart",
+            ["line 1\nline 2\nKernel panic - not syncing: Fatal exception\n"],
+        )
+        assert len(trigger.matches) == 1
+        assert list(trigger.matches[0].context_before) == ["line 1", "line 2"]
+        assert timeline.entries_written == 4  # 3 lines + 1 match event
+
+

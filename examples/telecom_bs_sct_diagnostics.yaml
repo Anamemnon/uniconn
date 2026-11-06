@@ -1,0 +1,58 @@
+# Декларативный профиль диагностики базовой станции (BBU / RRU) и SCT-тестирования
+# Используется в conn.diagnostic_session(config="examples/telecom_bs_sct_diagnostics.yaml")
+
+local_dir: "./diagnostics/telecom_sct"
+archive_path: "./diagnostics/telecom_sct_{host}_{timestamp}.tar.gz"
+archive_format: "tar.gz"
+fsync_realtime: true
+enable_timeline: true
+gather_pre_facts: true
+gather_post_facts: true
+
+# 1. Статические факты и аппаратные счётчики (до, во время snapshot() и после SCT-прогона)
+facts:
+  include_builtin: true
+  commands:
+    ptp_status: "pmc -u -b 0 'GET CURRENT_DATA_SET' || true"
+    pcie_aer_counters: "lspci -vvv | grep -E 'UESta|CESta|DevSta' || true"
+    fpga_sensors: "sensors -j || true"
+  files:
+    clock_source: "/sys/devices/system/clocksource/clocksource0/current_clocksource"
+    iommu_groups: "/proc/iommu"
+
+# 2. Реактивные правила детекции аномалий (встроенные пресеты + пользовательские правила)
+watch_rules:
+  - "kernel_panic"
+  - "hardware_errors"
+  - "telecom_bs"
+  - name: "fpga_pcie_surprise_down"
+    pattern: "pcieport.*Surprise Down| FPGA_DMA_TIMEOUT"
+    severity: "critical"
+    abort_on_match: true
+    context_lines: 4
+  - name: "pa_high_temp_warning"
+    pattern: "PA_TEMP_WARN:\\s*([89]\\d|\\d{3})C"
+    severity: "warning"
+    abort_on_match: false
+    context_lines: 2
+
+# 3. Рантайм-потоки логов с контролем зависаний (Stream Silence Watchdog)
+streams:
+  - name: "kernel_dmesg"
+    command: "dmesg -w"
+    timestamp_lines: true
+
+  - name: "l1_phy_daemon"
+    command: "journalctl -u o-ran-l1 -f -n 0"
+    timestamp_lines: true
+    max_silence_seconds: 15.0
+
+  - name: "rru_uart_console"
+    command: "cat /dev/ttyS0"
+    timestamp_lines: true
+    max_silence_seconds: 10.0
+
+  - name: "sfp_optical_ddm_poll"
+    command: "ethtool -m eth0"
+    interval: 5.0
+    timestamp_lines: true

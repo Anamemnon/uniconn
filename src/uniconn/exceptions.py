@@ -83,6 +83,25 @@ class BackgroundPoolFullError(BackgroundError):
     """Достигнут лимит одновременных сессий в пуле (max_sessions)."""
 
 
+class HardwareFaultDetectedError(BackgroundError):
+    """В потоке логов обнаружена аппаратная или системная ошибка (правило с abort_on_match=True)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        match: object | None = None,
+        matches: list[object] | None = None,
+        host: str | None = None,
+        command: str | None = None,
+    ) -> None:
+        """Инициализировать исключение обнаруженного аппаратного сбоя."""
+        super().__init__(message, command=command, host=host)
+        self.match = match
+        self.matches: list[object] = list(matches or ([match] if match is not None else []))
+
+
+
 class CapabilityNotSupportedError(UniconnError, NotImplementedError):
     """Транспорт не поддерживает запрошенную возможность (SFTP, PTY, Tunnel и т.д.).
 
