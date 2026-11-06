@@ -31,11 +31,18 @@ async def redfish_bmc_operations() -> None:
 
 
 async def ipmi_bmc_operations() -> None:
-    """Управление сервером по протоколу IPMI 2.0 (pyghmi)."""
+    """Управление сервером и платой базовой станции по протоколу IPMI 2.0 (pyghmi)."""
     async with Connection.from_uri("ipmi://admin:env://BMC_PASS@bmc-legacy.local:623") as bmc:
         status = await bmc.run("power status")
-        boot_dev = await bmc.run("boot device")
-        print(f"IPMI power={status.text}, boot={boot_dev.text}")
+        sensors = await bmc.run("sensors")
+        sel_log = await bmc.run("sel list")
+        await bmc.run("boot pxe once uefi")
+        # Отправка сырой команды IPMI (например, установка ручного ШИМ вентиляторов 80% = 0x50)
+        pwm_res = await bmc.run("raw 0x30 0x30 0x02 0xff 0x50")
+        print(
+            f"IPMI power={status.json()}, sensors={len(sensors.json()['sensors'])}, "
+            f"sel_count={sel_log.json()['count']}, raw_hex={pwm_res.json()['hex']}"
+        )
 
 
 async def batch_bmc_fleet_status() -> None:

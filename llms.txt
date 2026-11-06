@@ -35,7 +35,7 @@
 - `local://[?timeout=30&rate_limit=10&circuit_breaker_threshold=5]`
 - `telnet://[user[:password]@]host[:23][?term_type=vt100]`
 - `serial:///dev/ttyUSB0[?baudrate=115200&parity=N&stopbits=1]` or `uart://COM3[:115200][?parity=even&stopbits=1.5&vid=10c4&pid=ea60]`
-- `ipmi://admin:password@bmc-host[:623]`
+- `ipmi://admin:password@bmc-host[:623]` (commands: `power on|off|cycle|reset|shutdown|status`, `sensors`/`health` with SDR units & critical thresholds, `sel`/`sel list`/`sel clear`, `boot device`/`boot pxe|disk|bios|cdrom [once|continuous] [uefi|legacy]`, `raw <netfn> <cmd> [data...]`)
 - `redfish://admin:password@bmc-host[:443][?verify_ssl=false&system_id=1&chassis_id=1&manager_id=1&auth=auto&multiplexed=true]`
 - `replay://host[?cassette=path/to/cassette.yaml&mode=none&normalize_temp=true&allow_playback_repeats=true]`
 - **Secret URI References (`v0.12.0+`)**: `password`, `options["passphrase"]`, `options["sudo_password"]`, `options["key_file"]`, and arbitrary values in `InventoryLoader` (YAML/TOML/JSON) support `env://VAR_NAME[?default=fallback]` and `file:///path/to/secret[?default=fallback]`. Missing secrets without `?default=` raise `ConfigurationError`.
