@@ -19,13 +19,13 @@
 - **Domain Services (`uniconn.services` / `uniconn.pool`)**: `FileOperationsService`, `DirectorySynchronizer`, `TemplateEngine`, `StateManagementService`, `FactCollector`, `TunnelService`, `PoolFileOperationsService`, `PoolStateManagementService`, `SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`, `SyncPoolFileOperationsService`, `SyncPoolStateManagementService`
 - **Strategies (`uniconn.services.provisioning`)**: `PackageManagerStrategy`, `AptStrategy`, `ApkStrategy`, `DnfYumStrategy`, `PacmanStrategy`, `ZypperStrategy`, `ServiceManagerStrategy`, `SystemdStrategy`, `OpenRCStrategy`, `SysVStrategy`
 - **Middleware Pipeline & Context (`uniconn.core`)**: `CommandRequest`, `CommandPipeline`, `CommandMiddleware`, `ContextMiddleware`, `SudoMiddleware`, `HookMiddleware`, `DryRunMiddleware`, `ObservabilityMiddleware`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`, `RetryMiddleware`, `TracingMiddleware`, `ExecutionContext`, `EventLoopPortal`, `SyncContextBridge`, `InventoryLoader`
-- **Transport Protocols, BMC, Container/K8s, Replay/Cassette & Helpers (`uniconn.transports` / `uniconn.pytest_plugin`)**: `BaseTransport`, `CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `ShellStdinProtocol`, `ShellStdoutProtocol`, `TunnelCapableTransport`, `require_capability`, `supports_capability`, `SerialTransport`, `SerialPortInfo`, `list_serial_ports`, `IPMITransport`, `RedfishTransport`, `DockerTransport`, `PodmanTransport`, `KubectlTransport`, `LocalTransport`, `ReplayTransport`, `CassetteTransportProxy`, `Cassette`, `CassetteDiffReport`, `InteractionDiff`, `CassetteContext`, `SyncCassetteContext`, `UniconnCassetteFixture`, `RecordMode`, `RecordedExecInteraction`, `RecordedStreamInteraction`, `RecordedFsInteraction`, `RecordedShellInteraction`, `ShellDialogStep`, `ReplayShellProcess`, `normalize_temp_paths`, `OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`
+- **Transport Protocols, BMC, Container/K8s, Serial Modem, Replay/Cassette & Helpers (`uniconn.transports` / `uniconn.pytest_plugin`)**: `BaseTransport`, `CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `ShellStdinProtocol`, `ShellStdoutProtocol`, `TunnelCapableTransport`, `require_capability`, `supports_capability`, `SerialTransport`, `SerialPortInfo`, `list_serial_ports`, `AsyncXmodemSender`, `AsyncXmodemReceiver`, `AsyncYmodemSender`, `AsyncYmodemReceiver`, `ZmodemSubprocessAdapter`, `compute_crc16`, `compute_checksum8`, `IPMITransport`, `RedfishTransport`, `DockerTransport`, `PodmanTransport`, `KubectlTransport`, `LocalTransport`, `ReplayTransport`, `CassetteTransportProxy`, `Cassette`, `CassetteDiffReport`, `InteractionDiff`, `CassetteContext`, `SyncCassetteContext`, `UniconnCassetteFixture`, `RecordMode`, `RecordedExecInteraction`, `RecordedStreamInteraction`, `RecordedFsInteraction`, `RecordedShellInteraction`, `ShellDialogStep`, `ReplayShellProcess`, `normalize_temp_paths`, `OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`
 - **Pools**: `ConnectionPool`, `SyncConnectionPool`, `PoolFileOperationsService`, `PoolStateManagementService`, `SyncPoolFileOperationsService`, `SyncPoolStateManagementService`, `PoolStreamMultiplexer`, `SSHSessionPool`
 - **Interactive PTY Shell (`uniconn.shell`)**: `ShellSession`, `SyncShellSession`, `PosixMarkerProtocol`, `ExpectStateMachine`
 - **Background Diagnostics, Streaming Logs & Pluggable Backends (`uniconn.background`)**: `DiagnosticSession`, `SyncDiagnosticSession`, `DiagnosticConfig`, `DiagnosticResult`, `StreamSourceSpec`, `DirectStreamCollector`, `LogPipeline`, `LogHandler`, `LocalFileHandler`, `ForwardHandler`, `StreamHandler`, `ArchiveHandler`, `BackgroundPool`, `BackgroundPoolConfig`, `BackgroundSession`, `BackgroundResult`, `BackgroundCleanupManager`, `BackgroundLogCollector`, `BackgroundBackendStrategy`, `TmuxBackend`, `ScreenBackend`, `NohupBackend`, `WindowsJobBackend`, `resolve_backend`, `LogConfig`
 - **Hooks & OpenTelemetry (`uniconn.hooks` / `uniconn.telemetry`)**: `audit_log_hook`, `allowlist_hook`, `blocklist_hook`, `MetricsCollector`, `metrics_collector_hook`, `structured_log_hook`, `OtelTracingHook`, `otel_tracing_hook`, `InMemoryTracer`, `RecordedSpan`, `SpanProtocol`, `TracerProtocol`, `get_current_span`
 - **Logging (`structlog` + `stdlib`)**: `configure_logging`, `get_struct_logger`, `log_context`, `bind_log_context`, `unbind_log_context`, `clear_log_context`, `get_log_context`, `get_logger`, `setup_file_logging`, `SecretMaskingFilter`
-- **Exceptions**: `UniconnError`, `ConfigurationError`, `ConnectionError`, `CircuitOpenError`, `BatchAbortedError`, `CassetteError`, `CassetteMissError`, `AuthenticationError`, `ExecutionError`, `FileTransferError`, `TimeoutError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `BackgroundError`, `BackgroundBackendError`, `BackgroundSessionExistsError`, `BackgroundPoolFullError`
+- **Exceptions**: `UniconnError`, `ConfigurationError`, `ConnectionError`, `CircuitOpenError`, `BatchAbortedError`, `CassetteError`, `CassetteMissError`, `AuthenticationError`, `ExecutionError`, `FileTransferError`, `ModemTransferError`, `ModemHandshakeTimeoutError`, `ModemCancelledError`, `ModemMaxRetriesError`, `ModemProtocolError`, `ModemChecksumMismatchError`, `TimeoutError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `BackgroundError`, `BackgroundBackendError`, `BackgroundSessionExistsError`, `BackgroundPoolFullError`
 
 ## URI Schemes & Secret Resolution (`SecretResolver`)
 - `ssh://[user[:password]@]host[:22][?key_file=...&password=env://SSH_PASS&known_hosts=strict&keepalive=30&ssh_config=true&use_agent=true&proxy=jump1,jump2&proxy_command=...&rate_limit=10&circuit_breaker_threshold=5&circuit_breaker_timeout=30]`
@@ -265,7 +265,7 @@ conn.remove_operation_observer(observer)
 with conn.using_observer(observer):    # Also works with `async with conn.using_observer(observer):`
     await conn.files.read_file("/etc/hostname")
 
-# File Operations, Smart Directory Sync & Templating via `conn.files` (SFTP & Local)
+# File Operations, Smart Directory Sync & Templating via `conn.files` (SFTP, Local & Serial XMODEM/YMODEM/ZMODEM)
 content: str | bytes = await conn.files.read_file(remote_path, encoding="utf-8")  # encoding=None -> bytes
 await conn.files.write_file(remote_path, content: str | bytes, mode: int | None = None, encoding="utf-8", *, atomic: bool = False)
 await conn.files.remove_file(remote_path)
@@ -273,6 +273,10 @@ exists: bool = await conn.files.exists(remote_path)
 await conn.files.mkdir(remote_path, parents=True, exist_ok=True, mode=None)
 await conn.files.upload(local_path, remote_path, recurse=False, *, verify: bool = False, progress_callback=None)
 await conn.files.download(remote_path, local_path, recurse=False, *, verify: bool = False, progress_callback=None)
+bytes_sent: int = await conn.files.upload_xmodem(local_path, *, mode="1k", trigger_command=None, progress_callback=None)
+bytes_sent: int = await conn.files.upload_ymodem(local_path, *, trigger_command=None, progress_callback=None)
+bytes_recv: int = await conn.files.download_xmodem(local_path, *, mode="crc", trigger_command=None, progress_callback=None)
+saved_paths: list[Path] = await conn.files.download_ymodem(destination_dir, *, trigger_command=None, progress_callback=None)
 digest: str = await conn.files.checksum(remote_path, algorithm="sha256", *, sudo=False)
 await conn.files.chmod(remote_path, 0o755)
 info: dict = await conn.files.stat(remote_path)
@@ -295,7 +299,7 @@ async with await conn.open_shell(term_type="xterm", term_size=(80, 24), init_pos
     r_exp = await shell.expect("fdisk /dev/sda", patterns={r"Command \(m for help\):": "q\n"})
     await shell.resize(120, 40)
 
-# Serial / UART Hardware Controls, Binary I/O & Sensor Streaming
+# Serial / UART Hardware Controls, Binary I/O, Sensor Streaming & Bootloader Flashing (XMODEM/YMODEM/ZMODEM)
 async with Connection.from_uri("uart://COM3:115200?parity=even&stopbits=1.5") as s_conn:
     # Binary I/O (Modbus RTU, framing with inter_byte_timeout)
     pdu_resp: bytes = await s_conn.run_bytes(b"\x01\x03\x00\x00\x00\x02\xc4\x0b", inter_byte_timeout=0.02)
@@ -306,6 +310,9 @@ async with Connection.from_uri("uart://COM3:115200?parity=even&stopbits=1.5") as
     await s_conn.transport.pulse_dtr_rts(dtr=False, rts=True, duration=0.1)
     s_conn.transport.send_break(duration=0.25)
     cts_active: bool = s_conn.transport.get_cts()
+    # Firmware upload to U-Boot via YMODEM / XMODEM-1K
+    sent: int = await s_conn.files.upload_ymodem("firmware.bin", trigger_command="loady 0x82000000\r")
+    sent_x: int = await s_conn.files.upload_xmodem("uImage", mode="1k", trigger_command="loadx $loadaddr\r")
 ```
 
 ### `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `HostFacts`, `FactsDiffReport` & `CassetteDiffReport`

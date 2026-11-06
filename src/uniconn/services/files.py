@@ -16,7 +16,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from ..exceptions import ExecutionError, FileTransferError
+from ..exceptions import CapabilityNotSupportedError, ExecutionError, FileTransferError
 from ..result import SyncResult
 from ..transports.base import FileStat
 from .templates import TemplateEngine
@@ -375,6 +375,12 @@ class FileOperationsService:
 
         await handler(local_path, remote_path, recurse=recurse, **kwargs)
         if verify and not recurse and not self._conn.dry_run:
+            if self._conn.transport_name in ("serial", "uart"):
+                raise CapabilityNotSupportedError(
+                    "Post-transfer SHA-256 checksum verification via shell is not supported on serial/uart transport "
+                    "(CRC-16 is already verified at packet level by XMODEM/YMODEM).",
+                    host=self._conn.config.host,
+                )
             local_digest = _local_file_digest(local_path, "sha256")
             remote_digest = await self.checksum(remote_path, algorithm="sha256")
             if local_digest != remote_digest:
@@ -437,6 +443,12 @@ class FileOperationsService:
 
         await handler(remote_path, local_path, recurse=recurse, **kwargs)
         if verify and not recurse and not self._conn.dry_run:
+            if self._conn.transport_name in ("serial", "uart"):
+                raise CapabilityNotSupportedError(
+                    "Post-transfer SHA-256 checksum verification via shell is not supported on serial/uart transport "
+                    "(CRC-16 is already verified at packet level by XMODEM/YMODEM).",
+                    host=self._conn.config.host,
+                )
             remote_digest = await self.checksum(remote_path, algorithm="sha256")
             local_digest = _local_file_digest(local_path, "sha256")
             if local_digest != remote_digest:
@@ -445,6 +457,253 @@ class FileOperationsService:
                     f"remote={remote_digest}, local={local_digest}",
                     host=self._conn.config.host,
                 )
+
+    async def upload_xmodem(
+        self,
+        local_path: str | Path,
+        *,
+        mode: Literal["checksum", "crc", "1k"] = "1k",
+        trigger_command: str | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
+        **kwargs: Any,
+    ) -> int:
+        """Загрузить файл по протоколу XMODEM (поддерживается для Serial/UART транспорта)."""
+        if self._conn.dry_run:
+            self._conn.logger.info(
+                f"[DRY-RUN] Skipping XMODEM upload {str(local_path)!r} on {self._conn.config.uri_safe}"
+            )
+            return 0
+
+        await self._ensure_connected()
+        trans: Any = self._conn.transport
+        if not hasattr(trans, "upload_xmodem"):
+            raise CapabilityNotSupportedError(
+                f"XMODEM upload is not supported on {trans.name} transport",
+                host=self._conn.config.host,
+            )
+        sent_bytes = 0
+
+        async def _do_xmodem(
+            l_path: str | Path,
+            _r_path: str | Path,
+            *,
+            recurse: bool = False,
+            **kw: Any,
+        ) -> None:
+            nonlocal sent_bytes
+            _ = recurse
+            sent_bytes = int(
+                await trans.upload_xmodem(
+                    l_path,
+                    mode=mode,
+                    trigger_command=trigger_command,
+                    progress_callback=progress_callback,
+                    **kw,
+                )
+            )
+
+        handler: Any = _do_xmodem
+        for obs in reversed(self._conn.operation_observers):
+            prev_fn = handler
+
+            async def _step(
+                l_path: str | Path,
+                r_path: str | Path,
+                *,
+                recurse: bool = False,
+                _obs: Any = obs,
+                _nxt: Any = prev_fn,
+                **kw: Any,
+            ) -> None:
+                await _obs.observe_upload(
+                    self._conn, _nxt, l_path, r_path, recurse=recurse, **kw
+                )
+
+            handler = _step
+
+        await handler(local_path, "", recurse=False, **kwargs)
+        return sent_bytes
+
+    async def upload_ymodem(
+        self,
+        local_path: str | Path,
+        *,
+        trigger_command: str | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
+        **kwargs: Any,
+    ) -> int:
+        """Загрузить файл по протоколу YMODEM (поддерживается для Serial/UART транспорта)."""
+        if self._conn.dry_run:
+            self._conn.logger.info(
+                f"[DRY-RUN] Skipping YMODEM upload {str(local_path)!r} on {self._conn.config.uri_safe}"
+            )
+            return 0
+
+        await self._ensure_connected()
+        trans: Any = self._conn.transport
+        if not hasattr(trans, "upload_ymodem"):
+            raise CapabilityNotSupportedError(
+                f"YMODEM upload is not supported on {trans.name} transport",
+                host=self._conn.config.host,
+            )
+        sent_bytes = 0
+
+        async def _do_ymodem(
+            l_path: str | Path,
+            _r_path: str | Path,
+            *,
+            recurse: bool = False,
+            **kw: Any,
+        ) -> None:
+            nonlocal sent_bytes
+            _ = recurse
+            sent_bytes = int(
+                await trans.upload_ymodem(
+                    l_path,
+                    trigger_command=trigger_command,
+                    progress_callback=progress_callback,
+                    **kw,
+                )
+            )
+
+        handler: Any = _do_ymodem
+        for obs in reversed(self._conn.operation_observers):
+            prev_fn = handler
+
+            async def _step(
+                l_path: str | Path,
+                r_path: str | Path,
+                *,
+                recurse: bool = False,
+                _obs: Any = obs,
+                _nxt: Any = prev_fn,
+                **kw: Any,
+            ) -> None:
+                await _obs.observe_upload(
+                    self._conn, _nxt, l_path, r_path, recurse=recurse, **kw
+                )
+
+            handler = _step
+
+        await handler(local_path, "", recurse=False, **kwargs)
+        return sent_bytes
+
+    async def download_xmodem(
+        self,
+        local_path: str | Path,
+        *,
+        mode: Literal["checksum", "crc", "1k"] = "crc",
+        trigger_command: str | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
+        **kwargs: Any,
+    ) -> int:
+        """Скачать файл по протоколу XMODEM (поддерживается для Serial/UART транспорта)."""
+        await self._ensure_connected()
+        trans: Any = self._conn.transport
+        if not hasattr(trans, "download_xmodem"):
+            raise CapabilityNotSupportedError(
+                f"XMODEM download is not supported on {trans.name} transport",
+                host=self._conn.config.host,
+            )
+        received_bytes = 0
+
+        async def _do_xmodem_dl(
+            _r_path: str | Path,
+            l_path: str | Path,
+            *,
+            recurse: bool = False,
+            **kw: Any,
+        ) -> None:
+            nonlocal received_bytes
+            _ = recurse
+            received_bytes = int(
+                await trans.download_xmodem(
+                    l_path,
+                    mode=mode,
+                    trigger_command=trigger_command,
+                    progress_callback=progress_callback,
+                    **kw,
+                )
+            )
+
+        handler: Any = _do_xmodem_dl
+        for obs in reversed(self._conn.operation_observers):
+            prev_fn = handler
+
+            async def _step(
+                r_path: str | Path,
+                l_path: str | Path,
+                *,
+                recurse: bool = False,
+                _obs: Any = obs,
+                _nxt: Any = prev_fn,
+                **kw: Any,
+            ) -> None:
+                await _obs.observe_download(
+                    self._conn, _nxt, r_path, l_path, recurse=recurse, **kw
+                )
+
+            handler = _step
+
+        await handler("", local_path, recurse=False, **kwargs)
+        return received_bytes
+
+    async def download_ymodem(
+        self,
+        destination_dir: str | Path,
+        *,
+        trigger_command: str | None = None,
+        progress_callback: Callable[[int, int, str], None] | None = None,
+        **kwargs: Any,
+    ) -> list[Path]:
+        """Скачать файлы по протоколу YMODEM-Batch в целевую директорию."""
+        await self._ensure_connected()
+        trans: Any = self._conn.transport
+        if not hasattr(trans, "download_ymodem"):
+            raise CapabilityNotSupportedError(
+                f"YMODEM download is not supported on {trans.name} transport",
+                host=self._conn.config.host,
+            )
+        received_files: list[Path] = []
+
+        async def _do_ymodem_dl(
+            _r_path: str | Path,
+            l_path: str | Path,
+            *,
+            recurse: bool = False,
+            **kw: Any,
+        ) -> None:
+            nonlocal received_files
+            _ = recurse
+            res = await trans.download_ymodem(
+                l_path,
+                trigger_command=trigger_command,
+                progress_callback=progress_callback,
+                **kw,
+            )
+            received_files = list(res)
+
+        handler: Any = _do_ymodem_dl
+        for obs in reversed(self._conn.operation_observers):
+            prev_fn = handler
+
+            async def _step(
+                r_path: str | Path,
+                l_path: str | Path,
+                *,
+                recurse: bool = False,
+                _obs: Any = obs,
+                _nxt: Any = prev_fn,
+                **kw: Any,
+            ) -> None:
+                await _obs.observe_download(
+                    self._conn, _nxt, r_path, l_path, recurse=recurse, **kw
+                )
+
+            handler = _step
+
+        await handler("", destination_dir, recurse=False, **kwargs)
+        return received_files
 
     async def _raw_read_file(
         self,

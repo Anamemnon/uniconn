@@ -99,6 +99,18 @@ class PoolFileOperationsService:
             max_fail_ratio=max_fail_ratio,
         )
 
+    upload_xmodem = pool_fan_out_dict(
+        FileOperationsService.upload_xmodem, conn_attr="files"
+    )
+    upload_ymodem = pool_fan_out_dict(
+        FileOperationsService.upload_ymodem, conn_attr="files"
+    )
+    download_xmodem = pool_fan_out_dict(
+        FileOperationsService.download_xmodem, conn_attr="files"
+    )
+    download_ymodem = pool_fan_out_dict(
+        FileOperationsService.download_ymodem, conn_attr="files"
+    )
     read_file = pool_fan_out_dict(FileOperationsService.read_file, conn_attr="files")
     write_file = pool_fan_out_dict(FileOperationsService.write_file, conn_attr="files")
     checksum = pool_fan_out_dict(FileOperationsService.checksum, conn_attr="files")

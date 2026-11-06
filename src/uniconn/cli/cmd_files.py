@@ -25,8 +25,29 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
     @app.command
     def upload(
         local_path: Annotated[str, Parameter(help="Local file or directory path")],
-        remote_path: Annotated[str, Parameter(help="Remote destination path")],
+        remote_path: Annotated[str, Parameter(help="Remote destination path")] = "",
         *uris: Annotated[str, Parameter(help="Target connection URIs")],
+        protocol: Annotated[
+            str,
+            Parameter(
+                name=["--protocol", "-p"],
+                help="Transfer protocol (auto, sftp, ymodem, xmodem, zmodem)",
+            ),
+        ] = "auto",
+        trigger: Annotated[
+            str | None,
+            Parameter(
+                name=["--trigger", "-t"],
+                help="Command to trigger receive mode in bootloader (e.g. 'loady 0x82000000')",
+            ),
+        ] = None,
+        xmodem_mode: Annotated[
+            str,
+            Parameter(
+                name="--xmodem-mode",
+                help="XMODEM packet mode: 1k (default), crc, checksum",
+            ),
+        ] = "1k",
         inventory: Annotated[
             str | None,
             Parameter(name=["--inventory", "-i"], help="Inventory file (.yaml/.json)"),
@@ -78,8 +99,14 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
             bool, Parameter(name=["--verbose", "-v"], negative="", help="Verbose output")
         ] = False,
     ) -> None:
-        """Upload file or directory to one or more remote hosts via SFTP."""
+        """Upload file or directory to one or more remote hosts via SFTP or Serial (XMODEM/YMODEM/ZMODEM)."""
         host_uris = list(uris)
+        effective_remote = remote_path
+        # Support 2-arg form for serial: `uniconn upload firmware.bin serial:///dev/ttyUSB0 --protocol ymodem`
+        if not host_uris and "://" in remote_path:
+            host_uris = [remote_path]
+            effective_remote = ""
+
         if not host_uris and not inventory:
             console.print("[red]ERROR:[/red] specify at least one URI or --inventory/-i")
             sys.exit(1)
@@ -99,6 +126,13 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                 )
                 target_labels = [pool._target_key(t) for t in pool._uris]
                 extra_kw: dict[str, Any] = {"verify": True} if verify else {}
+                if protocol != "auto":
+                    extra_kw["protocol"] = protocol
+                if trigger is not None:
+                    extra_kw["trigger_command"] = trigger
+                if xmodem_mode != "1k":
+                    extra_kw["xmodem_mode"] = xmodem_mode
+
                 if output_format == "table" and not no_progress:
                     from rich.progress import (
                         BarColumn,
@@ -129,14 +163,14 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
 
                         await pool.files.upload(
                             local_path,
-                            remote_path,
+                            effective_remote,
                             recurse=recurse,
                             progress_callback=_on_progress,
                             **extra_kw,
                         )
                 else:
                     await pool.files.upload(
-                        local_path, remote_path, recurse=recurse, **extra_kw
+                        local_path, effective_remote, recurse=recurse, **extra_kw
                     )
 
                 if output_format == "json":
@@ -145,15 +179,17 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                         {
                             "action": "upload",
                             "local_path": local_path,
-                            "remote_path": remote_path,
+                            "remote_path": effective_remote,
+                            "protocol": protocol,
                             "hosts": target_labels,
                             "ok": True,
                         },
                     )
                 else:
+                    dest_label = effective_remote or ", ".join(target_labels)
                     console.print(
                         f"[green]OK[/green] Uploaded [cyan]{local_path}[/cyan] -> "
-                        f"[cyan]{remote_path}[/cyan] on {len(target_labels)} host(s)"
+                        f"[cyan]{dest_label}[/cyan] on {len(target_labels)} host(s)"
                     )
             except Exception as e:
                 renderer.print_error_and_exit(e, title="Upload Error")
@@ -163,8 +199,29 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
     @app.command
     def download(
         remote_path: Annotated[str, Parameter(help="Remote file or directory path")],
-        local_path: Annotated[str, Parameter(help="Local destination path or pattern")],
+        local_path: Annotated[str, Parameter(help="Local destination path or pattern")] = "",
         *uris: Annotated[str, Parameter(help="Target connection URIs")],
+        protocol: Annotated[
+            str,
+            Parameter(
+                name=["--protocol", "-p"],
+                help="Transfer protocol (auto, sftp, ymodem, xmodem, zmodem)",
+            ),
+        ] = "auto",
+        trigger: Annotated[
+            str | None,
+            Parameter(
+                name=["--trigger", "-t"],
+                help="Command to trigger send mode on target",
+            ),
+        ] = None,
+        xmodem_mode: Annotated[
+            str,
+            Parameter(
+                name="--xmodem-mode",
+                help="XMODEM packet mode: crc (default), 1k, checksum",
+            ),
+        ] = "crc",
         inventory: Annotated[
             str | None,
             Parameter(name=["--inventory", "-i"], help="Inventory file (.yaml/.json)"),
@@ -216,8 +273,14 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
             bool, Parameter(name=["--verbose", "-v"], negative="", help="Verbose output")
         ] = False,
     ) -> None:
-        """Download file or directory from one or more remote hosts via SFTP."""
+        """Download file or directory from one or more remote hosts via SFTP or Serial."""
         host_uris = list(uris)
+        # Support 2-arg form for serial: `uniconn download ./dest serial:///dev/ttyUSB0 --protocol ymodem`
+        if not host_uris and "://" in local_path:
+            host_uris = [local_path]
+            local_path = remote_path
+            remote_path = ""
+
         if not host_uris and not inventory:
             console.print("[red]ERROR:[/red] specify at least one URI or --inventory/-i")
             sys.exit(1)
@@ -236,6 +299,13 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                     max_fail_ratio=max_fail_ratio,
                 )
                 extra_kw: dict[str, Any] = {"verify": True} if verify else {}
+                if protocol != "auto":
+                    extra_kw["protocol"] = protocol
+                if trigger is not None:
+                    extra_kw["trigger_command"] = trigger
+                if xmodem_mode != "crc":
+                    extra_kw["xmodem_mode"] = xmodem_mode
+
                 if output_format == "table" and not no_progress:
                     from rich.progress import (
                         BarColumn,
@@ -282,6 +352,7 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                         {
                             "action": "download",
                             "remote_path": remote_path,
+                            "protocol": protocol,
                             "saved": saved,
                             "ok": True,
                         },

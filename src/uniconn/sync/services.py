@@ -35,6 +35,10 @@ class SyncFileOperationsService(SyncProxyMixin):
 
     upload = sync_method(FileOperationsService.upload)
     download = sync_method(FileOperationsService.download)
+    upload_xmodem = sync_method(FileOperationsService.upload_xmodem)
+    upload_ymodem = sync_method(FileOperationsService.upload_ymodem)
+    download_xmodem = sync_method(FileOperationsService.download_xmodem)
+    download_ymodem = sync_method(FileOperationsService.download_ymodem)
     read_file = sync_method(FileOperationsService.read_file)
     write_file = sync_method(FileOperationsService.write_file)
     checksum = sync_method(FileOperationsService.checksum)
@@ -110,6 +114,10 @@ class SyncPoolFileOperationsService(SyncProxyMixin):
 
     upload = sync_method(PoolFileOperationsService.upload)
     download = sync_method(PoolFileOperationsService.download)
+    upload_xmodem = sync_method(PoolFileOperationsService.upload_xmodem)
+    upload_ymodem = sync_method(PoolFileOperationsService.upload_ymodem)
+    download_xmodem = sync_method(PoolFileOperationsService.download_xmodem)
+    download_ymodem = sync_method(PoolFileOperationsService.download_ymodem)
     read_file = sync_method(PoolFileOperationsService.read_file)
     write_file = sync_method(PoolFileOperationsService.write_file)
     checksum = sync_method(PoolFileOperationsService.checksum)

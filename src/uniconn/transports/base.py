@@ -212,7 +212,7 @@ class TunnelCapableTransport(Protocol):
 
 
 _PROTOCOL_PRIMARY_METHODS: dict[type[Any], str] = {
-    FileCapableTransport: "upload",
+    FileCapableTransport: "stat",
     ShellCapableTransport: "open_shell",
     TunnelCapableTransport: "forward_local_port",
 }

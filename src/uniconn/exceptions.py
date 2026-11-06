@@ -150,3 +150,27 @@ class BatchAbortedError(UniconnError):
         self.completed_results: dict[str, object] = dict(completed_results or {})
         self.failed_hosts: dict[str, object] = dict(failed_hosts or {})
 
+
+class ModemTransferError(FileTransferError):
+    """Базовое исключение для ошибок модемных протоколов передачи файлов (XMODEM/YMODEM/ZMODEM)."""
+
+
+class ModemHandshakeTimeoutError(ModemTransferError):
+    """Превышен таймаут ожидания стартового символа хэндшейка ('C' или NAK)."""
+
+
+class ModemCancelledError(ModemTransferError):
+    """Передача отменена удалённой стороной или пользователем (получена последовательность CAN CAN)."""
+
+
+class ModemMaxRetriesError(ModemTransferError):
+    """Превышено максимальное количество повторных попыток отправки или приёма пакета."""
+
+
+class ModemProtocolError(ModemTransferError):
+    """Нарушение спецификации протокола или некорректный ответ удалённого узла."""
+
+
+class ModemChecksumMismatchError(ModemTransferError):
+    """Несовпадение контрольной суммы или CRC-16 полученного пакета."""
+
