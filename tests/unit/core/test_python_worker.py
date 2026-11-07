@@ -196,3 +196,24 @@ async def test_run_python_supports_bytes_path_args_and_async_coroutines(tmp_path
         assert isinstance(replayed_bytes, bytes)
         assert replayed_bytes == b"\x00\xffheader:/etc/nginx/nginx.conf:a,b"
 
+
+async def test_run_python_passes_through_command_pipeline_and_escapes_interpreter() -> None:
+    """RemotePythonWorker экранирует python_interpreter и проходит через CommandPipeline (dry_run, middlewares)."""
+    conn = Connection.from_dict(
+        {
+            "transport": "ssh",
+            "host": "127.0.0.1",
+            "options": {"python_interpreter": "/opt/my python/bin/python3; id"},
+        }
+    )
+    cmd_str = conn.python_worker._build_bootstrap_command()
+    # Интерпретатор обязан быть экранирован через shlex.quote, чтобы точка с запятой не исполнялась шеллом
+    assert "'/opt/my python/bin/python3; id'" in cmd_str
+
+    # В режиме dry_run=True вызов run_python перехватывается DryRunMiddleware без запуска процесса
+    async with Connection.from_uri("local://", dry_run=True) as dry_conn:
+        dry_res = await dry_conn.run_python(_sample_add, 1, 2)
+        assert dry_res is None
+        assert dry_conn.python_worker.is_running is False
+
+

@@ -203,3 +203,36 @@ def test_sync_flow_and_sync_connection_parity_without_deadlock() -> None:
         pool_report = sync_pool.run_flow(sync_flow)
         assert pool_report.ok is True
         assert set(pool_report.results.keys()) == {"s1", "s2"}
+
+
+async def test_fleet_barrier_layer_failure_ratio_ignores_prior_layer_ignored_errors() -> None:
+    """В режиме barrier с ignore_errors=True ошибка в Слое 0 не должна считаться падением в Слое 1."""
+
+    @task(ignore_errors=True)
+    async def layer_0_optional(conn: Connection) -> str:
+        if conn.config.host == "node-01":
+            raise RuntimeError("non-fatal error in layer 0")
+        return "ok"
+
+    @task(depends_on=[layer_0_optional])
+    async def layer_1_healthy(conn: Connection) -> str:
+        _ = conn
+        return "layer_1_ok"
+
+    flow = Flow(
+        "barrier_ignored_layer0",
+        tasks=[layer_1_healthy],
+        mode="barrier",
+        batch_size=2,
+        max_fail_ratio=0.5,
+    )
+    conns = [
+        Connection.from_uri("local://").with_overrides(host="node-01"),
+        Connection.from_uri("local://").with_overrides(host="node-02"),
+    ]
+    async with ConnectionPool(conns) as pool:
+        report = await pool.run_flow(flow)
+
+    assert len(report.for_host("node-01")) == 2
+    assert report.for_host("node-01")[1].status == "success"
+

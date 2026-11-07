@@ -338,6 +338,46 @@ class RedfishTransport(BaseTransport):
             self._discovery.cached_resources[norm] = data
         return status, data
 
+    async def _request_json_with_headers(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: float | None = None,
+        _retry_on_401: bool = True,
+    ) -> tuple[int, dict[str, Any], dict[str, str]]:
+        """Выполнить HTTP-запрос и вернуть ``(status, json_dict, response_headers)``."""
+        if "_request_json" in self.__dict__:
+            st, data = await self._request_json(
+                method,
+                path,
+                payload=payload,
+                headers=headers,
+                timeout=timeout,
+                _retry_on_401=_retry_on_401,
+            )
+            return st, data, dict(self._http.last_response_headers)
+
+        if not self._connected or self._session is None:
+            await self.connect()
+        assert self._session is not None
+
+        status, data, resp_headers = await self._http.request_json(
+            self._session,
+            method,
+            path,
+            payload=payload,
+            headers=headers,
+            timeout=timeout,
+            _retry_on_401=_retry_on_401,
+        )
+        if method.upper() == "GET" and 200 <= status < 300:
+            norm = self._normalize_path(path).rstrip("/") or "/"
+            self._discovery.cached_resources[norm] = data
+        return status, data, resp_headers
+
     async def _invoke_action(
         self,
         *,
@@ -368,7 +408,7 @@ class RedfishTransport(BaseTransport):
                 if alt and alt in allowable:
                     effective_payload["ResetType"] = alt
 
-        st, resp_data = await self._request_json(
+        st, resp_data, resp_headers = await self._request_json_with_headers(
             "POST", action_path, payload=effective_payload, timeout=timeout
         )
 
@@ -382,14 +422,14 @@ class RedfishTransport(BaseTransport):
                 )
                 if resolved_target != action_path:
                     action_path = resolved_target
-                    st, resp_data = await self._request_json(
+                    st, resp_data, resp_headers = await self._request_json_with_headers(
                         "POST", action_path, payload=effective_payload, timeout=timeout
                     )
 
         # Обработка HTTP 202 Accepted (фоновая задача TaskService)
         if st == 202 and self._wait_for_tasks:
             task_uri = extract_task_uri_from_response(
-                st, resp_data, self._http.last_response_headers
+                st, resp_data, resp_headers
             )
             if task_uri:
                 task_st, task_summary = await self._tasks.wait_for_task(

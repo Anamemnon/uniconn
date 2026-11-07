@@ -104,6 +104,26 @@ class ConnectionPool:
                 )
 
     @property
+    def targets(self) -> list[PoolTarget]:
+        """Список целевых хостов/конфигураций/соединений пула."""
+        return list(self._uris)
+
+    @property
+    def batch_size(self) -> int | None:
+        """Размер батча волновой раскатки пула (если настроен)."""
+        return self._batch_size
+
+    @property
+    def max_fail_ratio(self) -> float:
+        """Максимально допустимая доля ошибок в батче пула."""
+        return self._max_fail_ratio
+
+    @property
+    def semaphore(self) -> asyncio.Semaphore:
+        """Семафор ограничения параллелизма пула."""
+        return self._semaphore
+
+    @property
     def rate_limiter(self) -> RateLimiter | None:
         """Общий ограничитель частоты команд пула (если настроен)."""
         return self._rate_limiter
@@ -237,6 +257,11 @@ class ConnectionPool:
             return target.host or target.uri_safe
         return target.config.host or target.config.uri_safe
 
+    @classmethod
+    def target_key(cls, target: PoolTarget) -> str:
+        """Публичный метод получения строкового ключа хоста для элемента пула."""
+        return cls._target_key(target)
+
     def _attach_resilience(self, target: PoolTarget, conn: Connection) -> Connection:
         """Привязать пуловый ``RateLimiter``, ``CircuitBreaker`` и инициализаторы к соединению."""
         key = self._target_key(target)
@@ -324,6 +349,16 @@ class ConnectionPool:
             ):
                 cb.record_failure()
             raise
+
+    def use_target_connection(
+        self,
+        idx: int,
+        target: PoolTarget,
+        *,
+        with_defaults: bool = True,
+    ) -> contextlib.AbstractAsyncContextManager[Connection]:
+        """Публичный контекстный менеджер получения открытого соединения для элемента пула."""
+        return self._use_conn(idx, target, with_defaults=with_defaults)
 
     @staticmethod
     def _is_failed_outcome(val: Any) -> bool:

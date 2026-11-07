@@ -16,6 +16,8 @@ class InventoryLoader:
         raw_data: Any,
         host: str | None = None,
         group: str | None = None,
+        *,
+        base_dir: str | Path | None = None,
     ) -> list[dict[str, Any]]:
         """Нормализовать данные инвентаря (список или словарь с hosts/groups/defaults).
 
@@ -23,6 +25,7 @@ class InventoryLoader:
             raw_data: Распарсенная структура из YAML или JSON.
             host: Опциональное имя/алиас хоста для фильтрации.
             group: Опциональное имя группы для фильтрации.
+            base_dir: Опциональная корневая директория для ограничения ``file://`` секретов.
 
         Returns:
             Список словарей с параметрами подключений.
@@ -109,7 +112,10 @@ class InventoryLoader:
 
         from .secrets import SecretResolver
 
-        return [SecretResolver.resolve_mapping(entry) for entry in entries]
+        return [
+            SecretResolver.resolve_mapping(entry, base_dir=base_dir)
+            for entry in entries
+        ]
 
     @classmethod
     def load_file(
@@ -118,6 +124,7 @@ class InventoryLoader:
         *,
         host: str | None = None,
         group: str | None = None,
+        base_dir: str | Path | None = None,
     ) -> list[dict[str, Any]]:
         """Прочитать файл ``.yaml``/``.yml``/``.json``/``.toml`` и вернуть список конфигураций хостов."""
         from ..exceptions import ConfigurationError
@@ -144,5 +151,5 @@ class InventoryLoader:
                 f"Unsupported file format: {filepath.suffix}. Use .json, .yaml, .yml or .toml"
             )
 
-        return cls.parse_data(raw_data, host=host, group=group)
+        return cls.parse_data(raw_data, host=host, group=group, base_dir=base_dir)
 

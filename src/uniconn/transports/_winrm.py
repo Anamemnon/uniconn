@@ -231,6 +231,7 @@ class WinRMTransport(BaseTransport):
         )
         self._protocol: Any = None
         self._session: Any = None
+        self._protocol_lock = asyncio.Lock()
 
     @property
     def name(self) -> str:
@@ -386,9 +387,11 @@ class WinRMTransport(BaseTransport):
         """Синхронный цикл открытия WS-Man оболочки, запуска команды и чтения результата."""
         open_kwargs: dict[str, Any] = {}
         if cwd:
-            open_kwargs["working_directory"] = str(cwd)
+            open_kwargs["working_directory"] = str(cwd).replace("\r", "").replace("\n", "")
         if env:
-            open_kwargs["env_vars"] = {str(k): str(v) for k, v in env.items()}
+            open_kwargs["env_vars"] = {
+                re.sub(r"[^A-Za-z0-9_]", "_", str(k)): str(v) for k, v in env.items()
+            }
 
         try:
             shell_id = (
@@ -436,7 +439,13 @@ class WinRMTransport(BaseTransport):
         if shell_mode in ("cmd", "cmd.exe"):
             cmd_str = command
             if cwd:
-                safe_cwd = str(cwd).replace('"', "")
+                safe_cwd = (
+                    str(cwd)
+                    .replace("\r", "")
+                    .replace("\n", "")
+                    .replace('"', "")
+                    .replace("%", "%%")
+                )
                 cmd_str = f'cd /d "{safe_cwd}" && {cmd_str}'
             return cmd_str, [], cwd, env
 
@@ -504,37 +513,38 @@ class WinRMTransport(BaseTransport):
                 env=env,
                 input_data=input_data,
             )
-            protocol = self._get_protocol_for_call(timeout=timeout)
-            prev_op = getattr(protocol, "operation_timeout_sec", None)
-            prev_read = getattr(protocol, "read_timeout_sec", None)
-            if timeout is not None:
-                op_sec, read_sec = self._compute_timeouts(timeout)
-                with contextlib.suppress(Exception):
-                    protocol.operation_timeout_sec = op_sec
-                    protocol.read_timeout_sec = read_sec
-
-            try:
-                coro = asyncio.to_thread(
-                    self._exec_sync,
-                    protocol,
-                    exec_cmd,
-                    exec_args,
-                    cwd=proto_cwd,
-                    env=proto_env,
-                )
+            async with self._protocol_lock:
+                protocol = self._get_protocol_for_call(timeout=timeout)
+                prev_op = getattr(protocol, "operation_timeout_sec", None)
+                prev_read = getattr(protocol, "read_timeout_sec", None)
                 if timeout is not None:
-                    out_bytes, err_bytes, status_code = await asyncio.wait_for(
-                        coro, timeout=timeout + 2.0
-                    )
-                else:
-                    out_bytes, err_bytes, status_code = await coro
-            finally:
-                if timeout is not None:
+                    op_sec, read_sec = self._compute_timeouts(timeout)
                     with contextlib.suppress(Exception):
-                        if prev_op is not None:
-                            protocol.operation_timeout_sec = prev_op
-                        if prev_read is not None:
-                            protocol.read_timeout_sec = prev_read
+                        protocol.operation_timeout_sec = op_sec
+                        protocol.read_timeout_sec = read_sec
+
+                try:
+                    coro = asyncio.to_thread(
+                        self._exec_sync,
+                        protocol,
+                        exec_cmd,
+                        exec_args,
+                        cwd=proto_cwd,
+                        env=proto_env,
+                    )
+                    if timeout is not None:
+                        out_bytes, err_bytes, status_code = await asyncio.wait_for(
+                            coro, timeout=timeout + 2.0
+                        )
+                    else:
+                        out_bytes, err_bytes, status_code = await coro
+                finally:
+                    if timeout is not None:
+                        with contextlib.suppress(Exception):
+                            if prev_op is not None:
+                                protocol.operation_timeout_sec = prev_op
+                            if prev_read is not None:
+                                protocol.read_timeout_sec = prev_read
 
         except Exception as exc:
             raise self._map_exception(exc, command=command) from exc

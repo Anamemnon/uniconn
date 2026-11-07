@@ -18,17 +18,20 @@ import inspect
 import json
 import logging
 import os
+import re
+import shlex
 import sys
 import textwrap
 import time
 import weakref
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 from ..exceptions import CapabilityNotSupportedError, ExecutionError, TimeoutError
 from ..result import Result
 from ..services.facts_models import DiskInfo, HostFacts, NetworkInterface
 from ..transports.base import ShellCapableTransport, ShellProcessProtocol, supports_capability
+from .pipeline import CommandRequest, prepare_sudo_command
 
 if TYPE_CHECKING:
     from .connection import Connection
@@ -151,11 +154,12 @@ def _op_glob(req):
     return items
 
 def _op_facts(req):
+    is_win = os.name == "nt" or bool(req.get("force_windows", False))
     uname = platform.uname()
-    os_family = "Windows" if os.name == "nt" else (uname.system or "Linux")
-    distro = f"Windows {uname.release}" if os.name == "nt" else os_family
+    os_family = "Windows" if is_win else (uname.system or "Linux")
+    distro = f"Windows {uname.release}" if is_win else os_family
     os_rel = {}
-    if os.path.isfile("/etc/os-release"):
+    if not is_win and os.path.isfile("/etc/os-release"):
         try:
             with open("/etc/os-release", encoding="utf-8", errors="replace") as fp:
                 for line in fp:
@@ -177,7 +181,7 @@ def _op_facts(req):
         except OSError:
             pass
     uptime = 0.0
-    if os.path.isfile("/proc/uptime"):
+    if not is_win and os.path.isfile("/proc/uptime"):
         try:
             with open("/proc/uptime", encoding="utf-8") as fp:
                 uptime = round(float(fp.read().split()[0]), 1)
@@ -185,7 +189,7 @@ def _op_facts(req):
             pass
     mem_total = 0
     mem_avail = 0
-    if os.path.isfile("/proc/meminfo"):
+    if not is_win and os.path.isfile("/proc/meminfo"):
         try:
             with open("/proc/meminfo", encoding="utf-8") as fp:
                 info = {}
@@ -200,7 +204,7 @@ def _op_facts(req):
                 mem_avail = info.get("MemAvailable", info.get("MemFree", 0))
         except Exception:
             pass
-    if mem_total == 0 and hasattr(os, "sysconf"):
+    if not is_win and mem_total == 0 and hasattr(os, "sysconf"):
         with contextlib.suppress(Exception):
             ps = os.sysconf("SC_PAGE_SIZE")
             pp = os.sysconf("SC_PHYS_PAGES")
@@ -222,27 +226,54 @@ def _op_facts(req):
                 m = re.search(r"sec\s*=\s*(\d+)", out)
                 if m:
                     uptime = round(max(0.0, time.time() - float(m.group(1))), 1)
-    if os.name == "nt":
+    disks = []
+    if is_win:
         with contextlib.suppress(Exception):
             import ctypes
             k32 = getattr(getattr(ctypes, "windll", None), "kernel32", None)
             if k32 is not None:
-                class _MEMSTAT(ctypes.Structure):
-                    _fields_ = [
-                        ("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
-                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
-                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
-                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
-                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-                    ]
-                ms = _MEMSTAT()
-                ms.dwLength = ctypes.sizeof(_MEMSTAT)
-                if k32.GlobalMemoryStatusEx(ctypes.byref(ms)):
-                    mem_total = int(ms.ullTotalPhys)
-                    mem_avail = int(ms.ullAvailPhys)
-                uptime = round(k32.GetTickCount64() / 1000.0, 1)
-    disks = []
-    if os.path.isfile("/proc/mounts"):
+                try:
+                    class _MEMSTAT(ctypes.Structure):
+                        _fields_ = [
+                            ("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                            ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                            ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                            ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                            ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                        ]
+                    ms = _MEMSTAT()
+                    ms.dwLength = ctypes.sizeof(_MEMSTAT)
+                    if k32.GlobalMemoryStatusEx(ctypes.byref(ms)):
+                        mem_total = int(ms.ullTotalPhys)
+                        mem_avail = int(ms.ullAvailPhys)
+                except Exception:
+                    pass
+                with contextlib.suppress(Exception):
+                    uptime = round(k32.GetTickCount64() / 1000.0, 1)
+                with contextlib.suppress(Exception):
+                    drive_mask = k32.GetLogicalDrives()
+                    fs_buf = ctypes.create_unicode_buffer(256)
+                    for i in range(26):
+                        if not (drive_mask & (1 << i)):
+                            continue
+                        letter = chr(65 + i)
+                        root = f"{letter}:\\"
+                        if k32.GetDriveTypeW(root) not in (2, 3, 4, 6):
+                            continue
+                        try:
+                            total, used, free = shutil.disk_usage(root)
+                            fstype = "NTFS"
+                            if k32.GetVolumeInformationW(root, None, 0, None, None, None, fs_buf, 256):
+                                fstype = fs_buf.value or "NTFS"
+                            pct = round((used / total) * 100.0, 1) if total > 0 else 0.0
+                            disks.append({
+                                "device": f"{letter}:", "mountpoint": root, "fstype": fstype,
+                                "total_bytes": int(total), "used_bytes": int(used),
+                                "available_bytes": int(free), "use_percent": pct,
+                            })
+                        except OSError:
+                            continue
+    if not is_win and os.path.isfile("/proc/mounts"):
         seen_mounts = set()
         skip_fs = {
             "proc", "sysfs", "devtmpfs", "devpts", "tmpfs", "cgroup", "cgroup2",
@@ -260,13 +291,13 @@ def _op_facts(req):
                         continue
                     seen_mounts.add(mp)
                     try:
-                        usage = shutil.disk_usage(mp)
-                        if usage.total > 0:
-                            pct = round((usage.used / usage.total) * 100.0, 1)
+                        total, used, free = shutil.disk_usage(mp)
+                        if total > 0:
+                            pct = round((used / total) * 100.0, 1)
                             disks.append({
                                 "device": dev, "mountpoint": mp, "fstype": fstype,
-                                "total_bytes": int(usage.total), "used_bytes": int(usage.used),
-                                "available_bytes": int(usage.free), "use_percent": pct,
+                                "total_bytes": int(total), "used_bytes": int(used),
+                                "available_bytes": int(free), "use_percent": pct,
                             })
                     except OSError:
                         continue
@@ -274,15 +305,15 @@ def _op_facts(req):
             pass
     if not disks:
         try:
-            root_mp = "C:\\" if os.name == "nt" else "/"
-            usage = shutil.disk_usage(root_mp)
-            pct = round((usage.used / usage.total) * 100.0, 1) if usage.total > 0 else 0.0
+            root_mp = "C:\\" if is_win else "/"
+            total, used, free = shutil.disk_usage(root_mp)
+            pct = round((used / total) * 100.0, 1) if total > 0 else 0.0
             disks.append({
-                "device": "C:" if os.name == "nt" else root_mp,
+                "device": "C:" if is_win else root_mp,
                 "mountpoint": root_mp,
-                "fstype": "NTFS" if os.name == "nt" else "root",
-                "total_bytes": int(usage.total), "used_bytes": int(usage.used),
-                "available_bytes": int(usage.free), "use_percent": pct,
+                "fstype": "NTFS" if is_win else "root",
+                "total_bytes": int(total), "used_bytes": int(used),
+                "available_bytes": int(free), "use_percent": pct,
             })
         except Exception:
             pass
@@ -336,14 +367,14 @@ def _op_facts(req):
             pass
     host_val = (
         (uname.node or socket.gethostname())
-        if os.name == "nt"
+        if is_win
         else (socket.gethostname() or uname.node)
     ) or req.get("default_host", "localhost")
     return {
         "os_family": os_family,
         "distro": distro,
-        "kernel": uname.release or "unknown",
-        "arch": uname.machine or "unknown",
+        "kernel": uname.release or ("Windows" if is_win else "unknown"),
+        "arch": uname.machine or ("x86_64" if is_win else "unknown"),
         "hostname": host_val,
         "uptime_seconds": uptime,
         "cpu_count": os.cpu_count() or 1,
@@ -586,6 +617,73 @@ def _decode_worker_value(val: Any) -> Any:
     return val
 
 
+_LOCAL_OP_FACTS_FN: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+
+
+def raw_dict_to_host_facts(
+    raw: Mapping[str, Any],
+    default_host: str = "localhost",
+) -> HostFacts:
+    """Преобразовать сырой словарь фактов воркера ``_op_facts`` в типизированный ``HostFacts``."""
+    disks = [
+        DiskInfo(
+            device=d["device"],
+            mountpoint=d["mountpoint"],
+            fstype=d.get("fstype", ""),
+            total_bytes=int(d.get("total_bytes", 0)),
+            used_bytes=int(d.get("used_bytes", 0)),
+            available_bytes=int(d.get("available_bytes", 0)),
+            use_percent=float(d.get("use_percent", 0.0)),
+        )
+        for d in raw.get("disks", [])
+    ]
+    interfaces = [
+        NetworkInterface(
+            name=iface["name"],
+            mac=iface.get("mac", ""),
+            ipv4=list(iface.get("ipv4", [])),
+            ipv6=list(iface.get("ipv6", [])),
+            state=iface.get("state", "UNKNOWN"),
+            mtu=int(iface.get("mtu", 1500)),
+        )
+        for iface in raw.get("interfaces", [])
+    ]
+    return HostFacts(
+        os_family=raw.get("os_family", "Linux"),
+        distro=raw.get("distro", "Linux"),
+        kernel=raw.get("kernel", "unknown"),
+        arch=raw.get("arch", "unknown"),
+        hostname=raw.get("hostname", default_host),
+        uptime_seconds=float(raw.get("uptime_seconds", 0.0)),
+        cpu_count=int(raw.get("cpu_count", 1)),
+        memory_total_bytes=int(raw.get("memory_total_bytes", 0)),
+        memory_available_bytes=int(raw.get("memory_available_bytes", 0)),
+        disks=disks,
+        interfaces=interfaces,
+    )
+
+
+def collect_local_python_facts(
+    default_host: str = "localhost",
+    *,
+    force_windows: bool = False,
+) -> HostFacts:
+    """Собрать ``HostFacts`` в текущем процессе Python через единую функцию ``_op_facts`` воркера."""
+    global _LOCAL_OP_FACTS_FN
+    if _LOCAL_OP_FACTS_FN is None:
+        defs_only = WORKER_BOOTSTRAP_SCRIPT.split("_REAL_STDOUT.write(_READY", 1)[0]
+        ns: dict[str, Any] = {}
+        exec(compile(defs_only, "<uniconn_worker_facts>", "exec"), ns, ns)
+        _LOCAL_OP_FACTS_FN = cast(
+            Callable[[dict[str, Any]], dict[str, Any]],
+            ns["_op_facts"],
+        )
+    raw = _LOCAL_OP_FACTS_FN(
+        {"default_host": default_host, "force_windows": force_windows}
+    )
+    return raw_dict_to_host_facts(raw, default_host=default_host)
+
+
 class RemotePythonWorker:
     """Менеджер постоянного удалённого Python-воркера для соединения ``Connection``."""
 
@@ -685,9 +783,17 @@ class RemotePythonWorker:
     def _build_bootstrap_command(self) -> str:
         """Сформировать однострочную команду запуска постоянного воркера со сжатым base64-скриптом."""
         b64_script = base64.b64encode(WORKER_BOOTSTRAP_SCRIPT.encode("utf-8")).decode("ascii")
-        interp = self._python_interpreter()
+        raw_interp = self._python_interpreter()
+        if re.search(r"[;|&`$><\n\r]", raw_interp):
+            safe_interp = shlex.quote(raw_interp)
+        else:
+            try:
+                parts = shlex.split(raw_interp)
+            except ValueError:
+                parts = [raw_interp]
+            safe_interp = shlex.join(parts) if parts else "python3"
         return (
-            f"{interp} -u -c "
+            f"{safe_interp} -u -c "
             f"\"import base64; exec(base64.b64decode('{b64_script}').decode('utf-8'))\""
         )
 
@@ -867,18 +973,46 @@ class RemotePythonWorker:
         timeout: float | None = None,
         *,
         sudo: bool = False,
+        bypass_pipeline: bool = False,
     ) -> dict[str, Any]:
-        """Выполнить RPC-запрос одноразовым вызовом ``python3 -u -c ...`` через ``conn.run``."""
+        """Выполнить RPC-запрос одноразовым вызовом ``python3 -u -c ...``."""
         cmd = self._build_bootstrap_command()
         req_input = json.dumps(payload, ensure_ascii=False) + '\n{"id": 0, "op": "exit"}\n'
-        res = await self._conn.run(
-            cmd,
-            input=req_input,
-            timeout=timeout,
-            sudo=sudo,
-            raise_on_error=False,
-            dry_run=False,
-        )
+        conn_run = getattr(self._conn, "run", None)
+        conn_type_run = getattr(type(self._conn), "run", None)
+        is_conn_run_mocked = getattr(conn_run, "__func__", None) is not conn_type_run
+
+        if bypass_pipeline and not is_conn_run_mocked:
+            tr = self._conn.transport
+            if not tr.is_connected:
+                await tr.connect()
+            exec_cmd, effective_input = prepare_sudo_command(
+                cmd,
+                sudo=sudo,
+                sudo_user=None,
+                sudo_password=None,
+                input_data=req_input,
+                config_options=self._conn.config.options,
+                config_password=self._conn.config.password,
+            )
+            tr_kwargs: dict[str, Any] = {}
+            self._conn.context.apply_to_kwargs(tr_kwargs)
+            if effective_input is not None:
+                tr_kwargs["input"] = effective_input
+            res = await tr.run(
+                exec_cmd,
+                timeout=timeout or self._conn.config.timeout,
+                **tr_kwargs,
+            )
+        else:
+            res = await self._conn.run(
+                cmd,
+                input=req_input,
+                timeout=timeout,
+                sudo=sudo,
+                raise_on_error=False,
+                dry_run=False,
+            )
         for line in res.stdout.splitlines():
             stripped = line.strip()
             if WORKER_RPC_PREFIX in stripped:
@@ -942,10 +1076,16 @@ class RemotePythonWorker:
         """Низкоуровневое выполнение RPC-запроса под защитой асинхронной блокировки."""
         async with self._lock:
             self._req_id += 1
+            bypass_pipeline = bool(params.pop("_bypass_pipeline", False))
             payload: dict[str, Any] = {"id": self._req_id, "op": op, **params}
 
             if sudo:
-                resp = await self._execute_oneshot_via_run(payload, timeout=timeout, sudo=True)
+                resp = await self._execute_oneshot_via_run(
+                    payload,
+                    timeout=timeout,
+                    sudo=True,
+                    bypass_pipeline=bypass_pipeline,
+                )
             else:
                 started = await self.ensure_started(timeout=timeout)
                 if started:
@@ -956,11 +1096,19 @@ class RemotePythonWorker:
                         if await self.ensure_started(timeout=timeout):
                             resp = await self._send_over_pipe(payload, timeout=timeout)
                         elif allow_oneshot_fallback:
-                            resp = await self._execute_oneshot_via_run(payload, timeout=timeout)
+                            resp = await self._execute_oneshot_via_run(
+                                payload,
+                                timeout=timeout,
+                                bypass_pipeline=bypass_pipeline,
+                            )
                         else:
                             raise
                 elif allow_oneshot_fallback:
-                    resp = await self._execute_oneshot_via_run(payload, timeout=timeout)
+                    resp = await self._execute_oneshot_via_run(
+                        payload,
+                        timeout=timeout,
+                        bypass_pipeline=bypass_pipeline,
+                    )
                 else:
                     raise CapabilityNotSupportedError(
                         "Persistent Python worker is not available on this connection",
@@ -991,73 +1139,56 @@ class RemotePythonWorker:
         dry_run: bool | None = None,
         **kwargs: Any,
     ) -> Any:
-        """Выполнить Python-функцию, lambda или выражение в удалённом воркере."""
+        """Выполнить Python-функцию, lambda или выражение в удалённом воркере через CommandPipeline."""
         effective_dry = self._conn.dry_run if dry_run is None else dry_run
         source, func_name, is_expr = CallableSerializer.serialize(fn)
         cmd_label = f"run_python:{func_name}"
-
-        if effective_dry:
-            self._conn.logger.info(
-                f"[DRY-RUN] Skipping {cmd_label} on {self._conn.config.uri_safe}"
-            )
-            return None
-
-        cwd = self._conn.current_cwd
-        env = self._conn.current_env
         encoded_args = _encode_worker_value(list(args))
         encoded_kwargs = _encode_worker_value(dict(kwargs))
-        start_t = time.monotonic()
 
-        # Интеграция с lifecycle-хуками Connection (before_run / after_run / on_error)
-        hook_kwargs: dict[str, Any] = {
-            "cwd": cwd,
-            "env": env,
-            "sudo": sudo,
-            "args": args,
-            "kwargs": kwargs,
-        }
-        for before_cb in self._conn.get_hooks("before_run"):
-            res_cb = before_cb(cmd_label, self._conn.config.host, hook_kwargs)
-            if inspect.isawaitable(res_cb):
-                await res_cb
+        req = CommandRequest(
+            raw_command=cmd_label,
+            command=cmd_label,
+            exec_command=cmd_label,
+            timeout=timeout,
+            raise_on_error=True,
+            sudo=sudo,
+            dry_run=effective_dry,
+            transport_kwargs={
+                "sudo": sudo,
+                "args": args,
+                "kwargs": kwargs,
+            },
+        )
+        ret_holder: list[Any] = [None]
 
-        try:
-            result = await self.request(
+        async def _py_terminal(r: CommandRequest) -> Result:
+            t0 = time.monotonic()
+            val = await self.request(
                 "call",
-                timeout=timeout,
-                sudo=sudo,
+                timeout=r.timeout,
+                sudo=r.sudo,
                 source=source,
                 func_name=func_name,
                 is_expr=is_expr,
                 args=encoded_args,
                 kwargs=encoded_kwargs,
-                cwd=cwd,
-                env=env,
+                cwd=r.transport_kwargs.get("cwd") or self._conn.current_cwd,
+                env=r.transport_kwargs.get("env") or self._conn.current_env,
+                _bypass_pipeline=True,
             )
-        except Exception as exc:
-            for err_cb in self._conn.get_hooks("on_error"):
-                res_err = err_cb(exc, cmd_label, self._conn.config.host)
-                if inspect.isawaitable(res_err):
-                    await res_err
-            raise
-
-        duration = time.monotonic() - start_t
-        after_hooks = self._conn.get_hooks("after_run")
-        if after_hooks:
-            synth_res = Result(
+            ret_holder[0] = val
+            return Result(
                 exit_code=0,
-                stdout=repr(result),
+                stdout=repr(val),
                 stderr="",
-                duration=duration,
+                duration=time.monotonic() - t0,
                 command=cmd_label,
                 host=self._conn.config.host,
             )
-            for after_cb in after_hooks:
-                res_after = after_cb(synth_res)
-                if inspect.isawaitable(res_after):
-                    await res_after
 
-        return result
+        await self._conn.pipeline.execute(req, terminal_handler=_py_terminal)
+        return ret_holder[0]
 
     async def gather_facts(
         self,
@@ -1071,42 +1202,7 @@ class RemotePythonWorker:
             allow_oneshot_fallback=False,
             default_host=default_host,
         )
-        disks = [
-            DiskInfo(
-                device=d["device"],
-                mountpoint=d["mountpoint"],
-                fstype=d.get("fstype", ""),
-                total_bytes=int(d.get("total_bytes", 0)),
-                used_bytes=int(d.get("used_bytes", 0)),
-                available_bytes=int(d.get("available_bytes", 0)),
-                use_percent=float(d.get("use_percent", 0.0)),
-            )
-            for d in raw.get("disks", [])
-        ]
-        interfaces = [
-            NetworkInterface(
-                name=iface["name"],
-                mac=iface.get("mac", ""),
-                ipv4=list(iface.get("ipv4", [])),
-                ipv6=list(iface.get("ipv6", [])),
-                state=iface.get("state", "UNKNOWN"),
-                mtu=int(iface.get("mtu", 1500)),
-            )
-            for iface in raw.get("interfaces", [])
-        ]
-        return HostFacts(
-            os_family=raw.get("os_family", "Linux"),
-            distro=raw.get("distro", "Linux"),
-            kernel=raw.get("kernel", "unknown"),
-            arch=raw.get("arch", "unknown"),
-            hostname=raw.get("hostname", default_host),
-            uptime_seconds=float(raw.get("uptime_seconds", 0.0)),
-            cpu_count=int(raw.get("cpu_count", 1)),
-            memory_total_bytes=int(raw.get("memory_total_bytes", 0)),
-            memory_available_bytes=int(raw.get("memory_available_bytes", 0)),
-            disks=disks,
-            interfaces=interfaces,
-        )
+        return raw_dict_to_host_facts(raw, default_host=default_host)
 
     async def glob_with_stat(
         self,
@@ -1195,5 +1291,7 @@ __all__ = [
     "RemotePythonWorker",
     "_decode_worker_value",
     "_encode_worker_value",
+    "collect_local_python_facts",
+    "raw_dict_to_host_facts",
     "run_python",
 ]

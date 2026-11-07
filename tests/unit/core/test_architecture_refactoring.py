@@ -272,3 +272,69 @@ def test_inventory_loader_and_ssh_config_parser(tmp_path: Path) -> None:
     assert resolved["hostname"] == "192.168.1.50"
     assert resolved["user"] == "deploy"
     assert resolved["port"] == 2200
+
+
+def test_secret_resolver_base_dir_prevents_path_traversal(tmp_path: Path) -> None:
+    """SecretResolver и InventoryLoader с base_dir блокируют выход за пределы разрешённой директории."""
+    from uniconn.config.secrets import SecretResolver
+    from uniconn.exceptions import ConfigurationError
+
+    allowed_dir = tmp_path / "secrets"
+    allowed_dir.mkdir()
+    outside_file = tmp_path / "outside_secret.txt"
+    outside_file.write_text("top_secret", encoding="utf-8")
+    inside_file = allowed_dir / "db_pass.txt"
+    inside_file.write_text("inside_secret\n", encoding="utf-8")
+
+    # Без base_dir чтение работает по умолчанию
+    assert SecretResolver.resolve_str(f"file://{outside_file}") == "top_secret"
+    # Внутри base_dir чтение разрешено
+    assert SecretResolver.resolve_str(f"file://{inside_file}", base_dir=allowed_dir) == "inside_secret"
+
+    # Попытка чтения файла вне base_dir вызывает ConfigurationError
+    with pytest.raises(ConfigurationError, match="escapes allowed base_dir"):
+        SecretResolver.resolve_str(f"file://{outside_file}", base_dir=allowed_dir)
+
+    inv_data = {
+        "hosts": {
+            "app1": {
+                "host": "10.0.0.5",
+                "password": f"file://{outside_file}",
+            }
+        }
+    }
+    with pytest.raises(ConfigurationError, match="escapes allowed base_dir"):
+        InventoryLoader.parse_data(inv_data, base_dir=allowed_dir)
+
+
+@pytest.mark.asyncio
+async def test_external_tool_runner_blocks_unsafe_artifact_glob() -> None:
+    """ExternalToolRunner.run_tool отвергает artifact_glob с шелл-метасимволами."""
+    from uniconn.services.facts import ExternalToolRunner
+    from uniconn.services.facts_models import ExternalToolSpec
+
+    async with Connection.from_uri("local://") as conn:
+        runner = ExternalToolRunner(conn)
+        bad_spec = ExternalToolSpec(
+            name="bad",
+            command="echo ok",
+            output_mode="artifact",
+            artifact_glob="/tmp/*.json; rm -rf /",
+        )
+        res = await runner.run_tool(bad_spec)
+        assert isinstance(res, dict)
+        assert res["ok"] is False
+        assert "Unsafe characters in artifact_glob" in res["error"]
+
+
+def test_diagnostic_write_json_atomic_replaces_cleanly(tmp_path: Path) -> None:
+    """_write_json_atomic атомарно записывает JSON без оставления временных файлов."""
+    from uniconn.background._diagnostic import _write_json_atomic
+
+    target = tmp_path / "manifest.json"
+    _write_json_atomic(target, {"status": "ok", "count": 3})
+    assert target.exists()
+    assert '"status": "ok"' in target.read_text(encoding="utf-8")
+    leftover_tmps = list(tmp_path.glob("*.tmp"))
+    assert leftover_tmps == []
+

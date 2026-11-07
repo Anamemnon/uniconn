@@ -51,6 +51,21 @@ class SyncConnectionPool(SyncProxyMixin):
         return self._portal.closed
 
     @property
+    def targets(self) -> list[Any]:
+        """Список целевых хостов/конфигураций/соединений пула."""
+        return self._async_pool.targets
+
+    @property
+    def batch_size(self) -> int | None:
+        """Размер батча волновой раскатки пула (если настроен)."""
+        return self._async_pool.batch_size
+
+    @property
+    def max_fail_ratio(self) -> float:
+        """Максимально допустимая доля ошибок в батче пула."""
+        return self._async_pool.max_fail_ratio
+
+    @property
     def rate_limiter(self) -> RateLimiter | None:
         """Общий ограничитель частоты команд пула (если настроен)."""
         return self._async_pool.rate_limiter
@@ -59,6 +74,11 @@ class SyncConnectionPool(SyncProxyMixin):
     def circuit_breakers(self) -> dict[str, CircuitBreaker]:
         """Словарь предохранителей ``CircuitBreaker`` по ключам хостов пула."""
         return self._async_pool.circuit_breakers
+
+    @classmethod
+    def target_key(cls, target: Any) -> str:
+        """Публичный метод получения строкового ключа хоста для элемента пула."""
+        return ConnectionPool.target_key(target)
 
     def add_connection_initializer(
         self, initializer: Callable[[Connection], None]

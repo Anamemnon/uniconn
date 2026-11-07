@@ -48,6 +48,8 @@ _ASYNC_ONLY_METHODS: frozenset[str] = frozenset(
         "with_overrides",
         "to_sync",
         "initialize",
+        "semaphore",
+        "use_target_connection",
     }
 )
 

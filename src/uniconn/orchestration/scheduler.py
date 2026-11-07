@@ -63,16 +63,16 @@ def _resolve_rollout_limits(
     """Определить эффективные ``(eff_batch, eff_ratio, enforce_ratio)`` для флотского запуска."""
     eff_batch = flow.batch_size if batch_size is None else batch_size
     if eff_batch is None:
-        eff_batch = pool._batch_size
+        eff_batch = pool.batch_size
     eff_ratio = flow.max_fail_ratio if max_fail_ratio is None else max_fail_ratio
-    if eff_ratio == 0.0 and pool._max_fail_ratio > 0.0:
-        eff_ratio = pool._max_fail_ratio
+    if eff_ratio == 0.0 and pool.max_fail_ratio > 0.0:
+        eff_ratio = pool.max_fail_ratio
 
     enforce_ratio = (
         eff_batch is not None
         or max_fail_ratio is not None
         or flow.max_fail_ratio > 0.0
-        or pool._batch_size is not None
+        or pool.batch_size is not None
     )
     return eff_batch, eff_ratio, enforce_ratio
 
@@ -218,7 +218,7 @@ class _TaskExecutionEngine:
         if self.dry_run_override is None or conn.dry_run == self.dry_run_override:
             return conn
         eff_conn = conn.with_overrides(dry_run=self.dry_run_override)
-        eff_conn.state._batch_stack = conn.state._batch_stack
+        eff_conn.state.share_batches_from(conn.state)
         return eff_conn
 
     async def _evaluate_when(
@@ -431,7 +431,7 @@ async def run_single_host_dag(
                 pending_task.cancel()
             await asyncio.gather(*running.keys(), return_exceptions=True)
         if batch_obj is not None:
-            conn.state._pop_batch(batch_obj)
+            conn.state.discard_batch(batch_obj)
 
     return ordered_results, notified_keys
 
@@ -451,15 +451,15 @@ async def run_independent_fleet(
     eff_batch, eff_ratio, enforce_ratio = _resolve_rollout_limits(
         flow, pool, batch_size, max_fail_ratio
     )
-    batches = _slice_into_batches(pool._uris, eff_batch)
+    batches = _slice_into_batches(pool.targets, eff_batch)
 
     async def _run_host(
         idx: int, target: Any
     ) -> tuple[str, list[TaskResult], list[str], BaseException | None]:
-        key = pool._target_key(target)
-        async with pool._semaphore:
+        key = pool.target_key(target)
+        async with pool.semaphore:
             try:
-                async with pool._use_conn(idx, target, with_defaults=True) as conn:
+                async with pool.use_target_connection(idx, target, with_defaults=True) as conn:
                     res_list, notif = await run_single_host_dag(
                         flow, key, conn, engine
                     )
@@ -512,14 +512,14 @@ async def run_barrier_fleet(
     max_fail_ratio: float | None = None,
 ) -> tuple[dict[str, list[TaskResult]], dict[str, list[str]]]:
     """Исполнить DAG в барьерном режиме (по топологическим слоям и батчам хостов)."""
-    uris = list(pool._uris)
+    uris = pool.targets
     results_by_host: dict[str, list[TaskResult]] = {
-        pool._target_key(t): [] for t in uris
+        pool.target_key(t): [] for t in uris
     }
     host_task_maps: dict[str, dict[str, TaskResult]] = {
-        pool._target_key(t): {} for t in uris
+        pool.target_key(t): {} for t in uris
     }
-    host_aborted: dict[str, bool] = {pool._target_key(t): False for t in uris}
+    host_aborted: dict[str, bool] = {pool.target_key(t): False for t in uris}
     notified_by_host: dict[str, list[str]] = {}
 
     if not uris:
@@ -539,7 +539,7 @@ async def run_barrier_fleet(
             async def _acquire_host_conn(idx: int, target: Any, key: str) -> Connection:
                 if idx not in host_conns:
                     conn = await conn_stack.enter_async_context(
-                        pool._use_conn(idx, target, with_defaults=True)
+                        pool.use_target_connection(idx, target, with_defaults=True)
                     )
                     host_conns[idx] = conn
                     if flow.batch_notifications:
@@ -554,8 +554,8 @@ async def run_barrier_fleet(
                 layer_tasks: list[Task[Any, Any]],
                 is_last_layer: bool,
             ) -> tuple[str, list[TaskResult], BaseException | None]:
-                key = pool._target_key(target)
-                async with pool._semaphore:
+                key = pool.target_key(target)
+                async with pool.semaphore:
                     try:
                         conn = await _acquire_host_conn(idx, target, key)
                         coros = [
@@ -584,7 +584,7 @@ async def run_barrier_fleet(
                                 if notif_list:
                                     notified_by_host[key] = notif_list
                             finally:
-                                c_obj.state._pop_batch(nb)
+                                c_obj.state.discard_batch(nb)
 
                         return key, layer_res, None
                     except Exception as exc:
@@ -611,12 +611,12 @@ async def run_barrier_fleet(
                         )
                     )
                     batch_failures: dict[str, Any] = {}
-                    for key, _layer_res, exc in outcomes:
+                    for key, layer_res, exc in outcomes:
                         if exc is not None:
                             batch_failures[key] = exc
-                        elif any(not r.ok for r in results_by_host[key]):
+                        elif any(not r.ok for r in layer_res):
                             batch_failures[key] = [
-                                r for r in results_by_host[key] if not r.ok
+                                r for r in layer_res if not r.ok
                             ]
 
                     if enforce_ratio:
@@ -633,7 +633,7 @@ async def run_barrier_fleet(
             # Гарантированно очищаем стек батчей на всех соединениях при раннем выходе/BatchAbortedError
             for c_obj, nb in list(host_batches.values()):
                 with contextlib.suppress(Exception):
-                    c_obj.state._pop_batch(nb)
+                    c_obj.state.discard_batch(nb)
             host_batches.clear()
 
     return results_by_host, notified_by_host

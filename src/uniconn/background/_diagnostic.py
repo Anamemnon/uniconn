@@ -11,6 +11,7 @@ import os
 import shlex
 import time
 import tomllib
+import uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -260,14 +261,21 @@ class DiagnosticResult(BaseModel):
 
 
 def _write_json_atomic(path: Path, data: Any, fsync: bool = True) -> None:
-    """Записать JSON-файл с опциональным ``os.fsync`` для защиты от потери данных."""
+    """Атомарно записать JSON-файл через временный файл и ``os.replace`` с опциональным ``os.fsync``."""
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(data, indent=2, ensure_ascii=False)
-    with path.open("w", encoding="utf-8") as f:
-        f.write(text)
-        if fsync:
-            f.flush()
-            os.fsync(f.fileno())
+    tmp_path = path.parent / f".{path.name}.{os.getpid()}.{time.monotonic_ns()}.tmp"
+    try:
+        with tmp_path.open("w", encoding="utf-8") as f:
+            f.write(text)
+            if fsync:
+                f.flush()
+                os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        with contextlib.suppress(OSError):
+            tmp_path.unlink(missing_ok=True)
+        raise
 
 
 class DiagnosticSession:
@@ -432,10 +440,19 @@ class DiagnosticSession:
                 f"mkdir -p {shlex.quote(remote_dir)}", raise_on_error=False
             )
             text = json.dumps(payload, indent=2, ensure_ascii=False)
-            await fwd_conn.run(
-                f"printf '%s' {shlex.quote(text)} > {shlex.quote(remote_file)}",
-                raise_on_error=False,
-            )
+            if len(text) > 65536:
+                await fwd_conn.run(
+                    f"cat > {shlex.quote(remote_file)}",
+                    input=text,
+                    raise_on_error=False,
+                    sensitive=True,
+                )
+            else:
+                await fwd_conn.run(
+                    f"printf '%s' {shlex.quote(text)} > {shlex.quote(remote_file)}",
+                    raise_on_error=False,
+                    sensitive=True,
+                )
         except Exception as exc:
             logger.warning(f"Не удалось переслать {filename} на резервный хост: {exc}")
 
@@ -520,10 +537,11 @@ class DiagnosticSession:
                     artifact_dir=tools_dir,
                 )
                 pre_dict = self.pre_facts.to_dict()
-                _write_json_atomic(
+                await asyncio.to_thread(
+                    _write_json_atomic,
                     self._workspace_dir / "pre_facts.json",
                     pre_dict,
-                    fsync=self._config.fsync_realtime,
+                    self._config.fsync_realtime,
                 )
                 await self._forward_json("pre_facts.json", pre_dict)
             except Exception as exc:
@@ -541,7 +559,8 @@ class DiagnosticSession:
 
         if spec.mode == "background":
             bg_name = f"uniconn_diag_{_sanitize_name(spec.name)}"
-            remote_log = f"/tmp/{bg_name}.log"
+            session_token = uuid.uuid4().hex[:8]
+            remote_log = f"/tmp/{bg_name}_{session_token}.log"
             await self._conn.run(
                 f"rm -f {shlex.quote(remote_log)}", raise_on_error=False
             )
@@ -592,10 +611,11 @@ class DiagnosticSession:
         )
         self.snapshots[safe_label] = facts
         snap_dict = facts.to_dict()
-        _write_json_atomic(
+        await asyncio.to_thread(
+            _write_json_atomic,
             self._workspace_dir / "snapshots" / f"{safe_label}.json",
             snap_dict,
-            fsync=self._config.fsync_realtime,
+            self._config.fsync_realtime,
         )
         if self._timeline_handler is not None:
             self._timeline_handler.record_event(
@@ -660,10 +680,11 @@ class DiagnosticSession:
                         artifact_dir=tools_dir,
                     )
                     post_dict = self.post_facts.to_dict()
-                    _write_json_atomic(
+                    await asyncio.to_thread(
+                        _write_json_atomic,
                         self._workspace_dir / "post_facts.json",
                         post_dict,
-                        fsync=self._config.fsync_realtime,
+                        self._config.fsync_realtime,
                     )
                     await self._forward_json("post_facts.json", post_dict)
             except Exception as exc:
@@ -676,10 +697,11 @@ class DiagnosticSession:
                 baseline_host="pre",
             )
             diff_dict = self.facts_diff.to_dict()
-            _write_json_atomic(
+            await asyncio.to_thread(
+                _write_json_atomic,
                 self._workspace_dir / "facts_diff.json",
                 diff_dict,
-                fsync=self._config.fsync_realtime,
+                self._config.fsync_realtime,
             )
             await self._forward_json("facts_diff.json", diff_dict)
 
@@ -751,10 +773,11 @@ class DiagnosticSession:
         )
 
         manifest_dict = self.result.to_manifest_dict()
-        _write_json_atomic(
+        await asyncio.to_thread(
+            _write_json_atomic,
             self._workspace_dir / "manifest.json",
             manifest_dict,
-            fsync=self._config.fsync_realtime,
+            self._config.fsync_realtime,
         )
         await self._forward_json("manifest.json", manifest_dict)
 

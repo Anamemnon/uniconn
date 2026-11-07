@@ -39,9 +39,10 @@ class SecretResolver:
         value: str,
         *,
         env: Mapping[str, str] | None = None,
+        base_dir: str | Path | None = None,
     ) -> str:
         """Разрешить одиночную строку со схемой ``env://`` или ``file://``."""
-        return cls.resolve_str(value, env=env)
+        return cls.resolve_str(value, env=env, base_dir=base_dir)
 
     @classmethod
     def resolve_str(
@@ -49,12 +50,13 @@ class SecretResolver:
         value: str,
         *,
         env: Mapping[str, str] | None = None,
+        base_dir: str | Path | None = None,
     ) -> str:
         """Разрешить одиночную строку со схемой ``env://`` или ``file://``."""
         if value.startswith("env://"):
             return cls._resolve_env(value, env=env)
         if value.startswith("file://"):
-            return cls._resolve_file(value)
+            return cls._resolve_file(value, base_dir=base_dir)
         return value
 
     @classmethod
@@ -83,7 +85,12 @@ class SecretResolver:
         )
 
     @classmethod
-    def _resolve_file(cls, uri: str) -> str:
+    def _resolve_file(
+        cls,
+        uri: str,
+        *,
+        base_dir: str | Path | None = None,
+    ) -> str:
         rest = uri[len("file://") :]
         raw_path, has_query, query_str = rest.partition("?")
         decoded_path = unquote(raw_path).strip()
@@ -92,6 +99,19 @@ class SecretResolver:
 
         params = parse_qs(query_str, keep_blank_values=True) if has_query else {}
         file_path = Path(decoded_path).expanduser()
+
+        if base_dir is not None:
+            resolved_base = Path(base_dir).expanduser().resolve()
+            candidate = (
+                (resolved_base / file_path).resolve()
+                if not file_path.is_absolute()
+                else file_path.resolve()
+            )
+            if not candidate.is_relative_to(resolved_base):
+                raise ConfigurationError(
+                    f"Secret file path {str(file_path)!r} escapes allowed base_dir {str(resolved_base)!r}"
+                )
+            file_path = candidate
 
         try:
             content = file_path.read_text(encoding="utf-8")
@@ -109,23 +129,24 @@ class SecretResolver:
         value: Any,
         *,
         env: Mapping[str, str] | None = None,
+        base_dir: str | Path | None = None,
     ) -> Any:
         """Рекурсивно разрешить секретные URI в строке, ``SecretStr``, списке или словаре."""
         if isinstance(value, SecretStr):
             raw = value.get_secret_value()
             if raw.startswith(_SECRET_SCHEMES):
-                return SecretStr(cls.resolve_str(raw, env=env))
+                return SecretStr(cls.resolve_str(raw, env=env, base_dir=base_dir))
             return value
         if isinstance(value, str):
             if value.startswith(_SECRET_SCHEMES):
-                return cls.resolve_str(value, env=env)
+                return cls.resolve_str(value, env=env, base_dir=base_dir)
             return value
         if isinstance(value, Mapping):
-            return cls.resolve_mapping(value, env=env)
+            return cls.resolve_mapping(value, env=env, base_dir=base_dir)
         if isinstance(value, list):
-            return [cls.resolve_value(item, env=env) for item in value]
+            return [cls.resolve_value(item, env=env, base_dir=base_dir) for item in value]
         if isinstance(value, tuple):
-            return tuple(cls.resolve_value(item, env=env) for item in value)
+            return tuple(cls.resolve_value(item, env=env, base_dir=base_dir) for item in value)
         return value
 
     @classmethod
@@ -134,9 +155,13 @@ class SecretResolver:
         data: Mapping[str, Any],
         *,
         env: Mapping[str, str] | None = None,
+        base_dir: str | Path | None = None,
     ) -> dict[str, Any]:
         """Рекурсивно разрешить все ``env://`` и ``file://`` ссылки в словаре конфигурации."""
-        return {str(k): cls.resolve_value(v, env=env) for k, v in data.items()}
+        return {
+            str(k): cls.resolve_value(v, env=env, base_dir=base_dir)
+            for k, v in data.items()
+        }
 
 
 __all__ = ["SecretResolver"]

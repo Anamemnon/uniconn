@@ -366,3 +366,42 @@ def test_sync_connection_read_write_and_run_bytes(tmp_path: Path):
         assert conn.files.read_file(str(target)) == "sync content"
         raw = conn.run_bytes(["python3", "-c", "import sys; sys.stdout.buffer.write(b'raw_ok')"])
         assert raw == b"raw_ok"
+
+
+def test_allowlist_hook_blocks_shell_operators_by_default():
+    """allowlist_hook по умолчанию блокирует шелл-операторы (;, |, &&, $(), `), кроме точного совпадения."""
+    from uniconn.hooks import allowlist_hook
+
+    hook = allowlist_hook(["ls", "df -h", "cat /etc/os-release | head -n 1"])
+    hook("ls -la /tmp", "localhost", {})
+    hook("df -h", "localhost", {})
+    # Точное совпадение с разрешённой строкой пропускается даже с пайпом
+    hook("cat /etc/os-release | head -n 1", "localhost", {})
+
+    for malicious in [
+        "ls; rm -rf /",
+        "ls | sh",
+        "ls && id",
+        "ls $(whoami)",
+        "ls `whoami`",
+        "ls > /etc/passwd",
+        "ls\nid",
+    ]:
+        with pytest.raises(PermissionError, match="shell operator"):
+            hook(malicious, "localhost", {})
+
+    # С флагом allow_shell_operators=True разрешается префиксное совпадение с пайпами
+    permissive_hook = allowlist_hook(["ls"], allow_shell_operators=True)
+    permissive_hook("ls | wc -l", "localhost", {})
+
+
+def test_blocklist_hook_normalizes_whitespace_against_bypass():
+    """blocklist_hook нормализует множественные пробелы и табуляции для защиты от обхода."""
+    from uniconn.hooks import blocklist_hook
+
+    hook = blocklist_hook(["rm -rf /", "shutdown"])
+    with pytest.raises(PermissionError, match="blocked by pattern"):
+        hook("rm   -rf\t  /", "localhost", {})
+    with pytest.raises(PermissionError, match="blocked by pattern"):
+        hook("sudo   rm   -rf   /var", "localhost", {})
+

@@ -83,9 +83,31 @@ def serve_dev_dashboard(port: int = 3000) -> None:
             except Exception:
                 return {}
 
+        def _is_cross_site_request(self) -> bool:
+            sec_site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+            if sec_site == "cross-site":
+                return True
+            origin = (self.headers.get("Origin") or "").strip()
+            if origin:
+                if origin.lower() == "null":
+                    return True
+                parsed_origin = urlparse(origin)
+                origin_host = (parsed_origin.hostname or "").lower()
+                host_header = (self.headers.get("Host") or "").split(":", 1)[0].strip().lower()
+                allowed_hosts = {host_header, "localhost", "127.0.0.1", "0.0.0.0"}
+                if origin_host and origin_host not in allowed_hosts:
+                    return True
+            return False
+
         def do_GET(self) -> None:
             try:
                 parsed = urlparse(self.path)
+                if parsed.path.startswith("/api/") and self._is_cross_site_request():
+                    self._send_json(
+                        {"error": "Cross-origin API requests are forbidden"},
+                        status=403,
+                    )
+                    return
                 qs = parse_qs(parsed.query)
                 if parsed.path == "/api/status":
                     self._send_json(_dispatch_endpoint("status"))
@@ -127,6 +149,12 @@ def serve_dev_dashboard(port: int = 3000) -> None:
         def do_POST(self) -> None:
             try:
                 parsed = urlparse(self.path)
+                if parsed.path.startswith("/api/") and self._is_cross_site_request():
+                    self._send_json(
+                        {"error": "Cross-origin API requests are forbidden"},
+                        status=403,
+                    )
+                    return
                 payload = self._read_json_body()
                 if parsed.path == "/api/shell":
                     cmd = str(payload.get("cmd") or "pwd")

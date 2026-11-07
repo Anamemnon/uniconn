@@ -115,22 +115,30 @@ def audit_log_hook(
     return _on_after_run
 
 
+_SHELL_OPERATOR_RE = re.compile(r"[;|&`><\n\r]|\$\(")
+
+
 def allowlist_hook(
     allowed_prefixes: Sequence[str],
+    *,
+    allow_shell_operators: bool = False,
 ) -> Callable[[str, str | None, dict[str, Any]], None]:
     """Создать хук ``before_run``, разрешающий только команды из белого списка.
 
     Проверяет, что выполняемая команда (или её базовый исполняемый файл)
-    начинается с одного из разрешённых префиксов.
+    начинается с одного из разрешённых префиксов, и по умолчанию блокирует
+    опасные шелл-операторы цепочек/перенаправлений (``;``, ``|``, ``&&``, ``$()``, `` ` ``).
 
     Args:
         allowed_prefixes: Список разрешённых команд или префиксов
+        allow_shell_operators: Разрешить ли шелл-операторы (``;``, ``|``, ``&``, ``>``, ``$()``)
+            внутри команд, начинающихся с разрешённого префикса (по умолчанию ``False``)
 
     Returns:
         Функция обратного вызова для ``conn.add_hook("before_run", ...)``
 
     Raises:
-        PermissionError: Если команда не входит в белый список
+        PermissionError: Если команда не входит в белый список или содержит запрещённые операторы
 
     """
     normalized = [p.strip() for p in allowed_prefixes if p.strip()]
@@ -143,6 +151,14 @@ def allowlist_hook(
         cmd_stripped = command.strip()
         if not cmd_stripped:
             raise PermissionError(f"Empty command is not allowed on host {host!r}")
+
+        if cmd_stripped in normalized:
+            return
+
+        if not allow_shell_operators and _SHELL_OPERATOR_RE.search(cmd_stripped):
+            raise PermissionError(
+                f"Command {cmd_stripped!r} on host {host!r} contains disallowed shell operators"
+            )
 
         try:
             tokens = shlex.split(cmd_stripped)
@@ -195,8 +211,14 @@ def blocklist_hook(
         _kwargs: dict[str, Any],
     ) -> None:
         cmd_stripped = command.strip()
+        cmd_norm = " ".join(cmd_stripped.split())
         for regex, raw_pat in zip(compiled, patterns, strict=True):
-            if regex.search(cmd_stripped) or raw_pat in cmd_stripped:
+            if (
+                regex.search(cmd_stripped)
+                or regex.search(cmd_norm)
+                or raw_pat in cmd_stripped
+                or raw_pat in cmd_norm
+            ):
                 raise PermissionError(
                     f"Command {cmd_stripped!r} on host {host!r} blocked by pattern {raw_pat!r}"
                 )

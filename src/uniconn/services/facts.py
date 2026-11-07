@@ -40,114 +40,10 @@ _ARTIFACT_PATH_RE = re.compile(
 
 
 def _collect_windows_local_facts(default_host: str) -> HostFacts:
-    """Собрать базовые системные факты для локального хоста на платформе Windows через ctypes/platform."""
-    import ctypes
-    import os
-    import platform
-    import shutil
+    """Собрать базовые системные факты для локального хоста на платформе Windows через единый Python-сборщик."""
+    from ..core.python_worker import collect_local_python_facts
 
-    cpu_count = os.cpu_count() or 1
-    hostname = platform.node() or default_host
-    kernel = platform.release() or "Windows"
-    distro = f"Windows {platform.release()}"
-    arch = platform.machine() or "x86_64"
-    mem_total = 0
-    mem_avail = 0
-
-    kernel32 = getattr(getattr(ctypes, "windll", None), "kernel32", None)
-    if kernel32 is not None:
-        try:
-            class MEMORYSTATUSEX(ctypes.Structure):
-                _fields_ = [
-                    ("dwLength", ctypes.c_ulong),
-                    ("dwMemoryLoad", ctypes.c_ulong),
-                    ("ullTotalPhys", ctypes.c_ulonglong),
-                    ("ullAvailPhys", ctypes.c_ulonglong),
-                    ("ullTotalPageFile", ctypes.c_ulonglong),
-                    ("ullAvailPageFile", ctypes.c_ulonglong),
-                    ("ullTotalVirtual", ctypes.c_ulonglong),
-                    ("ullAvailVirtual", ctypes.c_ulonglong),
-                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
-                ]
-
-            stat = MEMORYSTATUSEX()
-            stat.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
-            if kernel32.GlobalMemoryStatusEx(ctypes.byref(stat)):
-                mem_total = int(stat.ullTotalPhys)
-                mem_avail = int(stat.ullAvailPhys)
-        except Exception:
-            pass
-
-    uptime = 0.0
-    if kernel32 is not None:
-        with contextlib.suppress(Exception):
-            uptime = round(kernel32.GetTickCount64() / 1000.0, 1)
-
-    disks: list[DiskInfo] = []
-    if kernel32 is not None:
-        try:
-            drive_mask = kernel32.GetLogicalDrives()
-            fs_buffer = ctypes.create_unicode_buffer(256)
-
-            for i in range(26):
-                if not (drive_mask & (1 << i)):
-                    continue
-                letter = chr(65 + i)
-                root = f"{letter}:\\"
-                drive_type = kernel32.GetDriveTypeW(root)
-                # 2 = DRIVE_REMOVABLE, 3 = DRIVE_FIXED, 4 = DRIVE_REMOTE, 6 = DRIVE_RAMDISK
-                if drive_type not in (2, 3, 4, 6):
-                    continue
-                try:
-                    total, used, free = shutil.disk_usage(root)
-                    fstype = "NTFS"
-                    if kernel32.GetVolumeInformationW(root, None, 0, None, None, None, fs_buffer, 256):
-                        fstype = fs_buffer.value or "NTFS"
-
-                    disks.append(
-                        DiskInfo(
-                            device=f"{letter}:",
-                            mountpoint=root,
-                            fstype=fstype,
-                            total_bytes=total,
-                            used_bytes=used,
-                            available_bytes=free,
-                            use_percent=round((used / total) * 100, 1) if total > 0 else 0.0,
-                        )
-                    )
-                except OSError:
-                    continue
-        except Exception:
-            pass
-
-    # Резервный опрос C:\ при сбое Win32 API или на не-Windows окружении
-    if not disks:
-        with contextlib.suppress(Exception):
-            total, used, free = shutil.disk_usage("C:\\")
-            disks.append(
-                DiskInfo(
-                    device="C:",
-                    mountpoint="C:\\",
-                    fstype="NTFS",
-                    total_bytes=total,
-                    used_bytes=used,
-                    available_bytes=free,
-                    use_percent=round((used / total) * 100, 1) if total > 0 else 0.0,
-                )
-            )
-
-    return HostFacts(
-        os_family="Windows",
-        distro=distro,
-        kernel=kernel,
-        arch=arch,
-        hostname=hostname,
-        uptime_seconds=uptime,
-        cpu_count=cpu_count,
-        memory_total_bytes=mem_total,
-        memory_available_bytes=mem_avail,
-        disks=disks,
-    )
+    return collect_local_python_facts(default_host, force_windows=True)
 
 
 def _is_windows_remote_connection(conn: Connection) -> bool:
@@ -221,6 +117,12 @@ class ExternalToolRunner:
         if tool.output_mode == "artifact":
             remote_artifact = ""
             if tool.artifact_glob:
+                if re.search(r"[;|&`$><\n\r]", tool.artifact_glob):
+                    return {
+                        "ok": False,
+                        "exit_code": 1,
+                        "error": f"Unsafe characters in artifact_glob: {tool.artifact_glob!r}",
+                    }
                 if _is_windows_remote_connection(self._conn):
                     ps_glob = "'" + tool.artifact_glob.replace("'", "''") + "'"
                     glob_cmd = (
@@ -250,9 +152,17 @@ class ExternalToolRunner:
                     "stdout": res.stdout.strip(),
                 }
 
+            artifact_name = Path(remote_artifact.replace("\\", "/")).name
+            if not artifact_name or artifact_name in {".", ".."}:
+                return {
+                    "ok": False,
+                    "exit_code": res.exit_code,
+                    "error": f"Invalid artifact filename resolved from {remote_artifact!r}",
+                }
+
             target_dir = Path(tool.local_dir or artifact_dir or "./artifacts")
             target_dir.mkdir(parents=True, exist_ok=True)
-            local_dest = target_dir / Path(remote_artifact.replace("\\", "/")).name
+            local_dest = target_dir / artifact_name
             await self._conn.files.download(remote_artifact, str(local_dest))
             if tool.cleanup_remote:
                 with contextlib.suppress(Exception):

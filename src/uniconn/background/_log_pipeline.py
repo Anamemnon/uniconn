@@ -421,16 +421,17 @@ class LocalFileHandler(LogHandler):
     async def handle(self, session_id: str, chunk: list[str]) -> None:
         """Обработать порцию лога согласно стратегии."""
         if self._strategy == "realtime":
-            self._write(session_id, chunk)
+            await asyncio.to_thread(self._write, session_id, chunk)
         elif self._strategy == "periodic":
             buffer = self._buffers.setdefault(session_id, [])
             buffer.extend(chunk)
             now = time.monotonic()
             last = self._last_flush.setdefault(session_id, now)
             if now - last >= self._periodic_interval:
-                self._write(session_id, buffer)
+                to_write = list(buffer)
                 buffer.clear()
                 self._last_flush[session_id] = now
+                await asyncio.to_thread(self._write, session_id, to_write)
         else:  # on_complete
             self._buffers.setdefault(session_id, []).extend(chunk)
 
@@ -438,7 +439,7 @@ class LocalFileHandler(LogHandler):
         """Записать накопленный буфер (для periodic/on_complete) и вернуть путь."""
         buffer = self._buffers.pop(session_id, [])
         if buffer:
-            self._write(session_id, buffer)
+            await asyncio.to_thread(self._write, session_id, buffer)
         return self.local_path(session_id)
 
     async def finalize_all(self) -> dict[str, Path]:
@@ -483,9 +484,15 @@ class ForwardHandler(LogHandler):
         text = "".join(lines)
         target_path = self.resolve_remote_path(session_id)
         try:
-            await self._connection.run(
-                f"printf '%s' {shlex.quote(text)} >> {shlex.quote(target_path)}"
-            )
+            if len(text) > 65536:
+                await self._connection.run(
+                    f"cat >> {shlex.quote(target_path)}",
+                    input=text,
+                )
+            else:
+                await self._connection.run(
+                    f"printf '%s' {shlex.quote(text)} >> {shlex.quote(target_path)}"
+                )
         except Exception as exc:
             self._logger.warning(
                 f"Forward логов сессии {session_id} на {target_path} "
@@ -633,7 +640,7 @@ class TimelineHandler(LogHandler):
                     "text": clean_line,
                 }
             )
-        self._append_records(records)
+        await asyncio.to_thread(self._append_records, records)
 
     async def finalize(self) -> Path:
         """Завершить работу с файлом хронологической шкалы и вернуть его путь."""

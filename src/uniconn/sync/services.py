@@ -77,6 +77,21 @@ class SyncStateManagementService(SyncProxyMixin):
     def _portal(self) -> EventLoopPortal:
         return self._sync_conn._portal
 
+    def share_batches_from(
+        self, other: StateManagementService | SyncStateManagementService
+    ) -> None:
+        """Разделить стек активных ``NotificationBatch`` с другим экземпляром сервиса состояния."""
+        target_other = (
+            other._async_target
+            if isinstance(other, SyncStateManagementService)
+            else other
+        )
+        self._async_target.share_batches_from(target_other)
+
+    def discard_batch(self, batch: Any) -> None:
+        """Безопасно удалить контекст ``NotificationBatch`` из стека активных батчей."""
+        self._async_target.discard_batch(batch)
+
     batch_notifications = sync_context(StateManagementService.batch_notifications)
     gather_facts = sync_method(StateManagementService.gather_facts)
     resolve_pkg_manager = sync_method(StateManagementService.resolve_pkg_manager)

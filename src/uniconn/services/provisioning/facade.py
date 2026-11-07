@@ -88,6 +88,14 @@ class StateManagementService:
         """Вернуть текущий активный контекст ``NotificationBatch`` или ``None``."""
         return self._batch_stack[-1] if self._batch_stack else None
 
+    def share_batches_from(self, other: StateManagementService) -> None:
+        """Разделить стек активных ``NotificationBatch`` с другим экземпляром ``StateManagementService``."""
+        self._batch_stack = other._batch_stack
+
+    def discard_batch(self, batch: NotificationBatch) -> None:
+        """Безопасно удалить контекст ``NotificationBatch`` из стека активных батчей."""
+        self._pop_batch(batch)
+
     def batch_notifications(self) -> NotificationBatch:
         """Создать контекстный менеджер для отложенного вызова и дедупликации ``notify``."""
         return NotificationBatch(self)

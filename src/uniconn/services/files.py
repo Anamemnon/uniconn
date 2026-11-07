@@ -322,6 +322,24 @@ class FileOperationsService:
         if not self._conn.transport.is_connected:
             await self._conn.transport.connect()
 
+    def _build_observed_handler(self, method_name: str, base_handler: Any) -> Any:
+        """Обернуть базовый обработчик в цепочку зарегистрированных ``OperationObserver``."""
+        handler = base_handler
+        for obs in reversed(self._conn.operation_observers):
+            prev_fn = handler
+            obs_method = getattr(obs, method_name)
+
+            async def _step(
+                *args: Any,
+                _obs_fn: Any = obs_method,
+                _nxt: Any = prev_fn,
+                **kw: Any,
+            ) -> Any:
+                return await _obs_fn(self._conn, _nxt, *args, **kw)
+
+            handler = _step
+        return handler
+
     async def _raw_upload(
         self,
         local_path: str | Path,
@@ -356,30 +374,7 @@ class FileOperationsService:
         if progress_callback is not None:
             kwargs["progress_callback"] = progress_callback
 
-        handler = self._raw_upload
-        for obs in reversed(self._conn.operation_observers):
-            prev_fn = handler
-
-            async def _step(
-                l_path: str | Path,
-                r_path: str | Path,
-                *,
-                recurse: bool = False,
-                _obs: Any = obs,
-                _nxt: Any = prev_fn,
-                **kw: Any,
-            ) -> None:
-                await _obs.observe_upload(
-                    self._conn,
-                    _nxt,
-                    l_path,
-                    r_path,
-                    recurse=recurse,
-                    **kw,
-                )
-
-            handler = _step
-
+        handler = self._build_observed_handler("observe_upload", self._raw_upload)
         await handler(local_path, remote_path, recurse=recurse, **kwargs)
         if verify and not recurse and not self._conn.dry_run:
             if self._conn.transport_name in ("serial", "uart"):
@@ -424,30 +419,7 @@ class FileOperationsService:
         if progress_callback is not None:
             kwargs["progress_callback"] = progress_callback
 
-        handler = self._raw_download
-        for obs in reversed(self._conn.operation_observers):
-            prev_fn = handler
-
-            async def _step(
-                r_path: str | Path,
-                l_path: str | Path,
-                *,
-                recurse: bool = False,
-                _obs: Any = obs,
-                _nxt: Any = prev_fn,
-                **kw: Any,
-            ) -> None:
-                await _obs.observe_download(
-                    self._conn,
-                    _nxt,
-                    r_path,
-                    l_path,
-                    recurse=recurse,
-                    **kw,
-                )
-
-            handler = _step
-
+        handler = self._build_observed_handler("observe_download", self._raw_download)
         await handler(remote_path, local_path, recurse=recurse, **kwargs)
         if verify and not recurse and not self._conn.dry_run:
             if self._conn.transport_name in ("serial", "uart"):
@@ -509,25 +481,7 @@ class FileOperationsService:
                 )
             )
 
-        handler: Any = _do_xmodem
-        for obs in reversed(self._conn.operation_observers):
-            prev_fn = handler
-
-            async def _step(
-                l_path: str | Path,
-                r_path: str | Path,
-                *,
-                recurse: bool = False,
-                _obs: Any = obs,
-                _nxt: Any = prev_fn,
-                **kw: Any,
-            ) -> None:
-                await _obs.observe_upload(
-                    self._conn, _nxt, l_path, r_path, recurse=recurse, **kw
-                )
-
-            handler = _step
-
+        handler = self._build_observed_handler("observe_upload", _do_xmodem)
         await handler(local_path, "", recurse=False, **kwargs)
         return sent_bytes
 
@@ -573,25 +527,7 @@ class FileOperationsService:
                 )
             )
 
-        handler: Any = _do_ymodem
-        for obs in reversed(self._conn.operation_observers):
-            prev_fn = handler
-
-            async def _step(
-                l_path: str | Path,
-                r_path: str | Path,
-                *,
-                recurse: bool = False,
-                _obs: Any = obs,
-                _nxt: Any = prev_fn,
-                **kw: Any,
-            ) -> None:
-                await _obs.observe_upload(
-                    self._conn, _nxt, l_path, r_path, recurse=recurse, **kw
-                )
-
-            handler = _step
-
+        handler = self._build_observed_handler("observe_upload", _do_ymodem)
         await handler(local_path, "", recurse=False, **kwargs)
         return sent_bytes
 
@@ -633,25 +569,7 @@ class FileOperationsService:
                 )
             )
 
-        handler: Any = _do_xmodem_dl
-        for obs in reversed(self._conn.operation_observers):
-            prev_fn = handler
-
-            async def _step(
-                r_path: str | Path,
-                l_path: str | Path,
-                *,
-                recurse: bool = False,
-                _obs: Any = obs,
-                _nxt: Any = prev_fn,
-                **kw: Any,
-            ) -> None:
-                await _obs.observe_download(
-                    self._conn, _nxt, r_path, l_path, recurse=recurse, **kw
-                )
-
-            handler = _step
-
+        handler = self._build_observed_handler("observe_download", _do_xmodem_dl)
         await handler("", local_path, recurse=False, **kwargs)
         return received_bytes
 
@@ -690,25 +608,7 @@ class FileOperationsService:
             )
             received_files = list(res)
 
-        handler: Any = _do_ymodem_dl
-        for obs in reversed(self._conn.operation_observers):
-            prev_fn = handler
-
-            async def _step(
-                r_path: str | Path,
-                l_path: str | Path,
-                *,
-                recurse: bool = False,
-                _obs: Any = obs,
-                _nxt: Any = prev_fn,
-                **kw: Any,
-            ) -> None:
-                await _obs.observe_download(
-                    self._conn, _nxt, r_path, l_path, recurse=recurse, **kw
-                )
-
-            handler = _step
-
+        handler = self._build_observed_handler("observe_download", _do_ymodem_dl)
         await handler("", destination_dir, recurse=False, **kwargs)
         return received_files
 
@@ -730,26 +630,7 @@ class FileOperationsService:
         encoding: str | None = "utf-8",
     ) -> str | bytes:
         """Прочитать содержимое файла с хоста напрямую в память."""
-        handler = self._raw_read_file
-        for obs in reversed(self._conn.operation_observers):
-            prev_fn = handler
-
-            async def _step(
-                r_path: str | Path,
-                *,
-                encoding: str | None = "utf-8",
-                _obs: Any = obs,
-                _nxt: Any = prev_fn,
-            ) -> str | bytes:
-                return await _obs.observe_read_file(
-                    self._conn,
-                    _nxt,
-                    r_path,
-                    encoding=encoding,
-                )
-
-            handler = _step
-
+        handler = self._build_observed_handler("observe_read_file", self._raw_read_file)
         return await handler(remote_path, encoding=encoding)
 
     async def _raw_write_file(
@@ -846,33 +727,8 @@ class FileOperationsService:
                 r_path, c_data, mode=mode, encoding=encoding, atomic=atomic
             )
 
-        handler = _base_write
-        for obs in reversed(self._conn.operation_observers):
-            prev_fn = handler
-
-            async def _step(
-                r_path: str | Path,
-                c_data: str | bytes,
-                *,
-                mode: int | None = None,
-                encoding: str = "utf-8",
-                _obs: Any = obs,
-                _nxt: Any = prev_fn,
-            ) -> None:
-                await _obs.observe_write_file(
-                    self._conn,
-                    _nxt,
-                    r_path,
-                    c_data,
-                    mode=mode,
-                    encoding=encoding,
-                )
-
-            handler = _step
-
-        await handler(
-            remote_path, content, mode=mode, encoding=encoding
-        )
+        handler = self._build_observed_handler("observe_write_file", _base_write)
+        await handler(remote_path, content, mode=mode, encoding=encoding)
 
     async def checksum(
         self,
@@ -1084,34 +940,7 @@ class FileOperationsService:
                 preserve_permissions=preserve_permissions,
             )
 
-        handler = _base_sync
-        for obs in reversed(self._conn.operation_observers):
-            prev_fn = handler
-
-            async def _step(
-                *,
-                local_dir: str | Path,
-                remote_dir: str | Path,
-                delete: bool = False,
-                exclude: Sequence[str] | None = None,
-                mtime_tolerance: float = 1.0,
-                dry_run: bool | None = None,
-                _obs: Any = obs,
-                _nxt: Any = prev_fn,
-            ) -> SyncResult:
-                return await _obs.observe_sync_dir(
-                    self._conn,
-                    _nxt,
-                    local_dir=local_dir,
-                    remote_dir=remote_dir,
-                    delete=delete,
-                    exclude=exclude,
-                    mtime_tolerance=mtime_tolerance,
-                    dry_run=dry_run,
-                )
-
-            handler = _step
-
+        handler = self._build_observed_handler("observe_sync_dir", _base_sync)
         return await handler(
             local_dir=local_dir,
             remote_dir=remote_dir,
