@@ -778,6 +778,33 @@ class ConnectionPool:
         """Мультиплексировать потоковый вывод команды со всех хостов пула в реальном времени."""
         return self._stream_mux.stream(command, timeout=timeout, **kwargs)
 
+    async def run_flow(
+        self,
+        flow: Any,
+        *,
+        context: Any = None,
+        vars: Mapping[str, Any] | None = None,
+        tags: Sequence[str] | None = None,
+        dry_run: bool | None = None,
+        mode: Literal["barrier", "independent"] | None = None,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
+    ) -> Any:
+        """Выполнить сценарий ``Flow`` (или задачу ``@task`` / список задач) на всём пуле хостов."""
+        from ..orchestration.scheduler import run_pool_flow
+
+        return await run_pool_flow(
+            self,
+            flow,
+            context=context,
+            vars=dict(vars) if vars else None,
+            tags=tags,
+            dry_run=dry_run,
+            mode=mode,
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
+        )
+
     def to_sync(self) -> SyncConnectionPool:
         """Конвертировать пул в синхронную обёртку ``SyncConnectionPool``."""
         from ..sync.pool import SyncConnectionPool

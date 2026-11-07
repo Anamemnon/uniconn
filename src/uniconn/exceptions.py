@@ -193,3 +193,34 @@ class ModemProtocolError(ModemTransferError):
 class ModemChecksumMismatchError(ModemTransferError):
     """Несовпадение контрольной суммы или CRC-16 полученного пакета."""
 
+
+class CyclicDependencyError(ConfigurationError):
+    """Обнаружена циклическая зависимость в графе задач (Flow DAG)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        cycle: list[str] | tuple[str, ...] | None = None,
+    ) -> None:
+        """Инициализировать ошибку циклической зависимости с маршрутом цикла."""
+        super().__init__(message)
+        self.cycle: list[str] = [str(item) for item in (cycle or ())]
+
+
+class FlowExecutionError(ExecutionError):
+    """Сценарий оркестрации Flow завершился с ошибкой на одном или нескольких хостах."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        report: object | None = None,
+        failed_hosts: list[str] | None = None,
+    ) -> None:
+        """Инициализировать ошибку выполнения Flow со ссылкой на сводный отчёт FlowReport."""
+        super().__init__(message)
+        self.report = report
+        self.failed_hosts: list[str] = list(failed_hosts or [])
+
+

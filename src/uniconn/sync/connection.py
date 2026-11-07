@@ -236,6 +236,7 @@ class SyncConnection(SyncProxyMixin):
     run_script = sync_method(Connection.run_script)
     run_python = sync_method(Connection.run_python)
     gather_facts = sync_method(Connection.gather_facts)
+    run_flow = sync_method(Connection.run_flow)
     temp_dir = sync_context(Connection.temp_dir)
 
     # ─── Специализированные синхронные сессии и жизненный цикл ─────

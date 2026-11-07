@@ -355,6 +355,11 @@ class Connection:
             refresh=refresh, timeout=timeout, spec=spec, artifact_dir=artifact_dir, ttl=ttl
         )
 
+    async def run_flow(self, flow: Any, **kwargs: Any) -> Any:
+        from ..orchestration.scheduler import run_connection_flow
+
+        return await run_connection_flow(self, flow, **kwargs)
+
     async def __aenter__(self) -> Self:
         await self._transport.connect()
         return self
