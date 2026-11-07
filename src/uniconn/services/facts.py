@@ -75,18 +75,44 @@ class ExternalToolRunner:
         artifact_dir: str | Path | None = None,
     ) -> Any:
         """Выполнить внешнюю утилиту и вернуть структурированный результат или путь к артефакту."""
+        if (
+            tool.output_mode == "artifact"
+            and tool.artifact_glob
+            and re.search(r"[;|&`$><\n\r]", tool.artifact_glob)
+        ):
+            return {
+                "ok": False,
+                "exit_code": 1,
+                "error": f"Unsafe characters in artifact_glob: {tool.artifact_glob!r}",
+            }
+
         binary = tool.resolved_binary()
         if binary:
             if _is_windows_remote_connection(self._conn):
                 ps_bin = "'" + binary.replace("'", "''") + "'"
                 probe = f"if (Get-Command {ps_bin} -ErrorAction SilentlyContinue) {{ exit 0 }} else {{ exit 1 }}"
+                chk = await self._conn.run(
+                    probe,
+                    raise_on_error=False,
+                )
+                found = chk.ok
+            elif (
+                self._conn.config.transport == "local"
+                and sys.platform == "win32"
+                and not FactCollector(self._conn)._is_run_mocked()
+            ):
+                import shutil
+
+                win_builtins = {"echo", "dir", "type", "set", "ver", "cd", "copy", "del"}
+                found = binary.lower() in win_builtins or shutil.which(binary) is not None
             else:
                 probe = f"command -v {shlex.quote(binary)} >/dev/null 2>&1"
-            chk = await self._conn.run(
-                probe,
-                raise_on_error=False,
-            )
-            if not chk.ok:
+                chk = await self._conn.run(
+                    probe,
+                    raise_on_error=False,
+                )
+                found = chk.ok
+            if not found:
                 return {
                     "ok": False,
                     "error": f"Tool {binary!r} not found on host",
@@ -117,12 +143,6 @@ class ExternalToolRunner:
         if tool.output_mode == "artifact":
             remote_artifact = ""
             if tool.artifact_glob:
-                if re.search(r"[;|&`$><\n\r]", tool.artifact_glob):
-                    return {
-                        "ok": False,
-                        "exit_code": 1,
-                        "error": f"Unsafe characters in artifact_glob: {tool.artifact_glob!r}",
-                    }
                 if _is_windows_remote_connection(self._conn):
                     ps_glob = "'" + tool.artifact_glob.replace("'", "''") + "'"
                     glob_cmd = (
