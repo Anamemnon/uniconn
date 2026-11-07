@@ -3,11 +3,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from ...result import EnsureResult
+from ._notify import (
+    NotificationBatch,
+    NotifySpec,
+    finalize_ensure_with_notify,
+    normalize_notify_spec,
+)
 from ._plan import (
     apply_owner_group,
     can_inspect_in_dry_run,
@@ -65,6 +71,42 @@ class StateManagementService:
     def __init__(self, conn: Connection) -> None:
         """Инициализировать сервис для указанного подключения."""
         self._conn = conn
+        self._batch_stack: list[NotificationBatch] = []
+
+    def _push_batch(self, batch: NotificationBatch) -> None:
+        """Активировать контекст батчинга уведомлений."""
+        self._batch_stack.append(batch)
+
+    def _pop_batch(self, batch: NotificationBatch) -> None:
+        """Деактивировать контекст батчинга уведомлений."""
+        if self._batch_stack and self._batch_stack[-1] is batch:
+            self._batch_stack.pop()
+        elif batch in self._batch_stack:
+            self._batch_stack.remove(batch)
+
+    def _current_batch(self) -> NotificationBatch | None:
+        """Вернуть текущий активный контекст ``NotificationBatch`` или ``None``."""
+        return self._batch_stack[-1] if self._batch_stack else None
+
+    def batch_notifications(self) -> NotificationBatch:
+        """Создать контекстный менеджер для отложенного вызова и дедупликации ``notify``."""
+        return NotificationBatch(self)
+
+    async def _execute_ensure(
+        self,
+        notify: NotifySpec,
+        operation: Callable[..., Awaitable[EnsureResult]],
+        *args: Any,
+        **kwargs: Any,
+    ) -> EnsureResult:
+        """Провалидировать ``notify`` до старта операции, выполнить её и диспетчеризовать уведомления."""
+        entries = normalize_notify_spec(notify)
+        res = await operation(self, *args, **kwargs)
+        if not entries:
+            return res
+        return await finalize_ensure_with_notify(
+            self, res, entries, _pre_normalized=True
+        )
 
     async def gather_facts(
         self,
@@ -94,10 +136,13 @@ class StateManagementService:
         update_cache: bool = False,
         sudo: bool = True,
         dry_run: bool | None = None,
+        *,
+        notify: NotifySpec = None,
     ) -> EnsureResult:
         """Идемпотентно обеспечить наличие или отсутствие пакета(ов) на хосте."""
-        return await _ensure_package(
-            self,
+        return await self._execute_ensure(
+            notify,
+            _ensure_package,
             package,
             state=state,
             manager=manager,
@@ -114,10 +159,13 @@ class StateManagementService:
         sudo: bool = True,
         dry_run: bool | None = None,
         manager: Literal["auto", "systemd", "openrc", "sysv"] = "auto",
+        *,
+        notify: NotifySpec = None,
     ) -> EnsureResult:
         """Идемпотентно управлять состоянием системного сервиса."""
-        return await _ensure_service(
-            self,
+        return await self._execute_ensure(
+            notify,
+            _ensure_service,
             service,
             state=state,
             enabled=enabled,
@@ -173,10 +221,13 @@ class StateManagementService:
         mode: int | None = None,
         encoding: str = "utf-8",
         dry_run: bool | None = None,
+        *,
+        notify: NotifySpec = None,
     ) -> EnsureResult:
         """Идемпотентно обеспечить наличие, замену или отсутствие строки в файле."""
-        return await _ensure_line(
-            self,
+        return await self._execute_ensure(
+            notify,
+            _ensure_line,
             remote_path,
             line,
             state=state,
@@ -203,10 +254,12 @@ class StateManagementService:
         atomic: bool = False,
         sudo: bool = False,
         dry_run: bool | None = None,
+        notify: NotifySpec = None,
     ) -> EnsureResult:
         """Идемпотентно управлять файлом или символической ссылкой на хосте."""
-        return await _ensure_file(
-            self,
+        return await self._execute_ensure(
+            notify,
+            _ensure_file,
             remote_path,
             state=state,
             content=content,
@@ -232,10 +285,12 @@ class StateManagementService:
         recurse: bool = False,
         sudo: bool = False,
         dry_run: bool | None = None,
+        notify: NotifySpec = None,
     ) -> EnsureResult:
         """Идемпотентно обеспечить наличие или отсутствие директории, её прав и владельца."""
-        return await _ensure_directory(
-            self,
+        return await self._execute_ensure(
+            notify,
+            _ensure_directory,
             remote_path,
             state=state,
             mode=mode,
@@ -260,10 +315,12 @@ class StateManagementService:
         system: bool = False,
         sudo: bool = True,
         dry_run: bool | None = None,
+        notify: NotifySpec = None,
     ) -> EnsureResult:
         """Идемпотентно управлять системным пользователем и его группами."""
-        return await _ensure_user(
-            self,
+        return await self._execute_ensure(
+            notify,
+            _ensure_user,
             username,
             state=state,
             uid=uid,
@@ -290,10 +347,12 @@ class StateManagementService:
         exclusive: bool = False,
         sudo: bool = False,
         dry_run: bool | None = None,
+        notify: NotifySpec = None,
     ) -> EnsureResult:
         """Идемпотентно управлять SSH-ключами в ``~/.ssh/authorized_keys``."""
-        return await _ensure_authorized_key(
-            self,
+        return await self._execute_ensure(
+            notify,
+            _ensure_authorized_key,
             user,
             key,
             state=state,
@@ -313,10 +372,12 @@ class StateManagementService:
         daemon_reload: bool = True,
         sudo: bool = True,
         dry_run: bool | None = None,
+        notify: NotifySpec = None,
     ) -> EnsureResult:
         """Идемпотентно управлять unit-файлом systemd с вызовом ``daemon-reload`` при изменениях."""
-        return await _ensure_systemd_unit(
-            self,
+        return await self._execute_ensure(
+            notify,
+            _ensure_systemd_unit,
             name,
             content=content,
             state=state,
@@ -337,10 +398,12 @@ class StateManagementService:
         reload: bool = True,
         sudo: bool = True,
         dry_run: bool | None = None,
+        notify: NotifySpec = None,
     ) -> EnsureResult:
         """Идемпотентно управлять параметром ядра ``sysctl`` и применять его на лету."""
-        return await _ensure_sysctl(
-            self,
+        return await self._execute_ensure(
+            notify,
+            _ensure_sysctl,
             name,
             value,
             state=state,

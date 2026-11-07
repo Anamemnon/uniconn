@@ -613,3 +613,371 @@ def test_cli_v0150_commands(tmp_path: Path) -> None:
     assert "changed" in res_sysctl.output
 
 
+# ─── Unit 3: Обработчики событий изменения (Change Handlers / notify & batch_notifications) ───
+
+
+@pytest.mark.asyncio
+async def test_ensure_file_notify_only_on_real_change_and_skip_in_dry_run(
+    tmp_path: Path, mocker: pytest.MonkeyPatch
+) -> None:
+    """notify вызывается только при changed=True и dry_run=False, пропуская вызов при повторном прогоне и dry_run."""
+    conf_file = tmp_path / "nginx.conf"
+    async with Connection.from_uri("local://localhost") as conn:
+        svc_mock = mocker.patch.object(
+            conn.state,
+            "ensure_service",
+            new=AsyncMock(
+                return_value= Result(
+                    exit_code=0,
+                    stdout="reloaded",
+                    stderr="",
+                    duration=0.01,
+                    command="systemctl reload nginx",
+                )
+            ),
+        )
+
+        # 1. В режиме dry_run=True обработчик НЕ вызывается, но notified=True фиксируется в EnsureResult
+        dry_res = await conn.state.ensure_file(
+            conf_file,
+            content="worker_processes 4;\n",
+            dry_run=True,
+            notify=lambda: conn.state.ensure_service("nginx", state="reloaded"),
+        )
+        assert dry_res.changed is True
+        assert dry_res.dry_run is True
+        assert dry_res.notified is True
+        assert dry_res.notify_results == ()
+        assert svc_mock.await_count == 0
+
+        # 2. Реальное создание файла (changed=True) -> notify вызывается ровно 1 раз
+        res1 = await conn.state.ensure_file(
+            conf_file,
+            content="worker_processes 4;\n",
+            notify=lambda: conn.state.ensure_service("nginx", state="reloaded"),
+        )
+        assert res1.changed is True
+        assert res1.notified is True
+        assert len(res1.notify_results) == 1
+        assert svc_mock.await_count == 1
+        svc_mock.assert_awaited_once_with("nginx", state="reloaded")
+        serialized = res1.to_dict()
+        assert serialized["notified"] is True
+        assert len(serialized["notify_results"]) == 1
+        assert serialized["notify_results"][0]["command"] == "systemctl reload nginx"
+
+        # 3. Повторный вызов с тем же содержимым (changed=False) -> notify НЕ вызывается
+        res2 = await conn.state.ensure_file(
+            conf_file,
+            content="worker_processes 4;\n",
+            notify=lambda: conn.state.ensure_service("nginx", state="reloaded"),
+        )
+        assert res2.changed is False
+        assert res2.notified is False
+        assert res2.notify_results == ()
+        assert svc_mock.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_notify_supported_across_all_ensure_methods(
+    tmp_path: Path, mocker: pytest.MonkeyPatch
+) -> None:
+    """Параметр notify поддерживается во всех 9 методах conn.state.ensure_*."""
+    from uniconn import EnsureResult
+
+    conn = Connection.from_uri("ssh://root@10.0.0.5")
+    mocker.patch.object(conn.transport, "connect", new=AsyncMock())
+    mocker.patch.object(
+        type(conn.transport), "is_connected", new_callable=mocker.PropertyMock, return_value=True
+    )
+
+    triggered_targets: list[str] = []
+
+    def record_change(result: EnsureResult) -> str:
+        triggered_targets.append(result.target)
+        return f"ack:{result.target}"
+
+    # Мокируем внутренние функции доменных модулей, чтобы изолированно проверить фасад StateManagementService
+    for attr_name, target_label in (
+        ("_ensure_package", "nginx"),
+        ("_ensure_service", "nginx.service"),
+        ("_ensure_line", "/etc/hosts"),
+        ("_ensure_file", "/etc/app.conf"),
+        ("_ensure_directory", "/var/lib/app"),
+        ("_ensure_user", "deploy"),
+        ("_ensure_authorized_key", "/home/deploy/.ssh/authorized_keys"),
+        ("_ensure_systemd_unit", "app.service"),
+        ("_ensure_sysctl", "net.ipv4.ip_forward"),
+    ):
+        mocker.patch(
+            f"uniconn.services.provisioning.facade.{attr_name}",
+            new=AsyncMock(
+                return_value=EnsureResult(
+                    target=target_label,
+                    state="present",
+                    changed=True,
+                    ok=True,
+                    details=f"Modified {target_label}",
+                )
+            ),
+        )
+
+    r_pkg = await conn.state.ensure_package("nginx", notify=record_change)
+    r_svc = await conn.state.ensure_service("nginx.service", notify=record_change)
+    r_line = await conn.state.ensure_line(tmp_path / "hosts", "127.0.0.1 local", notify=record_change)
+    r_file = await conn.state.ensure_file(tmp_path / "app.conf", content="x=1", notify=record_change)
+    r_dir = await conn.state.ensure_directory(tmp_path / "app_dir", notify=record_change)
+    r_usr = await conn.state.ensure_user("deploy", notify=record_change)
+    r_key = await conn.state.ensure_authorized_key("deploy", "ssh-ed25519 AAAA", notify=record_change)
+    r_unit = await conn.state.ensure_systemd_unit("app.service", content="[Unit]", notify=record_change)
+    r_sys = await conn.state.ensure_sysctl("net.ipv4.ip_forward", 1, notify=record_change)
+
+    all_results = [r_pkg, r_svc, r_line, r_file, r_dir, r_usr, r_key, r_unit, r_sys]
+    assert all(r.notified is True for r in all_results)
+    assert [r.notify_results[0] for r in all_results] == [f"ack:{t}" for t in triggered_targets]
+    assert len(triggered_targets) == 9
+
+
+@pytest.mark.asyncio
+async def test_notify_handler_signatures_failure_propagation_and_validation(tmp_path: Path) -> None:
+    """notify поддерживает 0/1/2 аргумента, дефолтные параметры, обратный порядок (result, conn) и раннюю валидацию."""
+    from uniconn import EnsureResult
+
+    target = tmp_path / "multi.conf"
+    untouched = tmp_path / "should_not_be_created.conf"
+    calls: list[tuple[str, str]] = []
+
+    def handler_with_default(force: bool = False) -> str:
+        calls.append(("default_arg", f"force={force}"))
+        return f"default:{force}"
+
+    def handler_reversed_two_args(result: EnsureResult, conn: Connection) -> str:
+        calls.append(("reversed_args", f"{Path(result.target).name}@{conn.transport_name}"))
+        return "reversed_ok"
+
+    async with Connection.from_uri("local://localhost") as conn:
+        # 1. Валидация notify происходит ДО мутации файла на хосте
+        with pytest.raises(TypeError, match="Unsupported notify specification"):
+            await conn.state.ensure_file(untouched, content="bad\n", notify=12345)  # type: ignore[arg-type]
+        assert not untouched.exists()
+
+        with pytest.raises(TypeError, match="requires 3 positional arguments"):
+            await conn.state.ensure_file(untouched, content="bad\n", notify=lambda a, b, c: None)  # type: ignore[arg-type]
+        assert not untouched.exists()
+
+        with pytest.raises(ValueError, match="Notify handler name cannot be empty"):
+            await conn.state.ensure_file(untouched, content="bad\n", notify=("   ", lambda: None))
+        assert not untouched.exists()
+
+        # 2. Все варианты сигнатур (0 арг, 1 арг conn, 1 арг result, дефолтный параметр, 2 арг в обоих порядках)
+        res = await conn.state.ensure_file(
+            target,
+            content="v=1\n",
+            notify=[
+                lambda: calls.append(("zero_arg", "ok")),
+                lambda c: calls.append(("conn_arg", c.transport_name)),
+                lambda result: calls.append(("res_arg", result.target)),
+                handler_with_default,
+                lambda c, r: calls.append(("both_args", f"{c.transport_name}:{Path(r.target).name}")),
+                handler_reversed_two_args,
+                ("named_handler", lambda: "named_done"),
+            ],
+        )
+        assert res.notified is True
+        assert res.ok is True
+        assert calls == [
+            ("zero_arg", "ok"),
+            ("conn_arg", "local"),
+            ("res_arg", str(target)),
+            ("default_arg", "force=False"),
+            ("both_args", "local:multi.conf"),
+            ("reversed_args", "multi.conf@local"),
+        ]
+        assert res.notify_results[-1] == "named_done"
+
+        # 3. Если обработчик возвращает EnsureResult или Result с ok=False, итоговый EnsureResult получает ok=False
+        res_fail = await conn.state.ensure_file(
+            target,
+            content="v=2\n",
+            notify=lambda: EnsureResult(
+                target="nginx",
+                state="reloaded",
+                changed=False,
+                ok=False,
+                details="nginx reload syntax error",
+            ),
+        )
+        assert res_fail.changed is True
+        assert res_fail.notified is True
+        assert res_fail.ok is False
+        assert "notify failed: nginx reload syntax error" in res_fail.details
+
+
+@pytest.mark.asyncio
+async def test_batch_notifications_deduplicates_named_and_inline_lambdas(tmp_path: Path) -> None:
+    """batch_notifications() дедуплицирует обработчики, различает замыкания и повышает dry_run до реального вызова."""
+    f1 = tmp_path / "site_a.conf"
+    f2 = tmp_path / "site_b.conf"
+    f3 = tmp_path / "site_c.conf"
+    f_cascade = tmp_path / "cascade.conf"
+    reload_calls: list[str] = []
+
+    async def reload_nginx() -> str:
+        reload_calls.append("nginx_reloaded")
+        return "reloaded_ok"
+
+    def make_service_notifier(svc_name: str):
+        return lambda: reload_calls.append(f"svc:{svc_name}")
+
+    async with Connection.from_uri("local://localhost") as conn:
+        async with conn.state.batch_notifications() as batch:
+            # 1. Сначала dry_run=True регистрирует отложенный обработчик, затем реальный вызов (dry_run=False)
+            # с тем же ключом должен повысить запись так, чтобы на выходе из блока обработчик реально выполнился!
+            r_dry = await conn.state.ensure_file(
+                f1,
+                content="server_name a;\n",
+                dry_run=True,
+                notify=lambda: reload_nginx(),
+            )
+            assert r_dry.changed is True
+            assert r_dry.dry_run is True
+            assert r_dry.notified is True
+            assert r_dry.notify_results == ()
+
+            r1 = await conn.state.ensure_file(
+                f1,
+                content="server_name a;\n",
+                notify=lambda: reload_nginx(),
+            )
+            r2 = await conn.state.ensure_file(
+                f2,
+                content="server_name b;\n",
+                notify=lambda: reload_nginx(),
+            )
+            # Фабричные lambda с одинаковым значением замыкания дедуплицируются, а с разным — нет
+            await conn.state.ensure_file(
+                f1,
+                content="server_name a2;\n",
+                notify=make_service_notifier("redis"),
+            )
+            await conn.state.ensure_file(
+                f2,
+                content="server_name b2;\n",
+                notify=make_service_notifier("redis"),
+            )
+            await conn.state.ensure_file(
+                f3,
+                content="server_name c1;\n",
+                notify=make_service_notifier("postgres"),
+            )
+            # Повторная запись без изменений не увеличивает счётчик триггеров
+            r_noop = await conn.state.ensure_file(
+                f3,
+                content="server_name c1;\n",
+                notify=make_service_notifier("postgres"),
+            )
+            assert r1.notified is True
+            assert r2.notified is True
+            assert r_noop.notified is False
+            assert reload_calls == []
+            assert batch.triggered_count == 6
+            assert batch.pending_count == 3
+
+        assert reload_calls == ["nginx_reloaded", "svc:redis", "svc:postgres"]
+        assert batch.executed_count == 3
+        assert batch.ok is True
+
+        # 2. Каскадные уведомления: обработчик внутри flush() сам вызывает ensure_file(..., notify=...)
+        cascade_events: list[str] = []
+        async with conn.state.batch_notifications() as cascade_batch:
+            await conn.state.ensure_file(
+                f1,
+                content="trigger_cascade\n",
+                notify=(
+                    "step1",
+                    lambda: conn.state.ensure_file(
+                        f_cascade,
+                        content="generated_by_step1\n",
+                        notify=("step2", lambda: cascade_events.append("step2_done")),
+                    ),
+                ),
+            )
+        assert f_cascade.read_text(encoding="utf-8") == "generated_by_step1\n"
+        assert cascade_events == ["step2_done"]
+        assert cascade_batch.executed_count == 2
+
+        # 3. При возникновении необработанного исключения внутри блока отложенные обработчики не вызываются
+        with pytest.raises(RuntimeError, match="abort deployment"):
+            async with conn.state.batch_notifications() as aborted_batch:
+                await conn.state.ensure_file(
+                    f3,
+                    content="server_name abort;\n",
+                    notify=("reload_nginx", reload_nginx),
+                )
+                assert aborted_batch.pending_count == 1
+                raise RuntimeError("abort deployment")
+
+        assert reload_calls == ["nginx_reloaded", "svc:redis", "svc:postgres"]
+
+
+def test_sync_connection_and_pool_notify_and_batch_notifications(tmp_path: Path) -> None:
+    """SyncConnection и ConnectionPool поддерживают notify и batch_notifications без deadlock и RuntimeWarning."""
+    from uniconn import ConnectionPool
+
+    cfg_sync = tmp_path / "sync_service.conf"
+    cfg_batch_1 = tmp_path / "sync_b1.conf"
+    cfg_batch_2 = tmp_path / "sync_b2.conf"
+    sync_events: list[str] = []
+
+    with Connection.from_uri("local://localhost").to_sync() as sconn:
+        # Вызов синхронного метода sconn.run(...) прямо внутри notify-колбэка (проверка отсутствия deadlock в портале)
+        res = sconn.state.ensure_file(
+            cfg_sync,
+            content="enabled = true\n",
+            notify=lambda: sconn.run("echo sync-reloaded"),
+        )
+        assert res.changed is True
+        assert res.notified is True
+        assert res.notify_results[0].text == "sync-reloaded"
+
+        # Синхронный контекст batch_notifications()
+        with sconn.state.batch_notifications() as batch:
+            sconn.state.ensure_file(
+                cfg_batch_1,
+                content="k1=1\n",
+                notify=("sync_reload", lambda: sync_events.append("reloaded")),
+            )
+            sconn.state.ensure_file(
+                cfg_batch_2,
+                content="k2=2\n",
+                notify=("sync_reload", lambda: sync_events.append("reloaded")),
+            )
+            assert sync_events == []
+        assert sync_events == ["reloaded"]
+        assert batch.triggered_count == 2
+        assert batch.executed_count == 1
+
+    # Fan-out и групповой batch_notifications() через ConnectionPool / SyncConnectionPool
+    pool_file_1 = tmp_path / "pool_notify_1.conf"
+    pool_file_2 = tmp_path / "pool_notify_2.conf"
+    notified_hosts: list[str] = []
+    c1 = Connection.from_uri("local://").with_overrides(host="web-01")
+    c2 = Connection.from_uri("local://").with_overrides(host="web-02")
+    with ConnectionPool([c1, c2], max_concurrent=1).to_sync() as spool:
+        with spool.state.batch_notifications() as pbatch:
+            spool.state.ensure_file(
+                pool_file_1,
+                content="cluster_mode = on\n",
+                notify=("reload_cluster", lambda conn: notified_hosts.append(conn.config.host or "unknown")),
+            )
+            spool.state.ensure_file(
+                pool_file_2,
+                content="workers = 4\n",
+                notify=("reload_cluster", lambda conn: notified_hosts.append(conn.config.host or "unknown")),
+            )
+            assert notified_hosts == []
+        # Хотя изменились 2 файла, благодаря batch_notifications() обработчик вызвался только 1 раз
+        assert len(notified_hosts) == 1
+        assert pbatch.triggered_count == 2
+        assert pbatch.executed_count == 1
+        assert pbatch.ok is True

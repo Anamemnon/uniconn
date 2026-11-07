@@ -77,6 +77,7 @@ class SyncStateManagementService(SyncProxyMixin):
     def _portal(self) -> EventLoopPortal:
         return self._sync_conn._portal
 
+    batch_notifications = sync_context(StateManagementService.batch_notifications)
     gather_facts = sync_method(StateManagementService.gather_facts)
     resolve_pkg_manager = sync_method(StateManagementService.resolve_pkg_manager)
     ensure_package = sync_method(StateManagementService.ensure_package)
@@ -155,6 +156,9 @@ class SyncPoolStateManagementService(SyncProxyMixin):
     def _portal(self) -> EventLoopPortal:
         return self._sync_pool._portal
 
+    batch_notifications = sync_context(
+        PoolStateManagementService.batch_notifications
+    )
     ensure_package = sync_method(PoolStateManagementService.ensure_package)
     ensure_service = sync_method(PoolStateManagementService.ensure_service)
     ensure_line = sync_method(PoolStateManagementService.ensure_line)

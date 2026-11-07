@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -128,12 +129,100 @@ class PoolFileOperationsService:
     sync_dir = pool_fan_out_dict(FileOperationsService.sync_dir, conn_attr="files")
 
 
+class PoolNotificationBatch:
+    """Групповой контекст отложенного выполнения и дедупликации ``notify`` для ``ConnectionPool``."""
+
+    def __init__(self, pool: ConnectionPool) -> None:
+        """Инициализировать батч уведомлений для пула подключений."""
+        self._pool = pool
+        self._batches: dict[str, Any] = {}
+        self._results: dict[str, list[Any]] = {}
+        self._entered_pool_here = False
+
+    @property
+    def batches(self) -> dict[str, Any]:
+        """Словарь ``NotificationBatch`` по ключам хостов пула."""
+        return dict(self._batches)
+
+    @property
+    def pending_count(self) -> int:
+        """Суммарное число уникальных ожидающих обработчиков по всем хостам пула."""
+        return sum(b.pending_count for b in self._batches.values())
+
+    @property
+    def triggered_count(self) -> int:
+        """Суммарное число срабатываний ``notify`` по всем хостам пула (до дедупликации)."""
+        return sum(b.triggered_count for b in self._batches.values())
+
+    @property
+    def executed_count(self) -> int:
+        """Суммарное число выполненных уникальных обработчиков по всем хостам пула."""
+        return sum(b.executed_count for b in self._batches.values())
+
+    @property
+    def results(self) -> dict[str, list[Any]]:
+        """Словарь списков результатов выполнения обработчиков по каждому хосту пула."""
+        return {host: list(b.results) for host, b in self._batches.items()}
+
+    @property
+    def ok(self) -> bool:
+        """Вернуть ``True``, если все выполненные обработчики на всех хостах завершились успешно."""
+        return all(b.ok for b in self._batches.values())
+
+    async def flush(self) -> dict[str, list[Any]]:
+        """Параллельно выполнить накопленные обработчики на всех хостах пула."""
+        flushed: dict[str, list[Any]] = {}
+
+        async def _flush_host(host_key: str, batch: Any) -> None:
+            async with self._pool._semaphore:
+                flushed[host_key] = await batch.flush()
+
+        async with asyncio.TaskGroup() as tg:
+            for key, batch in self._batches.items():
+                tg.create_task(_flush_host(key, batch))
+
+        self._results = {host: list(b.results) for host, b in self._batches.items()}
+        return flushed
+
+    async def __aenter__(self) -> PoolNotificationBatch:
+        """Активировать ``NotificationBatch`` на всех соединениях пула."""
+        if not self._pool._is_entered:
+            await self._pool.__aenter__()
+            self._entered_pool_here = True
+
+        self._batches.clear()
+        for idx, target in enumerate(self._pool._uris):
+            key = self._pool._target_key(target)
+            conn = self._pool._active_conns.get(idx)
+            if conn is not None:
+                batch = conn.state.batch_notifications()
+                await batch.__aenter__()
+                self._batches[key] = batch
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Снять батчи со всех соединений пула и параллельно выполнить обработчики при успехе."""
+        try:
+            if exc_type is None:
+                await self.flush()
+        finally:
+            for batch in self._batches.values():
+                batch._service._pop_batch(batch)
+            if self._entered_pool_here:
+                await self._pool.__aexit__(exc_type, exc_val, exc_tb)
+                self._entered_pool_here = False
+
+
 class PoolStateManagementService:
     """Доменный сервис идемпотентного управления состоянием для ``ConnectionPool`` (``pool.state``)."""
 
     def __init__(self, pool: ConnectionPool) -> None:
         """Инициализировать сервис управления состоянием пула подключений."""
         self._pool = pool
+
+    def batch_notifications(self) -> PoolNotificationBatch:
+        """Создать групповой контекстный менеджер дедупликации ``notify`` по всем хостам пула."""
+        return PoolNotificationBatch(self._pool)
 
     ensure_package = pool_fan_out_dict(
         StateManagementService.ensure_package, conn_attr="state"
@@ -166,5 +255,6 @@ class PoolStateManagementService:
 
 __all__ = [
     "PoolFileOperationsService",
+    "PoolNotificationBatch",
     "PoolStateManagementService",
 ]

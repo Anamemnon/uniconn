@@ -220,7 +220,12 @@ class RemotePath(os.PathLike[str]):
         cached_stat: Mapping[str, Any] | RemoteStatResult | None = None,
     ) -> RemotePath:
         """Создать новый экземпляр ``RemotePath`` на том же подключении."""
-        return RemotePath(self._conn, str(new_pure), cached_stat=cached_stat)
+        spawned = RemotePath(self._conn, str(new_pure), cached_stat=cached_stat)
+        if self._is_windows and not spawned._is_windows:
+            spawned._is_windows = True
+            spawned._pure = PureWindowsPath(str(new_pure))
+            spawned._raw_path = str(spawned._pure)
+        return spawned
 
     # ─── Протокол PathLike, сравнение и чистые свойства пути ─────────
 

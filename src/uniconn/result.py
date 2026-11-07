@@ -137,9 +137,15 @@ class EnsureResult:
     details: str = ""
     dry_run: bool = False
     diff: str | None = None
+    notified: bool = False
+    notify_results: tuple[Any, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         """Преобразовать отчёт идемпотентной проверки в сериализуемый словарь."""
+        serialized_notify = [
+            item.to_dict() if hasattr(item, "to_dict") and callable(item.to_dict) else item
+            for item in self.notify_results
+        ]
         return {
             "target": self.target,
             "state": self.state,
@@ -148,6 +154,8 @@ class EnsureResult:
             "details": self.details,
             "dry_run": self.dry_run,
             "diff": self.diff,
+            "notified": self.notified,
+            "notify_results": serialized_notify,
         }
 
 

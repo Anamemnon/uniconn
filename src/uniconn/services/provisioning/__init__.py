@@ -3,6 +3,16 @@
 
 from __future__ import annotations
 
+from ._notify import (
+    NamedNotifyHandler,
+    NotificationBatch,
+    NotifyCallable,
+    NotifyItem,
+    NotifySpec,
+    finalize_ensure_with_notify,
+    invoke_notify_handler,
+    normalize_notify_spec,
+)
 from ._plan import (
     ChangePlan,
     _parse_mode,
@@ -61,6 +71,11 @@ __all__ = [
     "AptStrategy",
     "ChangePlan",
     "DnfYumStrategy",
+    "NamedNotifyHandler",
+    "NotificationBatch",
+    "NotifyCallable",
+    "NotifyItem",
+    "NotifySpec",
     "OpenRCStrategy",
     "PackageManagerStrategy",
     "PacmanStrategy",
@@ -88,7 +103,10 @@ __all__ = [
     "ensure_systemd_unit",
     "ensure_user",
     "extract_stat_mode",
+    "finalize_ensure_with_notify",
     "get_owner_group",
+    "invoke_notify_handler",
+    "normalize_notify_spec",
     "resolve_pkg_manager",
     "resolve_service_transition",
     "resolve_user_home",

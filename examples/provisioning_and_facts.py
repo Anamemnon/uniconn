@@ -82,8 +82,31 @@ async def main() -> None:
             )
             print(f"Обновление файла (changed={file_res2.changed}):\n{file_res2.diff}")
 
-            line_res = await conn.state.ensure_line(conf_file, "log_level = info")
-            print(f"ensure_line: changed={line_res.changed}, details={line_res.details}")
+            line_res = await conn.state.ensure_line(
+                conf_file,
+                "log_level = info",
+                notify=lambda: conn.run("echo 'reloading service'"),
+            )
+            print(
+                f"ensure_line: changed={line_res.changed}, "
+                f"notified={line_res.notified}, details={line_res.details}"
+            )
+
+            async with conn.state.batch_notifications() as batch:
+                await conn.state.ensure_line(
+                    conf_file,
+                    "max_connections = 512",
+                    notify=("reload_app", lambda: conn.run("echo 'batched reload'")),
+                )
+                await conn.state.ensure_line(
+                    conf_file,
+                    "keepalive_timeout = 65",
+                    notify=("reload_app", lambda: conn.run("echo 'batched reload'")),
+                )
+            print(
+                f"batch_notifications: triggered={batch.triggered_count}, "
+                f"executed={batch.executed_count}"
+            )
 
             print("\n=== 4. Системные примитивы в режиме dry_run=True ===")
             usr_dry = await conn.state.ensure_user("deploy_bot", shell="/bin/bash", dry_run=True)

@@ -523,7 +523,7 @@ async def ensure_authorized_key(
     return EnsureResult(
         target=auth_file,
         state=state,
-        changed=True,
+        changed=dir_res.changed or file_res.changed,
         ok=file_res.ok,
         details=f"Updated {auth_file} for user {user}" if file_res.ok else file_res.details,
         dry_run=False,
