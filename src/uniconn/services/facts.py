@@ -365,12 +365,6 @@ class FactCollector:
                 facts = parse_windows_facts_output(
                     win_res.stdout, default_host=default_host
                 )
-            elif (
-                sys.platform == "win32"
-                and self._conn.transport_name == "local"
-                and not self._is_run_mocked()
-            ):
-                facts = _collect_windows_local_facts(default_host)
             else:
                 worker = getattr(self._conn, "_python_worker", None)
                 worker_facts: HostFacts | None = None
@@ -382,6 +376,12 @@ class FactCollector:
                         )
                 if worker_facts is not None:
                     facts = worker_facts
+                elif (
+                    sys.platform == "win32"
+                    and self._conn.transport_name == "local"
+                    and not self._is_run_mocked()
+                ):
+                    facts = _collect_windows_local_facts(default_host)
                 else:
                     res = await self._conn.run(
                         FACT_COLLECTION_SCRIPT,

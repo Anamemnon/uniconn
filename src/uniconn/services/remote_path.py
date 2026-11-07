@@ -158,9 +158,7 @@ def _is_windows_flavour(conn: Any, raw_path: str) -> bool:
     tr_name = getattr(conn, "transport_name", "")
     if tr_name in ("winrm", "wsman"):
         return True
-    if tr_name == "local" and os.name == "nt":
-        return True
-    return len(raw_path) >= 2 and raw_path[1] == ":" and ("\\" in raw_path or "/" in raw_path)
+    return (len(raw_path) >= 2 and raw_path[1] == ":") or "\\" in raw_path
 
 
 def _make_pure_path(raw_path: str, *, is_windows: bool) -> PurePath:
@@ -255,7 +253,7 @@ class RemotePath(os.PathLike[str]):
         if isinstance(other, SyncRemotePath):
             return self._pure == other._async_path._pure and self._conn is other._async_path._conn
         if isinstance(other, PurePath):
-            return str(self._pure) == str(other)
+            return self._pure.as_posix() == other.as_posix()
         return NotImplemented
 
     def __hash__(self) -> int:

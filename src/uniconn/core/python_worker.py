@@ -139,7 +139,7 @@ def _op_glob(req):
             except OSError:
                 continue
         try:
-            rel_str = str(p.relative_to(base_path))
+            rel_str = p.relative_to(base_path).as_posix()
         except ValueError:
             rel_str = p.name
         items.append({
@@ -153,7 +153,7 @@ def _op_glob(req):
 def _op_facts(req):
     uname = platform.uname()
     os_family = "Windows" if os.name == "nt" else (uname.system or "Linux")
-    distro = os_family
+    distro = f"Windows {uname.release}" if os.name == "nt" else os_family
     os_rel = {}
     if os.path.isfile("/etc/os-release"):
         try:
@@ -200,6 +200,47 @@ def _op_facts(req):
                 mem_avail = info.get("MemAvailable", info.get("MemFree", 0))
         except Exception:
             pass
+    if mem_total == 0 and hasattr(os, "sysconf"):
+        with contextlib.suppress(Exception):
+            ps = os.sysconf("SC_PAGE_SIZE")
+            pp = os.sysconf("SC_PHYS_PAGES")
+            if ps > 0 and pp > 0:
+                mem_total = int(ps * pp)
+                ap = os.sysconf("SC_AVPHYS_PAGES") if "SC_AVPHYS_PAGES" in os.sysconf_names else -1
+                mem_avail = int(ps * ap) if ap > 0 else mem_total // 2
+    if os_family == "Darwin":
+        import subprocess
+        if mem_total == 0:
+            with contextlib.suppress(Exception):
+                out = subprocess.check_output(["sysctl", "-n", "hw.memsize"], timeout=2).decode().strip()
+                if out.isdigit():
+                    mem_total = int(out)
+                    mem_avail = mem_total // 2
+        if uptime == 0.0:
+            with contextlib.suppress(Exception):
+                out = subprocess.check_output(["sysctl", "-n", "kern.boottime"], timeout=2).decode()
+                m = re.search(r"sec\s*=\s*(\d+)", out)
+                if m:
+                    uptime = round(max(0.0, time.time() - float(m.group(1))), 1)
+    if os.name == "nt":
+        with contextlib.suppress(Exception):
+            import ctypes
+            k32 = getattr(getattr(ctypes, "windll", None), "kernel32", None)
+            if k32 is not None:
+                class _MEMSTAT(ctypes.Structure):
+                    _fields_ = [
+                        ("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong),
+                        ("ullTotalPhys", ctypes.c_ulonglong), ("ullAvailPhys", ctypes.c_ulonglong),
+                        ("ullTotalPageFile", ctypes.c_ulonglong), ("ullAvailPageFile", ctypes.c_ulonglong),
+                        ("ullTotalVirtual", ctypes.c_ulonglong), ("ullAvailVirtual", ctypes.c_ulonglong),
+                        ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                    ]
+                ms = _MEMSTAT()
+                ms.dwLength = ctypes.sizeof(_MEMSTAT)
+                if k32.GlobalMemoryStatusEx(ctypes.byref(ms)):
+                    mem_total = int(ms.ullTotalPhys)
+                    mem_avail = int(ms.ullAvailPhys)
+                uptime = round(k32.GetTickCount64() / 1000.0, 1)
     disks = []
     if os.path.isfile("/proc/mounts"):
         seen_mounts = set()
@@ -237,7 +278,9 @@ def _op_facts(req):
             usage = shutil.disk_usage(root_mp)
             pct = round((usage.used / usage.total) * 100.0, 1) if usage.total > 0 else 0.0
             disks.append({
-                "device": root_mp, "mountpoint": root_mp, "fstype": "root",
+                "device": "C:" if os.name == "nt" else root_mp,
+                "mountpoint": root_mp,
+                "fstype": "NTFS" if os.name == "nt" else "root",
                 "total_bytes": int(usage.total), "used_bytes": int(usage.used),
                 "available_bytes": int(usage.free), "use_percent": pct,
             })
@@ -291,12 +334,17 @@ def _op_facts(req):
                 })
         except Exception:
             pass
+    host_val = (
+        (uname.node or socket.gethostname())
+        if os.name == "nt"
+        else (socket.gethostname() or uname.node)
+    ) or req.get("default_host", "localhost")
     return {
         "os_family": os_family,
         "distro": distro,
         "kernel": uname.release or "unknown",
         "arch": uname.machine or "unknown",
-        "hostname": socket.gethostname() or uname.node or req.get("default_host", "localhost"),
+        "hostname": host_val,
         "uptime_seconds": uptime,
         "cpu_count": os.cpu_count() or 1,
         "memory_total_bytes": mem_total,

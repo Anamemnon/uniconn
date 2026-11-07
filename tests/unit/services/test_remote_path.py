@@ -189,13 +189,17 @@ async def test_remote_path_respects_cd_context_and_upload_download(tmp_path: Pat
             with pytest.raises(FileExistsError):
                 await rel_file.touch(exist_ok=False)
 
-            # unlink() корректно удаляет битые симлинки
+            # unlink() корректно удаляет битые симлинки (на ОС с поддержкой симлинков без привилегий)
             broken_link = work_dir / "broken.lnk"
-            os.symlink(work_dir / "non_existent_target", broken_link)
-            remote_broken = conn.path("broken.lnk")
-            assert await remote_broken.is_symlink() is True
-            await remote_broken.unlink()
-            assert not broken_link.is_symlink()
+            try:
+                os.symlink(work_dir / "non_existent_target", broken_link)
+            except OSError:
+                broken_link = None  # type: ignore[assignment]
+            if broken_link is not None:
+                remote_broken = conn.path("broken.lnk")
+                assert await remote_broken.is_symlink() is True
+                await remote_broken.unlink()
+                assert not broken_link.is_symlink()
 
 
 def test_sync_remote_path_end_to_end(tmp_path: Path) -> None:
