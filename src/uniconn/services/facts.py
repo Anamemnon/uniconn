@@ -372,24 +372,35 @@ class FactCollector:
             ):
                 facts = _collect_windows_local_facts(default_host)
             else:
-                res = await self._conn.run(
-                    FACT_COLLECTION_SCRIPT,
-                    timeout=timeout,
-                    raise_on_error=False,
-                )
-                facts = parse_facts_output(res.stdout, default_host=default_host)
-                if facts.os_family == "Unknown":
-                    win_res = await self._conn.run(
-                        WINDOWS_FACT_POWERSHELL_SCRIPT,
+                worker = getattr(self._conn, "_python_worker", None)
+                worker_facts: HostFacts | None = None
+                if worker is not None and worker.can_auto_accelerate():
+                    with contextlib.suppress(Exception):
+                        worker_facts = await worker.gather_facts(
+                            default_host=default_host,
+                            timeout=timeout,
+                        )
+                if worker_facts is not None:
+                    facts = worker_facts
+                else:
+                    res = await self._conn.run(
+                        FACT_COLLECTION_SCRIPT,
                         timeout=timeout,
                         raise_on_error=False,
                     )
-                    if win_res.ok and win_res.stdout.strip():
-                        win_facts = parse_windows_facts_output(
-                            win_res.stdout, default_host=default_host
+                    facts = parse_facts_output(res.stdout, default_host=default_host)
+                    if facts.os_family == "Unknown":
+                        win_res = await self._conn.run(
+                            WINDOWS_FACT_POWERSHELL_SCRIPT,
+                            timeout=timeout,
+                            raise_on_error=False,
                         )
-                        if win_facts.os_family == "Windows":
-                            facts = win_facts
+                        if win_res.ok and win_res.stdout.strip():
+                            win_facts = parse_windows_facts_output(
+                                win_res.stdout, default_host=default_host
+                            )
+                            if win_facts.os_family == "Windows":
+                                facts = win_facts
         else:
             facts = HostFacts(hostname=default_host)
 

@@ -13,6 +13,7 @@ from uniconn import (
     FileOperationsService,
     PoolFileOperationsService,
     PoolStateManagementService,
+    RemotePath,
     ShellSession,
     StateManagementService,
     SyncConnection,
@@ -20,6 +21,7 @@ from uniconn import (
     SyncFileOperationsService,
     SyncPoolFileOperationsService,
     SyncPoolStateManagementService,
+    SyncRemotePath,
     SyncShellSession,
     SyncStateManagementService,
     SyncTunnelService,
@@ -85,6 +87,7 @@ def test_domain_services_async_sync_parity() -> None:
         (PoolStateManagementService, SyncPoolStateManagementService),
         (ShellSession, SyncShellSession),
         (ConnectionPool, SyncConnectionPool),
+        (RemotePath, SyncRemotePath),
     ]
     for async_cls, sync_cls in pairs:
         async_m = _public_methods(async_cls) - _ASYNC_ONLY_METHODS

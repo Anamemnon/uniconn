@@ -195,5 +195,6 @@ class SyncConnectionPool(SyncProxyMixin):
     wait_for_port = sync_method(ConnectionPool.wait_for_port)
     wait_for_path = sync_method(ConnectionPool.wait_for_path)
     run_script = sync_method(ConnectionPool.run_script)
+    run_python = sync_method(ConnectionPool.run_python)
     use_cassette = sync_context(ConnectionPool.use_cassette, reopen_portal=True)
     stream = sync_iter(ConnectionPool.stream)

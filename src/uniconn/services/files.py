@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from ..exceptions import CapabilityNotSupportedError, ExecutionError, FileTransferError
 from ..result import SyncResult
 from ..transports.base import FileStat
+from .remote_path import RemotePath, RemoteStatResult
 from .templates import TemplateEngine
 
 if TYPE_CHECKING:
@@ -312,6 +313,10 @@ class FileOperationsService:
         """Инициализировать сервис файловых операций для подключения."""
         self._conn = conn
         self._synchronizer = DirectorySynchronizer(conn)
+
+    def path(self, *pathsegments: str | os.PathLike[str]) -> RemotePath:
+        """Создать объектно-ориентированный путь ``RemotePath`` (аналог ``pathlib.Path``) на хосте."""
+        return RemotePath(self._conn, *pathsegments)
 
     async def _ensure_connected(self) -> None:
         if not self._conn.transport.is_connected:
@@ -886,6 +891,18 @@ class FileOperationsService:
         if self._conn.transport_name == "local" and not sudo:
             return _local_file_digest(effective_path, algorithm)
 
+        worker = getattr(self._conn, "_python_worker", None)
+        if not sudo and worker is not None and worker.can_auto_accelerate():
+            with contextlib.suppress(Exception):
+                digest = await worker.request(
+                    "checksum",
+                    allow_oneshot_fallback=False,
+                    path=effective_path,
+                    algorithm=algorithm,
+                )
+                if isinstance(digest, str) and len(digest) == _CHECKSUM_HEX_LENGTHS.get(algorithm, 64):
+                    return digest.lower()
+
         cached_facts = getattr(self._conn, "_cached_facts", None)
         os_family = getattr(cached_facts, "os_family", None)
         if not os_family and self._conn.transport_name in ("winrm", "wsman"):
@@ -959,11 +976,12 @@ class FileOperationsService:
         effective_path = self._conn.context.resolve_path(remote_path)
         await self._conn.transport.chmod(effective_path, mode)
 
-    async def stat(self, remote_path: str | Path) -> FileStat:
-        """Получить метаданные файла на удалённом хосте."""
+    async def stat(self, remote_path: str | Path) -> RemoteStatResult:
+        """Получить метаданные файла на удалённом хосте (совместимо с FileStat и os.stat_result)."""
         await self._ensure_connected()
         effective_path = self._conn.context.resolve_path(remote_path)
-        return await self._conn.transport.stat(effective_path)
+        raw_stat = await self._conn.transport.stat(effective_path)
+        return RemoteStatResult.coerce(raw_stat)
 
     async def listdir(self, remote_path: str | Path = ".") -> list[str]:
         """Получить список имён файлов в директории."""

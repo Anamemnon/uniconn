@@ -34,6 +34,7 @@ from .provisioning import (
     UniversalServiceStrategy,
     ZypperStrategy,
 )
+from .remote_path import RemotePath, RemoteStatResult, SyncRemotePath
 from .templates import TemplateEngine, render_template
 from .tunnels import TunnelService
 
@@ -60,8 +61,11 @@ __all__ = [
     "OpenRCStrategy",
     "PackageManagerStrategy",
     "PacmanStrategy",
+    "RemotePath",
+    "RemoteStatResult",
     "ServiceManagerStrategy",
     "StateManagementService",
+    "SyncRemotePath",
     "SysVStrategy",
     "SystemdStrategy",
     "TemplateEngine",

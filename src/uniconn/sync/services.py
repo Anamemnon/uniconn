@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
@@ -13,6 +14,7 @@ from ..pool.services import PoolFileOperationsService, PoolStateManagementServic
 from ..services.facts_models import FactsDiffReport, HostFacts
 from ..services.files import FileOperationsService
 from ..services.provisioning import StateManagementService
+from ..services.remote_path import RemotePath, SyncRemotePath
 from ..services.tunnels import TunnelService
 
 if TYPE_CHECKING:
@@ -33,6 +35,13 @@ class SyncFileOperationsService(SyncProxyMixin):
     @property
     def _portal(self) -> EventLoopPortal:
         return self._sync_conn._portal
+
+    def path(self, *pathsegments: str | os.PathLike[str]) -> SyncRemotePath:
+        """Создать синхронный путь ``SyncRemotePath`` (аналог ``pathlib.Path``)."""
+        return SyncRemotePath(
+            RemotePath(self._sync_conn._async_conn, *pathsegments),
+            self._sync_conn,
+        )
 
     upload = sync_method(FileOperationsService.upload)
     download = sync_method(FileOperationsService.download)

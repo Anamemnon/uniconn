@@ -73,7 +73,7 @@ class RecordMode(StrEnum):
     ALL = "all"
 
 
-InteractionKind = Literal["exec", "stream", "fs", "shell"]
+InteractionKind = Literal["exec", "stream", "fs", "shell", "py_rpc"]
 MatchField = Literal["command", "cwd", "sudo"]
 CapabilityKind = Literal["exec", "stream", "file", "shell", "tunnel"]
 FsOperationName = Literal[
@@ -155,11 +155,29 @@ class RecordedShellInteraction(BaseModel):
     steps: list[ShellDialogStep] = Field(default_factory=list)
 
 
+class RecordedPyRpcInteraction(BaseModel):
+    """Записанный вызов ``run_python()`` или RPC постоянного Python-воркера."""
+
+    kind: Literal["py_rpc"] = "py_rpc"
+    op: str = "call"
+    func_name: str = "<lambda>"
+    source: str = ""
+    args: list[Any] = Field(default_factory=list)
+    kwargs: dict[str, Any] = Field(default_factory=dict)
+    cwd: str | None = None
+    result: Any = None
+    stdout: str = ""
+    duration: float = 0.001
+    error_class: str | None = None
+    error_message: str | None = None
+
+
 CassetteInteraction = Annotated[
     RecordedExecInteraction
     | RecordedStreamInteraction
     | RecordedFsInteraction
-    | RecordedShellInteraction,
+    | RecordedShellInteraction
+    | RecordedPyRpcInteraction,
     Field(discriminator="kind"),
 ]
 
@@ -234,6 +252,11 @@ class Cassette(BaseModel):
         """Количество интерактивных shell-сессий."""
         return sum(1 for it in self.interactions if it.kind == "shell")
 
+    @property
+    def py_rpc_count(self) -> int:
+        """Количество вызовов Python-воркера (py_rpc)."""
+        return sum(1 for it in self.interactions if it.kind == "py_rpc")
+
     def sanitize(
         self,
         *,
@@ -299,6 +322,13 @@ class Cassette(BaseModel):
                 for step in it.steps:
                     step.expect_input = _sub(step.expect_input) or ""
                     step.response_output = _sub(step.response_output) or ""
+            elif isinstance(it, RecordedPyRpcInteraction):
+                it.source = _sub(it.source) or ""
+                it.stdout = _sub(it.stdout) or ""
+                if it.cwd:
+                    it.cwd = _sub(it.cwd)
+                if isinstance(it.result, str):
+                    it.result = _sub(it.result)
 
         return replacements
 
@@ -509,6 +539,8 @@ def _interaction_summary(it: CassetteInteraction) -> str:
         return f"stream: {it.command}"
     if isinstance(it, RecordedFsInteraction):
         return f"fs:{it.operation} {it.path}"
+    if isinstance(it, RecordedPyRpcInteraction):
+        return f"py_rpc:{it.op}:{it.func_name}"
     return f"shell ({len(it.steps)} steps)"
 
 
@@ -528,6 +560,8 @@ def _interaction_stdout(it: CassetteInteraction) -> str:
         if it.result_bool is not None:
             return str(it.result_bool)
         return ""
+    if isinstance(it, RecordedPyRpcInteraction):
+        return json.dumps(it.result, sort_keys=True, ensure_ascii=False)
     return "\n".join(f"{s.expect_input} -> {s.response_output}" for s in it.steps)
 
 
@@ -535,7 +569,7 @@ def _interaction_stderr(it: CassetteInteraction) -> str:
     """Извлечь текстовое представление потока ошибок шага."""
     if isinstance(it, RecordedExecInteraction):
         return it.stderr
-    if isinstance(it, RecordedStreamInteraction | RecordedFsInteraction):
+    if isinstance(it, RecordedStreamInteraction | RecordedFsInteraction | RecordedPyRpcInteraction):
         return it.error_message or ""
     return ""
 
@@ -551,7 +585,7 @@ def _interaction_exit_code(it: CassetteInteraction) -> int:
 
 def _interaction_duration(it: CassetteInteraction) -> float:
     """Извлечь длительность выполнения шага в секундах."""
-    if isinstance(it, RecordedExecInteraction):
+    if isinstance(it, RecordedExecInteraction | RecordedPyRpcInteraction):
         return it.duration
     return 0.0
 
@@ -656,6 +690,7 @@ __all__ = [
     "RecordMode",
     "RecordedExecInteraction",
     "RecordedFsInteraction",
+    "RecordedPyRpcInteraction",
     "RecordedShellInteraction",
     "RecordedStreamInteraction",
     "ShellDialogStep",

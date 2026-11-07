@@ -647,6 +647,7 @@ class ConnectionPool:
     wait_for_port = pool_fan_out_dict(Connection.wait_for_port)
     wait_for_path = pool_fan_out_dict(Connection.wait_for_path)
     run_script = pool_fan_out_dict(Connection.run_script)
+    run_python = pool_fan_out_dict(Connection.run_python)
 
     async def diff_facts(
         self,

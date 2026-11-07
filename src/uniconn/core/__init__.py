@@ -25,6 +25,7 @@ from .pipeline import (
     format_command,
     prepare_sudo_command,
 )
+from .python_worker import CallableSerializer, RemotePythonWorker, run_python
 from .resilience import CircuitBreaker, CircuitState, RateLimiter
 from .scripts import ScriptExecutionManager
 from .shell_facade import ObserverContext
@@ -45,6 +46,7 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "CallableSerializer",
     "CircuitBreaker",
     "CircuitBreakerMiddleware",
     "CircuitState",
@@ -66,6 +68,7 @@ __all__ = [
     "ObserverContext",
     "RateLimitMiddleware",
     "RateLimiter",
+    "RemotePythonWorker",
     "RetryMiddleware",
     "ScriptExecutionManager",
     "SudoMiddleware",
@@ -74,5 +77,6 @@ __all__ = [
     "TracingMiddleware",
     "format_command",
     "prepare_sudo_command",
+    "run_python",
 ]
 

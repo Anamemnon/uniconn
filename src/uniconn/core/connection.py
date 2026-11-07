@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import warnings
 from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
@@ -21,6 +22,7 @@ from ..services.facts import FactCollector
 from ..services.facts_models import FactSpec, HostFacts
 from ..services.files import FileOperationsService
 from ..services.provisioning import StateManagementService
+from ..services.remote_path import RemotePath
 from ..services.templates import render_template as render_template
 from ..services.tunnels import TunnelService
 from ..transports.base import BaseTransport
@@ -40,6 +42,7 @@ from .factories import (
     with_overrides_connection,
 )
 from .pipeline import CommandPipeline, CommandRequest, HookCallback, HookEvent, format_command
+from .python_worker import RemotePythonWorker, run_python
 from .resilience import CircuitBreaker, RateLimiter
 from .scripts import ScriptExecutionManager, run_script
 from .shell_facade import (
@@ -99,6 +102,16 @@ class Connection:
         self.state = StateManagementService(self)
         self.tunnels = TunnelService(self)
         self._facts_collector = FactCollector(self)
+        self._python_worker = RemotePythonWorker(self)
+
+    @property
+    def python_worker(self) -> RemotePythonWorker:
+        """Менеджер постоянного Python-воркера для выполнения ``run_python`` и быстрых RPC."""
+        return self._python_worker
+
+    def path(self, *pathsegments: str | os.PathLike[str]) -> RemotePath:
+        """Создать объектно-ориентированный путь ``RemotePath`` (аналог ``pathlib.Path``) на хосте."""
+        return RemotePath(self, *pathsegments)
 
     @property
     def transport(self) -> BaseTransport:
@@ -193,7 +206,7 @@ class Connection:
     copy = clone_connection
     with_overrides = with_overrides_connection
 
-    def cd(self, path: str | Path) -> CwdContext:
+    def cd(self, path: str | os.PathLike[str]) -> CwdContext:
         return self._context.cd(path)
 
     def env(self, mapping: dict[str, str] | None = None, **env_vars: str) -> EnvContext:
@@ -238,19 +251,11 @@ class Connection:
         """Выполнить команду на хосте через конвейер ``CommandPipeline``."""
         cmd_str = format_command(command)
         req = CommandRequest(
-            raw_command=command,
-            command=cmd_str,
-            exec_command=cmd_str,
-            timeout=timeout,
-            raise_on_error=raise_on_error,
-            input_data=input,
-            sudo=sudo,
-            sudo_user=sudo_user,
-            sudo_password=sudo_password,
-            sensitive=sensitive,
+            raw_command=command, command=cmd_str, exec_command=cmd_str, timeout=timeout,
+            raise_on_error=raise_on_error, input_data=input, sudo=sudo, sudo_user=sudo_user,
+            sudo_password=sudo_password, sensitive=sensitive,
             dry_run=self._dry_run if dry_run is None else dry_run,
-            output_format="text",
-            transport_kwargs=dict(kwargs),
+            output_format="text", transport_kwargs=dict(kwargs),
         )
         return await self._pipeline.execute(req)
 
@@ -273,19 +278,10 @@ class Connection:
             return b""
         cmd_str = format_command(command)
         req = CommandRequest(
-            raw_command=command,
-            command=cmd_str,
-            exec_command=cmd_str,
-            timeout=timeout,
-            raise_on_error=raise_on_error,
-            input_data=input,
-            sudo=sudo,
-            sudo_user=sudo_user,
-            sudo_password=sudo_password,
-            sensitive=sensitive,
-            dry_run=effective_dry_run,
-            output_format="bytes",
-            transport_kwargs=dict(kwargs),
+            raw_command=command, command=cmd_str, exec_command=cmd_str, timeout=timeout,
+            raise_on_error=raise_on_error, input_data=input, sudo=sudo, sudo_user=sudo_user,
+            sudo_password=sudo_password, sensitive=sensitive, dry_run=effective_dry_run,
+            output_format="bytes", transport_kwargs=dict(kwargs),
         )
         return (await self._pipeline.execute(req)).raw_bytes
 
@@ -299,13 +295,9 @@ class Connection:
             results.append(result)
             if stop_on_error and not result.ok:
                 log_event(
-                    self._logger,
-                    logging.WARNING,
-                    "command.batch_stopped",
+                    self._logger, logging.WARNING, "command.batch_stopped",
                     f"run_commands: остановка на команде {command!r} (exit_code={result.exit_code})",
-                    host=self._config.host,
-                    command=format_command(command),
-                    exit_code=result.exit_code,
+                    host=self._config.host, command=format_command(command), exit_code=result.exit_code,
                 )
                 break
         return results
@@ -331,18 +323,21 @@ class Connection:
             yield line
 
     async def close(self) -> None:
+        with contextlib.suppress(Exception):
+            await self._python_worker.close()
         await self._transport.disconnect()
 
     async def is_alive(self, timeout: float | None = None) -> bool:
         return await self._transport.ping(timeout=timeout)
 
-    # ─── Ожидание, скрипты, Shell, факты и диагностика ─────────────
+    # ─── Ожидание, скрипты, Python-воркер, Shell, факты и диагностика ──
 
     ping = ping_connection
     wait_for_connection = wait_for_connection
     wait_for_port = wait_for_port
     wait_for_path = wait_for_path
     run_script = run_script
+    run_python = run_python
     expect = expect_command
     _raw_open_shell = raw_open_shell
     open_shell = open_shell_session
@@ -357,11 +352,7 @@ class Connection:
         ttl: float | None = None,
     ) -> HostFacts:
         return await self._facts_collector.gather(
-            refresh=refresh,
-            timeout=timeout,
-            spec=spec,
-            artifact_dir=artifact_dir,
-            ttl=ttl,
+            refresh=refresh, timeout=timeout, spec=spec, artifact_dir=artifact_dir, ttl=ttl
         )
 
     async def __aenter__(self) -> Self:
@@ -369,7 +360,7 @@ class Connection:
         return self
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        await self._transport.disconnect()
+        await self.close()
 
     def to_sync(self) -> SyncConnection:
         from ..sync.connection import SyncConnection

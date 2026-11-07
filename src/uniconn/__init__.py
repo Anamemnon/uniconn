@@ -58,6 +58,7 @@ from .background import (
 )
 from .config import ConnectionConfig, InventoryLoader, SecretResolver, URIParser
 from .core import (
+    CallableSerializer,
     CircuitBreaker,
     CircuitBreakerMiddleware,
     CircuitState,
@@ -74,6 +75,7 @@ from .core import (
     ObserverContext,
     RateLimiter,
     RateLimitMiddleware,
+    RemotePythonWorker,
     RetryMiddleware,
     ScriptExecutionManager,
     SudoMiddleware,
@@ -144,8 +146,11 @@ from .services import (
     OpenRCStrategy,
     PackageManagerStrategy,
     PacmanStrategy,
+    RemotePath,
+    RemoteStatResult,
     ServiceManagerStrategy,
     StateManagementService,
+    SyncRemotePath,
     SystemdStrategy,
     SysVStrategy,
     TemplateEngine,
@@ -205,6 +210,7 @@ from .transports.replay import (
     InteractionDiff,
     RecordedExecInteraction,
     RecordedFsInteraction,
+    RecordedPyRpcInteraction,
     RecordedShellInteraction,
     RecordedStreamInteraction,
     RecordMode,
@@ -225,7 +231,7 @@ from .transports.serial_protocols import (
 )
 from .transports.ssh import OpenSSHConfigParser, SFTPClientAdapter, SSHJumpChainManager
 
-__version__ = "0.17.0"
+__version__ = "0.18.0"
 
 
 def __getattr__(name: str) -> Any:
@@ -264,6 +270,7 @@ __all__ = [  # noqa: RUF022
     "BaseTransport",
     "BatchAbortedError",
     "BeforeRunHook",
+    "CallableSerializer",
     "CapabilityNotSupportedError",
     "Cassette",
     "CassetteContext",
@@ -361,10 +368,14 @@ __all__ = [  # noqa: RUF022
     "RecordMode",
     "RecordedExecInteraction",
     "RecordedFsInteraction",
+    "RecordedPyRpcInteraction",
     "RecordedShellInteraction",
     "RecordedSpan",
     "RecordedStreamInteraction",
     "RedfishTransport",
+    "RemotePath",
+    "RemotePythonWorker",
+    "RemoteStatResult",
     "ReplayShellProcess",
     "ReplayTransport",
     "Result",
@@ -399,6 +410,7 @@ __all__ = [  # noqa: RUF022
     "SyncFileOperationsService",
     "SyncPoolFileOperationsService",
     "SyncPoolStateManagementService",
+    "SyncRemotePath",
     "SyncResult",
     "SyncShellSession",
     "SyncStateManagementService",

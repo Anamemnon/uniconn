@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -90,13 +91,13 @@ class TempDirContext:
         conn: Connection,
         prefix: str = "uniconn_",
         suffix: str = "",
-        dir: str | Path | None = None,
+        dir: str | os.PathLike[str] | None = None,
     ) -> None:
         """Инициализировать контекстный менеджер временной директории."""
         self._conn = conn
         self._prefix = prefix
         self._suffix = suffix
-        self._dir = str(dir) if dir is not None else None
+        self._dir = os.fspath(dir) if dir is not None else None
         self._path: str | None = None
 
     async def __aenter__(self) -> str:
@@ -123,9 +124,9 @@ class ExecutionContext:
         self.cwd_stack: list[str] = []
         self.env_stack: list[dict[str, str]] = []
 
-    def cd(self, path: str | Path) -> CwdContext:
+    def cd(self, path: str | os.PathLike[str]) -> CwdContext:
         """Создать контекстный менеджер временной смены директории."""
-        return CwdContext(self.cwd_stack, str(path))
+        return CwdContext(self.cwd_stack, os.fspath(path))
 
     def env(self, mapping: dict[str, str] | None = None, **env_vars: str) -> EnvContext:
         """Создать контекстный менеджер временных переменных окружения."""
@@ -149,9 +150,9 @@ class ExecutionContext:
             merged.update(frame)
         return merged
 
-    def resolve_path(self, remote_path: str | Path) -> str:
+    def resolve_path(self, remote_path: str | os.PathLike[str]) -> str:
         """Разрешить путь с учётом активного ``current_cwd`` (для относительных путей)."""
-        path_str = str(remote_path)
+        path_str = os.fspath(remote_path)
         active_cwd = self.current_cwd
         if active_cwd and not _is_remote_abs_path(path_str):
             return _join_remote_paths(active_cwd, path_str)

@@ -37,6 +37,7 @@ from .models import (
     MatchField,
     RecordedExecInteraction,
     RecordedFsInteraction,
+    RecordedPyRpcInteraction,
     RecordedShellInteraction,
     RecordedStreamInteraction,
     RecordMode,
@@ -1092,6 +1093,143 @@ class CassetteTransportProxy(BaseTransport):
         self._cassette.interactions.append(shell_rec)
         self._dirty = True
         return _RecordingShellProcessProxy(real_proc, shell_rec, self)
+
+    def _match_py_rpc(
+        self,
+        op: str,
+        func_name: str,
+        source: str,
+        args: list[Any],
+        kwargs: dict[str, Any],
+    ) -> RecordedPyRpcInteraction | None:
+        norm_source = (self._norm_key(source) or "").strip()
+        matched_repeat: RecordedPyRpcInteraction | None = None
+
+        for idx, item in enumerate(self._cassette.interactions):
+            if not isinstance(item, RecordedPyRpcInteraction):
+                continue
+            if item.op != op:
+                continue
+            if op == "call":
+                if item.func_name != func_name:
+                    continue
+                if norm_source and item.source and (self._norm_key(item.source) or "").strip() != norm_source:
+                    continue
+                if item.args != args or item.kwargs != kwargs:
+                    continue
+            elif item.kwargs and kwargs and item.kwargs != kwargs:
+                continue
+            if idx not in self._consumed_indices:
+                self._consumed_indices.add(idx)
+                return item
+            matched_repeat = item
+
+        if self._allow_playback_repeats and matched_repeat is not None:
+            return matched_repeat
+        return None
+
+    async def record_or_replay_py_rpc(
+        self,
+        worker: Any,
+        *,
+        op: str,
+        timeout: float | None = None,
+        sudo: bool = False,
+        allow_oneshot_fallback: bool = True,
+        **params: Any,
+    ) -> Any:
+        """Записать или воспроизвести вызов ``RemotePythonWorker`` (``run_python``) в кассете."""
+        import time as time_mod
+
+        from ...core.python_worker import _decode_worker_value, _encode_worker_value
+
+        func_name = str(params.get("func_name", op))
+        source = str(params.get("source", ""))
+        args = _encode_worker_value(list(params.get("args") or []))
+        if op == "call":
+            kwargs = _encode_worker_value(dict(params.get("kwargs") or {}))
+        else:
+            excluded = {"args", "kwargs", "source", "func_name", "is_expr", "cwd", "env"}
+            kwargs = _encode_worker_value({k: v for k, v in params.items() if k not in excluded})
+        cwd = params.get("cwd")
+
+        if self._can_replay():
+            matched = self._match_py_rpc(op, func_name, source, args, kwargs)
+            if matched is not None:
+                self._raise_recorded_error(
+                    matched.error_class,
+                    matched.error_message,
+                    command=f"run_python({func_name})",
+                    host=self.config.host,
+                )
+                return _decode_worker_value(matched.result)
+            if not self._can_record():
+                candidates = [
+                    f"{it.op}:{it.func_name}"
+                    for it in self._cassette.interactions
+                    if isinstance(it, RecordedPyRpcInteraction)
+                ]
+                raise CassetteMissError(
+                    f"No matching py_rpc interaction in cassette for {op}:{func_name}",
+                    kind="py_rpc",
+                    command=f"run_python({func_name})",
+                    host=self.config.host,
+                    candidates=candidates,
+                )
+
+        if self._wrapped is None:
+            raise CassetteError(
+                "Real transport is not available for recording py_rpc in standalone ReplayTransport",
+                host=self.config.host,
+            )
+
+        sanitized_source = self._sanitize_text(source, normalize=True)
+        sanitized_cwd = self._sanitize_text(str(cwd), normalize=True) if cwd else None
+        start_t = time_mod.monotonic()
+
+        # Временно переключаем транспорт соединения на реальный для выполнения воркера
+        prev_tr = worker._conn.swap_transport(self._wrapped)
+        try:
+            res = await worker._raw_request(
+                op,
+                timeout=timeout,
+                sudo=sudo,
+                allow_oneshot_fallback=allow_oneshot_fallback,
+                **params,
+            )
+        except Exception as exc:
+            self._cassette.interactions.append(
+                RecordedPyRpcInteraction(
+                    op=op,
+                    func_name=func_name,
+                    source=sanitized_source,
+                    args=args,
+                    kwargs=kwargs,
+                    cwd=sanitized_cwd,
+                    duration=round(time_mod.monotonic() - start_t, 6),
+                    error_class=type(exc).__name__,
+                    error_message=self._sanitize_text(str(exc)),
+                )
+            )
+            self._dirty = True
+            raise
+        finally:
+            worker._conn.swap_transport(prev_tr)
+
+        self._cassette.interactions.append(
+            RecordedPyRpcInteraction(
+                op=op,
+                func_name=func_name,
+                source=sanitized_source,
+                args=args,
+                kwargs=kwargs,
+                cwd=sanitized_cwd,
+                result=_encode_worker_value(res),
+                duration=round(time_mod.monotonic() - start_t, 6),
+            )
+        )
+        self._dirty = True
+        return res
 
 
 class ReplayTransport(CassetteTransportProxy):

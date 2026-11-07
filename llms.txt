@@ -14,12 +14,12 @@
 - Documentation & Feature Matrix: `AGENTS.md` (architecture & rules), `FEATURES.md` (full catalog of implemented features — consult on-demand only)
 
 ## Public Exports (`from uniconn import ...`)
-- **Core & Facade**: `Connection`, `SyncConnection`, `ConnectionConfig`, `SecretResolver`, `URIParser`, `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `HostFacts`, `FactSpec`, `CustomCommandSpec`, `FileSourceSpec`, `ExternalToolSpec`, `ExternalToolRunner`, `FactsDiffReport`, `DiskInfo`, `NetworkInterface`, `diff_facts`, `render_template`, `OperationObserver`, `ObserverContext`, `HostTempManager`, `ScriptExecutionManager`, `BeforeRunHook`, `AfterRunHook`, `OnErrorHook`, `HookCallback`, `HookEvent`
+- **Core & Facade**: `Connection`, `SyncConnection`, `ConnectionConfig`, `SecretResolver`, `URIParser`, `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `HostFacts`, `FactSpec`, `CustomCommandSpec`, `FileSourceSpec`, `ExternalToolSpec`, `ExternalToolRunner`, `FactsDiffReport`, `DiskInfo`, `NetworkInterface`, `diff_facts`, `render_template`, `OperationObserver`, `ObserverContext`, `HostTempManager`, `ScriptExecutionManager`, `RemotePythonWorker`, `CallableSerializer`, `BeforeRunHook`, `AfterRunHook`, `OnErrorHook`, `HookCallback`, `HookEvent`
 - **Resilience (`uniconn.core.resilience`)**: `CircuitBreaker`, `CircuitState`, `RateLimiter`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`
-- **Domain Services (`uniconn.services` / `uniconn.pool`)**: `FileOperationsService`, `DirectorySynchronizer`, `TemplateEngine`, `StateManagementService`, `FactCollector`, `TunnelService`, `PoolFileOperationsService`, `PoolStateManagementService`, `SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`, `SyncPoolFileOperationsService`, `SyncPoolStateManagementService`
+- **Domain Services & Object-Oriented FS (`uniconn.services` / `uniconn.pool`)**: `FileOperationsService`, `RemotePath`, `SyncRemotePath`, `RemoteStatResult`, `DirectorySynchronizer`, `TemplateEngine`, `StateManagementService`, `FactCollector`, `TunnelService`, `PoolFileOperationsService`, `PoolStateManagementService`, `SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`, `SyncPoolFileOperationsService`, `SyncPoolStateManagementService`
 - **Strategies (`uniconn.services.provisioning`)**: `PackageManagerStrategy`, `AptStrategy`, `ApkStrategy`, `DnfYumStrategy`, `PacmanStrategy`, `ZypperStrategy`, `ServiceManagerStrategy`, `SystemdStrategy`, `OpenRCStrategy`, `SysVStrategy`
 - **Middleware Pipeline & Context (`uniconn.core`)**: `CommandRequest`, `CommandPipeline`, `CommandMiddleware`, `ContextMiddleware`, `SudoMiddleware`, `HookMiddleware`, `DryRunMiddleware`, `ObservabilityMiddleware`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`, `RetryMiddleware`, `TracingMiddleware`, `ExecutionContext`, `EventLoopPortal`, `SyncContextBridge`, `InventoryLoader`
-- **Transport Protocols, BMC, Container/K8s, WinRM, Serial Modem, Replay/Cassette & Helpers (`uniconn.transports` / `uniconn.pytest_plugin`)**: `BaseTransport`, `CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `ShellStdinProtocol`, `ShellStdoutProtocol`, `TunnelCapableTransport`, `require_capability`, `supports_capability`, `WinRMTransport`, `SerialTransport`, `SerialPortInfo`, `list_serial_ports`, `AsyncXmodemSender`, `AsyncXmodemReceiver`, `AsyncYmodemSender`, `AsyncYmodemReceiver`, `ZmodemSubprocessAdapter`, `compute_crc16`, `compute_checksum8`, `IPMITransport`, `RedfishTransport`, `DockerTransport`, `PodmanTransport`, `KubectlTransport`, `LocalTransport`, `ReplayTransport`, `CassetteTransportProxy`, `Cassette`, `CassetteDiffReport`, `InteractionDiff`, `CassetteContext`, `SyncCassetteContext`, `UniconnCassetteFixture`, `RecordMode`, `RecordedExecInteraction`, `RecordedStreamInteraction`, `RecordedFsInteraction`, `RecordedShellInteraction`, `ShellDialogStep`, `ReplayShellProcess`, `normalize_temp_paths`, `OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`
+- **Transport Protocols, BMC, Container/K8s, WinRM, Serial Modem, Replay/Cassette & Helpers (`uniconn.transports` / `uniconn.pytest_plugin`)**: `BaseTransport`, `CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `ShellStdinProtocol`, `ShellStdoutProtocol`, `TunnelCapableTransport`, `require_capability`, `supports_capability`, `WinRMTransport`, `SerialTransport`, `SerialPortInfo`, `list_serial_ports`, `AsyncXmodemSender`, `AsyncXmodemReceiver`, `AsyncYmodemSender`, `AsyncYmodemReceiver`, `ZmodemSubprocessAdapter`, `compute_crc16`, `compute_checksum8`, `IPMITransport`, `RedfishTransport`, `DockerTransport`, `PodmanTransport`, `KubectlTransport`, `LocalTransport`, `ReplayTransport`, `CassetteTransportProxy`, `Cassette`, `CassetteDiffReport`, `InteractionDiff`, `CassetteContext`, `SyncCassetteContext`, `UniconnCassetteFixture`, `RecordMode`, `RecordedExecInteraction`, `RecordedStreamInteraction`, `RecordedFsInteraction`, `RecordedShellInteraction`, `RecordedPyRpcInteraction`, `ShellDialogStep`, `ReplayShellProcess`, `normalize_temp_paths`, `OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`
 - **Pools**: `ConnectionPool`, `SyncConnectionPool`, `PoolFileOperationsService`, `PoolStateManagementService`, `SyncPoolFileOperationsService`, `SyncPoolStateManagementService`, `PoolStreamMultiplexer`, `SSHSessionPool`
 - **Interactive PTY Shell (`uniconn.shell`)**: `ShellSession`, `SyncShellSession`, `PosixMarkerProtocol`, `ExpectStateMachine`
 - **Background Diagnostics, Streaming Logs & Pluggable Backends (`uniconn.background`)**: `DiagnosticSession`, `SyncDiagnosticSession`, `DiagnosticConfig`, `DiagnosticResult`, `StreamSourceSpec`, `DirectStreamCollector`, `LogPipeline`, `LogHandler`, `LocalFileHandler`, `ForwardHandler`, `StreamHandler`, `ArchiveHandler`, `TimelineHandler`, `PatternTriggerHandler`, `LogWatchRule`, `LogMatchEvent`, `StallEvent`, `BUILTIN_WATCH_RULES`, `KERNEL_PANIC_RULES`, `HARDWARE_ERROR_RULES`, `TELECOM_BS_RULES`, `resolve_watch_rules`, `BackgroundPool`, `BackgroundPoolConfig`, `BackgroundSession`, `BackgroundResult`, `BackgroundCleanupManager`, `BackgroundLogCollector`, `BackgroundBackendStrategy`, `TmuxBackend`, `ScreenBackend`, `NohupBackend`, `WindowsJobBackend`, `resolve_backend`, `LogConfig`
@@ -273,7 +273,19 @@ conn.remove_operation_observer(observer)
 with conn.using_observer(observer):    # Also works with `async with conn.using_observer(observer):`
     await conn.files.read_file("/etc/hostname")
 
-# File Operations, Smart Directory Sync & Templating via `conn.files` (SFTP, Local & Serial XMODEM/YMODEM/ZMODEM)
+# File Operations, RemotePath (`pathlib.Path` API), Smart Directory Sync & Templating via `conn.files` / `conn.path`
+log_dir: RemotePath = conn.path("/var/log/nginx")
+if await log_dir.exists():
+    async for log_file in log_dir.glob("*.log"):
+        st: RemoteStatResult = await log_file.stat()  # zero extra network round-trips (preloaded during glob/iterdir)
+        print(log_file.name, st.st_size)
+conf_path: RemotePath = conn.path("/etc/app.conf")
+await conf_path.write_text("port = 8080\n", encoding="utf-8", atomic=True)
+
+# Persistent Remote Python Worker (Mitogen-style zero-fork RPC over stdin/stdout pipe, v0.18.0)
+release: str = await conn.run_python(lambda: os.uname().release)
+computed: dict = await conn.run_python(my_func, "arg1", key=42, sudo=False, timeout=30.0)
+
 content: str | bytes = await conn.files.read_file(remote_path, encoding="utf-8")  # encoding=None -> bytes
 await conn.files.write_file(remote_path, content: str | bytes, mode: int | None = None, encoding="utf-8", *, atomic: bool = False)
 await conn.files.remove_file(remote_path)
@@ -287,7 +299,7 @@ bytes_recv: int = await conn.files.download_xmodem(local_path, *, mode="crc", tr
 saved_paths: list[Path] = await conn.files.download_ymodem(destination_dir, *, trigger_command=None, progress_callback=None)
 digest: str = await conn.files.checksum(remote_path, algorithm="sha256", *, sudo=False)
 await conn.files.chmod(remote_path, 0o755)
-info: dict = await conn.files.stat(remote_path)
+info: RemoteStatResult = await conn.files.stat(remote_path)
 names: list[str] = await conn.files.listdir(remote_path=".")
 sync_res: SyncResult = await conn.files.sync_dir(
     local_dir,
@@ -367,6 +379,7 @@ async with pool:  # Keeps connections open across multiple pool operations
     port_map: dict[str, float] = await pool.wait_for_port(443, state="open", check_from="remote")
     path_map: dict[str, float] = await pool.wait_for_path("/tmp/ready", content_regex="OK")
     script_map: dict[str, Result | Exception] = await pool.run_script("./check.sh", args=["--fast"])
+    py_map: dict[str, Any] = await pool.run_python(lambda: os.uname().release)
     facts_map: dict[str, HostFacts] = await pool.gather_facts()
     diff_rep: FactsDiffReport = await pool.diff_facts(baseline=None)
     line_map: dict[str, EnsureResult] = await pool.state.ensure_line("/etc/hosts", "10.0.0.5 db.internal")

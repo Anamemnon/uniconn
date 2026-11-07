@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import warnings
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -23,8 +24,10 @@ from ..core.bridge import (
 from ..core.connection import Connection, ObserverContext, OperationObserver
 from ..core.context import CwdContext, EnvContext, ExecutionContext
 from ..core.pipeline import CommandPipeline, HookCallback, HookEvent
+from ..core.python_worker import RemotePythonWorker
 from ..core.resilience import CircuitBreaker, RateLimiter
 from ..services.facts_models import FactSpec
+from ..services.remote_path import RemotePath, SyncRemotePath
 from ..transports.base import BaseTransport
 from .services import (
     SyncDiagnosticSession,
@@ -149,6 +152,15 @@ class SyncConnection(SyncProxyMixin):
         """Конвейер выполнения команд."""
         return self._async_conn.pipeline
 
+    @property
+    def python_worker(self) -> RemotePythonWorker:
+        """Менеджер постоянного Python-воркера."""
+        return self._async_conn.python_worker
+
+    def path(self, *pathsegments: str | os.PathLike[str]) -> SyncRemotePath:
+        """Создать синхронный объектно-ориентированный путь ``SyncRemotePath`` (аналог ``pathlib.Path``)."""
+        return SyncRemotePath(RemotePath(self._async_conn, *pathsegments), self)
+
     def get_hooks(self, event: HookEvent) -> list[HookCallback]:
         """Вернуть копию списка зарегистрированных хуков."""
         return self._async_conn.get_hooks(event)
@@ -222,6 +234,7 @@ class SyncConnection(SyncProxyMixin):
     wait_for_port = sync_method(Connection.wait_for_port)
     wait_for_path = sync_method(Connection.wait_for_path)
     run_script = sync_method(Connection.run_script)
+    run_python = sync_method(Connection.run_python)
     gather_facts = sync_method(Connection.gather_facts)
     temp_dir = sync_context(Connection.temp_dir)
 
