@@ -137,7 +137,34 @@ def test_mock_sftp_server_direct_methods() -> None:
 
     f_obj = sftp_srv.open("/etc/nginx/nginx.conf", asyncssh.FXF_READ, asyncssh.SFTPAttrs())
     assert f_obj.read() == b"worker_processes auto;\n"
+    sftp_srv.fsync(f_obj)
     f_obj.close()
 
     with pytest.raises(asyncssh.SFTPNoSuchFile):
         sftp_srv.stat("/no/such/file.txt")
+
+
+async def test_mock_sftp_file_ranges_without_fileno_on_windows() -> None:
+    """Проверка получения диапазонов SFTP для MockSFTPFile без атрибута fileno (Windows / pywin32)."""
+    import asyncssh.sftp as asyncssh_sftp
+
+    from uniconn.mock.sftp_server import MockSFTPFile
+
+    mock_file = MockSFTPFile("/etc/nginx/nginx.conf", b"worker_processes auto;\n")
+    assert not hasattr(mock_file, "fileno")
+
+    ranges = [
+        item
+        async for item in asyncssh_sftp._request_ranges(  # type: ignore[arg-type]
+            mock_file, 0, len(mock_file.content)
+        )
+    ]
+    assert ranges == [(0, len(mock_file.content))]
+
+    empty_ranges = [
+        item
+        async for item in asyncssh_sftp._request_ranges(  # type: ignore[arg-type]
+            mock_file, len(mock_file.content), 100
+        )
+    ]
+    assert empty_ranges == []

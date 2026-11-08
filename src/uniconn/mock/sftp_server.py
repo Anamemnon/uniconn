@@ -8,9 +8,11 @@ import os
 import posixpath
 import stat as stat_module
 import time
+from collections.abc import AsyncIterator
 from typing import Any
 
 import asyncssh
+import asyncssh.sftp as _asyncssh_sftp
 
 from ..transports.replay.models import Cassette, RecordedFsInteraction
 from .config import CassetteInteractionMatcher, MockServerConfig
@@ -462,6 +464,43 @@ class MockSFTPServer(asyncssh.SFTPServer):
     def posix_rename(self, oldpath: bytes | str, newpath: bytes | str) -> None:
         """Переименовать файл с семантикой POSIX (перезапись целевого пути)."""
         self.rename(oldpath, newpath)
+
+    def fsync(self, file_obj: Any) -> None:
+        """Синхронизировать буфер ``MockSFTPFile`` с оверлеем без вызова ``os.fsync(fileno)``."""
+        if isinstance(file_obj, MockSFTPFile):
+            file_obj._sync_to_overlay()
+            return
+        raise asyncssh.SFTPFailure("Invalid file handle")
+
+    def fstatvfs(self, file_obj: Any) -> asyncssh.SFTPVFSAttrs:
+        """Отклонить ``fstatvfs`` без обращения к ``file_obj.fileno()``."""
+        raise asyncssh.SFTPOpUnsupported("fstatvfs not supported")
+
+
+_ORIG_REQUEST_RANGES: Any = getattr(_asyncssh_sftp, "_request_ranges", None)
+
+
+async def _mock_aware_request_ranges(
+    file_obj: Any,
+    offset: int,
+    length: int,
+) -> AsyncIterator[tuple[int, int]]:
+    """Вернуть диапазон данных для ``MockSFTPFile`` без вызова ``fileno()`` / ``msvcrt.get_osfhandle`` на Windows."""
+    if isinstance(file_obj, MockSFTPFile):
+        total = len(file_obj.content)
+        if length > 0 and offset < total:
+            yield offset, min(length, total - offset)
+        return
+    if _ORIG_REQUEST_RANGES is not None:
+        async for data_range in _ORIG_REQUEST_RANGES(file_obj, offset, length):
+            yield data_range
+
+
+if (
+    _ORIG_REQUEST_RANGES is not None
+    and getattr(_ORIG_REQUEST_RANGES, "__name__", "") != "_mock_aware_request_ranges"
+):
+    _asyncssh_sftp._request_ranges = _mock_aware_request_ranges
 
 
 __all__ = [
