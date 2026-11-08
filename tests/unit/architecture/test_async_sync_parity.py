@@ -12,6 +12,8 @@ from uniconn import (
     ConnectionPool,
     FileOperationsService,
     Flow,
+    MockSSHServer,
+    MockTelnetServer,
     PoolFileOperationsService,
     PoolStateManagementService,
     RemotePath,
@@ -21,6 +23,8 @@ from uniconn import (
     SyncConnectionPool,
     SyncFileOperationsService,
     SyncFlow,
+    SyncMockSSHServer,
+    SyncMockTelnetServer,
     SyncPoolFileOperationsService,
     SyncPoolStateManagementService,
     SyncRemotePath,
@@ -44,6 +48,7 @@ _ASYNC_ONLY_METHODS: frozenset[str] = frozenset(
         "from_dict",
         "from_inventory",
         "from_file",
+        "from_cassette",
         "copy",
         "with_overrides",
         "to_sync",
@@ -93,6 +98,8 @@ def test_domain_services_async_sync_parity() -> None:
         (ConnectionPool, SyncConnectionPool),
         (RemotePath, SyncRemotePath),
         (Flow, SyncFlow),
+        (MockSSHServer, SyncMockSSHServer),
+        (MockTelnetServer, SyncMockTelnetServer),
     ]
     for async_cls, sync_cls in pairs:
         async_m = _public_methods(async_cls) - _ASYNC_ONLY_METHODS

@@ -348,6 +348,44 @@ def _execute_v090_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
                         "result": res.to_dict(),
                     }
 
+            if feature == "mock_ssh_server":
+                from uniconn.mock import MockSSHServer
+                from uniconn.transports.replay.models import (
+                    Cassette,
+                    RecordedExecInteraction,
+                    RecordedFsInteraction,
+                )
+
+                cassette = Cassette(
+                    transport="ssh",
+                    host="edge-mock-01",
+                    interactions=[
+                        RecordedExecInteraction(
+                            command="uptime",
+                            exit_code=0,
+                            stdout=" 12:00:00 up 42 days, load average: 0.01, 0.02, 0.00\n",
+                        ),
+                        RecordedFsInteraction(
+                            operation="read_file",
+                            path="/etc/hostname",
+                            content_utf8="edge-mock-01\n",
+                        ),
+                    ],
+                )
+                async with MockSSHServer.from_cassette(cassette) as srv:
+                    async with Connection.from_uri(srv.uri) as conn:
+                        up_res = await conn.run("uptime")
+                        host_txt = await conn.files.read_file("/etc/hostname")
+                    return {
+                        "status": "ok",
+                        "feature": "mock_ssh_server",
+                        "uri": srv.uri,
+                        "port": srv.port,
+                        "uptime": up_res.text,
+                        "hostname": str(host_txt).strip(),
+                        "history": [ev.to_dict() for ev in srv.history],
+                    }
+
             pool = ConnectionPool(["local://?host=web-01", "local://?host=web-02"])
             ping_map = await pool.ping()
             return {

@@ -23,11 +23,63 @@ else:
         pytest = None
 
 from .core.connection import Connection
+from .mock.config import MockServerConfig
+from .mock.facade import MockSSHServer, SyncMockSSHServer
+from .mock.telnet_server import MockTelnetServer, SyncMockTelnetServer
 from .sync.connection import SyncConnection
 from .transports.base import FileCapableTransport, ShellCapableTransport, supports_capability
 from .transports.replay.context import CassetteContext, SyncCassetteContext
 from .transports.replay.models import CapabilityKind, Cassette, MatchField, RecordMode
 from .transports.replay.proxy import CassetteTransportProxy
+
+
+def _resolve_marker_cassette_path(
+    request: Any,
+    marker_name: str,
+    custom_dir: str | None = None,
+) -> tuple[Path, dict[str, Any]]:
+    """Извлечь путь к кассете и дополнительные опции из маркера pytest."""
+    marker = request.node.get_closest_marker(marker_name) if request else None
+    if marker is None and marker_name != "uniconn_cassette" and request is not None:
+        marker = request.node.get_closest_marker("uniconn_cassette")
+
+    kwargs: dict[str, Any] = dict(marker.kwargs) if marker else {}
+    raw_path: str | Path | None = None
+    if marker and marker.args:
+        first_arg = marker.args[0]
+        if isinstance(first_arg, str | Path | Cassette):
+            if isinstance(first_arg, Cassette):
+                kwargs["cassette_obj"] = first_arg
+            else:
+                raw_path = first_arg
+    if raw_path is None and "name" in kwargs:
+        raw_path = str(kwargs.pop("name"))
+    if raw_path is None and "cassette" in kwargs:
+        c_val = kwargs.pop("cassette")
+        if isinstance(c_val, Cassette):
+            kwargs["cassette_obj"] = c_val
+        elif isinstance(c_val, str | Path):
+            raw_path = c_val
+
+    if raw_path is not None:
+        p = Path(raw_path)
+        if p.is_absolute() or p.exists():
+            return p, kwargs
+        base_dir = (
+            Path(custom_dir)
+            if custom_dir
+            else request.path.parent / "cassettes"
+        )
+        candidate = base_dir / p
+        return (candidate if candidate.exists() else p), kwargs
+
+    base_dir = (
+        Path(custom_dir)
+        if custom_dir
+        else request.path.parent / "cassettes"
+    )
+    safe_name = request.node.name.replace("[", "_").replace("]", "").replace("/", "_")
+    return base_dir / request.path.stem / f"{safe_name}.yaml", kwargs
 
 
 class UniconnCassetteFixture:
@@ -166,6 +218,24 @@ class UniconnCassetteFixture:
         uri = f"replay://{eff_host}?cassette={target_path}&mode={mode}"
         return SyncConnection.from_uri(uri, **kwargs)
 
+    def mock_ssh_server(
+        self,
+        path: Cassette | str | Path | None = None,
+        **kwargs: Any,
+    ) -> MockSSHServer:
+        """Создать асинхронный ``MockSSHServer`` для кассеты текущего теста."""
+        target = path if path is not None else self.default_path
+        return MockSSHServer.from_cassette(target, **kwargs)
+
+    def sync_mock_ssh_server(
+        self,
+        path: Cassette | str | Path | None = None,
+        **kwargs: Any,
+    ) -> SyncMockSSHServer:
+        """Создать синхронный ``SyncMockSSHServer`` для кассеты текущего теста."""
+        target = path if path is not None else self.default_path
+        return SyncMockSSHServer.from_cassette(target, **kwargs)
+
 
 if pytest is not None:
 
@@ -192,6 +262,16 @@ if pytest is not None:
             "markers",
             "uniconn_cassette(name=None, mode=None, auto_wrap=True, mask_secrets=True, sanitize_ips=False): "
             "mark test to record/replay uniconn interactions using a cassette.",
+        )
+        config.addinivalue_line(
+            "markers",
+            "mock_ssh_server(cassette=None, host='127.0.0.1', port=0, strict_mode=False, allow_any_auth=True): "
+            "start a local TCP MockSSHServer backed by the specified cassette.",
+        )
+        config.addinivalue_line(
+            "markers",
+            "mock_telnet_server(cassette=None, host='127.0.0.1', port=0, strict_mode=False, allow_any_auth=True): "
+            "start a local TCP MockTelnetServer backed by the specified cassette.",
         )
 
     @pytest.fixture
@@ -227,6 +307,48 @@ if pytest is not None:
     def uniconn_sync_replay_conn(uniconn_cassette: UniconnCassetteFixture) -> SyncConnection:
         """Фикстура синхронного подключения, автоматически привязанного к кассете текущего теста."""
         return uniconn_cassette.sync_connection()
+
+    @pytest.fixture
+    def mock_ssh_server(request: pytest.FixtureRequest) -> Iterator[MockSSHServer]:
+        """Фикстура автоматического запуска сокетного ``MockSSHServer`` из маркера ``@pytest.mark.mock_ssh_server``."""
+        cli_dir = request.config.getoption("--uniconn-cassette-dir", default=None)
+        cass_path, kw = _resolve_marker_cassette_path(request, "mock_ssh_server", cli_dir)
+        cass_target: Cassette | Path = kw.pop("cassette_obj", None) or cass_path
+        cfg = MockServerConfig(
+            cassette=cass_target,
+            host=str(kw.get("host", "127.0.0.1")),
+            port=int(kw.get("port", 0)),
+            allow_any_auth=bool(kw.get("allow_any_auth", True)),
+            username=kw.get("username"),
+            password=kw.get("password"),
+            strict_mode=bool(kw.get("strict_mode", False)),
+            normalize_temp=bool(kw.get("normalize_temp", True)),
+            allow_repeats=bool(kw.get("allow_repeats", True)),
+            default_exit_code=int(kw.get("default_exit_code", 127)),
+        )
+        sync_srv = SyncMockSSHServer(cfg)
+        with sync_srv:
+            yield sync_srv._async_target
+
+    @pytest.fixture
+    def sync_mock_ssh_server(request: pytest.FixtureRequest) -> Iterator[SyncMockSSHServer]:
+        """Фикстура синхронного фасада ``SyncMockSSHServer``."""
+        cli_dir = request.config.getoption("--uniconn-cassette-dir", default=None)
+        cass_path, kw = _resolve_marker_cassette_path(request, "mock_ssh_server", cli_dir)
+        cass_target: Cassette | Path = kw.pop("cassette_obj", None) or cass_path
+        sync_srv = SyncMockSSHServer.from_cassette(cass_target, **kw)
+        with sync_srv:
+            yield sync_srv
+
+    @pytest.fixture
+    def mock_telnet_server(request: pytest.FixtureRequest) -> Iterator[MockTelnetServer]:
+        """Фикстура запуска ``MockTelnetServer`` из маркера ``@pytest.mark.mock_telnet_server``."""
+        cli_dir = request.config.getoption("--uniconn-cassette-dir", default=None)
+        cass_path, kw = _resolve_marker_cassette_path(request, "mock_telnet_server", cli_dir)
+        cass_target: Cassette | Path = kw.pop("cassette_obj", None) or cass_path
+        sync_srv = SyncMockTelnetServer.from_cassette(cass_target, **kw)
+        with sync_srv:
+            yield sync_srv._async_target
 
     @pytest.fixture(autouse=True)
     def _uniconn_marker_auto_cassette(

@@ -211,10 +211,11 @@ class SSHTransport(BaseTransport):
             connect_kwargs: dict[str, Any] = {
                 "host": self.config.host,
                 "port": self.config.port or 22,
-                "username": self.config.username,
                 "known_hosts": self._resolve_known_hosts(),
                 "connect_timeout": self.config.timeout,
             }
+            if self.config.username is not None:
+                connect_kwargs["username"] = self.config.username
 
             if self.config.password:
                 connect_kwargs["password"] = self.config.password.get_secret_value()

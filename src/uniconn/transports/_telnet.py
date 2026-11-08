@@ -156,9 +156,10 @@ class TelnetTransport(BaseTransport):
                 self._reader.read(4096),
                 timeout=5.0
             )
+            text_data = data.decode("utf-8", errors="replace") if isinstance(data, bytes) else str(data)
 
             # Ищем login prompt
-            if b"login" in data.lower() or b"username" in data.lower():
+            if "login" in text_data.lower() or "username" in text_data.lower():
                 self._writer.write(username + "\n")
                 await self._writer.drain()
 
@@ -167,9 +168,10 @@ class TelnetTransport(BaseTransport):
                     self._reader.read(4096),
                     timeout=5.0
                 )
+                text_data = data.decode("utf-8", errors="replace") if isinstance(data, bytes) else str(data)
 
             # Ищем password prompt
-            if b"password" in data.lower():
+            if "password" in text_data.lower():
                 self._writer.write(password + "\n")
                 await self._writer.drain()
 
@@ -262,12 +264,20 @@ class TelnetTransport(BaseTransport):
                     if not line:
                         break
 
-                    decoded = line.decode('utf-8', errors='replace').rstrip()
+                    raw_line = (
+                        line.decode("utf-8", errors="replace")
+                        if isinstance(line, bytes)
+                        else str(line)
+                    )
+                    decoded = raw_line.rstrip()
                     output_lines.append(decoded)
 
                     # Проверяем на приглашение оболочки (конец вывода)
                     if (
-                        any(prompt in decoded for prompt in ['$ ', '# ', '> '])
+                        (
+                            any(prompt in raw_line for prompt in ["$ ", "# ", "> "])
+                            or decoded in ("$", "#", ">")
+                        )
                         and len(output_lines) > 1
                     ):
                         break
@@ -291,7 +301,9 @@ class TelnetTransport(BaseTransport):
                 if line.strip() == command.strip():
                     continue
                 # Пропускаем приглашение оболочки
-                if any(line.endswith(prompt) for prompt in ['$ ', '# ', '> ']):
+                if line in ("$", "#", ">") or any(
+                    line.endswith(prompt) for prompt in ["$ ", "# ", "> "]
+                ):
                     continue
                 stdout_lines.append(line)
 
@@ -349,14 +361,21 @@ class TelnetTransport(BaseTransport):
                 if not line:
                     break
 
-                decoded = line.decode('utf-8', errors='replace').rstrip()
+                raw_line = (
+                    line.decode("utf-8", errors="replace")
+                    if isinstance(line, bytes)
+                    else str(line)
+                )
+                decoded = raw_line.rstrip()
 
                 # Пропускаем саму команду
                 if decoded.strip() == command.strip():
                     continue
 
                 # Проверяем конец вывода
-                if any(decoded.endswith(prompt) for prompt in ['$ ', '# ', '> ']):
+                if decoded in ("$", "#", ">") or any(
+                    raw_line.rstrip("\r\n").endswith(prompt) for prompt in ["$ ", "# ", "> "]
+                ):
                     break
 
                 yield decoded

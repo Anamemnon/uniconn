@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import sys
+
+_ROOT_DIR = Path(__file__).resolve().parent
+for _path_entry in (str(_ROOT_DIR), str(_ROOT_DIR / "src")):
+    if _path_entry not in sys.path:
+        sys.path.insert(0, _path_entry)
 
 
 def main() -> None:
