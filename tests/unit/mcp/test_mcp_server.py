@@ -302,7 +302,7 @@ async def test_mcp_execution_and_facts_tools(tmp_path: Path) -> None:
 async def test_mcp_file_tools_and_security_guardrails(tmp_path: Path) -> None:
     """Проверка файловых инструментов (read, stat, checksum, write) и политик безопасности."""
     sample = tmp_path / "config.txt"
-    sample.write_text("service_port=8080\n", encoding="utf-8")
+    sample.write_bytes(b"service_port=8080\n")
 
     # 1. Safe Mode by Default (allow_write=False, allow_sudo=False)
     safe_server = MCPServer()
