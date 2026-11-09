@@ -28,7 +28,7 @@ def _serialize_parsed_value(val: Any) -> Any:
     if isinstance(val, datetime):
         return val.isoformat()
     if isinstance(val, Path):
-        return str(val)
+        return val.as_posix()
     if isinstance(val, bytes):
         return val.decode("utf-8", errors="replace")
     return val
