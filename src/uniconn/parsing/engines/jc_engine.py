@@ -69,14 +69,29 @@ class JCEngine:
     @staticmethod
     def _normalize_output(spec: str, data: Any) -> Any:
         """Обогатить результат унифицированными алиасами полей для совместимости со схемами."""
-        if spec == "df" and isinstance(data, list):
+        norm_spec = spec.lower().replace("-", "_")
+        if norm_spec == "df" and isinstance(data, list):
             for item in data:
                 if isinstance(item, dict):
+                    if "size" not in item:
+                        for k in ("1k_blocks", "1024_blocks", "blocks", "total"):
+                            if k in item:
+                                item["size"] = item[k]
+                                break
                     if "use_percent" in item and "percent_used" not in item:
                         item["percent_used"] = item["use_percent"]
                     elif "percent_used" in item and "use_percent" not in item:
                         item["use_percent"] = item["percent_used"]
-        elif spec == "uptime" and isinstance(data, dict):
+                    if "avail" in item and "available" not in item:
+                        item["available"] = item["avail"]
+        elif norm_spec in ("ip_route", "iproute") and isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    if "destination" not in item and "ip" in item:
+                        item["destination"] = item["ip"]
+                    elif "ip" not in item and "destination" in item:
+                        item["ip"] = item["destination"]
+        elif norm_spec == "uptime" and isinstance(data, dict):
             if "load_1m" not in data and "load_average_1m" in data:
                 data["load_1m"] = data["load_average_1m"]
             if "load_5m" not in data and "load_average_5m" in data:

@@ -223,7 +223,7 @@ def test_cli_run_and_run_multi_with_parse_flag(monkeypatch: pytest.MonkeyPatch) 
     )
     assert res_table.exit_code == 0
     assert "/dev/sda1" in res_table.stdout
-    assert "mounted_on" in res_table.stdout
+    assert "mounted" in res_table.stdout
     assert "85" in res_table.stdout
 
     # 3. uniconn run-multi --parse auto --format json

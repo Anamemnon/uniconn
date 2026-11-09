@@ -276,7 +276,7 @@ def test_builtin_df_7cols_uptime_pretty_and_aliases() -> None:
         "/dev/sda1      ext4      20511312 8593452  10852788  45% /\n"
         "/dev/sdb1      ntfs-3g  104857600 4000000 100857600   4% /media/External Drive\n"
     )
-    df_parsed = parse_output(df_t_out, "df")
+    df_parsed = parse_output(df_t_out, "builtin:df")
     assert len(df_parsed) == 2
     assert df_parsed[0]["filesystem"] == "/dev/sda1"
     assert df_parsed[0]["type"] == "ext4"
@@ -287,6 +287,11 @@ def test_builtin_df_7cols_uptime_pretty_and_aliases() -> None:
     assert df_parsed[0]["mounted_on"] == "/"
     assert df_parsed[1]["mounted_on"] == "/media/External Drive"
     assert df_parsed[1]["type"] == "ntfs-3g"
+
+    # Also test dispatching via 'df' (jc if available, with normalized keys)
+    df_dispatched = parse_output(df_t_out, "df")
+    assert df_dispatched[0]["filesystem"] == "/dev/sda1"
+    assert df_dispatched[0]["size"] == 20511312
 
     # 2. uptime -p
     up_pretty = "up 2 weeks, 3 days, 14 hours, 5 minutes\n"

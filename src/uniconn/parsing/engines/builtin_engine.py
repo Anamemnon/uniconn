@@ -213,7 +213,7 @@ def parse_ip_route(text: str) -> list[dict[str, Any]]:
         tokens = raw_line.strip().split()
         if not tokens:
             continue
-        entry: dict[str, Any] = {"destination": tokens[0], "flags": []}
+        entry: dict[str, Any] = {"destination": tokens[0], "ip": tokens[0], "flags": []}
         idx = 1
         while idx < len(tokens):
             tok = tokens[idx]

@@ -162,8 +162,12 @@ class CLIOutputRenderer:
                 show_header=True,
                 header_style="bold cyan",
             )
-            for col in columns:
-                table.add_column(col, style="green", overflow="fold")
+            for idx, col in enumerate(columns):
+                table.add_column(
+                    col,
+                    style="green",
+                    no_wrap=(idx == 0 or col in ("filesystem", "interface", "unit", "command")),
+                )
             for row in parsed:
                 table.add_row(*(str(row.get(col, "")) for col in columns))
             self.console.print(table)
