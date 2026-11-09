@@ -39,8 +39,11 @@ def _resolve_marker_cassette_path(
     custom_dir: str | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """Извлечь путь к кассете и дополнительные опции из маркера pytest."""
-    marker = request.node.get_closest_marker(marker_name) if request else None
-    if marker is None and marker_name != "uniconn_cassette" and request is not None:
+    if request is None:
+        return Path(custom_dir or "cassettes") / "default.yaml", {}
+
+    marker = request.node.get_closest_marker(marker_name)
+    if marker is None and marker_name != "uniconn_cassette":
         marker = request.node.get_closest_marker("uniconn_cassette")
 
     kwargs: dict[str, Any] = dict(marker.kwargs) if marker else {}

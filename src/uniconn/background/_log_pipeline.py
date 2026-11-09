@@ -10,6 +10,7 @@ import os
 import re
 import shlex
 import tarfile
+import threading
 import time
 import zipfile
 from abc import ABC, abstractmethod
@@ -568,6 +569,7 @@ class TimelineHandler(LogHandler):
         )
         self._seq: int = 0
         self._dir_ensured: bool = False
+        self._lock = threading.Lock()
 
     @property
     def path(self) -> Path:
@@ -582,17 +584,18 @@ class TimelineHandler(LogHandler):
     def _append_records(self, records: list[dict[str, Any]]) -> None:
         if not records:
             return
-        if not self._dir_ensured:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._dir_ensured = True
-        payload = "".join(
-            json.dumps(rec, ensure_ascii=False) + "\n" for rec in records
-        )
-        with self._path.open("a", encoding="utf-8", newline="") as f:
-            f.write(payload)
-            if self._fsync:
-                f.flush()
-                os.fsync(f.fileno())
+        with self._lock:
+            if not self._dir_ensured:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                self._dir_ensured = True
+            payload = "".join(
+                json.dumps(rec, ensure_ascii=False) + "\n" for rec in records
+            )
+            with self._path.open("a", encoding="utf-8", newline="\n") as f:
+                f.write(payload)
+                if self._fsync:
+                    f.flush()
+                    os.fsync(f.fileno())
 
     def record_event(
         self,
@@ -1037,10 +1040,9 @@ class LogPipeline:
         return list(self._handlers)
 
     async def emit(self, session_id: str, chunk: list[str]) -> None:
-        """Отправить порцию лога всем обработчикам параллельно."""
-        await asyncio.gather(
-            *(h.handle(session_id, chunk) for h in self._handlers)
-        )
+        """Отправить порцию лога всем обработчикам по цепочке."""
+        for h in self._handlers:
+            await h.handle(session_id, chunk)
 
     async def finalize(self) -> None:
         """Финализировать все обработчики конвейера (сброс буферов)."""

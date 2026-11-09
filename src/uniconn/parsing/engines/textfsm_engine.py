@@ -95,6 +95,8 @@ class TextFSMEngine:
     @staticmethod
     def _parse_with_textfsm_template(text: str, template_text: str) -> list[dict[str, Any]]:
         """Выполнить разбор текста через ``textfsm.TextFSM`` и вернуть список словарей."""
+        if _textfsm_mod is None:
+            raise OptionalDependencyError("TextFSM parsing requires the textfsm library.")
         try:
             fsm = _textfsm_mod.TextFSM(io.StringIO(template_text))
             raw_rows = fsm.ParseText(text)

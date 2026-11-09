@@ -176,6 +176,7 @@ async def demo_async_reactive_diagnostics(root: Path) -> None:
         entries = [
             json.loads(line)
             for line in timeline_f.read().decode("utf-8").splitlines()
+            if line.strip()
         ]
         print(f"\n  Содержимое единого хронологического лога timeline.jsonl ({len(entries)} событий):")
         for entry in entries:
