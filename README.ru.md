@@ -18,7 +18,7 @@
 `uniconn` устраняет необходимость в разрозненном инфраструктурном коде, предоставляя единый отказоустойчивый фасад `Connection` для выполнения команд, дельта-синхронизации файлов, идемпотентного управления состоянием, DAG-оркестрации задач и аппаратной диагностики поверх **SSH, WinRM, Docker, Podman, Kubernetes, Serial/UART, IPMI, Redfish BMC и Local** — со **100% паритетом Async + Sync** и нулевым оверхедом.
 
 <p align="center">
-  <img src="docs/assets/terminal_demo.svg" alt="uniconn interactive terminal demo" width="100%" />
+  <img src="./docs/assets/terminal_demo.svg" alt="uniconn interactive terminal demo" width="100%" />
 </p>
 
 ---
@@ -90,19 +90,21 @@ with SyncConnection.from_uri("docker://root@app-container") as conn:
 
 ### 📊 Сравнительная матрица возможностей
 
-| Возможность / Архитектура | `uniconn` | `Pyinfra` | `Fabric` (v3) | `Nornir` + `Scrapli` | `Testinfra` | `Ansible` |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Основная парадигма** | **Pure Python SDK + CLI** | CLI / Python Deploy | Python SSH Runner | Network Framework | Pytest Assertions | YAML DSL CLI |
-| **Нативный Async (`asyncio`) + Sync паритет** | **✅ 100% паритет** | ❌ (Gevent / Threads) | ❌ (Только Sync) | ⚠️ (Только Scrapli) | ❌ (Только Sync) | ❌ (Многопроцессный) |
-| **Мультитранспортность (10+ схем URI)** | **✅ SSH, WinRM, K8s, BMC, UART…** | ⚠️ (SSH, Docker, Local) | ❌ (Только SSH/Local) | ❌ (SSH/Telnet/Netconf) | ✅ (SSH, WinRM, Docker, K8s) | ✅ (Тяжёлые плагины) |
-| **Идемпотентный стейт (`ensure_*` + Diff)** | **✅ Встроено + `notify`** | ✅ | ❌ | ❌ | ❌ (Только чтение) | ✅ |
-| **Декларативная DAG-оркестрация задач** | **✅ `@task` и `Flow`** | ⚠️ (Линейные операции)| ❌ | ⚠️ (Пользовательские раннеры)| ❌ | ✅ (Плейбуки YAML) |
-| **Zero-Fork Python RPC (Mitogen-стиль)** | **✅ `conn.run_python()`** | ⚠️ (Коннектор) | ❌ | ❌ | ❌ | ⚠️ (Внешний плагин) |
-| **Автопарсинг вывода (`jc`, `ttp`, `textfsm`)** | **✅ `parse="auto"`** | ❌ | ❌ | ✅ | ❌ | ⚠️ (Фильтры) |
-| **Аппаратное управление (Redfish, IPMI, X/YMODEM)** | **✅ Из коробки** | ❌ | ❌ | ❌ | ❌ | ⚠️ (Разрозненные роли) |
-| **Офлайн контрактные тесты (Кассеты + Моки)** | **✅ Встроено + `pytest`** | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Отказоустойчивость (CircuitBreaker, Rollout)** | **✅ Встроено в пайплайн** | ❌ | ❌ | ❌ | ❌ | ⚠️ (`serial`/`max_fail`) |
-| **Накладные расходы ядра на команду** | **⚡ &lt; 0.3 мс** | ~ 5–15 мс | ~ 2–8 мс | ~ 1–5 мс | ~ 5–10 мс | ~ 500–2500 мс |
+| Возможность | `uniconn` | `Ansible` | `Fabric` | `Pyinfra` | `Nornir` |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Основная парадигма** | **Python SDK** | YAML Playbooks | CLI Runner | Python Deploy | Network SDK |
+| **Async + Sync паритет** | **✅ 100%** | ❌ Process | ❌ Только Sync | ❌ Threads | ⚠️ Только Scrapli |
+| **10+ схем URI транспортов** | **✅ Unified** | ⚠️ Плагины | ❌ Только SSH | ⚠️ Linux/SSH | ❌ Network CLI |
+| **Идемпотентный стейт (`ensure_*`)** | **✅ Встроено** | ✅ YAML | ❌ Нет | ✅ Python ops | ❌ Нет |
+| **DAG-оркестрация задач (`@task`)** | **✅ Встроено** | ✅ Playbooks | ❌ Нет | ⚠️ Линейная | ⚠️ Раннеры |
+| **Zero-Fork RPC (`run_python`)** | **✅ &lt; 2 мс** | ⚠️ Плагин Mitogen | ❌ Нет | ⚠️ Коннектор | ❌ Нет |
+| **Автопарсинг вывода (`auto`)** | **✅ Встроено** | ⚠️ Фильтры | ❌ Нет | ❌ Нет | ✅ TextFSM |
+| **Аппаратные BMC и UART** | **✅ Из коробки** | ⚠️ Роли | ❌ Нет | ❌ Нет | ⚠️ Только Serial |
+| **Офлайн кассеты и контрактные тесты** | **✅ Встроено** | ❌ Нет | ❌ Нет | ❌ Нет | ❌ Нет |
+| **Отказоустойчивость (CircuitBreaker)** | **✅ Встроено** | ⚠️ `max_fail` | ❌ Нет | ❌ Нет | ❌ Нет |
+| **Накладные расходы ядра** | **⚡ &lt; 0.3 мс** | ~ 500–2000 мс | ~ 3–8 мс | ~ 5–15 мс | ~ 1–5 мс |
+
+> 💡 *Примечание: Ассерты Testinfra и сетевые коннекторы Scrapli бесшовно подключаются к uniconn через адаптеры транспортов и плагин pytest.*
 
 ---
 

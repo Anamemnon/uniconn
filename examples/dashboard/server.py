@@ -6,6 +6,7 @@ import json
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -136,6 +137,19 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                 if parsed.path.startswith("/api/"):
                     self._send_json({"error": "Not found"}, status=404)
                     return
+
+                if parsed.path.startswith("/docs/") or parsed.path.endswith((".svg", ".png", ".jpg", ".ico")):
+                    safe_rel = parsed.path.lstrip("/").replace("..", "")
+                    static_file = (Path(ROOT_DIR) / safe_rel).resolve()
+                    if static_file.is_file() and str(static_file).startswith(str(ROOT_DIR)):
+                        ctype = "image/svg+xml; charset=utf-8" if static_file.suffix == ".svg" else "application/octet-stream"
+                        data = static_file.read_bytes()
+                        self.send_response(200)
+                        self.send_header("Content-Type", ctype)
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                        return
 
                 body = HTML_TEMPLATE_PATH.read_bytes()
                 self.send_response(200)

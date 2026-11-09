@@ -18,7 +18,7 @@
 `uniconn` eliminates infrastructure glue code by providing a single, resilient `Connection` facade for command execution, file synchronization, idempotent state enforcement, DAG task orchestration, and hardware diagnostics across **SSH, WinRM, Docker, Podman, Kubernetes, Serial/UART, IPMI, Redfish BMC, and Local systems** — with **100% Async + Sync parity** and zero boilerplate.
 
 <p align="center">
-  <img src="docs/assets/terminal_demo.svg" alt="uniconn interactive terminal demo" width="100%" />
+  <img src="./docs/assets/terminal_demo.svg" alt="uniconn interactive terminal demo" width="100%" />
 </p>
 
 ---
@@ -90,19 +90,21 @@ Traditionally, teams maintain a fragmented stack: `AsyncSSH` or `Paramiko` for S
 
 ### 📊 Competitive Comparison Matrix
 
-| Feature / Architecture | `uniconn` | `Pyinfra` | `Fabric` (v3) | `Nornir` + `Scrapli` | `Testinfra` | `Ansible` |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Primary Paradigm** | **Pure Python SDK + CLI** | CLI / Python Deploy | Python SSH Runner | Network Framework | Pytest Assertions | YAML DSL CLI |
-| **Native Async (`asyncio`) + Sync Parity** | **✅ 100% Parity** | ❌ (Gevent / Threads) | ❌ (Sync only) | ⚠️ (Scrapli only) | ❌ (Sync only) | ❌ (Multi-process) |
-| **Multi-Transport (10+ URI schemes)** | **✅ SSH, WinRM, K8s, BMC, UART…** | ⚠️ (SSH, Docker, Local) | ❌ (SSH & Local only) | ❌ (SSH/Telnet/Netconf) | ✅ (SSH, WinRM, Docker, K8s) | ✅ (Heavy plugins) |
-| **Idempotent State (`ensure_*` + Diff)** | **✅ Built-in + `notify`** | ✅ | ❌ | ❌ | ❌ (Read-only) | ✅ |
-| **Declarative DAG Task Orchestration** | **✅ `@task` & `Flow`** | ⚠️ (Linear ops) | ❌ | ⚠️ (Custom runners) | ❌ | ✅ (Playbooks) |
-| **Zero-Fork Python RPC (Mitogen-style)** | **✅ `conn.run_python()`** | ⚠️ (Connector) | ❌ | ❌ | ❌ | ⚠️ (External plugin) |
-| **Structured Output Parsing (`jc`, `ttp`, `textfsm`)** | **✅ `parse="auto"`** | ❌ | ❌ | ✅ | ❌ | ⚠️ (Filters) |
-| **Hardware Management (Redfish, IPMI, X/YMODEM)** | **✅ Out of the box** | ❌ | ❌ | ❌ | ❌ | ⚠️ (Scattered roles) |
-| **Offline Contract Testing (Cassettes + Mocks)** | **✅ Built-in + `pytest`** | ❌ | ❌ | ❌ | ❌ | ❌ |
-| **Resilience (CircuitBreaker, Wave Rollouts)** | **✅ Built-in pipeline** | ❌ | ❌ | ❌ | ❌ | ⚠️ (`serial`/`max_fail`) |
-| **Core Overhead per Command** | **⚡ &lt; 0.3 ms** | ~ 5–15 ms | ~ 2–8 ms | ~ 1–5 ms | ~ 5–10 ms | ~ 500–2500 ms |
+| Feature | `uniconn` | `Ansible` | `Fabric` | `Pyinfra` | `Nornir` |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Core Paradigm** | **Python SDK** | YAML Playbooks | CLI Runner | Python Deploy | Network SDK |
+| **Async + Sync Parity** | **✅ 100%** | ❌ Process | ❌ Sync only | ❌ Threads | ⚠️ Scrapli only |
+| **10+ Transports** | **✅ Unified** | ⚠️ Plugins | ❌ SSH only | ⚠️ Linux/SSH | ❌ Network CLI |
+| **Idempotent State (`ensure_*`)** | **✅ Built-in** | ✅ YAML | ❌ None | ✅ Python ops | ❌ None |
+| **DAG Orchestration (`@task`)** | **✅ Built-in** | ✅ Playbooks | ❌ None | ⚠️ Linear | ⚠️ Runners |
+| **Zero-Fork RPC (`run_python`)** | **✅ &lt; 2 ms** | ⚠️ Mitogen plugin| ❌ None | ⚠️ Connector | ❌ None |
+| **Structured Output Parsing** | **✅ `auto`** | ⚠️ Filters | ❌ None | ❌ None | ✅ TextFSM |
+| **Hardware BMC &amp; UART** | **✅ Out-of-box** | ⚠️ Roles | ❌ None | ❌ None | ⚠️ Serial only |
+| **Offline Testing (Cassettes)** | **✅ Built-in** | ❌ None | ❌ None | ❌ None | ❌ None |
+| **Resilience (CircuitBreaker)** | **✅ Built-in** | ⚠️ `max_fail` | ❌ None | ❌ None | ❌ None |
+| **Task Overhead** | **⚡ &lt; 0.3 ms** | ~ 500–2000 ms | ~ 3–8 ms | ~ 5–15 ms | ~ 1–5 ms |
+
+> 💡 *Note: Testinfra assertions and Scrapli network drivers integrate seamlessly with uniconn via its pluggable transport layer and pytest plugin.*
 
 ---
 

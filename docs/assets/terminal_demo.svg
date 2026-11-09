@@ -1,6 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 520" width="100%" height="100%">
   <defs>
     <style>
+      /* <![CDATA[ */
       @keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
 
       /* =========================================================================
@@ -119,7 +120,7 @@
       .tab-badge { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; font-size: 12px; font-weight: 600; }
       .code-font { font-family: "JetBrains Mono", "Fira Code", Monaco, Menlo, Consolas, monospace; font-size: 13.5px; line-height: 25px; }
 
-      /* One Dark Pro & Tokyo Night Syntax Highlighting Tokens */
+      /* One Dark Pro and Tokyo Night Syntax Highlighting Tokens */
       .syn-keyword { fill: #bb9af7; font-weight: 700; }  /* async, with, await, def, return, lambda */
       .syn-decorator { fill: #e0af68; font-weight: 700; } /* @task */
       .syn-func { fill: #7aa2f7; font-weight: 600; }     /* function and method calls */
@@ -138,6 +139,7 @@
       .term-flag { fill: #2ac3de; }
       .term-ok { fill: #73daca; font-weight: 700; }
       .term-cursor { fill: #7aa2f7; animation: blink 1s infinite; }
+      /* ]]> */
     </style>
   </defs>
 
@@ -153,16 +155,16 @@
 
   <!-- Active Scene Header Synchronized Badges -->
   <g class="tab-badge-1">
-    <text x="480" y="26" text-anchor="middle" class="tab-badge" fill="#7aa2f7">● [1/4] Async &amp; Sync Quick Start with Secret Resolution (live line-by-line)</text>
+    <text x="480" y="26" text-anchor="middle" class="tab-badge" fill="#7aa2f7">● [1/4] Async and Sync Quick Start with Secret Resolution (live line-by-line)</text>
   </g>
   <g class="tab-badge-2">
-    <text x="480" y="26" text-anchor="middle" class="tab-badge" fill="#bb9af7">● [2/4] Stateful PTY Shell &amp; Automated Expect Dialogs (live line-by-line)</text>
+    <text x="480" y="26" text-anchor="middle" class="tab-badge" fill="#bb9af7">● [2/4] Stateful PTY Shell and Automated Expect Dialogs (live line-by-line)</text>
   </g>
   <g class="tab-badge-3">
-    <text x="480" y="26" text-anchor="middle" class="tab-badge" fill="#e0af68">● [3/4] Bare-Metal BMC (Redfish HTTP/2) &amp; Serial/UART YMODEM (live line-by-line)</text>
+    <text x="480" y="26" text-anchor="middle" class="tab-badge" fill="#e0af68">● [3/4] Bare-Metal BMC (Redfish HTTP/2) and Serial/UART YMODEM (live line-by-line)</text>
   </g>
   <g class="tab-badge-4">
-    <text x="480" y="26" text-anchor="middle" class="tab-badge" fill="#73daca">● [4/4] Declarative DAG Task Flow &amp; Zero-Fork Python RPC (live line-by-line)</text>
+    <text x="480" y="26" text-anchor="middle" class="tab-badge" fill="#73daca">● [4/4] Declarative DAG Task Flow and Zero-Fork Python RPC (live line-by-line)</text>
   </g>
 
   <!-- Terminal Content Area -->
@@ -172,24 +174,24 @@
     <!-- SCENE 1: Line-by-Line Quick Start (0s - 15s)                              -->
     <!-- ========================================================================= -->
     <g>
-      <g class="s1-0"><text y="0"><tspan x="0" class="syn-comment"># 1. Asynchronous execution: dynamic secrets, parsed output &amp; idempotent state</tspan></text></g>
+      <g class="s1-0"><text y="0"><tspan x="0" class="syn-comment"># 1. Asynchronous execution: dynamic secrets, parsed output and idempotent state</tspan></text></g>
       <g class="s1-1"><text y="26"><tspan x="0" class="syn-keyword">async with </tspan><tspan class="syn-class">Connection</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">from_uri</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"ssh://admin:</tspan><tspan class="syn-secret">env://SSH_PASS</tspan><tspan class="syn-string">@web-01"</tspan><tspan class="syn-punct">) </tspan><tspan class="syn-keyword">as </tspan><tspan class="syn-var">conn</tspan><tspan class="syn-punct">:</tspan></text></g>
       <g class="s1-2"><text y="52"><tspan x="32" class="syn-var">disks </tspan><tspan class="syn-punct">= (</tspan><tspan class="syn-keyword">await </tspan><tspan class="syn-var">conn</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">run</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"df -h /data"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">parse</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-string">"auto"</tspan><tspan class="syn-punct">)).</tspan><tspan class="syn-var">parsed</tspan></text></g>
       <g class="s1-3"><text y="78"><tspan x="32" class="term-ok">✔ </tspan><tspan class="syn-comment">disks: [{'filesystem': '/dev/nvme0n1', 'avail': '322G', 'use_pct': 28}]</tspan></text></g>
       <g class="s1-4"><text y="106"><tspan x="32" class="syn-keyword">await </tspan><tspan class="syn-var">conn</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-var">files</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">write_file</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"/etc/app.conf"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-string">"port = 8080\n"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">atomic</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-number">True</tspan><tspan class="syn-punct">)</tspan></text></g>
       <g class="s1-5"><text y="132"><tspan x="32" class="syn-var">res </tspan><tspan class="syn-punct">= </tspan><tspan class="syn-keyword">await </tspan><tspan class="syn-var">conn</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-var">state</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">ensure_service</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"nginx"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">state</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-string">"started"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">sudo</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-number">True</tspan><tspan class="syn-punct">)</tspan></text></g>
       <g class="s1-6"><text y="158"><tspan x="32" class="term-ok">✔ </tspan><tspan class="syn-comment">EnsureResult: nginx started (changed=True, diff='+ LimitNOFILE=1048576')</tspan></text></g>
-      <g class="s1-7"><text y="196"><tspan x="0" class="syn-comment"># 2. Synchronous counterpart: zero asyncio.run() boilerplate for scripts &amp; CLI</tspan></text></g>
+      <g class="s1-7"><text y="196"><tspan x="0" class="syn-comment"># 2. Synchronous counterpart: zero asyncio.run() boilerplate for scripts and CLI</tspan></text></g>
       <g class="s1-8"><text y="222"><tspan x="0" class="syn-keyword">with </tspan><tspan class="syn-class">SyncConnection</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">from_uri</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"docker://root@api-container"</tspan><tspan class="syn-punct">) </tspan><tspan class="syn-keyword">as </tspan><tspan class="syn-var">sync_conn</tspan><tspan class="syn-punct">:</tspan></text></g>
       <g class="s1-9">
         <text y="248"><tspan x="32" class="syn-var">result </tspan><tspan class="syn-punct">= </tspan><tspan class="syn-var">sync_conn</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">run</tspan><tspan class="syn-punct">([</tspan><tspan class="syn-string">"python3"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-string">"manage.py"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-string">"check"</tspan><tspan class="syn-punct">])</tspan></text>
         <text y="274"><tspan x="32" class="term-ok">✔ [api-container:docker] </tspan><tspan class="syn-comment">System check identified no issues (0 silenced).</tspan></text>
-        <text y="310"><tspan x="0" class="term-prompt">➜ </tspan><tspan class="syn-comment"># Holding completed Scene 1 view before next scenario... </tspan><tspan class="term-cursor">▋</tspan></text>
+        <text y="310"><tspan x="0" class="term-prompt">➜ </tspan><tspan class="syn-comment"># Completed Scene 1 ... </tspan><tspan class="term-cursor">▋</tspan></text>
       </g>
     </g>
 
     <!-- ========================================================================= -->
-    <!-- SCENE 2: Line-by-Line Stateful PTY Shell & Expect (15s - 30s)             -->
+    <!-- SCENE 2: Line-by-Line Stateful PTY Shell and Expect (15s - 30s)           -->
     <!-- ========================================================================= -->
     <g>
       <g class="s2-0"><text y="0"><tspan x="0" class="syn-comment"># 1. Stateful PTY shell: directory and exported variables persist between calls</tspan></text></g>
@@ -204,18 +206,18 @@
         <text y="222"><tspan x="32" class="syn-var">command</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-string">"passwd deployer"</tspan><tspan class="syn-punct">,</tspan></text>
         <text y="248"><tspan x="32" class="syn-var">patterns</tspan><tspan class="syn-punct">={</tspan><tspan class="syn-string">r"New password:"</tspan><tspan class="syn-punct">: </tspan><tspan class="syn-secret">"S3cretPass!"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-string">r"Retype new password:"</tspan><tspan class="syn-punct">: </tspan><tspan class="syn-secret">"S3cretPass!"</tspan><tspan class="syn-punct">},</tspan></text>
       </g>
-      <g class="s2-8"><text y="274"><tspan x="32" class="syn-var">sensitive</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-number">True</tspan><tspan class="syn-punct">,  </tspan><tspan class="syn-comment"># Fully redacted in structlog, traces &amp; exceptions</tspan></text></g>
+      <g class="s2-8"><text y="274"><tspan x="32" class="syn-var">sensitive</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-number">True</tspan><tspan class="syn-punct">,  </tspan><tspan class="syn-comment"># Fully redacted in structlog, traces and exceptions</tspan></text></g>
       <g class="s2-9">
         <text y="300"><tspan x="0" class="syn-punct">)</tspan><tspan class="term-ok">  ✔ Password changed successfully (0 secrets leaked)</tspan></text>
-        <text y="336"><tspan x="0" class="term-prompt">➜ </tspan><tspan class="syn-comment"># Holding completed Scene 2 view before next scenario... </tspan><tspan class="term-cursor">▋</tspan></text>
+        <text y="336"><tspan x="0" class="term-prompt">➜ </tspan><tspan class="syn-comment"># Completed Scene 2 ... </tspan><tspan class="term-cursor">▋</tspan></text>
       </g>
     </g>
 
     <!-- ========================================================================= -->
-    <!-- SCENE 3: Line-by-Line Bare-Metal BMC & Serial Flashing (30s - 45s)        -->
+    <!-- SCENE 3: Line-by-Line Bare-Metal BMC and Serial Flashing (30s - 45s)      -->
     <!-- ========================================================================= -->
     <g>
-      <g class="s3-0"><text y="0"><tspan x="0" class="syn-comment"># 1. Bare-metal Redfish BMC: HTTP/2 telemetry &amp; out-of-band power control</tspan></text></g>
+      <g class="s3-0"><text y="0"><tspan x="0" class="syn-comment"># 1. Bare-metal Redfish BMC: HTTP/2 telemetry and out-of-band power control</tspan></text></g>
       <g class="s3-1"><text y="26"><tspan x="0" class="syn-keyword">async with </tspan><tspan class="syn-class">Connection</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">from_uri</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"redfish://admin:</tspan><tspan class="syn-secret">env://BMC_PASS</tspan><tspan class="syn-string">@192.168.1.100"</tspan><tspan class="syn-punct">) </tspan><tspan class="syn-keyword">as </tspan><tspan class="syn-var">bmc</tspan><tspan class="syn-punct">:</tspan></text></g>
       <g class="s3-2"><text y="52"><tspan x="32" class="syn-var">power </tspan><tspan class="syn-punct">= </tspan><tspan class="syn-keyword">await </tspan><tspan class="syn-var">bmc</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">run</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"power status"</tspan><tspan class="syn-punct">)  </tspan><tspan class="syn-comment"># Output: "On"</tspan></text></g>
       <g class="s3-3"><text y="78"><tspan x="32" class="syn-var">sensors </tspan><tspan class="syn-punct">= </tspan><tspan class="syn-keyword">await </tspan><tspan class="syn-var">bmc</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">run</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"sensors"</tspan><tspan class="syn-punct">)       </tspan><tspan class="syn-comment"># CPU 38°C, Ambient 22°C</tspan></text></g>
@@ -231,12 +233,12 @@
       </g>
       <g class="s3-9">
         <text y="280"><tspan x="0" class="term-ok">✔ Flashed 8,421,376 bytes via YMODEM CRC-16 </tspan><tspan class="syn-comment">in 48.2s (100% verified)</tspan></text>
-        <text y="316"><tspan x="0" class="term-prompt">➜ </tspan><tspan class="syn-comment"># Holding completed Scene 3 view before next scenario... </tspan><tspan class="term-cursor">▋</tspan></text>
+        <text y="316"><tspan x="0" class="term-prompt">➜ </tspan><tspan class="syn-comment"># Completed Scene 3 ... </tspan><tspan class="term-cursor">▋</tspan></text>
       </g>
     </g>
 
     <!-- ========================================================================= -->
-    <!-- SCENE 4: Line-by-Line DAG Flow & Zero-Fork RPC (45s - 60s)                -->
+    <!-- SCENE 4: Line-by-Line DAG Flow and Zero-Fork RPC (45s - 60s)              -->
     <!-- ========================================================================= -->
     <g>
       <g class="s4-0"><text y="0"><tspan x="0" class="syn-decorator">@task</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-var">name</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-string">"deploy_config"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">depends_on</tspan><tspan class="syn-punct">=[</tspan><tspan class="syn-var">check_env</tspan><tspan class="syn-punct">], </tspan><tspan class="syn-var">post</tspan><tspan class="syn-punct">=[</tspan><tspan class="syn-var">cleanup</tspan><tspan class="syn-punct">])</tspan></text></g>
