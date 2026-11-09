@@ -25,6 +25,7 @@
 - **Background Diagnostics, Streaming Logs & Pluggable Backends (`uniconn.background`)**: `DiagnosticSession`, `SyncDiagnosticSession`, `DiagnosticConfig`, `DiagnosticResult`, `StreamSourceSpec`, `DirectStreamCollector`, `LogPipeline`, `LogHandler`, `LocalFileHandler`, `ForwardHandler`, `StreamHandler`, `ArchiveHandler`, `TimelineHandler`, `PatternTriggerHandler`, `LogWatchRule`, `LogMatchEvent`, `StallEvent`, `BUILTIN_WATCH_RULES`, `KERNEL_PANIC_RULES`, `HARDWARE_ERROR_RULES`, `TELECOM_BS_RULES`, `resolve_watch_rules`, `BackgroundPool`, `BackgroundPoolConfig`, `BackgroundSession`, `BackgroundResult`, `BackgroundCleanupManager`, `BackgroundLogCollector`, `BackgroundBackendStrategy`, `TmuxBackend`, `ScreenBackend`, `NohupBackend`, `WindowsJobBackend`, `resolve_backend`, `LogConfig`
 - **Hooks & OpenTelemetry (`uniconn.hooks` / `uniconn.telemetry`)**: `audit_log_hook`, `allowlist_hook`, `blocklist_hook`, `MetricsCollector`, `metrics_collector_hook`, `structured_log_hook`, `OtelTracingHook`, `otel_tracing_hook`, `InMemoryTracer`, `RecordedSpan`, `SpanProtocol`, `TracerProtocol`, `get_current_span`
 - **Structured CLI Output Parsing (`uniconn.parsing`)**: `ParsingEngine`, `ParsingRegistry`, `ParseSpec`, `default_registry`, `parse_output`, `detect_parser_spec`, `strip_ansi`, `BuiltinEngine`, `NativeJsonEngine`, `JCEngine`, `TTPEngine`, `TextFSMEngine`
+- **Model Context Protocol Server (`uniconn.mcp`)**: `MCPServer`, `MCPHostRegistry`, `MCPSecurityPolicy`, `MCPHostEntry`, `MCPToolDefinition`, `MCPResourceDefinition`, `MCPResourceTemplate`, `mask_uri_secrets`
 - **Logging (`structlog` + `stdlib`)**: `configure_logging`, `get_struct_logger`, `log_context`, `bind_log_context`, `unbind_log_context`, `clear_log_context`, `get_log_context`, `get_logger`, `setup_file_logging`, `SecretMaskingFilter`
 - **Exceptions**: `UniconnError`, `ConfigurationError`, `CyclicDependencyError`, `ConnectionError`, `CircuitOpenError`, `BatchAbortedError`, `CassetteError`, `CassetteMissError`, `AuthenticationError`, `ExecutionError`, `FlowExecutionError`, `FileTransferError`, `ModemTransferError`, `ModemHandshakeTimeoutError`, `ModemCancelledError`, `ModemMaxRetriesError`, `ModemProtocolError`, `ModemChecksumMismatchError`, `ParsingError`, `ParserNotFoundError`, `OptionalDependencyError`, `TimeoutError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `BackgroundError`, `BackgroundBackendError`, `BackgroundSessionExistsError`, `BackgroundPoolFullError`, `HardwareFaultDetectedError`
 
@@ -525,6 +526,9 @@ uniconn run-multi ssh://node-01 ssh://node-02 -c "deploy.sh" --batch-size 1 --ma
 uniconn flow list deploy.py [--format table|json]
 uniconn flow inspect deploy.py:deploy_flow [--format tree|json]
 uniconn flow run deploy.py:deploy_flow ssh://node-01 ssh://node-02 [--mode barrier|independent] [--batch-size 2] [--max-fail-ratio 0.0] [--tags preflight,deploy] [--var env=prod] [--dry-run] [--format table|json]
+
+# Official MCP Server over JSON-RPC 2.0 stdio:
+uniconn mcp [--inventory hosts.yaml] [--uri ssh://node-01] [--group web] [--local] [--allow-write] [--allow-sudo] [--allow-dynamic-uri] [--dry-run] [--allowlist "df,uptime"] [--blocklist "..."] [--audit-log audit.jsonl] [--print-config]
 ```
 
 ### Declarative Task DAG Orchestration (`uniconn.orchestration`)

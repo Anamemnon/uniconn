@@ -86,6 +86,24 @@ class InventoryLoader:
                         merged.setdefault("host", str(alias))
                         entries.append(merged)
 
+        if group_map:
+            for entry in entries:
+                entry_name = entry.get("name") or entry.get("host")
+                if not entry_name:
+                    continue
+                raw_entry_groups = entry.get("groups") or []
+                if isinstance(raw_entry_groups, str):
+                    merged_groups = [raw_entry_groups]
+                elif isinstance(raw_entry_groups, list | tuple):
+                    merged_groups = [str(g) for g in raw_entry_groups]
+                else:
+                    merged_groups = []
+                for g_name, g_members in group_map.items():
+                    if str(entry_name) in g_members and g_name not in merged_groups:
+                        merged_groups.append(g_name)
+                if merged_groups:
+                    entry["groups"] = merged_groups
+
         if group is not None:
             explicit_members = set(group_map.get(group, []))
             filtered_by_group: list[dict[str, Any]] = []

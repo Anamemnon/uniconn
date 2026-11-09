@@ -131,6 +131,16 @@ from .hooks import (
     otel_tracing_hook,
     structured_log_hook,
 )
+from .mcp import (
+    MCPHostEntry,
+    MCPHostRegistry,
+    MCPResourceDefinition,
+    MCPResourceTemplate,
+    MCPSecurityPolicy,
+    MCPServer,
+    MCPToolDefinition,
+    mask_uri_secrets,
+)
 from .mock import (
     CassetteInteractionMatcher,
     MockRequestEvent,
@@ -391,6 +401,13 @@ __all__ = [  # noqa: RUF022
     "LogMatchEvent",
     "LogPipeline",
     "LogWatchRule",
+    "MCPHostEntry",
+    "MCPHostRegistry",
+    "MCPResourceDefinition",
+    "MCPResourceTemplate",
+    "MCPSecurityPolicy",
+    "MCPServer",
+    "MCPToolDefinition",
     "MetricsCollector",
     "MockRequestEvent",
     "MockSFTPFile",
@@ -530,6 +547,7 @@ __all__ = [  # noqa: RUF022
     "get_struct_logger",
     "list_serial_ports",
     "log_context",
+    "mask_uri_secrets",
     "metrics_collector_hook",
     "normalize_temp_paths",
     "otel_tracing_hook",

@@ -12,6 +12,7 @@ from .cmd_cassette import register_cassette_commands
 from .cmd_exec import register_exec_commands
 from .cmd_files import register_file_commands
 from .cmd_flow import register_flow_commands
+from .cmd_mcp import register_mcp_commands
 from .cmd_mock import register_mock_commands
 from .cmd_ops import register_ops_commands
 from .renderers import CLIOutputRenderer, Console, Parameter, check_cli_deps, cyclopts
@@ -64,6 +65,7 @@ def create_cli_app() -> Any:
     register_cassette_commands(app, console, renderer)
     register_flow_commands(app, console, renderer)
     register_mock_commands(app, console, renderer)
+    register_mcp_commands(app, console, renderer)
     return app
 
 

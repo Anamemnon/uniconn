@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code Style: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Type Checker: Pyright](https://img.shields.io/badge/type%20checking-pyright-brightgreen.svg)](https://github.com/microsoft/pyright)
-[![Tests Passing](https://img.shields.io/badge/tests-607%20passed-brightgreen.svg)](tests/)
+[![Tests Passing](https://img.shields.io/badge/tests-914%20passed-brightgreen.svg)](tests/)
 [![Poe Tasks](https://img.shields.io/badge/tasks-poethepoet-blueviolet.svg)](https://github.com/nat-n/poethepoet)
 
 ---
@@ -15,7 +15,7 @@
 
 ---
 
-`uniconn` eliminates infrastructure glue code by providing a single, resilient `Connection` facade for command execution, file synchronization, idempotent state enforcement, DAG task orchestration, and hardware diagnostics across **SSH, WinRM, Docker, Podman, Kubernetes, Serial/UART, IPMI, Redfish BMC, and Local systems** — with **100% Async + Sync parity** and zero boilerplate.
+`uniconn` eliminates infrastructure glue code by providing a single, resilient `Connection` facade and a built-in **MCP Server (`uniconn mcp`)** for command execution, file synchronization, idempotent state enforcement, DAG task orchestration, and hardware diagnostics across **SSH, WinRM, Docker, Podman, Kubernetes, Serial/UART, IPMI, Redfish BMC, and Local systems** — with **100% Async + Sync parity** and zero boilerplate.
 
 <p align="center">
   <img src="./docs/assets/terminal_demo.svg" alt="uniconn interactive terminal demo" width="100%" />
@@ -60,8 +60,8 @@ Traditionally, teams maintain a fragmented stack: `AsyncSSH` or `Paramiko` for S
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                              USER APPLICATION / CLI / WEB DASHBOARD                    │
-│       Async API: Connection / ConnectionPool / Flow / ShellSession / RemotePath        │
+│                  USER APPLICATION / CLI / WEB DASHBOARD / MCP SERVER (AI)              │
+│       Async API: Connection / ConnectionPool / Flow / ShellSession / MCPServer         │
 │       Sync API:  SyncConnection / SyncConnectionPool / SyncFlow (via EventLoopPortal)  │
 └───────────────────────────────────────────┬────────────────────────────────────────────┘
                                             │
@@ -101,6 +101,7 @@ Traditionally, teams maintain a fragmented stack: `AsyncSSH` or `Paramiko` for S
 | **Structured Output Parsing** | **✅ `auto`** | ⚠️ Filters | ❌ None | ❌ None | ✅ TextFSM |
 | **Hardware BMC &amp; UART** | **✅ Out-of-box** | ⚠️ Roles | ❌ None | ❌ None | ⚠️ Serial only |
 | **Offline Testing (Cassettes)** | **✅ Built-in** | ❌ None | ❌ None | ❌ None | ❌ None |
+| **MCP Server for AI Agents** | **✅ Built-in** | ❌ None | ❌ None | ❌ None | ❌ None |
 | **Resilience (CircuitBreaker)** | **✅ Built-in** | ⚠️ `max_fail` | ❌ None | ❌ None | ❌ None |
 | **Task Overhead** | **⚡ &lt; 0.3 ms** | ~ 500–2000 ms | ~ 3–8 ms | ~ 5–15 ms | ~ 1–5 ms |
 
@@ -404,6 +405,87 @@ async def test_server_provisioning():
 
 ---
 
+### 9. Official MCP Server for AI Agents (`uniconn mcp`)
+Expose your infrastructure inventory safely to AI agents and IDEs (**Claude Desktop, Cursor, Windsurf, Cline**) over the **Model Context Protocol (MCP, JSON-RPC 2.0 over `stdio`)** with zero external SDK dependencies.
+
+By default, `uniconn mcp` runs in **Safe Mode**:
+- File modification (`uniconn_write_file`) and privileged execution (`sudo=True`) are disabled by default.
+- Destructive commands (`rm -rf /`, `mkfs`, `shutdown`, etc.) are blocked via `blocklist_hook`.
+- Credentials, tokens, and `SecretResolver` references (`env://`, `file://`) are automatically redacted in URIs (`mask_uri_secrets`) and outputs (`SecretMaskingFilter`).
+- Multi-host operations (`uniconn_ping`, `uniconn_diff_facts`, `uniconn_checksum`) run concurrently via `asyncio.gather` with per-host error isolation.
+
+```bash
+# Start MCP server over JSON-RPC 2.0 stdio in safe read-only mode
+uvx --from "uniconn[cli]" uniconn mcp --inventory hosts.yaml
+
+# Start with command allowlist, file write access, and JSONL audit log
+uniconn mcp --inventory hosts.yaml --group web --allow-write --allowlist "df,uptime,systemctl status" --audit-log ./mcp-audit.jsonl
+
+# Generate ready-to-paste mcpServers JSON config for Claude Desktop / Cursor
+uniconn mcp --inventory hosts.yaml --group web --max-read-bytes 131072 --print-config
+```
+
+Example `mcp.json` / `claude_desktop_config.json` configuration:
+
+```json
+{
+  "mcpServers": {
+    "uniconn": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "uniconn[cli]",
+        "uniconn",
+        "mcp",
+        "--inventory",
+        "/etc/uniconn/hosts.yaml",
+        "--audit-log",
+        "/var/log/uniconn-mcp-audit.jsonl"
+      ]
+    }
+  }
+}
+```
+
+#### Exposed MCP Tools & Resources
+
+| Tool / Resource | Description | Security Guardrail |
+| :--- | :--- | :--- |
+| `uniconn_list_hosts` | List registered hosts, groups, transport schemes, and active security policy. | Read-only (secrets masked) |
+| `uniconn_ping` | Concurrent connectivity check and RTT measurement across target hosts. | Read-only (per-host fault isolation) |
+| `uniconn_run` | Execute a command with automatic semantic output parsing (`parse="auto"`). | `blocklist_hook` / `allowlist_hook`; `sudo` requires `--allow-sudo` |
+| `uniconn_gather_facts` | Collect structured `HostFacts` (OS, kernel, CPU, RAM, disks, network, uptime). | Read-only |
+| `uniconn_diff_facts` | Concurrently collect and compare facts across hosts/groups for drift detection (`has_drift`). | Read-only |
+| `uniconn_read_file` | Read UTF-8 file content with size truncation (`max_bytes`) and secret masking. | Read-only (capped by `--max-read-bytes`) |
+| `uniconn_stat_path` | Inspect path existence, size, permissions, and modification time. | Read-only |
+| `uniconn_checksum` | Concurrently compute file digest (`sha256`, `sha1`, `md5`) across hosts. | Read-only |
+| `uniconn_write_file` | Write text content to a remote file (atomically by default `atomic=True`). | **Requires `--allow-write`** |
+| `uniconn://inventory/hosts` | Static resource returning the host manifest, groups, and active security policy. | Read-only |
+| `uniconn://hosts/{host}/facts` | Resource Template returning live `HostFacts` JSON for any registered host. | Read-only |
+
+#### Programmatic `MCPServer` Usage in Python
+You can also embed `MCPServer` directly inside custom agent runners (including JSON-RPC 2.0 batch requests):
+
+```python
+from uniconn import MCPHostRegistry, MCPSecurityPolicy, MCPServer
+
+policy = MCPSecurityPolicy(allow_write=False, allowlist=("echo", "df", "uptime"))
+registry = MCPHostRegistry.from_sources(inventory="hosts.yaml", policy=policy)
+server = MCPServer(registry=registry)
+
+response = await server.handle_message({
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+        "name": "uniconn_run",
+        "arguments": {"target": "web-01", "command": "df -h", "parse": True},
+    },
+})
+```
+
+---
+
 ## 🖥️ Interactive Web Dashboard
 
 `uniconn` includes an interactive browser-based dashboard to test connections, build URIs, inspect execution pipelines, and run test suites without spinning up external servers:
@@ -453,6 +535,9 @@ uniconn ensure-unit myapp.service "ssh://node-01" --file ./myapp.service --state
 uniconn record "ssh://user@host" -c ./cassettes/node.yaml --sanitize-ip -- uptime
 uniconn replay ./cassettes/node.yaml -- uptime
 uniconn cassette diff ./cassettes/v1.yaml ./cassettes/v2.yaml --fail-on-diff
+
+# Launch Official MCP Server for AI Agents (JSON-RPC 2.0 stdio)
+uniconn mcp --inventory fleet.yaml --allowlist "df,uptime,systemctl status,journalctl"
 ```
 
 ---

@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code Style: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Type Checker: Pyright](https://img.shields.io/badge/type%20checking-pyright-brightgreen.svg)](https://github.com/microsoft/pyright)
-[![Tests Passing](https://img.shields.io/badge/tests-607%20passed-brightgreen.svg)](tests/)
+[![Tests Passing](https://img.shields.io/badge/tests-914%20passed-brightgreen.svg)](tests/)
 [![Poe Tasks](https://img.shields.io/badge/tasks-poethepoet-blueviolet.svg)](https://github.com/nat-n/poethepoet)
 
 ---
@@ -15,7 +15,7 @@
 
 ---
 
-`uniconn` устраняет необходимость в разрозненном инфраструктурном коде, предоставляя единый отказоустойчивый фасад `Connection` для выполнения команд, дельта-синхронизации файлов, идемпотентного управления состоянием, DAG-оркестрации задач и аппаратной диагностики поверх **SSH, WinRM, Docker, Podman, Kubernetes, Serial/UART, IPMI, Redfish BMC и Local** — со **100% паритетом Async + Sync** и нулевым оверхедом.
+`uniconn` устраняет необходимость в разрозненном инфраструктурном коде, предоставляя единый отказоустойчивый фасад `Connection` и встроенный **MCP-сервер (`uniconn mcp`)** для выполнения команд, дельта-синхронизации файлов, идемпотентного управления состоянием, DAG-оркестрации задач и аппаратной диагностики поверх **SSH, WinRM, Docker, Podman, Kubernetes, Serial/UART, IPMI, Redfish BMC и Local** — со **100% паритетом Async + Sync** и нулевым оверхедом.
 
 <p align="center">
   <img src="./docs/assets/terminal_demo.svg" alt="uniconn interactive terminal demo" width="100%" />
@@ -60,8 +60,8 @@ with SyncConnection.from_uri("docker://root@app-container") as conn:
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                              ПОЛЬЗОВАТЕЛЬСКИЙ КОД / CLI / ВЕБ-ПАНЕЛЬ                   │
-│       Async API: Connection / ConnectionPool / Flow / ShellSession / RemotePath        │
+│                 ПОЛЬЗОВАТЕЛЬСКИЙ КОД / CLI / ВЕБ-ПАНЕЛЬ / MCP-СЕРВЕР (AI)              │
+│       Async API: Connection / ConnectionPool / Flow / ShellSession / MCPServer         │
 │       Sync API:  SyncConnection / SyncConnectionPool / SyncFlow (через EventLoopPortal)│
 └───────────────────────────────────────────┬────────────────────────────────────────────┘
                                             │
@@ -101,6 +101,7 @@ with SyncConnection.from_uri("docker://root@app-container") as conn:
 | **Автопарсинг вывода (`auto`)** | **✅ Встроено** | ⚠️ Фильтры | ❌ Нет | ❌ Нет | ✅ TextFSM |
 | **Аппаратные BMC и UART** | **✅ Из коробки** | ⚠️ Роли | ❌ Нет | ❌ Нет | ⚠️ Только Serial |
 | **Офлайн кассеты и контрактные тесты** | **✅ Встроено** | ❌ Нет | ❌ Нет | ❌ Нет | ❌ Нет |
+| **MCP-сервер для AI-агентов** | **✅ Встроено** | ❌ Нет | ❌ Нет | ❌ Нет | ❌ Нет |
 | **Отказоустойчивость (CircuitBreaker)** | **✅ Встроено** | ⚠️ `max_fail` | ❌ Нет | ❌ Нет | ❌ Нет |
 | **Накладные расходы ядра** | **⚡ &lt; 0.3 мс** | ~ 500–2000 мс | ~ 3–8 мс | ~ 5–15 мс | ~ 1–5 мс |
 
@@ -404,6 +405,87 @@ async def test_server_provisioning():
 
 ---
 
+### 9. Официальный MCP-сервер для AI-агентов (`uniconn mcp`)
+Безопасно подключайте ваш инфраструктурный инвентарь к ИИ-агентам и IDE (**Claude Desktop, Cursor, Windsurf, Cline**) по протоколу **Model Context Protocol (MCP, JSON-RPC 2.0 поверх `stdio`)** без внешних SDK-зависимостей.
+
+По умолчанию `uniconn mcp` запускается в **безопасном режиме (Safe Mode by Default)**:
+- Модификация файлов (`uniconn_write_file`) и привилегированное выполнение (`sudo=True`) отключены по умолчанию.
+- Деструктивные команды (`rm -rf /`, `mkfs`, `shutdown` и др.) блокируются на уровне конвейера через `blocklist_hook`.
+- Пароли, токены и секреты из `SecretResolver` (`env://`, `file://`) скрываются как в URI (`mask_uri_secrets`), так и в потоках вывода (`SecretMaskingFilter`).
+- Мультихостовые операции (`uniconn_ping`, `uniconn_diff_facts`, `uniconn_checksum`) выполняются конкурентно через `asyncio.gather` с изоляцией сбоев отдельных узлов.
+
+```bash
+# Запуск MCP-сервера поверх JSON-RPC 2.0 (stdio) в безопасном режиме чтения
+uvx --from "uniconn[cli]" uniconn mcp --inventory hosts.yaml
+
+# Запуск с белым списком команд, разрешением записи и JSONL-аудитом
+uniconn mcp --inventory hosts.yaml --group web --allow-write --allowlist "df,uptime,systemctl status" --audit-log ./mcp-audit.jsonl
+
+# Генерация готового JSON-блока mcpServers для Claude Desktop / Cursor
+uniconn mcp --inventory hosts.yaml --group web --max-read-bytes 131072 --print-config
+```
+
+Пример конфигурации `mcp.json` / `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "uniconn": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "uniconn[cli]",
+        "uniconn",
+        "mcp",
+        "--inventory",
+        "/etc/uniconn/hosts.yaml",
+        "--audit-log",
+        "/var/log/uniconn-mcp-audit.jsonl"
+      ]
+    }
+  }
+}
+```
+
+#### Доступные инструменты (MCP Tools) и ресурсы (MCP Resources)
+
+| Инструмент / Ресурс | Описание | Политика безопасности |
+| :--- | :--- | :--- |
+| `uniconn_list_hosts` | Список хостов и групп реестра с замаскированными URI и активной политикой безопасности. | Read-only (секреты скрыты) |
+| `uniconn_ping` | Конкурентная проверка доступности и замер RTT по списку хостов. | Read-only (изоляция ошибок узлов) |
+| `uniconn_run` | Выполнение команды с семантическим автопарсингом вывода в JSON (`parse="auto"`). | `blocklist_hook` / `allowlist_hook`; `sudo` требует `--allow-sudo` |
+| `uniconn_gather_facts` | Сбор системных фактов (`HostFacts`: ОС, ядро, CPU, RAM, диски, сеть, аптайм). | Read-only |
+| `uniconn_diff_facts` | Конкурентный сбор и сравнение фактов между хостами/группой для поиска дрейфа (`has_drift`). | Read-only |
+| `uniconn_read_file` | Чтение текстового файла с ограничением размера (`max_bytes`) и маскированием секретов. | Read-only (лимит `--max-read-bytes`) |
+| `uniconn_stat_path` | Проверка существования, размера, прав доступа и времени модификации пути. | Read-only |
+| `uniconn_checksum` | Конкурентный расчёт хеша (`sha256`, `sha1`, `md5`) файла на одном или нескольких хостах. | Read-only |
+| `uniconn_write_file` | Запись содержимого в файл на целевом хосте (по умолчанию атомарно `atomic=True`). | **Требует `--allow-write`** |
+| `uniconn://inventory/hosts` | Статический ресурс с манифестом хостов, групп и параметров безопасности. | Read-only |
+| `uniconn://hosts/{host}/facts` | Шаблон ресурса (Resource Template) для чтения актуальных `HostFacts` хоста в JSON. | Read-only |
+
+#### Программное использование `MCPServer` в Python
+Вы также можете встраивать `MCPServer` напрямую в собственные агентные пайплайны (включая пакетные JSON-RPC 2.0 запросы):
+
+```python
+from uniconn import MCPHostRegistry, MCPSecurityPolicy, MCPServer
+
+policy = MCPSecurityPolicy(allow_write=False, allowlist=("echo", "df", "uptime"))
+registry = MCPHostRegistry.from_sources(inventory="hosts.yaml", policy=policy)
+server = MCPServer(registry=registry)
+
+response = await server.handle_message({
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+        "name": "uniconn_run",
+        "arguments": {"target": "web-01", "command": "df -h", "parse": True},
+    },
+})
+```
+
+---
+
 ## 🖥️ Интерактивная веб-панель (Web Dashboard)
 
 В репозиторий встроен интерактивный веб-дашборд для проверки подключений, конструирования URI, тестирования конвейера хуков и запуска тестов прямо из браузера:
@@ -453,6 +535,9 @@ uniconn ensure-unit myapp.service "ssh://node-01" --file ./myapp.service --state
 uniconn record "ssh://user@host" -c ./cassettes/node.yaml --sanitize-ip -- uptime
 uniconn replay ./cassettes/node.yaml -- uptime
 uniconn cassette diff ./cassettes/v1.yaml ./cassettes/v2.yaml --fail-on-diff
+
+# Запуск официального MCP-сервера для AI-агентов (JSON-RPC 2.0 stdio)
+uniconn mcp --inventory fleet.yaml --allowlist "df,uptime,systemctl status,journalctl"
 ```
 
 ---

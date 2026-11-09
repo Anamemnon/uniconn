@@ -31,7 +31,8 @@
 - `sync/` (реэкспорт в `_sync.py`) — `connection.py` (`SyncConnection`), `shell.py` (`SyncShellSession`), `pool.py` (`SyncConnectionPool` с `.files`, `.state` и поддержкой sync/async функций в `apply()`) и `services.py` (`SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`, `SyncPoolFileOperationsService`, `SyncPoolStateManagementService`, `SyncDiagnosticSession`) на базе `EventLoopPortal`, `SyncProxyMixin` и однострочных `ParamSpec`-дескрипторов.
 - `pool/` (реэкспорты в `_pool.py` и `_session_pool.py`) — `connection_pool.py` (`ConnectionPool` с `.files`, `.state`, `_fan_out_list` / `_fan_out_dict`, батчевой раскаткой `batch_size` / `max_fail_ratio`, `select()` и `use_cassette`), `services.py` (`PoolFileOperationsService`, `PoolStateManagementService` на базе `pool_fan_out_dict`), `session_pool.py` (`SSHSessionPool` с адаптивным авто-понижением лимитов и `resize()`) и `stream_mux.py` (`PoolStreamMultiplexer`).
 - `background/` — `BackgroundPool`, `BackgroundSession`, `BackgroundBackendStrategy` (`TmuxBackend`, `ScreenBackend`, `NohupBackend`, `WindowsJobBackend`), `LogPipeline`, `DiagnosticSession`: управление фоновыми задачами и диагностическими сессиями.
-- `cli/` — модульный CLI на базе `cyclopts` и `rich` (`app.py`, `renderers.py`, `cmd_exec.py`, `cmd_files.py`, `cmd_ops.py`, `cmd_bg.py`, `cmd_cassette.py`).
+- `mcp/` — официальный встроенный сервер Model Context Protocol (`MCPServer`, `MCPHostRegistry`, `MCPSecurityPolicy`, `MCPHostEntry`, `MCPToolDefinition`, `MCPResourceDefinition`, `MCPResourceTemplate`, `mask_uri_secrets`) поверх JSON-RPC 2.0 (`stdio`).
+- `cli/` — модульный CLI на базе `cyclopts` и `rich` (`app.py`, `renderers.py`, `cmd_exec.py`, `cmd_files.py`, `cmd_ops.py`, `cmd_bg.py`, `cmd_cassette.py`, `cmd_flow.py`, `cmd_mock.py`, `cmd_mcp.py`).
 - `result.py` (`Result`, `PingResult`, `SyncResult`, `EnsureResult`), `hooks.py`, `telemetry.py`, `pytest_plugin.py`, `_logging.py`, `exceptions.py` (`ConfigurationError`, `CircuitOpenError`, `BatchAbortedError`, `CassetteError`), `py.typed`.
 
 ## Точка входа и веб-панель (`main.py` и `examples/dashboard/`)
@@ -41,13 +42,14 @@
 
 ## Структура тестов (`tests/`)
 
-Unit-тесты (`tests/unit/`, 40 модулей, 607 тестов) сгруппированы строго по доменным пакетам (зеркало `src/uniconn/`):
+Unit-тесты (`tests/unit/`, 914 тестов) сгруппированы строго по доменным пакетам (зеркало `src/uniconn/`):
 - `tests/unit/core/` — базовые абстракции (`Connection`, `SyncConnection`, `Result`, `ShellSession`, `ExpectStateMachine`, `PosixMarkerProtocol`, `wait_for_*`, `CircuitBreaker`, `RateLimiter`, `SecretResolver`, URI, конфиги, хуки, плагины, исключения, `structlog`-логирование и OpenTelemetry).
 - `tests/unit/services/` — доменные сервисы (`FileOperationsService`, `checksum`, `atomic=True`, `sync_dir`, `write_template`, `FactCollector`, `diff_facts`, `StateManagementService` и системные примитивы `ensure_*`).
 - `tests/unit/transports/` — тесты транспортов (`SSH`, `Telnet`, `Serial`, `Local`, `IPMI`, `Redfish`, `Docker`, `Podman`, `Kubectl`, `Replay`/`Cassette`, `BaseTransport`), SFTP и `pytest_plugin`.
 - `tests/unit/pools/` — `ConnectionPool` (включая батчинг `batch_size`/`max_fail_ratio`, `BatchAbortedError` и `select()`) и `SSHSessionPool`.
 - `tests/unit/background/` — `BackgroundPool`, `BackgroundSession`, стратегии (`tmux`, `screen`, `nohup`), `LogPipeline`, `DiagnosticSession`, `BackgroundPoolConfig`, cleanup.
-- `tests/unit/cli/` — CLI-команды (`cyclopts` + `rich`), фоновые `bg-*` команды и интерактивная веб-панель (`examples/dashboard/`).
+- `tests/unit/mcp/` — `MCPServer`, `MCPHostRegistry`, `MCPSecurityPolicy`, JSON-RPC 2.0 (`stdio`/batch), MCP Tools & Resources и guardrails безопасности.
+- `tests/unit/cli/` — CLI-команды (`cyclopts` + `rich`), `uniconn mcp`, фоновые `bg-*` команды и интерактивная веб-панель (`examples/dashboard/`).
 - `tests/unit/architecture/` — архитектурные инварианты и чистота публичного API (`__all__`).
 - `tests/integration/` — интеграционные тесты с Docker/testcontainers.
 
