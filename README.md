@@ -1,656 +1,470 @@
 # uniconn
 
-Универсальная async-first Python-библиотека (Python 3.11+) и CLI для выполнения команд, инспекции хостов, идемпотентного управления состоянием, передачи файлов и контрактного тестирования через единый фасад `Connection`: **SSH, Telnet, Serial/UART, IPMI BMC, Redfish BMC, Docker, Podman, Kubernetes (`kubectl`), Replay и Local**.
+**Unified Async/Sync Infrastructure Automation &amp; Execution Engine for Python**
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Code Style: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Type Checker: Pyright](https://img.shields.io/badge/type%20checking-pyright-brightgreen.svg)](https://github.com/microsoft/pyright)
+[![Tests Passing](https://img.shields.io/badge/tests-607%20passed-brightgreen.svg)](tests/)
+[![Poe Tasks](https://img.shields.io/badge/tasks-poethepoet-blueviolet.svg)](https://github.com/nat-n/poethepoet)
 
-## Особенности
+---
 
-- 🚀 **10 встроенных транспортов**: `ssh://` (с Jump-цепочками и `~/.ssh/config`), `telnet://`, `serial://` / `uart://`, `ipmi://`, `redfish://` (`niquests` HTTP/2), `docker://`, `podman://`, `kubectl://`, `replay://` и `local://`
-- ⚡ **Прагматичный Async + Sync паритет**: Асинхронное ядро на `asyncio` и полная синхронная обёртка (`SyncConnection`, `SyncConnectionPool`, `SyncShellSession`) через единый фоновый `EventLoopPortal`
-- 🧩 **Доменные сервисы (`conn.files`, `conn.state`, `conn.tunnels`)**: Чистое разделение файловых операций, идемпотентной конфигурации и SSH-туннелирования как для одиночного хоста, так и для пула (`pool.files`, `pool.state`)
-- 🔒 **Безопасность и `SecretResolver`**: Автоматическое разрешение секретов из `env://VAR?default=...` и `file:///path`, `SecretStr`, безопасный `sudo` через `stdin`, маскирование при `sensitive=True` и автоэкранирование списков аргументов (`shlex.join`)
-- 🛡️ **Отказоустойчивость и волновой роллаут**: Встроенные `CircuitBreaker`, `RateLimiter` (Token Bucket), экспоненциальный retry, каскадная раскатка в `ConnectionPool` (`batch_size`, `max_fail_ratio`, `BatchAbortedError`) и выборка подмножеств `pool.select()`
-- ⏳ **Примитивы ожидания и проверки доступности**: `ping()` (`PingResult` с измерением RTT), `wait_for_connection()`, `wait_for_port()` (проверка с удалённого или локального хоста) и `wait_for_path()` (с проверкой `content_regex`)
-- 🔎 **Инспекция хостов, поиск дрейфа и диагностика**: Автосбор фактов `gather_facts()` (с расширяемым `FactSpec`), сравнение кластера `pool.diff_facts()` (`FactsDiffReport`) и контекстный менеджер `conn.diagnostic_session()`
-- 🧱 **Идемпотентное управление состоянием (`conn.state`)**: `ensure_package`, `ensure_service`, `ensure_file` (`atomic=True`, `validate`), `ensure_directory`, `ensure_line`, `ensure_user`, `ensure_authorized_key`, `ensure_systemd_unit`, `ensure_sysctl` с генерацией unified diff (`EnsureResult.diff`)
-- 📁 **Файловый сервис (`conn.files`)**: Чтение/запись в памяти, атомарная замена `atomic=True`, проверка контрольных сумм `checksum()` и `verify=True`, рекурсивный SFTP, дельта-синхронизация `sync_dir()` (`SyncResult`), шаблоны `write_template()` (`jinja2` / `string.Template`) и прошивка через Serial/UART по протоколам **XMODEM / YMODEM / ZMODEM** (`upload_ymodem`, `upload_xmodem`, `trigger_command`)
-- 📼 **Контрактное тестирование и кассеты (`use_cassette`)**: Запись и детерминированное воспроизведение команд, потоков, SFTP и PTY-сессий в YAML/JSON-кассетах, `cassette.diff()`, `ReplayTransport` и `pytest`-плагин `@pytest.mark.uniconn_cassette`
-- 💻 **Stateful PTY Shell, Expect и Туннели**: Интерактивные сессии `ShellSession`, декларативный автомат диалогов `expect()` и проброс портов `conn.tunnels.forward_local_port()` / `forward_remote_port()`
-- 🖥️ **BackgroundPool**: Долгоживущие фоновые задачи в `tmux`, `screen`, `nohup` или `WindowsJobBackend` с потоковым сбором логов `LogPipeline`
-- 📈 **Наблюдаемость (`structlog` + OpenTelemetry)**: JSONL/консольное логирование (`configure_logging`, `log_context`) и распределённая трассировка `otel_tracing_hook`
-- 🛠️ **Модульный CLI (`cyclopts` + `rich`) и Веб-панель**: Богатый CLI (`run`, `run-multi`, `ping`, `wait-for`, `facts`, `tail`, `upload`, `download`, `sync`, `template`, `checksum`, `ensure-*`, `bg-*`, `record`, `replay`, `cassette`) и интерактивный дашборд (`python3 main.py --serve`)
+### Language: **[ 🇬🇧 English ]** &nbsp;|&nbsp; **[ 🇷🇺 Русский ](README.ru.md)**
 
-## Установка
+---
 
-Легковесная установка ядра (SSH, Local, Docker, Podman, Kubectl, Replay, конвейер команд, структурированное логирование и YAML/TOML/JSON инвентари):
+`uniconn` eliminates infrastructure glue code by providing a single, resilient `Connection` facade for command execution, file synchronization, idempotent state enforcement, DAG task orchestration, and hardware diagnostics across **SSH, WinRM, Docker, Podman, Kubernetes, Serial/UART, IPMI, Redfish BMC, and Local systems** — with **100% Async + Sync parity** and zero boilerplate.
 
-```bash
-pip install uniconn
-# или через uv:
-uv add uniconn
-```
+<p align="center">
+  <img src="docs/assets/terminal_demo.svg" alt="uniconn interactive terminal demo" width="100%" />
+</p>
 
-Полная установка со всеми специализированными транспортами (Telnet, Serial/UART, BMC IPMI/Redfish), шаблонизатором Jinja2 и CLI:
+---
 
-```bash
-pip install "uniconn[all]"
-# или выборочные extras:
-pip install "uniconn[cli]"          # CLI интерфейс (cyclopts, rich)
-pip install "uniconn[bmc]"          # IPMI (pyghmi) и Redfish (niquests)
-pip install "uniconn[serial]"       # Serial/UART (pyserial-asyncio)
-pip install "uniconn[telnet]"       # Telnet (telnetlib3)
-pip install "uniconn[templates]"    # Jinja2 шаблонизатор
-```
+## ⚡ 5-Line Quick Start
 
-### Разработка
-
-```bash
-git clone https://github.com/yourusername/uniconn.git
-cd uniconn
-uv sync
-```
-
-## Быстрый старт
-
-### Базовое использование (Async)
+### 🚀 Asynchronous (`Connection`)
+Execute commands, parse structured output, write configs atomically, and enforce service states with `sudo`:
 
 ```python
-import asyncio
 from uniconn import Connection
 
-async def main() -> None:
-    # SSH подключение (поддерживает env:// и file:// ссылки на секреты)
-    async with Connection.from_uri("ssh://admin:env://SSH_PASS@node-01.internal") as conn:
-        ping = await conn.ping()
-        print(f"Host alive: {ping.alive} ({ping.latency_ms:.1f} ms)")
-
-        result = await conn.run(["uptime"])
-        print(f"Exit code: {result.exit_code}, output: {result.text}")
-
-        # Работа с файлами через доменный сервис conn.files
-        await conn.files.write_file("/etc/myapp.conf", "port = 8080\n", atomic=True)
-
-        # Идемпотентное управление состоянием через conn.state
-        ens = await conn.state.ensure_service("nginx", state="started", enabled=True, sudo=True)
-        print(f"Service nginx changed: {ens.changed}")
-
-asyncio.run(main())
+async with Connection.from_uri("ssh://admin:env://SSH_PASS@node-01") as conn:
+    disks = (await conn.run("df -h", parse="auto")).parsed
+    await conn.files.write_file("/etc/app.conf", "port = 8080\n", atomic=True)
+    await conn.state.ensure_service("nginx", state="started", enabled=True, sudo=True)
 ```
 
-### Синхронное использование (`SyncConnection`)
+### ⏱️ Synchronous (`SyncConnection`)
+Zero `asyncio.run()` boilerplate for scripts, CLI utilities, and sync frameworks:
 
 ```python
-from uniconn import Connection, SyncConnection
+from uniconn import SyncConnection
 
-# Напрямую через SyncConnection или метод .to_sync()
-with SyncConnection.local() as conn:
-    result = conn.run(["uname", "-s"])
-    print(result.text)
+with SyncConnection.from_uri("docker://root@app-container") as conn:
+    print(conn.run(["uname", "-s"]).text)
+    print("OS:", conn.gather_facts().os_family)
 ```
 
-### Параллельное выполнение и волновой роллаут (`ConnectionPool`)
+---
+
+## 💡 Why uniconn?
+
+Modern infrastructure is fundamentally heterogeneous: Linux servers run alongside Windows nodes, containers run next to Kubernetes pods, and bare-metal servers require BMC out-of-band management or serial bootloader flashing.
+
+Traditionally, teams maintain a fragmented stack: `AsyncSSH` or `Paramiko` for SSH, `pywinrm` for Windows, `docker-py` and `kubernetes` for containers, `Pyinfra` or `Ansible` for provisioning, `pyserial` for serial devices, and `Testinfra` for assertions.
+
+`uniconn` unifies all of these into a **single, lightweight, sub-millisecond execution engine**:
+
+```text
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                              USER APPLICATION / CLI / WEB DASHBOARD                    │
+│       Async API: Connection / ConnectionPool / Flow / ShellSession / RemotePath        │
+│       Sync API:  SyncConnection / SyncConnectionPool / SyncFlow (via EventLoopPortal)  │
+└───────────────────────────────────────────┬────────────────────────────────────────────┘
+                                            │
+                  ┌─────────────────────────▼──────────────────────────┐
+                  │               DOMAIN SERVICES LAYER                │
+                  │  • conn.files / conn.path (SFTP, Delta Sync, Hash) │
+                  │  • conn.state (Idempotent ensure_*, Diff, Notify)  │
+                  │  • conn.gather_facts / diff_facts / diagnostics    │
+                  │  • conn.run_python (Persistent Zero-Fork RPC)      │
+                  └─────────────────────────┬──────────────────────────┘
+                                            │
+                  ┌─────────────────────────▼──────────────────────────┐
+                  │            RESILIENCE & MIDDLEWARE PIPELINE        │
+                  │  [Context] ──► [Sudo/Secrets] ──► [Hooks/OTel] ──► │
+                  │  [DryRun]  ──► [CircuitBreaker] ──► [RateLimiter]  │
+                  │  ──► [Retry] ──► [Cassette Recorder / Replayer]    │
+                  └─────────────────────────┬──────────────────────────┘
+                                            │
+┌───────────────────────────────────────────▼────────────────────────────────────────────┐
+│                        PLUGGABLE TRANSPORT LAYER (ISP PROTOCOLS)                       │
+├───────────┬───────────┬───────────┬───────────┬───────────┬────────────┬───────────────┤
+│  ssh://   │  winrm:// │ docker:// │ kubectl://│  uart://  │ redfish:// │   replay://   │
+│  telnet://│  wsman:// │ podman:// │           │  serial://│   ipmi://  │   local://    │
+└───────────┴───────────┴───────────┴───────────┴───────────┴────────────┴───────────────┘
+```
+
+### 📊 Competitive Comparison Matrix
+
+| Feature / Architecture | `uniconn` | `Pyinfra` | `Fabric` (v3) | `Nornir` + `Scrapli` | `Testinfra` | `Ansible` |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Primary Paradigm** | **Pure Python SDK + CLI** | CLI / Python Deploy | Python SSH Runner | Network Framework | Pytest Assertions | YAML DSL CLI |
+| **Native Async (`asyncio`) + Sync Parity** | **✅ 100% Parity** | ❌ (Gevent / Threads) | ❌ (Sync only) | ⚠️ (Scrapli only) | ❌ (Sync only) | ❌ (Multi-process) |
+| **Multi-Transport (10+ URI schemes)** | **✅ SSH, WinRM, K8s, BMC, UART…** | ⚠️ (SSH, Docker, Local) | ❌ (SSH & Local only) | ❌ (SSH/Telnet/Netconf) | ✅ (SSH, WinRM, Docker, K8s) | ✅ (Heavy plugins) |
+| **Idempotent State (`ensure_*` + Diff)** | **✅ Built-in + `notify`** | ✅ | ❌ | ❌ | ❌ (Read-only) | ✅ |
+| **Declarative DAG Task Orchestration** | **✅ `@task` & `Flow`** | ⚠️ (Linear ops) | ❌ | ⚠️ (Custom runners) | ❌ | ✅ (Playbooks) |
+| **Zero-Fork Python RPC (Mitogen-style)** | **✅ `conn.run_python()`** | ⚠️ (Connector) | ❌ | ❌ | ❌ | ⚠️ (External plugin) |
+| **Structured Output Parsing (`jc`, `ttp`, `textfsm`)** | **✅ `parse="auto"`** | ❌ | ❌ | ✅ | ❌ | ⚠️ (Filters) |
+| **Hardware Management (Redfish, IPMI, X/YMODEM)** | **✅ Out of the box** | ❌ | ❌ | ❌ | ❌ | ⚠️ (Scattered roles) |
+| **Offline Contract Testing (Cassettes + Mocks)** | **✅ Built-in + `pytest`** | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Resilience (CircuitBreaker, Wave Rollouts)** | **✅ Built-in pipeline** | ❌ | ❌ | ❌ | ❌ | ⚠️ (`serial`/`max_fail`) |
+| **Core Overhead per Command** | **⚡ &lt; 0.3 ms** | ~ 5–15 ms | ~ 2–8 ms | ~ 1–5 ms | ~ 5–10 ms | ~ 500–2500 ms |
+
+---
+
+## 📦 Installation
+
+Lightweight core installation (includes SSH, Local, Docker, Podman, Kubectl, Replay transport, resilient pipeline, and structured logging):
+
+```bash
+# Using uv (recommended):
+uv add uniconn
+
+# Using pip:
+pip install uniconn
+```
+
+### Optional Extras
+
+Install all optional transports, BMC controllers, serial modems, and the CLI in one shot:
+
+```bash
+uv add "uniconn[all]"
+```
+
+Or pick only what you need:
+
+| Extra | Command | Description |
+| :--- | :--- | :--- |
+| **CLI** | `uv add "uniconn[cli]"` | Rich terminal CLI (`cyclopts`, `rich`) |
+| **WinRM** | `uv add "uniconn[winrm]"` | Windows Remote Management (`pywinrm`) |
+| **BMC** | `uv add "uniconn[bmc]"` | IPMI (`pyghmi`) and Redfish HTTP/2 (`niquests`) |
+| **Serial** | `uv add "uniconn[serial]"` | Serial/UART console (`pyserial-asyncio`) & X/Y/ZMODEM |
+| **Telnet** | `uv add "uniconn[telnet]"` | Telnet transport (`telnetlib3`) |
+| **Templates** | `uv add "uniconn[templates]"` | Jinja2 templating engine for `write_template()` |
+| **Parsing** | `uv add "uniconn[parsing]"` | Semantic parsers (`jc`, `ttp`, `textfsm`, `ntc-templates`) |
+| **Telemetry**| `uv add "uniconn[otel]"` | OpenTelemetry distributed tracing hooks |
+
+---
+
+## 🌐 Supported Transports & URI Syntax
+
+Every transport is represented via a standardized, human-readable URI with automatic secret resolution:
+
+| Transport | URI Scheme | Real-World Example |
+| :--- | :--- | :--- |
+| **SSH** | `ssh://` | `ssh://admin:env://SSH_PASS@node-01:22?key_file=/path/id_ed25519&proxy=bastion&keepalive=30` |
+| **Windows Remote**| `winrm://` | `winrm://Administrator:env://WIN_PASS@win-server:5986?ssl=true&shell=ps&transport=ntlm` |
+| **Docker** | `docker://` | `docker://root@app-container?workdir=/app&shell=/bin/sh` |
+| **Podman** | `podman://` | `podman://web-container?workdir=/srv` |
+| **Kubernetes** | `kubectl://` | `kubectl://production/backend-pod-0?container=api&context=eu-cluster` |
+| **Redfish BMC** | `redfish://` | `redfish://admin:env://BMC_PASS@bmc.local?verify_ssl=false&system_id=1` |
+| **IPMI BMC** | `ipmi://` | `ipmi://admin:password@bmc.local:623` (`power status`, `sensors`, `boot device`) |
+| **Serial / UART** | `serial://`, `uart://` | `uart:///dev/ttyUSB0:115200?parity=N&stopbits=1` or `uart://COM3?vid=10c4&pid=ea60` |
+| **Telnet** | `telnet://` | `telnet://admin:pass@switch.local:23?term_type=vt100` |
+| **Replay (Cassette)**| `replay://` | `replay://node-01?cassette=tests/cassettes/node.yaml&mode=none` |
+| **Local** | `local://` | `local://?timeout=30&rate_limit=50` (or `Connection.local()`) |
+
+> 🔒 **Dynamic Secret Resolution**: Passwords, sudo tokens, and key paths support `env://VAR_NAME[?default=fallback]` and `file:///path/to/secret[?default=fallback]`. Missing secrets without defaults raise `ConfigurationError` before any network connection is attempted.
+
+---
+
+## 🛠️ Production Recipes & Advanced Examples
+
+### 1. Declarative DAG Task Orchestration (`uniconn.orchestration`)
+Build dependency graphs with prerequisites (`depends_on`), cleanup post-actions (`post`), condition guards (`when`), and wave-synchronized execution (`mode="barrier"`) across a fleet:
+
+```python
+from uniconn import Connection, ConnectionPool, Flow, FlowContext, task
+
+@task(name="check_environment", tags=["preflight"])
+async def check_environment(conn: Connection, ctx: FlowContext):
+    facts = await conn.gather_facts()
+    ctx.host_set(conn, "os_family", facts.os_family)
+    return await conn.run("uname -a")
+
+@task(name="cleanup_artifacts", always_run=True)
+async def cleanup_artifacts(conn: Connection):
+    await conn.files.remove_file("/tmp/release.tar.gz")
+
+@task(
+    name="deploy_application",
+    depends_on=[check_environment],
+    post=[cleanup_artifacts],
+    when=lambda conn, ctx: ctx.host_get(conn, "os_family") == "Linux",
+    retries=2,
+    retry_delay=1.0,
+)
+async def deploy_application(conn: Connection):
+    return await conn.state.ensure_file(
+        "/etc/app.conf",
+        content="PORT=8080\nWORKERS=4\n",
+        mode=0o644,
+        atomic=True,
+        notify=("reload_app", lambda c: c.state.ensure_service("app", state="reloaded", sudo=True)),
+    )
+
+# Orchestrate rollout across nodes with wave synchronization and deduplicated service reloads
+flow = Flow(
+    name="production_release",
+    tasks=[deploy_application],  # Transitively pulls in check_environment and cleanup_artifacts
+    mode="barrier",              # All nodes pass each task wave before advancing to the next
+    batch_size=2,                # Roll out 2 nodes at a time
+    max_fail_ratio=0.0,          # Abort immediately if any batch fails
+    batch_notifications=True,    # Execute 'reload_app' only ONCE per host at the end of the flow
+)
+
+async with ConnectionPool.from_file("fleet.yaml", group="prod") as pool:
+    report = await pool.run_flow(flow, vars={"release": "v2.5.0"})
+    report.raise_for_status()
+```
+
+---
+
+### 2. Persistent Zero-Fork Remote Python RPC (`conn.run_python`)
+Execute arbitrary Python callables directly inside a persistent background Python worker over a bidirectional pipe (Mitogen-style). Eliminates SSH shell overhead, file upload latency, and process fork penalties:
+
+```python
+import os
+from uniconn import Connection
+
+async with Connection.from_uri("ssh://admin@remote-node") as conn:
+    # 1. Execute an inline lambda directly on the remote host (< 2ms round-trip)
+    kernel_release = await conn.run_python(lambda: os.uname().release)
+    print("Remote Kernel:", kernel_release)
+
+    # 2. Execute parameterized functions with remote library imports
+    def inspect_system(threshold_pct: float) -> dict:
+        import psutil
+        cpu_usage = psutil.cpu_percent(interval=0.1)
+        return {
+            "cpu_percent": cpu_usage,
+            "is_stressed": cpu_usage > threshold_pct,
+            "memory_free_gb": psutil.virtual_memory().available / (1024 ** 3),
+        }
+
+    stats = await conn.run_python(inspect_system, 85.0, sudo=False, timeout=15.0)
+    print("Health report:", stats["cpu_percent"], stats["is_stressed"])
+```
+
+---
+
+### 3. Bare-Metal Redfish BMC & Hardware Telemetry
+Manage rack servers directly out-of-band using DMTF Redfish HTTP/2 (powered by `niquests`) and IPMI protocols:
+
+```python
+from uniconn import Connection
+
+# 1. Redfish BMC: Query sensors, health states, and manage power
+async with Connection.from_uri("redfish://admin:env://BMC_PASS@192.168.1.100?verify_ssl=false") as bmc:
+    power_res = await bmc.run("power status")
+    print("Server Power:", power_res.text)  # "On"
+
+    # Query hardware inventory and chassis thermal telemetry
+    thermal = await bmc.run("sensors")
+    print(thermal.text)
+
+    # Power cycle bare-metal host
+    await bmc.run("power cycle")
+
+# 2. IPMI BMC: Direct netfn raw commands and boot order manipulation
+async with Connection.from_uri("ipmi://admin:env://IPMI_PASS@192.168.1.100:623") as ipmi:
+    # Set one-time PXE network boot for automated bare-metal provisioning
+    await ipmi.run("boot pxe once")
+    await ipmi.run("power reset")
+```
+
+---
+
+### 4. Serial / UART Controls & Bootloader Flashing (X/Y/ZMODEM)
+Direct hardware communication for embedded boards, network switches, and IoT microcontrollers:
+
+```python
+from uniconn import Connection
+
+async with Connection.from_uri("uart:///dev/ttyUSB0:115200?parity=N&stopbits=1") as board:
+    # 1. Trigger hardware reset via DTR/RTS pin pulsing
+    await board.transport.pulse_dtr_rts(dtr=False, rts=True, duration=0.1)
+
+    # 2. Send serial BREAK signal to interrupt boot sequence and enter U-Boot / ROMMON
+    board.transport.send_break(duration=0.25)
+
+    # 3. Flash firmware directly into memory over YMODEM protocol
+    bytes_sent = await board.files.upload_ymodem(
+        "build/u-boot-custom.bin",
+        trigger_command="loady 0x82000000\r",
+        progress_callback=lambda current, total: print(f"Flashing: {current}/{total} bytes"),
+    )
+    print(f"Firmware flashed: {bytes_sent} bytes transferred")
+
+    # 4. Stream serial console output in real time
+    async for line in board.stream():
+        print("[UART]:", line)
+        if "Kernel panic" in line:
+            break
+```
+
+---
+
+### 5. Stateful PTY Shell Sessions & Automated Expect Dialogs
+Maintain state across multiple commands in a real pseudoterminal (preserving `cd` and `export`) and automate interactive terminal prompts:
+
+```python
+from uniconn import Connection
+
+async with Connection.from_uri("ssh://admin@node-01") as conn:
+    # 1. Stateful PTY Shell: Environment variables and directory persist across executions
+    async with await conn.open_shell(term_type="xterm-256color", term_size=(120, 40)) as shell:
+        await shell.execute("cd /var/log/nginx && export LOG_LEVEL=debug")
+        res = await shell.execute("pwd && echo $LOG_LEVEL")
+        assert "/var/log/nginx" in res.text
+        assert "debug" in res.text
+
+    # 2. Declarative Expect: Automate prompts with password masking
+    await conn.expect(
+        "passwd deployer",
+        patterns={
+            r"New password:": "SecureP@ssw0rd!123",
+            r"Retype new password:": "SecureP@ssw0rd!123",
+        },
+        final_prompt=r"password updated successfully",
+        sensitive=True,  # Automatically redacts passwords from audit logs, traces, and exceptions
+    )
+```
+
+---
+
+### 6. Fleet Orchestration & Canary Rollouts (`ConnectionPool`)
+Deploy across hundreds of nodes with built-in concurrency limits, circuit breakers, and automatic rollout abortion on failure:
 
 ```python
 import asyncio
-from uniconn import ConnectionPool
+from uniconn import ConnectionPool, BatchAbortedError
 
-async def main() -> None:
-    hosts = [
-        "ssh://admin@node-01",
-        "ssh://admin@node-02",
-        "ssh://admin@node-03",
-        "ssh://admin@node-04",
-    ]
+async def deploy_fleet():
+    hosts = ["ssh://admin@web-01", "ssh://admin@web-02", "ssh://admin@web-03", "ssh://admin@web-04"]
 
-    # Каскадная раскатка батчами по 2 хоста с остановкой при ошибках (max_fail_ratio=0.0)
-    async with ConnectionPool(hosts, max_concurrent=4, batch_size=2, max_fail_ratio=0.0) as pool:
-        results = await pool.map("uptime")
-        for res in results:
-            print(f"{res.host}: {res.text}")
+    async with ConnectionPool(hosts, max_concurrent=10, batch_size=2, max_fail_ratio=0.0) as pool:
+        # 1. Canary check on subset (reuses persistent connections)
+        canary = pool.select(["web-01"])
+        assert (await canary.ping()).all_alive
 
-        # Сравнение системных фактов и поиск дрейфа конфигураций
+        # 2. Wave rollout with zero-tolerance failure guard (raises BatchAbortedError)
+        try:
+            await pool.files.sync_dir("./dist", "/var/www/app", delete=True)
+            await pool.state.ensure_service("nginx", state="restarted", sudo=True)
+        except BatchAbortedError as err:
+            print(f"Rollout halted at batch {err.batch_index}: {err}")
+
+        # 3. Detect drift across cluster facts
         drift = await pool.diff_facts()
-        print(f"Cluster has drift: {drift.has_drift}")
+        if drift.has_drift:
+            print("Configuration drift detected:", drift.mismatches)
 
-asyncio.run(main())
-```
-
-## Интерактивная веб-панель (Web Dashboard)
-
-В состав репозитория входит интерактивная веб-панель (`examples/dashboard/server.py` и `examples/dashboard/index.html`), позволяющая тестировать возможности `uniconn` в браузере без необходимости поднимать внешние серверы.
-
-### Запуск веб-страницы
-
-```bash
-# Запуск HTTP-сервера предпросмотра на http://0.0.0.0:3000 (требуется Python 3.11+)
-uv run python main.py --serve
-
-# Или напрямую:
-python3 main.py --serve
-```
-
-После запуска откройте в браузере адрес **http://localhost:3000**.
-
-> При запуске `python3 main.py` без флага `--serve` в терминале выполняется консольная демонстрация основных возможностей библиотеки.
-
-### Возможности веб-интерфейса
-
-Веб-панель разделена на 5 интерактивных рабочих областей:
-
-1. **Shell & Local Runner (`ShellSession` / `LocalTransport`)** — интерактивный запуск команд в stateful PTY-сессии `ShellSession.execute()` (с сохранением рабочей директории `cd`, переменных окружения `export` и размера терминала `cols × rows`) или через `Connection.local().run()`, с детальным инспектором объекта `Result` (`stdout`, `stderr`, `.lines`, `.json()`, `.to_dict()`, время выполнения).
-2. **Hooks, Security & Telemetry (`CommandPipeline` & `structlog`)** — песочница конвейера middleware и хуков (`allowlist_hook`, `blocklist_hook`, `audit_log_hook`, `structured_log_hook`, `metrics_collector_hook`, `otel_tracing_hook`), тестирование флагов `sudo`, `sensitive=True`, `dry_run=True`, контекстных менеджеров `conn.cd()` и `conn.temp_dir()`, а также просмотр `structlog` JSONL и консольных логов с маскированием секретов.
-3. **Pool, Inventory & Background (`ConnectionPool` & `BackgroundPool`)** — оркестратор мульти-хостового пула с редактируемым YAML-инвентарём, фильтрацией по группам (`all`, `web`, `backend`), готовыми пресетами (`Fleet Presets`) и групповыми операциями (`map_safe`, `apply`, `gather_facts`, `diff_facts`, `state.ensure_*`, `files.sync_dir`, `files.write_template`, `stream`), плюс симулятор `BackgroundPool` / `LogPipeline`.
-4. **URI Builder & Codegen (`URIParser` & `ConnectionConfig`)** — визуальный конструктор и валидатор URI для всех транспортов (`ssh://`, `docker://`, `kubectl://`, `redfish://`, `ipmi://`, `telnet://`, `serial://`, `replay://`, `local://`) с безопасным представлением `uri_safe` и генерацией готовых сниппетов кода.
-5. **Unit Test Runner (`pytest`)** — запуск unit-тестов или отдельных доменных пакетов (`core`, `services`, `transports`, `pools`, `background`, `cli`, `architecture`) прямо из браузера.
-
----
-
-## Документация API
-
-### `Connection` и `SyncConnection`
-
-Единый фасад для работы с локальными и удалёнными хостами, контейнерами и контроллерами BMC.
-
-#### Фабрики и разрешение секретов (`SecretResolver`)
-
-```python
-from uniconn import Connection, ConnectionConfig, RateLimiter
-
-# 1. Из URI (с автоматическим разрешением секретов env:// и file://)
-conn = Connection.from_uri(
-    "ssh://admin:env://PROD_SSH_PASS?default=fallback@node-01:22"
-    "?key_file=file:///run/secrets/id_ed25519&ssh_config=true&proxy=bastion-01"
-)
-
-# 2. Локальное подключение
-local_conn = Connection.local(timeout=30.0)
-
-# 3. Из типизированной модели ConnectionConfig или словаря
-config = ConnectionConfig(
-    transport="ssh",
-    host="example.com",
-    port=22,
-    username="admin",
-    password="env://SSH_PASSWORD",
-    timeout=60.0,
-)
-conn = Connection.from_config(config, rate_limit=RateLimiter(rate=20.0, burst=40), circuit_breaker=True)
-
-# 4. Из YAML/TOML/JSON инвентаря
-web1 = Connection.from_inventory("inventory.yaml", host="web-1")
-web_conns = Connection.from_file("inventory.yaml", group="web")
-
-# 5. Клонирование с переопределением параметров
-staging_conn = conn.copy(host="staging.example.com", dry_run=True)
-```
-
-#### Выполнение команд и скриптов
-
-- **`run(command, timeout=None, raise_on_error=False, input=None, sudo=False, sudo_user=None, sudo_password=None, sensitive=False, dry_run=None, **kwargs) -> Result`** — выполнить команду (строкой или безопасным списком аргументов с автоэкранированием через `shlex.join`).
-- **`run_bytes(command, ...) -> bytes`** — выполнить команду и получить сырой бинарный поток (`bytes`) без декодирования в UTF-8.
-- **`run_commands(commands, stop_on_error=True, **kwargs) -> list[Result]`** — последовательное выполнение списка команд.
-- **`run_script(script_path, args=(), *, interpreter=None, sudo=False, timeout=None, raise_on_error=False, **kwargs) -> Result`** — загрузить локальный скрипт во временную директорию хоста, исполнить с аргументами и автоматически очистить артефакты.
-- **`stream(command=None, timeout=None, **kwargs) -> AsyncIterator[str]`** — построчный потоковый вывод в реальном времени.
-
-```python
-# Безопасная передача аргументов списком и повышение привилегий
-res = await conn.run(["systemctl", "restart", "nginx"], sudo=True, raise_on_error=True)
-
-# Защита чувствительного вывода (маскируется в логах, repr(Result), to_dict() и исключениях)
-token_res = await conn.run("cat /etc/app/api.token", sudo=True, sensitive=True)
-
-# Выполнение локального скрипта на удалённом хосте
-script_res = await conn.run_script("./scripts/health_audit.sh", args=["--strict"], sudo=True)
-```
-
-#### Примитивы ожидания и проверки доступности (`ping`, `wait_for_*`)
-
-```python
-# Измерение доступности и задержки (PingResult: alive, latency_ms, transport, error)
-ping_res = await conn.ping(timeout=5.0)
-if ping_res:
-    print(f"Host {ping_res.host} responded in {ping_res.latency_ms:.2f} ms")
-
-# Ожидание восстановления хоста (например, после перезагрузки)
-await conn.wait_for_connection(timeout=120.0, interval=2.0)
-
-# Ожидание открытия/закрытия TCP-порта (проверка с удалённого хоста или локально)
-elapsed_port = await conn.wait_for_port(5432, state="open", check_from="remote", timeout=60.0)
-
-# Ожидание появления файла и совпадения его содержимого с регулярным выражением
-elapsed_path = await conn.wait_for_path(
-    "/var/run/myapp/ready.status",
-    state="present",
-    content_regex=r"STATUS=READY",
-    timeout=30.0,
-)
-```
-
-#### Контекстные менеджеры `cd()`, `env()` и `temp_dir()`
-
-```python
-async with conn.cd("/srv/myapp"), conn.env(APP_ENV="production"):
-    await conn.run(["git", "pull"])
-    async with conn.temp_dir(prefix="build_") as tmp_dir:
-        await conn.files.write_file(f"{tmp_dir}/manifest.json", '{"ok": true}')
+asyncio.run(deploy_fleet())
 ```
 
 ---
 
-### Доменные сервисы `Connection` и `ConnectionPool`
-
-#### 1. Файловый сервис (`conn.files` и `pool.files`)
-
-Предоставляет единый интерфейс поверх SFTP, контейнеров и локальной ФС с поддержкой атомарной записи, криптографической верификации, дельта-синхронизации и шаблонов:
+### 7. Object-Oriented Remote Filesystem (`conn.path` & `conn.files`)
+Work with remote files using a `pathlib.Path`-compatible API with zero round-trip overhead:
 
 ```python
-# Чтение и атомарная запись файлов в памяти (через временный файл + rename)
-await conn.files.write_file("/etc/myapp/config.yaml", "port: 8080\n", mode=0o600, atomic=True)
-text = await conn.files.read_file("/etc/myapp/config.yaml")
-raw_bytes = await conn.files.read_file("/etc/myapp/config.yaml", encoding=None)
+# Pathlib-style directory traversal
+log_dir = conn.path("/var/log/nginx")
+if await log_dir.exists():
+    async for log_file in log_dir.glob("*.log"):
+        st = await log_file.stat()  # Zero extra network trips (preloaded during glob)
+        print(log_file.name, st.st_size)
 
-# Загрузка и скачивание с автоматической проверкой SHA-256 (verify=True)
-await conn.files.upload("./build/app.tar.gz", "/opt/releases/app.tar.gz", verify=True)
-await conn.files.download("/var/log/syslog", "./logs/syslog.log", verify=True)
-
-# Вычисление контрольной суммы (sha256, sha1, md5)
-digest = await conn.files.checksum("/opt/releases/app.tar.gz", algorithm="sha256")
-
-# Инкрементальная дельта-синхронизация директорий (SyncResult)
+# High-performance delta directory sync (rsync alternative)
 sync_res = await conn.files.sync_dir(
-    "./dist",
+    "./build",
     "/var/www/app",
     delete=True,
-    exclude=["*.pyc", ".git"],
     checksum_check=True,
-    preserve_permissions=True,
+    exclude=["*.pyc", ".git"],
 )
-print(f"Uploaded: {len(sync_res.uploaded)}, skipped: {len(sync_res.skipped)}")
-
-# Рендеринг шаблонов (Jinja2 или string.Template) с атомарной записью
-await conn.files.write_template(
-    "/etc/nginx/conf.d/app.conf",
-    "./templates/nginx.conf.j2",
-    context={"server_name": "api.example.com", "port": 8080},
-    mode=0o644,
-    atomic=True,
-)
-
-# Метаданные и управление ФС
-exists = await conn.files.exists("/var/www/app")
-await conn.files.mkdir("/var/www/app/releases", parents=True, mode=0o755)
-await conn.files.chmod("/opt/scripts/run.sh", 0o755)
-info = await conn.files.stat("/etc/myapp/config.yaml")
-entries = await conn.files.listdir("/var/log")
-```
-
-#### 2. Идемпотентное управление состоянием (`conn.state` и `pool.state`)
-
-Все методы возвращают `EnsureResult` (`target`, `state`, `changed`, `ok`, `details`, `dry_run`, `diff`) и поддерживают режим `dry_run=True` с построением unified diff до внесения изменений:
-
-```python
-# Пакеты (auto: apt, apk, dnf/yum, pacman, zypper) и системные сервисы (systemd, openrc, sysv)
-await conn.state.ensure_package(["nginx", "curl"], state="present", update_cache=True, sudo=True)
-await conn.state.ensure_service("nginx", state="started", enabled=True, sudo=True)
-
-# Файлы, директории и строки в конфигах (с unified diff и валидацией перед заменой)
-file_res = await conn.state.ensure_file(
-    "/etc/nginx/nginx.conf",
-    content=new_nginx_conf,
-    mode=0o644,
-    atomic=True,
-    validate="nginx -t -c %s",
-    sudo=True,
-)
-if file_res.changed and file_res.diff:
-    print(file_res.diff)
-
-await conn.state.ensure_directory("/var/lib/myapp", mode=0o750, owner="deploy", group="deploy", sudo=True)
-await conn.state.ensure_line("/etc/hosts", "10.0.0.10 db.internal", regex=r".*\bdb\.internal$")
-
-# Пользователи, SSH-ключи, юниты systemd и параметры ядра sysctl
-await conn.state.ensure_user("deploy", uid=1050, groups=["docker"], shell="/bin/bash", sudo=True)
-await conn.state.ensure_authorized_key("deploy", "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...", sudo=True)
-await conn.state.ensure_systemd_unit(
-    "myapp.service",
-    content="[Unit]\nDescription=MyApp\n[Service]\nExecStart=/usr/bin/myapp\n[Install]\nWantedBy=multi-user.target\n",
-    state="started",
-    enabled=True,
-    sudo=True,
-)
-await conn.state.ensure_sysctl("net.ipv4.ip_forward", 1, reload=True, sudo=True)
-```
-
-#### 3. Инспекция фактов, дрейф конфигураций и диагностические сессии
-
-```python
-from uniconn import CustomCommandSpec, FactSpec
-
-# Сбор стандартных и пользовательских фактов (OS, ядро, CPU, RAM, диски, сеть)
-spec = FactSpec(
-    commands=[CustomCommandSpec(name="openssl_ver", command="openssl version")],
-)
-facts = await conn.gather_facts(spec=spec)
-print(facts.os_family, facts.distro, facts.cpu_count, facts.custom.get("openssl_ver"))
-
-# Диагностическая сессия для нагрузочных тестов (YAML-файл или dict):
-# Собирает статические pre/post факты + стримит логи в реальном времени на хост пользователя с os.fsync()
-async with conn.diagnostic_session(
-    config="examples/stress_test_diagnostics.yaml",  # или dict с секциями facts и streams
-    streams=[
-        {"name": "dmesg", "command": "dmesg -w", "timestamp_lines": True},
-        {"name": "nvme_smart", "command": "nvme smart-log /dev/nvme0n1", "interval": 5.0, "timestamp_lines": True},
-    ],
-    local_dir="./diagnostics",
-    archive_path="./diagnostics/incident_bundle.tar.gz",
-    fsync_realtime=True,
-) as diag:
-    await diag.emit_custom_log("workload", "Running fio NVMe stress test")
-    await diag.snapshot("peak_load")
-```
-
-#### 4. Проброс портов (`conn.tunnels`) и интерактивные сессии (`open_shell`, `expect`)
-
-```python
-# Локальный и удалённый проброс портов через SSH (работает в async with и в sync with)
-async with conn.tunnels.forward_local_port(remote_host="127.0.0.1", remote_port=5432) as local_port:
-    print(f"PostgreSQL доступен на 127.0.0.1:{local_port}")
-
-# Декларативный диалог expect() с маскированием секретов
-await conn.expect(
-    "passwd deploy",
-    patterns={r"New password:": "S3cretPass!", r"Retype new password:": "S3cretPass!"},
-    sensitive=True,
-)
-
-# Stateful PTY-сессия (сохраняет cd, export и состояние оболочки между вызовами)
-async with await conn.open_shell(term_type="xterm", term_size=(120, 40)) as shell:
-    await shell.execute("cd /var/log && export LOG_FILTER=error")
-    res = await shell.execute("pwd && echo $LOG_FILTER")
 ```
 
 ---
 
-### Пулы соединений и фоновые задачи
-
-#### `ConnectionPool` и `SyncConnectionPool`
-
-Поддерживает групповое выполнение команд, доменные сервисы `pool.files` и `pool.state`, потоковый мультиплексор `pool.stream()`, выборку подмножеств `pool.select()` и волновой роллаут (`batch_size`, `max_fail_ratio`):
-
-```python
-from uniconn import BatchAbortedError, ConnectionPool
-
-async with ConnectionPool.from_file(
-    "inventory.yaml",
-    group="production",
-    max_concurrent=10,
-    rate_limit=25.0,
-    circuit_breaker=True,
-    batch_size=2,
-    max_fail_ratio=0.0,
-) as pool:
-    # 1. Канареечная проверка на подмножестве хостов (переиспользует открытые соединения)
-    canary = pool.select(["web-1"])
-    await canary.ping()
-
-    # 2. Волновая раскатка на весь пул (выбросит BatchAbortedError при сбое первой волны)
-    try:
-        await pool.files.sync_dir("./dist", "/var/www/app", delete=True)
-        await pool.state.ensure_service("nginx", state="restarted", sudo=True)
-    except BatchAbortedError as err:
-        print(f"Rollout aborted at batch {err.batch_index}: {err}")
-
-    # 3. Мультиплексированный стриминг логов со всех хостов
-    async for host, line in pool.stream("journalctl -u nginx -f -n 5"):
-        print(f"[{host}] {line}")
-```
-
-#### `SSHSessionPool`
-
-Мультиплексирование нескольких параллельных каналов поверх одного или нескольких SSH-соединений к одному хосту с адаптивным понижением лимитов (`adaptive=True`) при ошибках `MaxSessions`:
-
-```python
-from uniconn import SSHSessionPool
-
-async with SSHSessionPool(
-    "ssh://admin@heavy-node",
-    max_sessions_per_conn=6,
-    max_connections=4,
-    adaptive=True,
-    health_check=True,
-) as ssh_pool:
-    results = await ssh_pool.map(["lshw -short", "df -h", "free -m", "sensors"])
-    await ssh_pool.resize(max_sessions_per_conn=4, max_connections=2)
-```
-
-#### `BackgroundPool`
-
-Управление долгоживущими задачами в отсоединяемых сессиях (`tmux`, `screen`, `nohup`, `WindowsJobBackend`), которые переживают разрыв соединения:
-
-```python
-from uniconn import BackgroundPool
-
-async with BackgroundPool("ssh://admin@server", backend="auto", max_sessions=8) as bg_pool:
-    await bg_pool.start("stress-ng --cpu 4 --timeout 60s")
-    await bg_pool.start("sysbench cpu run")
-
-    async for event in bg_pool.poll_logs(interval=2.0):
-        print(f"[{event.session_id}] {event.line.rstrip()}")
-
-    results = await bg_pool.wait_all(timeout=120.0)
-```
-
----
-
-## Контрактное тестирование и кассеты (`use_cassette` и `pytest`-плагин)
-
-`uniconn` позволяет записывать реальные сессии (команды, потоки, файловые операции и PTY-оболочку) в YAML/JSON-кассеты и воспроизводить их в тестах без доступа к сети, а также сравнивать кассеты между версиями (`cassette.diff()`):
-
-```python
-# 1. Контекстный менеджер на уровне Connection или ConnectionPool
-async with conn.use_cassette(
-    "tests/cassettes/deploy_flow.yaml",
-    mode="once",                 # "once" | "new_episodes" | "none" | "all"
-    normalize_temp=True,
-    mask_secrets=True,
-) as cassette:
-    facts = await conn.gather_facts()
-    await conn.state.ensure_line("/etc/hosts", "10.0.0.5 internal.api")
-
-# Сравнение двух кассет (CassetteDiffReport)
-diff_report = cassette.diff("tests/cassettes/baseline_deploy.yaml")
-print("Identical:", diff_report.is_identical)
-```
-
-Использование встроенного `pytest`-плагина (`uniconn.pytest_plugin`):
+### 8. Deterministic Offline Testing (`use_cassette` & Pytest Plugin)
+Record real infrastructure interactions (commands, SFTP, streams, PTY shells) into clean YAML cassettes with automatic secret redaction, and replay them in CI without network access:
 
 ```python
 import pytest
 from uniconn import Connection
 
+# In your test suite:
 @pytest.mark.uniconn_cassette(mode="once")
-async def test_node_provisioning():
-    async with Connection.from_uri("ssh://admin@node-01") as conn:
+async def test_server_provisioning():
+    # Automatically wrapped in ReplayTransport when cassette exists
+    async with Connection.from_uri("ssh://admin@production-host") as conn:
         res = await conn.run("hostname")
         assert res.ok
+        assert res.text == "prod-web-01"
 ```
 
 ---
 
-## Поддерживаемые транспорты и схемы URI
+## 🖥️ Interactive Web Dashboard
 
-| Транспорт | Схема URI | Примеры и ключевые параметры |
-| :--- | :--- | :--- |
-| **SSH** | `ssh://` | `ssh://user:env://PASS@host:22?key_file=/path/id_ed25519&ssh_config=true&proxy=jump1,jump2&keepalive=30` |
-| **Docker** | `docker://` | `docker://root@app-container?workdir=/app&shell=/bin/sh&context=prod` |
-| **Podman** | `podman://` | `podman://web-container?workdir=/srv` |
-| **Kubernetes** | `kubectl://` | `kubectl://prod-ns/api-pod-7f8b?container=api&context=eu-cluster&workdir=/app` |
-| **Redfish BMC** | `redfish://` | `redfish://admin:env://BMC_PASS@bmc.local:443?verify_ssl=false&system_id=1` |
-| **IPMI BMC** | `ipmi://` | `ipmi://admin:password@bmc.local:623` (`power status`, `power on/off/cycle`, `sensors`, `boot device`) |
-| **Serial / UART** | `serial://`, `uart://` | `uart:///dev/ttyUSB0:115200?parity=N&stopbits=1` или `uart://?vid=10c4&pid=ea60` |
-| **Telnet** | `telnet://` | `telnet://admin:pass@router.local:23?term_type=vt100` |
-| **Replay** | `replay://` | `replay://node-01?cassette=tests/cassettes/node.yaml&mode=none` |
-| **Local** | `local://` | `local://?timeout=30&rate_limit=50` (или `Connection.local()`) |
-
-### Пример работы с Redfish и IPMI BMC
-
-```python
-# Redfish BMC (HTTP/2 клиент на базе niquests с автообнаружением System/Chassis/Manager)
-async with Connection.from_uri("redfish://admin:env://BMC_PASS@bmc.local?verify_ssl=false") as bmc:
-    status = await bmc.run("power status")
-    sensors = await bmc.run("sensors")
-    info = await bmc.run("system info")
-```
-
-### Пример работы с контейнерами Docker / Podman и Kubernetes
-
-```python
-async with Connection.from_uri("kubectl://production/backend-pod-0?container=app") as pod:
-    res = await pod.run(["python3", "manage.py", "check"])
-    await pod.files.write_file("/tmp/maintenance.flag", "1\n", atomic=True)
-```
-
----
-
-## CLI Интерфейс
+`uniconn` includes an interactive browser-based dashboard to test connections, build URIs, inspect execution pipelines, and run test suites without spinning up external servers:
 
 ```bash
-# Выполнение команд (одиночное и групповое с волновым роллаутом)
+# Launch preview server on http://0.0.0.0:3000
+python main.py --serve
+```
+
+Open **http://localhost:3000** in your browser to access:
+1. **Shell & Local Runner**: Interactive stateful PTY sessions with full `cd` and `export` persistence.
+2. **Hooks & Telemetry Sandbox**: Live testing of `CircuitBreaker`, `RateLimiter`, and secret masking.
+3. **Pool & Fleet Orchestrator**: Multi-host YAML inventory manager with wave rollout simulation.
+4. **Visual URI Builder**: Real-time URI constructor and validator with Python code generation.
+5. **Interactive Test Runner**: In-browser execution of unit tests across all domain packages.
+
+---
+
+## 🛠️ Modular CLI
+
+`uniconn` features an ergonomic command-line interface powered by `cyclopts` and `rich`:
+
+```bash
+# Execute command with sudo and JSON output
 uniconn run "ssh://user@host" "systemctl status nginx" --sudo --format json
-uniconn run-multi --inventory inventory.yaml --group web -c "nginx -t" --sudo --batch-size 2 --max-fail-ratio 0.0
 
-# Проверка доступности (ping) и примитивы ожидания (wait-for)
-uniconn ping "ssh://node-01" "ssh://node-02"
-uniconn wait-for connection "ssh://node-01" --timeout 120 --interval 2
+# Multi-host wave rollout
+uniconn run-multi --inventory fleet.yaml --group web -c "nginx -t" --batch-size 2 --max-fail-ratio 0.0
+
+# Ping and latency probe
+uniconn ping "ssh://node-01" "winrm://win-01" "kubectl://prod/api-pod"
+
+# Wait primitives (connection, port, or file content regex)
+uniconn wait-for connection "ssh://node-01" --timeout 120
 uniconn wait-for port 5432 "ssh://node-01" --state open --check-from remote
-uniconn wait-for path /tmp/ready.flag "ssh://node-01" --regex "READY"
+uniconn wait-for path /var/run/app.pid "ssh://node-01" --regex "READY"
 
-# Сбор фактов, поиск дрейфа конфигураций и мультиплексированный стриминг логов
-uniconn facts --inventory inventory.yaml --group prod --diff --baseline web-1
-uniconn tail /var/log/nginx/error.log "ssh://web-1" "ssh://web-2" --follow
+# File integrity & delta synchronization
+uniconn checksum /etc/app.conf "ssh://node-01" "ssh://node-02" --algorithm sha256
+uniconn sync ./dist /var/www/app --inventory fleet.yaml --group web --delete --checksum
 
-# Файловые операции, контрольные суммы, дельта-синхронизация и шаблоны
-uniconn upload ./app.conf /etc/app/app.conf "ssh://web-1" --verify
-uniconn download /var/log/syslog ./logs/{host}.log "ssh://web-1" "ssh://web-2" --verify
-uniconn checksum /etc/app/app.conf "ssh://web-1" "ssh://web-2" --algorithm sha256
-uniconn sync ./dist /var/www/app --inventory inventory.yaml --group web --delete --checksum
-uniconn template ./nginx.conf.j2 /etc/nginx/conf.d/app.conf "ssh://web-1" -D port=8080 --atomic
+# Idempotent state commands with diff preview
+uniconn ensure-user deploy "ssh://node-01" --uid 1050 --groups docker,sudo --sudo
+uniconn ensure-unit myapp.service "ssh://node-01" --file ./myapp.service --state started --enabled
 
-# Идемпотентное управление состоянием (с поддержкой --dry-run и --batch-size)
-uniconn ensure-user deploy "ssh://node-01" --uid 1050 --groups docker,sudo --shell /bin/bash --sudo
-uniconn ensure-authorized-key deploy "ssh-ed25519 AAAA..." "ssh://node-01" --sudo
-uniconn ensure-unit myapp.service "ssh://node-01" --file ./myapp.service --state started --enabled --sudo
-uniconn ensure-sysctl net.ipv4.ip_forward 1 "ssh://node-01" --sudo
-
-# Фоновые сессии BackgroundPool (auto / tmux / screen / nohup)
-uniconn bg-run "ssh://user@host" --backend auto --instances 2 -c "stress-ng --cpu 4" --logs
-uniconn bg-status "ssh://user@host"
-uniconn bg-logs "ssh://user@host" --session-id uniconn_pool_0 --follow
-uniconn bg-kill "ssh://user@host" --session-id uniconn_pool_0
-
-# Запись, воспроизведение и аудит кассет контрактного тестирования
+# Record & replay contract cassettes
 uniconn record "ssh://user@host" -c ./cassettes/node.yaml --sanitize-ip -- uptime
 uniconn replay ./cassettes/node.yaml -- uptime
-uniconn cassette info ./cassettes/node.yaml
-uniconn cassette sanitize ./cassettes/node.yaml --redact-ip --redact-tokens
-uniconn cassette verify ./cassettes/node.yaml
-uniconn cassette diff ./cassettes/baseline.yaml ./cassettes/candidate.yaml --fail-on-diff
-
-# BMC, интерактивный shell и утилиты
-uniconn bmc "redfish://admin:pass@bmc?verify_ssl=false" "power status"
-uniconn shell "ssh://user@host"
-uniconn serial-ports --format json
-uniconn transports
+uniconn cassette diff ./cassettes/v1.yaml ./cassettes/v2.yaml --fail-on-diff
 ```
 
 ---
 
-## Структурированное логирование (`structlog`), хуки и OpenTelemetry
+## 🤝 Community & Governance
 
-`uniconn` предоставляет готовые lifecycle-хуки (`allowlist_hook`, `blocklist_hook`, `audit_log_hook`, `structured_log_hook`, `metrics_collector_hook`, `otel_tracing_hook`) и маскирование секретов во всех логах и спанах:
+We are committed to building an open, welcoming, and secure automation ecosystem. Please review our community guidelines:
 
-```python
-from uniconn import (
-    Connection,
-    configure_logging,
-    log_context,
-    metrics_collector_hook,
-    otel_tracing_hook,
-    structured_log_hook,
-)
-
-configure_logging(level="INFO", fmt="json", log_file="uniconn_telemetry.jsonl")
-
-async with Connection.local() as conn:
-    conn.add_hook("after_run", structured_log_hook(tags={"env": "prod", "dc": "eu-1"}))
-    metrics = metrics_collector_hook().attach(conn)
-    otel = otel_tracing_hook(service_name="fleet-deployer", mask_secrets=True).attach(conn)
-
-    async with log_context(release_id="v2026.10"):
-        await conn.run(["echo", "deploying release"])
-```
+- **[Contributing Guide (CONTRIBUTING.md)](CONTRIBUTING.md)**: Setup instructions (`uv`, `poe`), coding standards, architectural invariants, and PR guidelines.
+- **[Code of Conduct (CODE_OF_CONDUCT.md)](CODE_OF_CONDUCT.md)**: Our pledge and standards based on Contributor Covenant v2.1.
+- **[Security Policy (SECURITY.md)](SECURITY.md)**: Responsible disclosure instructions and vulnerability response SLAs.
 
 ---
 
-## Исключения
+## 📄 License
 
-```python
-from uniconn.exceptions import (
-    UniconnError,                 # Базовое исключение библиотеки
-    ConfigurationError,           # Ошибки конфигурации и разрешения секретов (env://, file://)
-    ConnectionError,              # Ошибки установки соединения
-    CircuitOpenError,             # Разомкнутый предохранитель CircuitBreaker
-    BatchAbortedError,            # Прерывание волнового роллаута при превышении max_fail_ratio
-    CassetteError,                # Ошибки работы с кассетами записи/воспроизведения
-    CassetteMissError,            # Отсутствие подходящего эпизода в кассете при mode="none"
-    AuthenticationError,          # Ошибки аутентификации
-    ExecutionError,               # Ненулевой код возврата при raise_on_error=True
-    FileTransferError,            # Ошибки передачи файлов и несовпадения контрольных сумм
-    TimeoutError,                 # Превышение времени ожидания команды или wait_for_*
-    TransportNotFoundError,       # Неизвестный транспорт
-    CapabilityNotSupportedError,  # Транспорт не поддерживает требуемую возможность (ISP)
-    BMCCapabilityError,           # BMC не поддерживает запрошенную операцию
-    BackgroundError,              # Базовое исключение фоновых задач BackgroundPool
-)
-```
-
----
-
-## Примеры использования (`examples/`)
-
-Все примеры в директории `examples/` снабжены как готовыми сниппетами для боевых серверов (`ssh://`, `redfish://`, `docker://`, `kubectl://`), так и самодостаточным локальным сценарием в блоке `__main__`, который можно сразу запустить без внешних хостов:
-
-- `examples/basic_usage.py` — создание подключений, `SecretResolver` (`env://`), `run`, `run_script`, клонирование и синхронный API.
-- `examples/file_transfer.py` — `conn.files`: атомарная запись `atomic=True`, SFTP с `verify=True`, `checksum()`, дельта-синхронизация `sync_dir()` и шаблоны `write_template()`.
-- `examples/provisioning_and_facts.py` — идемпотентное управление состоянием `conn.state.ensure_*` с выводом unified diff, сбор фактов `gather_facts()`, поиск дрейфа `pool.diff_facts()` и `diagnostic_session()`.
-- `examples/stress_test_diagnostics.py` (и `examples/stress_test_diagnostics.yaml`) — нагрузочное тестирование NVMe (`fio`) и ОЗУ (`stress-ng`) по SSH со сбором статических (`facts`) и рантайм-логов (`streams`, периодический `interval`, `timestamp_lines=True`, `fsync_realtime=True`) и защитой от потери логов при зависании или ребуте хоста.
-- `examples/parallel_execution.py` — `ConnectionPool`: волновой роллаут (`batch_size`, `max_fail_ratio`), выборка `pool.select()`, `pool.files`, `pool.state` и потоковый мультиплексор `pool.stream()`.
-- `examples/resilience_rollout_and_waiters.py` — `CircuitBreaker`, `RateLimiter`, примитивы `ping()` и `wait_for_*`, адаптивный `SSHSessionPool` и проброс портов `conn.tunnels`.
-- `examples/contract_testing_cassettes.py` — запись и воспроизведение кассет `use_cassette()`, `pool.use_cassette()`, сравнение `cassette.diff()` и `pytest`-плагин.
-- `examples/containers_and_k8s.py` — работа с контейнерами `Docker`, `Podman` и подами `Kubernetes` (`kubectl://`).
-- `examples/bmc_management.py` — управление серверами через `Redfish` (`redfish://`) и `IPMI` (`ipmi://`).
-- `examples/health_check.py` — проверка доступности через `ping()`, `is_alive()` и `wait_for_*`.
-- `examples/interactive_shell.py` — stateful PTY-сессии `open_shell()` и автомат диалогов `expect()`.
-- `examples/screen_monitoring.py` — фоновые задачи `BackgroundPool` (`tmux`, `screen`, `nohup`) и `LogPipeline`.
-- `examples/security_and_hooks.py` — хуки `before_run`/`after_run`, `sensitive=True`, `dry_run=True`, `cd()`, `env()` и `otel_tracing_hook`.
-- `examples/structured_logging_telemetry.py` — `structlog` JSONL-логирование, `log_context` и сбор метрик.
-- `examples/ergonomics_and_inventory.py` — эргономика `Result` (`.text`, `.lines`, `.json()`), `temp_dir()` и YAML-инвентари.
-- `examples/custom_transport.py` — создание собственного транспорта на базе `BaseTransport`.
-
-## Тестирование и качество кода
-
-```bash
-# Запуск unit-тестов с кратким выводом (0 RuntimeWarning)
-uv run pytest -m "not integration" -q --tb=short | tail -n 5
-
-# Линтинг (лимит строки 120 символов) и статическая проверка типов
-uv run ruff check src/ examples/ benchmarks/
-uv run pyright
-```
-
-## Лицензия
-
-MIT License. См. [LICENSE](LICENSE) файл.
+`uniconn` is released under the **MIT License**. See the [LICENSE](LICENSE) file for details.

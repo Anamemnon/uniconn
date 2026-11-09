@@ -1,13 +1,27 @@
 [project]
 name = "uniconn"
 dynamic = ["version"]
-description = "Universal library for remote command execution"
+description = "Unified async/sync Python library & CLI for remote execution, file sync, idempotent state, and BMC/hardware automation across SSH, WinRM, K8s, Docker & UART"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 readme = "README.md"
+keywords = [
+    "automation",
+    "ssh",
+    "winrm",
+    "devops",
+    "sre",
+    "infrastructure-as-code",
+    "remote-execution",
+    "redfish",
+    "ipmi",
+    "serial-port",
+    "asyncio",
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
@@ -16,7 +30,15 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: System :: Networking",
+    "Topic :: System :: Systems Administration",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ChekirDmitry/uniconn"
+Documentation = "https://github.com/ChekirDmitry/uniconn#readme"
+Repository = "https://github.com/ChekirDmitry/uniconn"
+Issues = "https://github.com/ChekirDmitry/uniconn/issues"
+Changelog = "https://github.com/ChekirDmitry/uniconn/blob/main/FEATURES.md"
 
 # Core lightweight dependencies (SSH, Local execution, resilient pipeline, logging, and config)
 dependencies = [

@@ -1,0 +1,262 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 520" width="100%" height="100%">
+  <defs>
+    <style>
+      @keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+
+      /* =========================================================================
+         Master 60s Cycle: 4 Scenes x 15s each, all with smooth line-by-line typing
+         ========================================================================= */
+
+      /* Title bar badges */
+      @keyframes tab1_sync { 0%, 24% { opacity: 1; } 24.8%, 99.2% { opacity: 0; } 100% { opacity: 1; } }
+      @keyframes tab2_sync { 0%, 24.5% { opacity: 0; } 25%, 49% { opacity: 1; } 49.8%, 100% { opacity: 0; } }
+      @keyframes tab3_sync { 0%, 49.5% { opacity: 0; } 50%, 74% { opacity: 1; } 74.8%, 100% { opacity: 0; } }
+      @keyframes tab4_sync { 0%, 74.5% { opacity: 0; } 75%, 99% { opacity: 1; } 99.8%, 100% { opacity: 0; } }
+
+      .tab-badge-1 { animation: tab1_sync 60s infinite ease-in-out; }
+      .tab-badge-2 { animation: tab2_sync 60s infinite ease-in-out; }
+      .tab-badge-3 { animation: tab3_sync 60s infinite ease-in-out; }
+      .tab-badge-4 { animation: tab4_sync 60s infinite ease-in-out; }
+
+      /* --- SCENE 1: Line-by-Line (0s - 15s = 0% - 25%) --- */
+      @keyframes s1_l0 { 0%, 0.5%  { opacity: 0; } 1.5%, 24%  { opacity: 1; } 24.8%, 100% { opacity: 0; } }
+      @keyframes s1_l1 { 0%, 2.2%  { opacity: 0; } 3.2%, 24%  { opacity: 1; } 24.8%, 100% { opacity: 0; } }
+      @keyframes s1_l2 { 0%, 4.5%  { opacity: 0; } 5.5%, 24%  { opacity: 1; } 24.8%, 100% { opacity: 0; } }
+      @keyframes s1_l3 { 0%, 6.5%  { opacity: 0; } 7.5%, 24%  { opacity: 1; } 24.8%, 100% { opacity: 0; } }
+      @keyframes s1_l4 { 0%, 9.0%  { opacity: 0; } 10.0%, 24% { opacity: 1; } 24.8%, 100% { opacity: 0; } }
+      @keyframes s1_l5 { 0%, 11.5% { opacity: 0; } 12.5%, 24% { opacity: 1; } 24.8%, 100% { opacity: 0; } }
+      @keyframes s1_l6 { 0%, 13.5% { opacity: 0; } 14.5%, 24% { opacity: 1; } 24.8%, 100% { opacity: 0; } }
+      @keyframes s1_l7 { 0%, 15.5% { opacity: 0; } 16.5%, 24% { opacity: 1; } 24.8%, 100% { opacity: 0; } }
+      @keyframes s1_l8 { 0%, 17.5% { opacity: 0; } 18.5%, 24% { opacity: 1; } 24.8%, 100% { opacity: 0; } }
+      @keyframes s1_l9 { 0%, 19.5% { opacity: 0; } 20.5%, 24% { opacity: 1; } 24.8%, 100% { opacity: 0; } }
+
+      .s1-0 { animation: s1_l0 60s infinite ease-in-out; }
+      .s1-1 { animation: s1_l1 60s infinite ease-in-out; }
+      .s1-2 { animation: s1_l2 60s infinite ease-in-out; }
+      .s1-3 { animation: s1_l3 60s infinite ease-in-out; }
+      .s1-4 { animation: s1_l4 60s infinite ease-in-out; }
+      .s1-5 { animation: s1_l5 60s infinite ease-in-out; }
+      .s1-6 { animation: s1_l6 60s infinite ease-in-out; }
+      .s1-7 { animation: s1_l7 60s infinite ease-in-out; }
+      .s1-8 { animation: s1_l8 60s infinite ease-in-out; }
+      .s1-9 { animation: s1_l9 60s infinite ease-in-out; }
+
+      /* --- SCENE 2: Line-by-Line (15s - 30s = 25% - 50%) --- */
+      @keyframes s2_l0 { 0%, 25.5% { opacity: 0; } 26.5%, 49% { opacity: 1; } 49.8%, 100% { opacity: 0; } }
+      @keyframes s2_l1 { 0%, 27.2% { opacity: 0; } 28.2%, 49% { opacity: 1; } 49.8%, 100% { opacity: 0; } }
+      @keyframes s2_l2 { 0%, 29.5% { opacity: 0; } 30.5%, 49% { opacity: 1; } 49.8%, 100% { opacity: 0; } }
+      @keyframes s2_l3 { 0%, 31.8% { opacity: 0; } 32.8%, 49% { opacity: 1; } 49.8%, 100% { opacity: 0; } }
+      @keyframes s2_l4 { 0%, 34.0% { opacity: 0; } 35.0%, 49% { opacity: 1; } 49.8%, 100% { opacity: 0; } }
+      @keyframes s2_l5 { 0%, 36.2% { opacity: 0; } 37.2%, 49% { opacity: 1; } 49.8%, 100% { opacity: 0; } }
+      @keyframes s2_l6 { 0%, 38.5% { opacity: 0; } 39.5%, 49% { opacity: 1; } 49.8%, 100% { opacity: 0; } }
+      @keyframes s2_l7 { 0%, 40.8% { opacity: 0; } 41.8%, 49% { opacity: 1; } 49.8%, 100% { opacity: 0; } }
+      @keyframes s2_l8 { 0%, 43.0% { opacity: 0; } 44.0%, 49% { opacity: 1; } 49.8%, 100% { opacity: 0; } }
+      @keyframes s2_l9 { 0%, 45.0% { opacity: 0; } 46.0%, 49% { opacity: 1; } 49.8%, 100% { opacity: 0; } }
+
+      .s2-0 { animation: s2_l0 60s infinite ease-in-out; }
+      .s2-1 { animation: s2_l1 60s infinite ease-in-out; }
+      .s2-2 { animation: s2_l2 60s infinite ease-in-out; }
+      .s2-3 { animation: s2_l3 60s infinite ease-in-out; }
+      .s2-4 { animation: s2_l4 60s infinite ease-in-out; }
+      .s2-5 { animation: s2_l5 60s infinite ease-in-out; }
+      .s2-6 { animation: s2_l6 60s infinite ease-in-out; }
+      .s2-7 { animation: s2_l7 60s infinite ease-in-out; }
+      .s2-8 { animation: s2_l8 60s infinite ease-in-out; }
+      .s2-9 { animation: s2_l9 60s infinite ease-in-out; }
+
+      /* --- SCENE 3: Line-by-Line (30s - 45s = 50% - 75%) --- */
+      @keyframes s3_l0 { 0%, 50.5% { opacity: 0; } 51.5%, 74% { opacity: 1; } 74.8%, 100% { opacity: 0; } }
+      @keyframes s3_l1 { 0%, 52.2% { opacity: 0; } 53.2%, 74% { opacity: 1; } 74.8%, 100% { opacity: 0; } }
+      @keyframes s3_l2 { 0%, 54.5% { opacity: 0; } 55.5%, 74% { opacity: 1; } 74.8%, 100% { opacity: 0; } }
+      @keyframes s3_l3 { 0%, 56.8% { opacity: 0; } 57.8%, 74% { opacity: 1; } 74.8%, 100% { opacity: 0; } }
+      @keyframes s3_l4 { 0%, 59.0% { opacity: 0; } 60.0%, 74% { opacity: 1; } 74.8%, 100% { opacity: 0; } }
+      @keyframes s3_l5 { 0%, 61.2% { opacity: 0; } 62.2%, 74% { opacity: 1; } 74.8%, 100% { opacity: 0; } }
+      @keyframes s3_l6 { 0%, 63.5% { opacity: 0; } 64.5%, 74% { opacity: 1; } 74.8%, 100% { opacity: 0; } }
+      @keyframes s3_l7 { 0%, 65.8% { opacity: 0; } 66.8%, 74% { opacity: 1; } 74.8%, 100% { opacity: 0; } }
+      @keyframes s3_l8 { 0%, 68.0% { opacity: 0; } 69.0%, 74% { opacity: 1; } 74.8%, 100% { opacity: 0; } }
+      @keyframes s3_l9 { 0%, 70.0% { opacity: 0; } 71.0%, 74% { opacity: 1; } 74.8%, 100% { opacity: 0; } }
+
+      .s3-0 { animation: s3_l0 60s infinite ease-in-out; }
+      .s3-1 { animation: s3_l1 60s infinite ease-in-out; }
+      .s3-2 { animation: s3_l2 60s infinite ease-in-out; }
+      .s3-3 { animation: s3_l3 60s infinite ease-in-out; }
+      .s3-4 { animation: s3_l4 60s infinite ease-in-out; }
+      .s3-5 { animation: s3_l5 60s infinite ease-in-out; }
+      .s3-6 { animation: s3_l6 60s infinite ease-in-out; }
+      .s3-7 { animation: s3_l7 60s infinite ease-in-out; }
+      .s3-8 { animation: s3_l8 60s infinite ease-in-out; }
+      .s3-9 { animation: s3_l9 60s infinite ease-in-out; }
+
+      /* --- SCENE 4: Line-by-Line (45s - 60s = 75% - 100%) --- */
+      @keyframes s4_l0 { 0%, 75.5% { opacity: 0; } 76.5%, 99% { opacity: 1; } 99.8%, 100% { opacity: 0; } }
+      @keyframes s4_l1 { 0%, 77.2% { opacity: 0; } 78.2%, 99% { opacity: 1; } 99.8%, 100% { opacity: 0; } }
+      @keyframes s4_l2 { 0%, 79.5% { opacity: 0; } 80.5%, 99% { opacity: 1; } 99.8%, 100% { opacity: 0; } }
+      @keyframes s4_l3 { 0%, 81.8% { opacity: 0; } 82.8%, 99% { opacity: 1; } 99.8%, 100% { opacity: 0; } }
+      @keyframes s4_l4 { 0%, 84.0% { opacity: 0; } 85.0%, 99% { opacity: 1; } 99.8%, 100% { opacity: 0; } }
+      @keyframes s4_l5 { 0%, 86.2% { opacity: 0; } 87.2%, 99% { opacity: 1; } 99.8%, 100% { opacity: 0; } }
+      @keyframes s4_l6 { 0%, 88.5% { opacity: 0; } 89.5%, 99% { opacity: 1; } 99.8%, 100% { opacity: 0; } }
+      @keyframes s4_l7 { 0%, 90.8% { opacity: 0; } 91.8%, 99% { opacity: 1; } 99.8%, 100% { opacity: 0; } }
+      @keyframes s4_l8 { 0%, 93.0% { opacity: 0; } 94.0%, 99% { opacity: 1; } 99.8%, 100% { opacity: 0; } }
+      @keyframes s4_l9 { 0%, 95.0% { opacity: 0; } 96.0%, 99% { opacity: 1; } 99.8%, 100% { opacity: 0; } }
+
+      .s4-0 { animation: s4_l0 60s infinite ease-in-out; }
+      .s4-1 { animation: s4_l1 60s infinite ease-in-out; }
+      .s4-2 { animation: s4_l2 60s infinite ease-in-out; }
+      .s4-3 { animation: s4_l3 60s infinite ease-in-out; }
+      .s4-4 { animation: s4_l4 60s infinite ease-in-out; }
+      .s4-5 { animation: s4_l5 60s infinite ease-in-out; }
+      .s4-6 { animation: s4_l6 60s infinite ease-in-out; }
+      .s4-7 { animation: s4_l7 60s infinite ease-in-out; }
+      .s4-8 { animation: s4_l8 60s infinite ease-in-out; }
+      .s4-9 { animation: s4_l9 60s infinite ease-in-out; }
+
+      /* Base Window and Fonts */
+      .terminal-bg { fill: #1a1b26; stroke: #292e42; stroke-width: 1.5px; rx: 12px; }
+      .title-bar { fill: #16161e; rx: 12px; }
+      .btn-red { fill: #f7768e; }
+      .btn-yellow { fill: #e0af68; }
+      .btn-green { fill: #9ece6a; }
+      .tab-badge { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace; font-size: 12px; font-weight: 600; }
+      .code-font { font-family: "JetBrains Mono", "Fira Code", Monaco, Menlo, Consolas, monospace; font-size: 13.5px; line-height: 25px; }
+
+      /* One Dark Pro & Tokyo Night Syntax Highlighting Tokens */
+      .syn-keyword { fill: #bb9af7; font-weight: 700; }  /* async, with, await, def, return, lambda */
+      .syn-decorator { fill: #e0af68; font-weight: 700; } /* @task */
+      .syn-func { fill: #7aa2f7; font-weight: 600; }     /* function and method calls */
+      .syn-string { fill: #9ece6a; }                    /* string literals */
+      .syn-secret { fill: #f7768e; font-weight: 700; }  /* credentials, passwords, env:// */
+      .syn-number { fill: #ff9e64; }                    /* numbers, True, False, None */
+      .syn-var { fill: #7dcfff; }                       /* variables, parameters */
+      .syn-class { fill: #2ac3de; font-weight: 600; }   /* Class names, Types */
+      .syn-comment { fill: #565f89; font-style: italic; } /* comments */
+      .syn-punct { fill: #89ddff; }                     /* : , . ( ) [ ] { } = */
+      .syn-text { fill: #c0caf5; }                      /* plain code text */
+      
+      /* CLI and Terminal Status Tokens */
+      .term-prompt { fill: #7aa2f7; font-weight: 700; }
+      .term-cmd { fill: #f0f6fc; font-weight: 600; }
+      .term-flag { fill: #2ac3de; }
+      .term-ok { fill: #73daca; font-weight: 700; }
+      .term-cursor { fill: #7aa2f7; animation: blink 1s infinite; }
+    </style>
+  </defs>
+
+  <!-- Window Chrome -->
+  <rect width="960" height="520" class="terminal-bg" />
+  <path d="M 0,12 Q 0,0 12,0 L 948,0 Q 960,0 960,12 L 940,42 L 0,42 Z" class="title-bar" />
+  <line x1="0" y1="42" x2="960" y2="42" stroke="#292e42" stroke-width="1" />
+
+  <!-- Window Buttons -->
+  <circle cx="24" cy="21" r="6" class="btn-red" />
+  <circle cx="44" cy="21" r="6" class="btn-yellow" />
+  <circle cx="64" cy="21" r="6" class="btn-green" />
+
+  <!-- Active Scene Header Synchronized Badges -->
+  <g class="tab-badge-1">
+    <text x="480" y="26" text-anchor="middle" class="tab-badge" fill="#7aa2f7">● [1/4] Async &amp; Sync Quick Start with Secret Resolution (live line-by-line)</text>
+  </g>
+  <g class="tab-badge-2">
+    <text x="480" y="26" text-anchor="middle" class="tab-badge" fill="#bb9af7">● [2/4] Stateful PTY Shell &amp; Automated Expect Dialogs (live line-by-line)</text>
+  </g>
+  <g class="tab-badge-3">
+    <text x="480" y="26" text-anchor="middle" class="tab-badge" fill="#e0af68">● [3/4] Bare-Metal BMC (Redfish HTTP/2) &amp; Serial/UART YMODEM (live line-by-line)</text>
+  </g>
+  <g class="tab-badge-4">
+    <text x="480" y="26" text-anchor="middle" class="tab-badge" fill="#73daca">● [4/4] Declarative DAG Task Flow &amp; Zero-Fork Python RPC (live line-by-line)</text>
+  </g>
+
+  <!-- Terminal Content Area -->
+  <g transform="translate(36, 76)" class="code-font">
+
+    <!-- ========================================================================= -->
+    <!-- SCENE 1: Line-by-Line Quick Start (0s - 15s)                              -->
+    <!-- ========================================================================= -->
+    <g>
+      <g class="s1-0"><text y="0"><tspan x="0" class="syn-comment"># 1. Asynchronous execution: dynamic secrets, parsed output &amp; idempotent state</tspan></text></g>
+      <g class="s1-1"><text y="26"><tspan x="0" class="syn-keyword">async with </tspan><tspan class="syn-class">Connection</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">from_uri</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"ssh://admin:</tspan><tspan class="syn-secret">env://SSH_PASS</tspan><tspan class="syn-string">@web-01"</tspan><tspan class="syn-punct">) </tspan><tspan class="syn-keyword">as </tspan><tspan class="syn-var">conn</tspan><tspan class="syn-punct">:</tspan></text></g>
+      <g class="s1-2"><text y="52"><tspan x="32" class="syn-var">disks </tspan><tspan class="syn-punct">= (</tspan><tspan class="syn-keyword">await </tspan><tspan class="syn-var">conn</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">run</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"df -h /data"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">parse</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-string">"auto"</tspan><tspan class="syn-punct">)).</tspan><tspan class="syn-var">parsed</tspan></text></g>
+      <g class="s1-3"><text y="78"><tspan x="32" class="term-ok">✔ </tspan><tspan class="syn-comment">disks: [{'filesystem': '/dev/nvme0n1', 'avail': '322G', 'use_pct': 28}]</tspan></text></g>
+      <g class="s1-4"><text y="106"><tspan x="32" class="syn-keyword">await </tspan><tspan class="syn-var">conn</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-var">files</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">write_file</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"/etc/app.conf"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-string">"port = 8080\n"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">atomic</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-number">True</tspan><tspan class="syn-punct">)</tspan></text></g>
+      <g class="s1-5"><text y="132"><tspan x="32" class="syn-var">res </tspan><tspan class="syn-punct">= </tspan><tspan class="syn-keyword">await </tspan><tspan class="syn-var">conn</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-var">state</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">ensure_service</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"nginx"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">state</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-string">"started"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">sudo</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-number">True</tspan><tspan class="syn-punct">)</tspan></text></g>
+      <g class="s1-6"><text y="158"><tspan x="32" class="term-ok">✔ </tspan><tspan class="syn-comment">EnsureResult: nginx started (changed=True, diff='+ LimitNOFILE=1048576')</tspan></text></g>
+      <g class="s1-7"><text y="196"><tspan x="0" class="syn-comment"># 2. Synchronous counterpart: zero asyncio.run() boilerplate for scripts &amp; CLI</tspan></text></g>
+      <g class="s1-8"><text y="222"><tspan x="0" class="syn-keyword">with </tspan><tspan class="syn-class">SyncConnection</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">from_uri</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"docker://root@api-container"</tspan><tspan class="syn-punct">) </tspan><tspan class="syn-keyword">as </tspan><tspan class="syn-var">sync_conn</tspan><tspan class="syn-punct">:</tspan></text></g>
+      <g class="s1-9">
+        <text y="248"><tspan x="32" class="syn-var">result </tspan><tspan class="syn-punct">= </tspan><tspan class="syn-var">sync_conn</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">run</tspan><tspan class="syn-punct">([</tspan><tspan class="syn-string">"python3"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-string">"manage.py"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-string">"check"</tspan><tspan class="syn-punct">])</tspan></text>
+        <text y="274"><tspan x="32" class="term-ok">✔ [api-container:docker] </tspan><tspan class="syn-comment">System check identified no issues (0 silenced).</tspan></text>
+        <text y="310"><tspan x="0" class="term-prompt">➜ </tspan><tspan class="syn-comment"># Holding completed Scene 1 view before next scenario... </tspan><tspan class="term-cursor">▋</tspan></text>
+      </g>
+    </g>
+
+    <!-- ========================================================================= -->
+    <!-- SCENE 2: Line-by-Line Stateful PTY Shell & Expect (15s - 30s)             -->
+    <!-- ========================================================================= -->
+    <g>
+      <g class="s2-0"><text y="0"><tspan x="0" class="syn-comment"># 1. Stateful PTY shell: directory and exported variables persist between calls</tspan></text></g>
+      <g class="s2-1"><text y="26"><tspan x="0" class="syn-keyword">async with await </tspan><tspan class="syn-var">conn</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">open_shell</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-var">term_type</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-string">"xterm-256color"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">term_size</tspan><tspan class="syn-punct">=(</tspan><tspan class="syn-number">120</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-number">40</tspan><tspan class="syn-punct">)) </tspan><tspan class="syn-keyword">as </tspan><tspan class="syn-var">shell</tspan><tspan class="syn-punct">:</tspan></text></g>
+      <g class="s2-2"><text y="52"><tspan x="32" class="syn-keyword">await </tspan><tspan class="syn-var">shell</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">execute</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"cd /srv/myapp &amp;&amp; export DEPLOY_ENV=production"</tspan><tspan class="syn-punct">)</tspan></text></g>
+      <g class="s2-3"><text y="78"><tspan x="32" class="syn-var">res </tspan><tspan class="syn-punct">= </tspan><tspan class="syn-keyword">await </tspan><tspan class="syn-var">shell</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">execute</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"pwd &amp;&amp; echo $DEPLOY_ENV"</tspan><tspan class="syn-punct">)</tspan></text></g>
+      <g class="s2-4"><text y="104"><tspan x="32" class="syn-keyword">assert </tspan><tspan class="syn-string">"/srv/myapp"</tspan><tspan class="syn-keyword"> in </tspan><tspan class="syn-var">res</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-var">text</tspan><tspan class="syn-keyword"> and </tspan><tspan class="syn-string">"production"</tspan><tspan class="syn-keyword"> in </tspan><tspan class="syn-var">res</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-var">text</tspan></text></g>
+      <g class="s2-5"><text y="132"><tspan x="0" class="term-ok">✔ Shell state preserved:</tspan><tspan class="syn-comment"> CWD = /srv/myapp, DEPLOY_ENV = production</tspan></text></g>
+      <g class="s2-6"><text y="170"><tspan x="0" class="syn-comment"># 2. Declarative Expect: handles interactive prompts with automatic secret masking</tspan></text></g>
+      <g class="s2-7">
+        <text y="196"><tspan x="0" class="syn-keyword">await </tspan><tspan class="syn-var">conn</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">expect</tspan><tspan class="syn-punct">(</tspan></text>
+        <text y="222"><tspan x="32" class="syn-var">command</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-string">"passwd deployer"</tspan><tspan class="syn-punct">,</tspan></text>
+        <text y="248"><tspan x="32" class="syn-var">patterns</tspan><tspan class="syn-punct">={</tspan><tspan class="syn-string">r"New password:"</tspan><tspan class="syn-punct">: </tspan><tspan class="syn-secret">"S3cretPass!"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-string">r"Retype new password:"</tspan><tspan class="syn-punct">: </tspan><tspan class="syn-secret">"S3cretPass!"</tspan><tspan class="syn-punct">},</tspan></text>
+      </g>
+      <g class="s2-8"><text y="274"><tspan x="32" class="syn-var">sensitive</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-number">True</tspan><tspan class="syn-punct">,  </tspan><tspan class="syn-comment"># Fully redacted in structlog, traces &amp; exceptions</tspan></text></g>
+      <g class="s2-9">
+        <text y="300"><tspan x="0" class="syn-punct">)</tspan><tspan class="term-ok">  ✔ Password changed successfully (0 secrets leaked)</tspan></text>
+        <text y="336"><tspan x="0" class="term-prompt">➜ </tspan><tspan class="syn-comment"># Holding completed Scene 2 view before next scenario... </tspan><tspan class="term-cursor">▋</tspan></text>
+      </g>
+    </g>
+
+    <!-- ========================================================================= -->
+    <!-- SCENE 3: Line-by-Line Bare-Metal BMC & Serial Flashing (30s - 45s)        -->
+    <!-- ========================================================================= -->
+    <g>
+      <g class="s3-0"><text y="0"><tspan x="0" class="syn-comment"># 1. Bare-metal Redfish BMC: HTTP/2 telemetry &amp; out-of-band power control</tspan></text></g>
+      <g class="s3-1"><text y="26"><tspan x="0" class="syn-keyword">async with </tspan><tspan class="syn-class">Connection</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">from_uri</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"redfish://admin:</tspan><tspan class="syn-secret">env://BMC_PASS</tspan><tspan class="syn-string">@192.168.1.100"</tspan><tspan class="syn-punct">) </tspan><tspan class="syn-keyword">as </tspan><tspan class="syn-var">bmc</tspan><tspan class="syn-punct">:</tspan></text></g>
+      <g class="s3-2"><text y="52"><tspan x="32" class="syn-var">power </tspan><tspan class="syn-punct">= </tspan><tspan class="syn-keyword">await </tspan><tspan class="syn-var">bmc</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">run</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"power status"</tspan><tspan class="syn-punct">)  </tspan><tspan class="syn-comment"># Output: "On"</tspan></text></g>
+      <g class="s3-3"><text y="78"><tspan x="32" class="syn-var">sensors </tspan><tspan class="syn-punct">= </tspan><tspan class="syn-keyword">await </tspan><tspan class="syn-var">bmc</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">run</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"sensors"</tspan><tspan class="syn-punct">)       </tspan><tspan class="syn-comment"># CPU 38°C, Ambient 22°C</tspan></text></g>
+      <g class="s3-4"><text y="104"><tspan x="0" class="term-ok">✔ [bmc-node:redfish]</tspan><tspan class="syn-comment"> PowerState: On | Health: OK | Thermal: Normal (iDRAC9)</tspan></text></g>
+      <g class="s3-5"><text y="146"><tspan x="0" class="syn-comment"># 2. Serial / UART: hardware reset pins and bootloader flashing via YMODEM</tspan></text></g>
+      <g class="s3-6"><text y="172"><tspan x="0" class="syn-keyword">async with </tspan><tspan class="syn-class">Connection</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">from_uri</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"uart:///dev/ttyUSB0:115200?parity=N"</tspan><tspan class="syn-punct">) </tspan><tspan class="syn-keyword">as </tspan><tspan class="syn-var">board</tspan><tspan class="syn-punct">:</tspan></text></g>
+      <g class="s3-7">
+        <text y="198"><tspan x="32" class="syn-keyword">await </tspan><tspan class="syn-var">board</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-var">transport</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">pulse_dtr_rts</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-var">dtr</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-number">False</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">rts</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-number">True</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">duration</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-number">0.1</tspan><tspan class="syn-punct">)  </tspan><tspan class="syn-comment"># Reset MCU</tspan></text>
+        <text y="224"><tspan x="32" class="syn-var">board</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-var">transport</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">send_break</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-var">duration</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-number">0.25</tspan><tspan class="syn-punct">)                           </tspan><tspan class="syn-comment"># Enter U-Boot</tspan></text>
+      </g>
+      <g class="s3-8">
+        <text y="250"><tspan x="32" class="syn-var">sent </tspan><tspan class="syn-punct">= </tspan><tspan class="syn-keyword">await </tspan><tspan class="syn-var">board</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-var">files</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">upload_ymodem</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"u-boot.bin"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">trigger_command</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-string">"loady 0x82000000\r"</tspan><tspan class="syn-punct">)</tspan></text>
+      </g>
+      <g class="s3-9">
+        <text y="280"><tspan x="0" class="term-ok">✔ Flashed 8,421,376 bytes via YMODEM CRC-16 </tspan><tspan class="syn-comment">in 48.2s (100% verified)</tspan></text>
+        <text y="316"><tspan x="0" class="term-prompt">➜ </tspan><tspan class="syn-comment"># Holding completed Scene 3 view before next scenario... </tspan><tspan class="term-cursor">▋</tspan></text>
+      </g>
+    </g>
+
+    <!-- ========================================================================= -->
+    <!-- SCENE 4: Line-by-Line DAG Flow & Zero-Fork RPC (45s - 60s)                -->
+    <!-- ========================================================================= -->
+    <g>
+      <g class="s4-0"><text y="0"><tspan x="0" class="syn-decorator">@task</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-var">name</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-string">"deploy_config"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">depends_on</tspan><tspan class="syn-punct">=[</tspan><tspan class="syn-var">check_env</tspan><tspan class="syn-punct">], </tspan><tspan class="syn-var">post</tspan><tspan class="syn-punct">=[</tspan><tspan class="syn-var">cleanup</tspan><tspan class="syn-punct">])</tspan></text></g>
+      <g class="s4-1"><text y="26"><tspan x="0" class="syn-keyword">async def </tspan><tspan class="syn-func">deploy_config</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-var">conn</tspan><tspan class="syn-punct">: </tspan><tspan class="syn-class">Connection</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">ctx</tspan><tspan class="syn-punct">: </tspan><tspan class="syn-class">FlowContext</tspan><tspan class="syn-punct">):</tspan></text></g>
+      <g class="s4-2">
+        <text y="52"><tspan x="32" class="syn-keyword">return await </tspan><tspan class="syn-var">conn</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-var">state</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">ensure_file</tspan><tspan class="syn-punct">(</tspan></text>
+        <text y="78"><tspan x="64" class="syn-string">"/etc/app.conf"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">content</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-string">"PORT=8080\n"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">atomic</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-number">True</tspan><tspan class="syn-punct">,</tspan></text>
+        <text y="104"><tspan x="64" class="syn-var">notify</tspan><tspan class="syn-punct">=(</tspan><tspan class="syn-string">"reload_app"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-keyword">lambda </tspan><tspan class="syn-var">c</tspan><tspan class="syn-punct">: </tspan><tspan class="syn-var">c</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-var">state</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">ensure_service</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-string">"app"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">state</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-string">"reloaded"</tspan><tspan class="syn-punct">)),</tspan></text>
+        <text y="130"><tspan x="32" class="syn-punct">)</tspan></text>
+      </g>
+      <g class="s4-3"><text y="168"><tspan x="0" class="syn-comment"># Zero-Fork Remote Python RPC: executes callables inside remote worker without fork</tspan></text></g>
+      <g class="s4-4"><text y="194"><tspan x="0" class="syn-var">kernel </tspan><tspan class="syn-punct">= </tspan><tspan class="syn-keyword">await </tspan><tspan class="syn-var">conn</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">run_python</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-keyword">lambda</tspan><tspan class="syn-punct">: </tspan><tspan class="syn-var">os</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">uname</tspan><tspan class="syn-punct">().</tspan><tspan class="syn-var">release</tspan><tspan class="syn-punct">)  </tspan><tspan class="syn-comment"># Returns "6.8.0-45-generic"</tspan></text></g>
+      <g class="s4-5"><text y="220"><tspan x="0" class="syn-var">stats </tspan><tspan class="syn-punct">= </tspan><tspan class="syn-keyword">await </tspan><tspan class="syn-var">conn</tspan><tspan class="syn-punct">.</tspan><tspan class="syn-func">run_python</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-var">inspect_host_health</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">threshold</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-number">85.0</tspan><tspan class="syn-punct">)</tspan></text></g>
+      <g class="s4-6"><text y="258"><tspan x="0" class="syn-comment"># Wave-synchronized DAG execution across 8 cluster nodes:</tspan></text></g>
+      <g class="s4-7"><text y="284"><tspan x="0" class="syn-var">flow </tspan><tspan class="syn-punct">= </tspan><tspan class="syn-class">Flow</tspan><tspan class="syn-punct">(</tspan><tspan class="syn-var">tasks</tspan><tspan class="syn-punct">=[</tspan><tspan class="syn-var">deploy_config</tspan><tspan class="syn-punct">], </tspan><tspan class="syn-var">mode</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-string">"barrier"</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">batch_size</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-number">2</tspan><tspan class="syn-punct">, </tspan><tspan class="syn-var">batch_notifications</tspan><tspan class="syn-punct">=</tspan><tspan class="syn-number">True</tspan><tspan class="syn-punct">)</tspan></text></g>
+      <g class="s4-8"><text y="316"><tspan x="0" class="term-ok">✔ Flow 'prod_deploy' completed on 8 nodes: </tspan><tspan class="syn-comment">24 tasks executed, 0 failed, 1 reload notified</tspan></text></g>
+      <g class="s4-9">
+        <text y="352"><tspan x="0" class="term-prompt">➜ </tspan><tspan class="term-cmd">python main.py --serve</tspan><tspan class="syn-comment">  # Web Dashboard running at http://0.0.0.0:3000</tspan><tspan class="term-cursor"> ▋</tspan></text>
+      </g>
+    </g>
+
+  </g>
+</svg>
