@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import io
 import json
 import sys
 from dataclasses import dataclass
 from typing import Any
+
+from pydantic import BaseModel
 
 try:
     import cyclopts
@@ -129,8 +132,64 @@ class CLIOutputRenderer:
         )
         sys.exit(1)
 
+    def render_parsed_data(self, parsed: Any, title: str = "Parsed Output") -> None:
+        """Отрисовать спарсенные данные (список словарей или словарь) в виде Rich Table или JSON."""
+        if isinstance(parsed, BaseModel):
+            parsed = parsed.model_dump()
+        elif dataclasses.is_dataclass(parsed) and not isinstance(parsed, type):
+            parsed = dataclasses.asdict(parsed)
+        elif isinstance(parsed, list):
+            parsed = [
+                row.model_dump()
+                if isinstance(row, BaseModel)
+                else (
+                    dataclasses.asdict(row)
+                    if dataclasses.is_dataclass(row) and not isinstance(row, type)
+                    else row
+                )
+                for row in parsed
+            ]
+
+        if isinstance(parsed, list) and parsed and all(isinstance(row, dict) for row in parsed):
+            columns: list[str] = []
+            for row in parsed:
+                for k in row:
+                    if str(k) not in columns:
+                        columns.append(str(k))
+            table = Table(
+                title=title,
+                box=box.ROUNDED,
+                show_header=True,
+                header_style="bold cyan",
+            )
+            for col in columns:
+                table.add_column(col, style="green", overflow="fold")
+            for row in parsed:
+                table.add_row(*(str(row.get(col, "")) for col in columns))
+            self.console.print(table)
+            return
+
+        if isinstance(parsed, dict) and parsed:
+            table = Table(
+                title=title,
+                box=box.ROUNDED,
+                show_header=True,
+                header_style="bold cyan",
+            )
+            table.add_column("Field", style="cyan", overflow="fold")
+            table.add_column("Value", style="green", overflow="fold")
+            for k, v in parsed.items():
+                val_str = json.dumps(v, ensure_ascii=False) if isinstance(v, dict | list) else str(v)
+                table.add_row(str(k), val_str)
+            self.console.print(table)
+            return
+
+        self.print_json(parsed)
+
     def render_single_result(self, result: Any, output_format: str = "panel") -> None:
-        """Вывести результат одиночной команды в формате ``json``, ``plain`` или ``panel``."""
+        """Вывести результат одиночной команды в формате ``json``, ``plain``, ``table`` или ``panel``."""
+        has_parse = getattr(result, "parse_spec", None) is not None
+
         if output_format == "json":
             self.print_json(result.to_dict())
             if not result.ok:
@@ -138,12 +197,19 @@ class CLIOutputRenderer:
             return
 
         if output_format == "plain":
-            if result.stdout:
-                self.console.print(result.stdout.rstrip())
-            if result.stderr:
-                self.console.print(result.stderr.rstrip(), style="red")
+            if has_parse and result.ok:
+                self.print_json(result.parsed)
+            else:
+                if result.stdout:
+                    self.console.print(result.stdout.rstrip())
+                if result.stderr:
+                    self.console.print(result.stderr.rstrip(), style="red")
             if not result.ok:
                 sys.exit(result.exit_code)
+            return
+
+        if output_format == "table" and has_parse and result.ok:
+            self.render_parsed_data(result.parsed, title=f"Parsed: {result.command}")
             return
 
         if result.ok:
@@ -156,7 +222,9 @@ class CLIOutputRenderer:
                     border_style="green",
                 )
             )
-            if result.stdout:
+            if has_parse:
+                self.render_parsed_data(result.parsed, title=f"Parsed: {result.command}")
+            elif result.stdout:
                 self.console.print("[bold]stdout:[/bold]")
                 self.console.print(result.stdout)
             if result.stderr:

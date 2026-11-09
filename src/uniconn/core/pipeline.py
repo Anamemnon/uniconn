@@ -108,6 +108,8 @@ class CommandRequest:
     sensitive: bool = False
     dry_run: bool = False
     output_format: Literal["text", "bytes"] = "text"
+    parse: Any = None
+    eager_parse: bool = False
     transport_kwargs: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -222,6 +224,8 @@ class DryRunMiddleware:
                 command=request.command,
                 host=self._conn.config.host,
                 sensitive=request.sensitive,
+                parse_spec=request.parse if request.parse is not False else None,
+                _dry_run=True,
             )
 
 
@@ -512,4 +516,14 @@ class CommandPipeline:
 
             handler = _step
 
-        return await handler(request)
+        result = await handler(request)
+        if request.parse is not None and request.parse is not False and isinstance(result, Result):
+            if result.parse_spec is None:
+                result = dataclasses.replace(
+                    result,
+                    parse_spec=request.parse,
+                    _dry_run=request.dry_run,
+                )
+            if request.eager_parse and not request.dry_run:
+                _ = result.parsed
+        return result

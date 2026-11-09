@@ -57,6 +57,11 @@ def test_optional_dependencies_contain_required_extras() -> None:
     assert "templates" in extras
     assert any("jinja2" in dep for dep in extras["templates"])
 
+    assert "parsing" in extras
+    assert any("jc" in dep for dep in extras["parsing"])
+    assert any("ttp" in dep for dep in extras["parsing"])
+    assert any("textfsm" in dep for dep in extras["parsing"])
+
     assert "all" in extras
     assert extras["all"] == ["uniconn[bmc,serial,telnet,winrm,cli,templates]"]
 

@@ -224,3 +224,15 @@ class FlowExecutionError(ExecutionError):
         self.failed_hosts: list[str] = list(failed_hosts or [])
 
 
+class ParsingError(UniconnError, ValueError):
+    """Базовое исключение ошибки семантического парсинга или валидации схемы вывода."""
+
+
+class ParserNotFoundError(ParsingError, LookupError):
+    """Движок парсинга или шаблон для указанной спецификации не найден."""
+
+
+class OptionalDependencyError(ParsingError, ImportError):
+    """Требуемая для парсинга опциональная библиотека не установлена (uniconn[parsing])."""
+
+

@@ -224,8 +224,13 @@ class ShellSession:
         self,
         command: str | Sequence[str],
         timeout: float | None = None,
+        *,
+        parse: Any = None,
+        eager_parse: bool = False,
     ) -> Result:
         """Выполнить команду в stateful shell-сессии и дождаться маркера завершения."""
+        import dataclasses
+
         handler = self._raw_execute
         for obs in reversed(self._observers):
             prev_fn = handler
@@ -243,7 +248,12 @@ class ShellSession:
 
             handler = _step
 
-        return await handler(command, timeout=timeout)
+        result = await handler(command, timeout=timeout)
+        if parse is not None and parse is not False and isinstance(result, Result):
+            result = dataclasses.replace(result, parse_spec=parse)
+            if eager_parse:
+                _ = result.parsed
+        return result
 
     def _mark_closed(self) -> None:
         self._closed = True
@@ -343,8 +353,13 @@ class ShellSession:
         line_ending: str = "\n",
         sensitive: bool = False,
         allow_eof: bool = True,
+        *,
+        parse: Any = None,
+        eager_parse: bool = False,
     ) -> Result:
         """Выполнить интерактивный диалог по регулярным выражениям (``expect``)."""
+        import dataclasses
+
         handler = self._raw_expect
         for obs in reversed(self._observers):
             prev_fn = handler
@@ -375,7 +390,7 @@ class ShellSession:
 
             handler = _step
 
-        return await handler(
+        res = await handler(
             command=command,
             patterns=patterns,
             final_prompt=final_prompt,
@@ -384,6 +399,14 @@ class ShellSession:
             sensitive=sensitive,
             allow_eof=allow_eof,
         )
+        if parse is not None or eager_parse:
+            res = dataclasses.replace(
+                res,
+                parse_spec=parse if parse is not False else None,
+            )
+            if eager_parse:
+                _ = res.parsed
+        return res
 
     async def resize(self, cols: int, rows: int) -> None:
         """Изменить размер окна терминала PTY."""

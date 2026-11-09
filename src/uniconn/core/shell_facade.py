@@ -221,6 +221,9 @@ async def expect_command(
     sensitive: bool = False,
     term_type: str = "xterm",
     term_size: tuple[int, int] = (80, 24),
+    *,
+    parse: Any = None,
+    eager_parse: bool = False,
     **kwargs: Any,
 ) -> Result:
     """Выполнить интерактивную команду с декларативным сопоставлением regex-паттернов."""
@@ -243,6 +246,8 @@ async def expect_command(
             command=cmd_str,
             host=conn.config.host,
             sensitive=sensitive,
+            parse_spec=parse if parse is not False else None,
+            _dry_run=True,
         )
 
     session = await conn.open_shell(
@@ -259,6 +264,8 @@ async def expect_command(
             timeout=timeout,
             line_ending=line_ending,
             sensitive=sensitive,
+            parse=parse,
+            eager_parse=eager_parse,
         )
     finally:
         await session.close()

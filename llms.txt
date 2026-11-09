@@ -24,8 +24,9 @@
 - **Interactive PTY Shell (`uniconn.shell`)**: `ShellSession`, `SyncShellSession`, `PosixMarkerProtocol`, `ExpectStateMachine`
 - **Background Diagnostics, Streaming Logs & Pluggable Backends (`uniconn.background`)**: `DiagnosticSession`, `SyncDiagnosticSession`, `DiagnosticConfig`, `DiagnosticResult`, `StreamSourceSpec`, `DirectStreamCollector`, `LogPipeline`, `LogHandler`, `LocalFileHandler`, `ForwardHandler`, `StreamHandler`, `ArchiveHandler`, `TimelineHandler`, `PatternTriggerHandler`, `LogWatchRule`, `LogMatchEvent`, `StallEvent`, `BUILTIN_WATCH_RULES`, `KERNEL_PANIC_RULES`, `HARDWARE_ERROR_RULES`, `TELECOM_BS_RULES`, `resolve_watch_rules`, `BackgroundPool`, `BackgroundPoolConfig`, `BackgroundSession`, `BackgroundResult`, `BackgroundCleanupManager`, `BackgroundLogCollector`, `BackgroundBackendStrategy`, `TmuxBackend`, `ScreenBackend`, `NohupBackend`, `WindowsJobBackend`, `resolve_backend`, `LogConfig`
 - **Hooks & OpenTelemetry (`uniconn.hooks` / `uniconn.telemetry`)**: `audit_log_hook`, `allowlist_hook`, `blocklist_hook`, `MetricsCollector`, `metrics_collector_hook`, `structured_log_hook`, `OtelTracingHook`, `otel_tracing_hook`, `InMemoryTracer`, `RecordedSpan`, `SpanProtocol`, `TracerProtocol`, `get_current_span`
+- **Structured CLI Output Parsing (`uniconn.parsing`)**: `ParsingEngine`, `ParsingRegistry`, `ParseSpec`, `default_registry`, `parse_output`, `detect_parser_spec`, `strip_ansi`, `BuiltinEngine`, `NativeJsonEngine`, `JCEngine`, `TTPEngine`, `TextFSMEngine`
 - **Logging (`structlog` + `stdlib`)**: `configure_logging`, `get_struct_logger`, `log_context`, `bind_log_context`, `unbind_log_context`, `clear_log_context`, `get_log_context`, `get_logger`, `setup_file_logging`, `SecretMaskingFilter`
-- **Exceptions**: `UniconnError`, `ConfigurationError`, `CyclicDependencyError`, `ConnectionError`, `CircuitOpenError`, `BatchAbortedError`, `CassetteError`, `CassetteMissError`, `AuthenticationError`, `ExecutionError`, `FlowExecutionError`, `FileTransferError`, `ModemTransferError`, `ModemHandshakeTimeoutError`, `ModemCancelledError`, `ModemMaxRetriesError`, `ModemProtocolError`, `ModemChecksumMismatchError`, `TimeoutError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `BackgroundError`, `BackgroundBackendError`, `BackgroundSessionExistsError`, `BackgroundPoolFullError`, `HardwareFaultDetectedError`
+- **Exceptions**: `UniconnError`, `ConfigurationError`, `CyclicDependencyError`, `ConnectionError`, `CircuitOpenError`, `BatchAbortedError`, `CassetteError`, `CassetteMissError`, `AuthenticationError`, `ExecutionError`, `FlowExecutionError`, `FileTransferError`, `ModemTransferError`, `ModemHandshakeTimeoutError`, `ModemCancelledError`, `ModemMaxRetriesError`, `ModemProtocolError`, `ModemChecksumMismatchError`, `ParsingError`, `ParserNotFoundError`, `OptionalDependencyError`, `TimeoutError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `BackgroundError`, `BackgroundBackendError`, `BackgroundSessionExistsError`, `BackgroundPoolFullError`, `HardwareFaultDetectedError`
 
 ## URI Schemes & Secret Resolution (`SecretResolver`)
 - `ssh://[user[:password]@]host[:22][?key_file=...&password=env://SSH_PASS&known_hosts=strict&keepalive=30&ssh_config=true&use_agent=true&proxy=jump1,jump2&proxy_command=...&rate_limit=10&circuit_breaker_threshold=5&circuit_breaker_timeout=30]`
@@ -66,7 +67,7 @@ sync_conn = SyncConnection.local(timeout: float = 30.0, retry_attempts: int = 3,
 conn2 = conn.copy(host=..., port=..., username=..., password=..., timeout=..., dry_run=...)
 conn2 = conn.with_overrides(**overrides)
 
-# Execution & Scripts
+# Execution, Semantic Parsing & Scripts
 res: Result = await conn.run(
     command: str | Sequence[str],
     timeout: float | None = None,
@@ -77,10 +78,13 @@ res: Result = await conn.run(
     sudo_password: str | SecretStr | None = None,
     sensitive: bool = False,
     dry_run: bool | None = None,
+    *,
+    parse: ParseSpec = None,       # True | "auto" | "df" | "jc:df" | "textfsm:..." | "ttp:..." | list[BaseModel] | Callable
+    eager_parse: bool = False,
     **kwargs,  # cwd, env
 )
 raw: bytes = await conn.run_bytes(command, timeout=None, raise_on_error=False, input=None, sudo=False, **kwargs)
-results: list[Result] = await conn.run_commands(commands: Sequence[str | Sequence[str]], stop_on_error: bool = True, **kwargs)
+results: list[Result] = await conn.run_commands(commands: Sequence[str | Sequence[str]], stop_on_error: bool = True, *, parse: ParseSpec = None, eager_parse: bool = False, **kwargs)
 script_res: Result = await conn.run_script(
     script_path: str | Path,
     args: Sequence[str] = (),
@@ -348,7 +352,7 @@ async with Connection.from_uri("uart://COM3:115200?parity=even&stopbits=1.5") as
 ```
 
 ### `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `HostFacts`, `FactsDiffReport` & `CassetteDiffReport`
-- `Result`: `exit_code: int`, `stdout: str`, `stderr: str`, `duration: float`, `command: str`, `host: str | None`, `ok: bool`, `text: str` (`stdout.strip()`), `lines: list[str]`, `sensitive: bool`, `raw_bytes: bytes`, `result.json() -> Any`, `result.raise_for_status() -> Self`, `result.to_dict() -> dict`
+- `Result`: `exit_code: int`, `stdout: str`, `stderr: str`, `duration: float`, `command: str`, `host: str | None`, `ok: bool`, `text: str` (`stdout.strip()`), `lines: list[str]`, `sensitive: bool`, `raw_bytes: bytes`, `parse_spec: Any`, `result.json() -> Any`, `result.parse(spec=None, **kwargs) -> Any`, `result.parsed -> Any` (lazy cached property), `result.raise_for_status() -> Self`, `result.to_dict() -> dict` (includes `"parsed"` when `parse_spec` is set or `parse()` was called)
 - `PingResult`: `host: str`, `alive: bool`, `latency_ms: float`, `transport: str`, `error: str | None`, `bool(ping_res) == ping_res.alive`, `ping_res.to_dict() -> dict`
 - `SyncResult`: `uploaded: list[str]`, `skipped: list[str]`, `deleted: list[str]`, `bytes_transferred: int`, `duration: float`, `dry_run: bool`, `total_checked: int`, `sync_res.to_dict() -> dict`
 - `EnsureResult`: `target: str`, `state: str`, `changed: bool`, `ok: bool`, `details: str`, `dry_run: bool`, `diff: str | None = None`, `notified: bool = False`, `notify_results: tuple[Any, ...] = ()`, `ensure_res.to_dict() -> dict`

@@ -1,10 +1,37 @@
 # src/uniconn/result.py
 """Модель результата выполнения команды."""
 
+import contextlib
+import dataclasses
 import json as json_module
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, TypeVar
+
+from pydantic import BaseModel
+
+T = TypeVar("T")
+_UNSET: Any = object()
+
+
+def _serialize_parsed_value(val: Any) -> Any:
+    """Рекурсивно преобразовать спарсенное значение (включая BaseModel и dataclass) в JSON-совместимый вид."""
+    if isinstance(val, BaseModel):
+        return val.model_dump()
+    if dataclasses.is_dataclass(val) and not isinstance(val, type):
+        return dataclasses.asdict(val)
+    if isinstance(val, list | tuple | set | frozenset):
+        return [_serialize_parsed_value(item) for item in val]
+    if isinstance(val, dict):
+        return {str(k): _serialize_parsed_value(v) for k, v in val.items()}
+    if isinstance(val, datetime):
+        return val.isoformat()
+    if isinstance(val, Path):
+        return str(val)
+    if isinstance(val, bytes):
+        return val.decode("utf-8", errors="replace")
+    return val
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +47,9 @@ class Result:
     host: str | None = None
     sensitive: bool = False
     raw_bytes: bytes = b""
+    parse_spec: Any = field(default=None, compare=False, repr=False)
+    _dry_run: bool = field(default=False, compare=False, repr=False)
+    _parsed_cache: Any = field(default=_UNSET, init=False, compare=False, repr=False)
 
     @property
     def ok(self) -> bool:
@@ -52,9 +82,34 @@ class Result:
         """
         return json_module.loads(self.stdout)
 
+    def parse(self, spec: Any = None, **kwargs: Any) -> Any:
+        """Семантически распарсить ``stdout`` с помощью указанной спецификации, схемы или автодетектора."""
+        from .parsing.registry import default_registry
+
+        target_spec = spec if spec is not None else (
+            self.parse_spec if self.parse_spec is not None else "auto"
+        )
+        parsed_val = default_registry.parse(
+            self.stdout,
+            target_spec,
+            command=self.command,
+            dry_run=self._dry_run,
+            **kwargs,
+        )
+        if spec is None and not kwargs:
+            object.__setattr__(self, "_parsed_cache", parsed_val)
+        return parsed_val
+
+    @property
+    def parsed(self) -> Any:
+        """Лениво вычисленный и закэшированный результат семантического парсинга ``stdout``."""
+        if self._parsed_cache is _UNSET:
+            object.__setattr__(self, "_parsed_cache", self.parse())
+        return self._parsed_cache
+
     def to_dict(self) -> dict[str, Any]:
-        """Преобразовать результат в сериализуемый словарь (с учётом ``sensitive``)."""
-        return {
+        """Преобразовать результат в сериализуемый словарь (с учётом ``sensitive`` и ``parsed``)."""
+        payload: dict[str, Any] = {
             "host": self.host,
             "command": "***REDACTED***" if self.sensitive else self.command,
             "exit_code": self.exit_code,
@@ -65,6 +120,13 @@ class Result:
             "timestamp": self.timestamp.isoformat(),
             "sensitive": self.sensitive,
         }
+        if self.parse_spec is not None or self._parsed_cache is not _UNSET:
+            if self.sensitive:
+                payload["parsed"] = "***REDACTED***"
+            else:
+                with contextlib.suppress(Exception):
+                    payload["parsed"] = _serialize_parsed_value(self.parsed)
+        return payload
 
     def raise_for_status(self) -> None:
         """Raise ExecutionError if exit_code != 0."""

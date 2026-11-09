@@ -86,8 +86,15 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
         ] = False,
         output_format: Annotated[
             str,
-            Parameter(name=["--format", "-f"], help="Output format: panel, json, plain"),
+            Parameter(name=["--format", "-f"], help="Output format: panel, table, json, plain"),
         ] = "panel",
+        parse: Annotated[
+            str | None,
+            Parameter(
+                name=["--parse", "-P"],
+                help="Semantic parser spec (e.g. 'auto', 'df', 'jc:df', 'table', 'kv')",
+            ),
+        ] = None,
         verbose: Annotated[
             bool, Parameter(name=["--verbose", "-v"], negative="", help="Verbose output")
         ] = False,
@@ -106,6 +113,7 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                         timeout=timeout,
                         sudo=sudo,
                         raise_on_error=raise_on_error,
+                        parse=parse,
                     )
                     renderer.render_single_result(result, output_format=output_format)
             except Exception as e:
@@ -155,6 +163,13 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
             str,
             Parameter(name=["--format", "-f"], help="Output format: table, json, plain"),
         ] = "table",
+        parse: Annotated[
+            str | None,
+            Parameter(
+                name=["--parse", "-P"],
+                help="Semantic parser spec (e.g. 'auto', 'df', 'jc:df', 'table', 'kv')",
+            ),
+        ] = None,
     ) -> None:
         """Execute command on multiple hosts in parallel (from URIs or inventory)."""
         host_uris = list(uris)
@@ -184,6 +199,7 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                     timeout=timeout,
                     sudo=sudo,
                     raise_on_error=False,
+                    parse=parse,
                 )
 
                 if output_format == "json":
@@ -194,6 +210,11 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                             "stdout": result.stdout,
                             "stderr": result.stderr,
                             "duration": result.duration,
+                            **(
+                                {"parsed": result.to_dict().get("parsed")}
+                                if parse is not None
+                                else {}
+                            ),
                         }
                         for label, result in zip(target_labels, results, strict=False)
                     ]

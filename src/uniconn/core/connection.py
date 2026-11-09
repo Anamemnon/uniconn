@@ -236,17 +236,11 @@ class Connection:
     # ─── Выполнение команд (через CommandPipeline) ─────────────────
 
     async def run(
-        self,
-        command: str | Sequence[str],
-        timeout: float | None = None,
-        raise_on_error: bool = False,
-        input: str | bytes | None = None,
-        sudo: bool = False,
-        sudo_user: str | None = None,
-        sudo_password: str | SecretStr | None = None,
-        sensitive: bool = False,
-        dry_run: bool | None = None,
-        **kwargs: Any,
+        self, command: str | Sequence[str], timeout: float | None = None,
+        raise_on_error: bool = False, input: str | bytes | None = None, sudo: bool = False,
+        sudo_user: str | None = None, sudo_password: str | SecretStr | None = None,
+        sensitive: bool = False, dry_run: bool | None = None, *,
+        parse: Any = None, eager_parse: bool = False, **kwargs: Any,
     ) -> Result:
         """Выполнить команду на хосте через конвейер ``CommandPipeline``."""
         cmd_str = format_command(command)
@@ -255,22 +249,16 @@ class Connection:
             raise_on_error=raise_on_error, input_data=input, sudo=sudo, sudo_user=sudo_user,
             sudo_password=sudo_password, sensitive=sensitive,
             dry_run=self._dry_run if dry_run is None else dry_run,
-            output_format="text", transport_kwargs=dict(kwargs),
+            output_format="text", parse=parse, eager_parse=eager_parse,
+            transport_kwargs=dict(kwargs),
         )
         return await self._pipeline.execute(req)
 
     async def run_bytes(
-        self,
-        command: str | Sequence[str],
-        timeout: float | None = None,
-        raise_on_error: bool = False,
-        input: str | bytes | None = None,
-        sudo: bool = False,
-        sudo_user: str | None = None,
-        sudo_password: str | SecretStr | None = None,
-        sensitive: bool = False,
-        dry_run: bool | None = None,
-        **kwargs: Any,
+        self, command: str | Sequence[str], timeout: float | None = None,
+        raise_on_error: bool = False, input: str | bytes | None = None, sudo: bool = False,
+        sudo_user: str | None = None, sudo_password: str | SecretStr | None = None,
+        sensitive: bool = False, dry_run: bool | None = None, **kwargs: Any,
     ) -> bytes:
         """Выполнить команду через конвейер ``CommandPipeline`` и вернуть сырой байтовый вывод (``bytes``)."""
         effective_dry_run = self._dry_run if dry_run is None else dry_run
@@ -286,12 +274,13 @@ class Connection:
         return (await self._pipeline.execute(req)).raw_bytes
 
     async def run_commands(
-        self, commands: Sequence[str | Sequence[str]], stop_on_error: bool = True, **kwargs: Any
+        self, commands: Sequence[str | Sequence[str]], stop_on_error: bool = True,
+        *, parse: Any = None, eager_parse: bool = False, **kwargs: Any,
     ) -> list[Result]:
         """Последовательно выполнить список команд на хосте."""
         results: list[Result] = []
         for command in commands:
-            result = await self.run(command, **kwargs)
+            result = await self.run(command, parse=parse, eager_parse=eager_parse, **kwargs)
             results.append(result)
             if stop_on_error and not result.ok:
                 log_event(

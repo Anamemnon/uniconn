@@ -581,6 +581,8 @@ class ConnectionPool:
         *,
         batch_size: int | None = None,
         max_fail_ratio: float | None = None,
+        parse: Any = None,
+        eager_parse: bool = False,
         **kwargs: Any,
     ) -> list[Result]:
         """Выполнить команду на всех хостах пула."""
@@ -589,6 +591,8 @@ class ConnectionPool:
                 command,
                 timeout=timeout,
                 raise_on_error=raise_on_error,
+                parse=parse,
+                eager_parse=eager_parse,
                 **kwargs,
             ),
             with_defaults=True,
