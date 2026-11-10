@@ -207,9 +207,31 @@ async def ensure_service(
     enabled: bool | None = None,
     sudo: bool = True,
     dry_run: bool | None = None,
-    manager: Literal["auto", "systemd", "openrc", "sysv"] = "auto",
+    manager: Literal["auto", "systemd", "openrc", "sysv", "windows"] = "auto",
 ) -> EnsureResult:
     """Идемпотентно управлять состоянием системного сервиса."""
+    from .windows import (
+        WindowsServiceState,
+        WindowsStartupType,
+        ensure_windows_service,
+        is_windows_connection,
+    )
+
+    if manager == "windows" or (manager == "auto" and is_windows_connection(svc._conn)):
+        win_state: WindowsServiceState = "restarted" if state == "reloaded" else state
+        win_startup: WindowsStartupType | None = (
+            "automatic"
+            if enabled is True
+            else ("disabled" if enabled is False else None)
+        )
+        return await ensure_windows_service(
+            svc,
+            service,
+            state=win_state,
+            startup_type=win_startup,
+            dry_run=dry_run,
+        )
+
     is_dry_run = svc._conn.dry_run if dry_run is None else dry_run
     if svc._conn.dry_run:
         return EnsureResult(

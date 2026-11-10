@@ -160,6 +160,63 @@ def _execute_v080_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
                         "feature": "ensure_service",
                         "result": res.to_dict(),
                     }
+                if feature == "windows_provisioning":
+                    from unittest.mock import AsyncMock
+                    from uniconn import Result
+
+                    win_conn = Connection.from_uri("winrm://Administrator:secret@10.0.0.50:5985")
+                    win_conn.run = AsyncMock(  # type: ignore[method-assign]
+                        side_effect=[
+                            Result(exit_code=1, stdout="", stderr="", duration=0.01, command="winget list"),
+                            Result(exit_code=0, stdout="Successfully installed", stderr="", duration=0.1, command="winget install"),
+                            Result(
+                                exit_code=0,
+                                stdout='{"ok":true,"changed":true,"actions":["startup_type:automatic->disabled","stop"],"before_status":"Running","after_status":"Stopped","before_startup":"automatic","after_startup":"disabled"}',
+                                stderr="",
+                                duration=0.02,
+                                command="Ensure-WindowsService",
+                            ),
+                            Result(
+                                exit_code=0,
+                                stdout='{"ok":true,"changed":true,"action":"updated_value","before":"DWord:0","after":"DWord:1"}',
+                                stderr="",
+                                duration=0.02,
+                                command="Ensure-RegistryKey",
+                            ),
+                            Result(
+                                exit_code=0,
+                                stdout='{"ok":true,"changed":true,"modified":["Web-Server"],"provider":"ServerManager","reboot_required":true}',
+                                stderr="",
+                                duration=0.05,
+                                command="Ensure-WindowsFeature",
+                            ),
+                        ]
+                    )
+                    pkg_res = await win_conn.state.ensure_package("Git.Git", manager="winget", state="present")
+                    svc_res = await win_conn.state.ensure_windows_service(
+                        name="wuauserv",
+                        state="stopped",
+                        startup_type="disabled",
+                    )
+                    reg_res = await win_conn.state.ensure_registry_key(
+                        path=r"HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU",
+                        name="NoAutoUpdate",
+                        value=1,
+                        type="DWORD",
+                        state="present",
+                    )
+                    feat_res = await win_conn.state.ensure_windows_feature(
+                        name="Web-Server",
+                        state="present",
+                    )
+                    return {
+                        "status": "ok",
+                        "feature": "windows_provisioning",
+                        "package": pkg_res.to_dict(),
+                        "service": svc_res.to_dict(),
+                        "registry": reg_res.to_dict(),
+                        "windows_feature": feat_res.to_dict(),
+                    }
                 facts = await conn.gather_facts(refresh=True)
                 return {
                     "status": "ok",

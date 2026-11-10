@@ -199,6 +199,7 @@ class EnsureResult:
     details: str = ""
     dry_run: bool = False
     diff: str | None = None
+    reboot_required: bool = False
     notified: bool = False
     notify_results: tuple[Any, ...] = ()
 
@@ -216,6 +217,7 @@ class EnsureResult:
             "details": self.details,
             "dry_run": self.dry_run,
             "diff": self.diff,
+            "reboot_required": self.reboot_required,
             "notified": self.notified,
             "notify_results": serialized_notify,
         }

@@ -231,6 +231,15 @@ class PoolStateManagementService:
     ensure_service = pool_fan_out_dict(
         StateManagementService.ensure_service, conn_attr="state"
     )
+    ensure_windows_service = pool_fan_out_dict(
+        StateManagementService.ensure_windows_service, conn_attr="state"
+    )
+    ensure_registry_key = pool_fan_out_dict(
+        StateManagementService.ensure_registry_key, conn_attr="state"
+    )
+    ensure_windows_feature = pool_fan_out_dict(
+        StateManagementService.ensure_windows_feature, conn_attr="state"
+    )
     ensure_line = pool_fan_out_dict(
         StateManagementService.ensure_line, conn_attr="state"
     )

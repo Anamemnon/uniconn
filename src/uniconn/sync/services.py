@@ -108,6 +108,9 @@ class SyncStateManagementService(SyncProxyMixin):
     resolve_pkg_manager = sync_method(StateManagementService.resolve_pkg_manager)
     ensure_package = sync_method(StateManagementService.ensure_package)
     ensure_service = sync_method(StateManagementService.ensure_service)
+    ensure_windows_service = sync_method(StateManagementService.ensure_windows_service)
+    ensure_registry_key = sync_method(StateManagementService.ensure_registry_key)
+    ensure_windows_feature = sync_method(StateManagementService.ensure_windows_feature)
     ensure_line = sync_method(StateManagementService.ensure_line)
     ensure_file = sync_method(StateManagementService.ensure_file)
     ensure_directory = sync_method(StateManagementService.ensure_directory)
@@ -219,6 +222,13 @@ class SyncPoolStateManagementService(SyncProxyMixin):
     )
     ensure_package = sync_method(PoolStateManagementService.ensure_package)
     ensure_service = sync_method(PoolStateManagementService.ensure_service)
+    ensure_windows_service = sync_method(
+        PoolStateManagementService.ensure_windows_service
+    )
+    ensure_registry_key = sync_method(PoolStateManagementService.ensure_registry_key)
+    ensure_windows_feature = sync_method(
+        PoolStateManagementService.ensure_windows_feature
+    )
     ensure_line = sync_method(PoolStateManagementService.ensure_line)
     ensure_file = sync_method(PoolStateManagementService.ensure_file)
     ensure_directory = sync_method(PoolStateManagementService.ensure_directory)

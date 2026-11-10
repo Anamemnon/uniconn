@@ -59,6 +59,20 @@ from .system import (
 from .system import (
     resolve_user_home as _resolve_user_home,
 )
+from .windows import (
+    RegistryValueType,
+    WindowsServiceState,
+    WindowsStartupType,
+)
+from .windows import (
+    ensure_registry_key as _ensure_registry_key,
+)
+from .windows import (
+    ensure_windows_feature as _ensure_windows_feature,
+)
+from .windows import (
+    ensure_windows_service as _ensure_windows_service,
+)
 from .yang import (
     ensure_yang as _ensure_yang,
 )
@@ -170,7 +184,7 @@ class StateManagementService:
         enabled: bool | None = None,
         sudo: bool = True,
         dry_run: bool | None = None,
-        manager: Literal["auto", "systemd", "openrc", "sysv"] = "auto",
+        manager: Literal["auto", "systemd", "openrc", "sysv", "windows"] = "auto",
         *,
         notify: NotifySpec = None,
     ) -> EnsureResult:
@@ -184,6 +198,73 @@ class StateManagementService:
             sudo=sudo,
             dry_run=dry_run,
             manager=manager,
+        )
+
+    async def ensure_windows_service(
+        self,
+        name: str,
+        *,
+        state: WindowsServiceState = "started",
+        startup_type: WindowsStartupType | None = None,
+        timeout: float = 30.0,
+        dry_run: bool | None = None,
+        notify: NotifySpec = None,
+    ) -> EnsureResult:
+        """Идемпотентно управлять службой Windows (SCM) с ожиданием переходных статусов."""
+        return await self._execute_ensure(
+            notify,
+            _ensure_windows_service,
+            name,
+            state=state,
+            startup_type=startup_type,
+            timeout=timeout,
+            dry_run=dry_run,
+        )
+
+    async def ensure_registry_key(
+        self,
+        path: str,
+        *,
+        name: str | None = None,
+        value: Any = None,
+        type: RegistryValueType | str = "String",
+        state: Literal["present", "absent"] = "present",
+        dry_run: bool | None = None,
+        notify: NotifySpec = None,
+    ) -> EnsureResult:
+        """Идемпотентно управлять разделом или параметром системного реестра Windows."""
+        return await self._execute_ensure(
+            notify,
+            _ensure_registry_key,
+            path,
+            name=name,
+            value=value,
+            type=type,
+            state=state,
+            dry_run=dry_run,
+        )
+
+    async def ensure_windows_feature(
+        self,
+        name: str | Sequence[str],
+        *,
+        state: Literal["present", "absent"] = "present",
+        include_sub_features: bool = False,
+        include_management_tools: bool = False,
+        source: str | None = None,
+        dry_run: bool | None = None,
+        notify: NotifySpec = None,
+    ) -> EnsureResult:
+        """Идемпотентно управлять ролями и компонентами Windows через ServerManager или DISM."""
+        return await self._execute_ensure(
+            notify,
+            _ensure_windows_feature,
+            name,
+            state=state,
+            include_sub_features=include_sub_features,
+            include_management_tools=include_management_tools,
+            source=source,
+            dry_run=dry_run,
         )
 
     def _can_inspect_in_dry_run(self) -> bool:
