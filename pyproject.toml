@@ -54,6 +54,9 @@ Changelog = "https://github.com/ChekirDmitry/uniconn/blob/main/FEATURES.md"
 ssh = ["asyncssh>=2.24"]
 bmc = ["pyghmi>=1.6", "niquests>=3.10"]
 pve = ["niquests>=3.10"]
+restconf = ["niquests>=3.10"]
+netconf = ["asyncssh>=2.24"]
+gnmi = ["niquests>=3.10"]
 serial = ["pyserial-asyncio>=0.6"]
 uart = ["pyserial-asyncio>=0.6"]
 telnet = ["telnetlib3>=5.0"]
@@ -105,6 +108,9 @@ kubectl = "uniconn.transports._kubectl:KubectlTransport"
 qga = "uniconn.transports.virtualization.qga:QgaTransport"
 "qemu-ga" = "uniconn.transports.virtualization.qga:QgaTransport"
 pve = "uniconn.transports.virtualization.pve:PveTransport"
+netconf = "uniconn.transports.network.netconf:NetconfTransport"
+restconf = "uniconn.transports.network.restconf:RestconfTransport"
+gnmi = "uniconn.transports.network.gnmi:GnmiTransport"
 
 [project.entry-points.pytest11]
 uniconn = "uniconn.pytest_plugin"

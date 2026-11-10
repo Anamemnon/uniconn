@@ -151,6 +151,9 @@ Every transport is represented via a standardized, human-readable URI with autom
 | Transport | URI Scheme | Real-World Example |
 | :--- | :--- | :--- |
 | **SSH** | `ssh://` | `ssh://admin:env://SSH_PASS@node-01:22?key_file=/path/id_ed25519&proxy=bastion&keepalive=30` |
+| **NETCONF** | `netconf://` | `netconf://admin:env://NET_PASS@router-01:830?vendor=junos&version=1.1` |
+| **RESTCONF** | `restconf://` | `restconf://admin:env://NET_PASS@router-01/restconf?verify_tls=false&format=json` |
+| **gNMI** | `gnmi://` | `gnmi://admin:env://NET_PASS@spine-01:9339?encoding=json_ietf&origin=openconfig` |
 | **Windows Remote**| `winrm://` | `winrm://Administrator:env://WIN_PASS@win-server:5986?ssl=true&shell=ps&transport=ntlm` |
 | **Docker** | `docker://` | `docker://root@app-container?workdir=/app&shell=/bin/sh` |
 | **Podman** | `podman://` | `podman://web-container?workdir=/srv` |

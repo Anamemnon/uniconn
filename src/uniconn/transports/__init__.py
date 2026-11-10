@@ -19,6 +19,18 @@ from ._serial import SerialPortInfo, SerialTransport, list_serial_ports
 from ._winrm import WinRMTransport
 from .base import BaseTransport
 from .bmc import IPMITransport, RedfishTransport
+from .network import (
+    GnmiPath,
+    GnmiPathElem,
+    GnmiTransport,
+    GnmiWireCodec,
+    NetconfFrameCodec,
+    NetconfTransport,
+    NetconfVendorAdapter,
+    RestconfClient,
+    RestconfTransport,
+    StructuredNetworkTransport,
+)
 from .replay import (
     Cassette,
     CassetteContext,
@@ -71,6 +83,10 @@ __all__ = [
     "CassetteContext",
     "CassetteTransportProxy",
     "DockerTransport",
+    "GnmiPath",
+    "GnmiPathElem",
+    "GnmiTransport",
+    "GnmiWireCodec",
     "IPMITransport",
     "KubectlTransport",
     "LocalTransport",
@@ -81,6 +97,9 @@ __all__ = [
     "ModemMaxRetriesError",
     "ModemProtocolError",
     "ModemTransferError",
+    "NetconfFrameCodec",
+    "NetconfTransport",
+    "NetconfVendorAdapter",
     "PodmanTransport",
     "PveHttpClient",
     "PveTransport",
@@ -95,10 +114,13 @@ __all__ = [
     "RedfishTransport",
     "ReplayShellProcess",
     "ReplayTransport",
+    "RestconfClient",
+    "RestconfTransport",
     "SerialPortInfo",
     "SerialTransport",
     "ShellDialogStep",
     "SshUnixSocketChannel",
+    "StructuredNetworkTransport",
     "SyncCassetteContext",
     "VirshCommandChannel",
     "WinRMTransport",
@@ -109,3 +131,4 @@ __all__ = [
     "normalize_temp_paths",
     "parse_qga_network_interfaces",
 ]
+

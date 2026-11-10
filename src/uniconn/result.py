@@ -247,3 +247,167 @@ class PingResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class NetResult:
+    """Структурированный результат сетевой операции (NETCONF / RESTCONF / gNMI)."""
+
+    ok: bool
+    data: Any = None
+    text: str = ""
+    raw: bytes = b""
+    operation: str = ""
+    datastore: str | None = None
+    protocol: str = ""
+    duration: float = 0.0
+    errors: list[dict[str, Any]] = field(default_factory=list)
+    host: str | None = None
+    message_id: str | None = None
+    timestamp: datetime = field(default_factory=datetime.now)
+
+    def __bool__(self) -> bool:
+        """Позволяет использовать NetResult в условных выражениях (``if await conn.net.get(...):``)."""
+        return self.ok
+
+    @property
+    def stdout(self) -> str:
+        """Алиас для совместимости с текстовым конвейером."""
+        return self.text
+
+    def json(self) -> Any:
+        """Вернуть структурированные данные или распарсить ``text`` как JSON."""
+        if self.data is not None and not isinstance(self.data, str | bytes):
+            return _serialize_parsed_value(self.data)
+        return json_module.loads(self.text)
+
+    def raise_for_status(self) -> None:
+        """Выбросить ``ExecutionError``, если операция завершилась с ошибкой (``not self.ok``)."""
+        from .exceptions import ExecutionError
+
+        if not self.ok:
+            err_msg = (
+                "; ".join(
+                    str(e.get("error-message") or e.get("message") or e)
+                    for e in self.errors
+                )
+                if self.errors
+                else (self.text or f"Network operation {self.operation!r} failed")
+            )
+            raise ExecutionError(
+                err_msg,
+                command=f"{self.protocol}:{self.operation}",
+                exit_code=1,
+                stdout=self.text,
+                stderr=err_msg,
+                host=self.host,
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Преобразовать ``NetResult`` в сериализуемый словарь."""
+        import base64
+
+        return {
+            "ok": self.ok,
+            "data": _serialize_parsed_value(self.data),
+            "text": self.text,
+            "raw_base64": (
+                base64.b64encode(self.raw).decode("ascii") if self.raw else ""
+            ),
+            "operation": self.operation,
+            "datastore": self.datastore,
+            "protocol": self.protocol,
+            "duration": round(self.duration, 6),
+            "errors": list(self.errors),
+            "host": self.host,
+            "message_id": self.message_id,
+            "timestamp": self.timestamp.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "NetResult":
+        """Восстановить ``NetResult`` из сериализованного словаря."""
+        import base64
+        import binascii
+
+        raw_b64 = payload.get("raw_base64")
+        if isinstance(raw_b64, str) and raw_b64:
+            try:
+                raw_bytes = base64.b64decode(raw_b64.encode("ascii"), validate=True)
+            except (binascii.Error, ValueError):
+                raw_bytes = raw_b64.encode("utf-8")
+        else:
+            raw_bytes = str(payload.get("text") or "").encode("utf-8")
+        ts_raw = payload.get("timestamp")
+        ts = datetime.fromisoformat(ts_raw) if isinstance(ts_raw, str) else datetime.now()
+        return cls(
+            ok=bool(payload.get("ok", True)),
+            data=payload.get("data"),
+            text=str(payload.get("text") or ""),
+            raw=raw_bytes,
+            operation=str(payload.get("operation") or ""),
+            datastore=payload.get("datastore"),
+            protocol=str(payload.get("protocol") or ""),
+            duration=float(payload.get("duration") or 0.0),
+            errors=list(payload.get("errors") or []),
+            host=payload.get("host"),
+            message_id=payload.get("message_id"),
+            timestamp=ts,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TelemetrySample:
+    """Сэмпл потоковой сетевой телеметрии (gNMI Subscribe / NETCONF Notification / RESTCONF SSE)."""
+
+    path: str
+    values: dict[str, Any] = field(default_factory=dict)
+    timestamp: int = 0
+    prefix: str = ""
+    deletes: list[str] = field(default_factory=list)
+    sync_response: bool = False
+    protocol: str = ""
+    host: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Преобразовать сэмпл телеметрии в сериализуемый словарь."""
+        return {
+            "path": self.path,
+            "values": _serialize_parsed_value(self.values),
+            "timestamp": self.timestamp,
+            "prefix": self.prefix,
+            "deletes": list(self.deletes),
+            "sync_response": self.sync_response,
+            "protocol": self.protocol,
+            "host": self.host,
+        }
+
+    def to_json(self) -> str:
+        """Сериализовать сэмпл телеметрии в компактную JSON-строку."""
+        return json_module.dumps(self.to_dict(), ensure_ascii=False)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "TelemetrySample":
+        """Восстановить ``TelemetrySample`` из словаря."""
+        raw_vals = payload.get("values")
+        return cls(
+            path=str(payload.get("path") or ""),
+            values=dict(raw_vals) if isinstance(raw_vals, dict) else {},
+            timestamp=int(payload.get("timestamp") or 0),
+            prefix=str(payload.get("prefix") or ""),
+            deletes=[str(x) for x in (payload.get("deletes") or [])],
+            sync_response=bool(payload.get("sync_response", False)),
+            protocol=str(payload.get("protocol") or ""),
+            host=payload.get("host"),
+        )
+
+
+__all__ = [
+    "EnsureResult",
+    "NetResult",
+    "PingResult",
+    "Result",
+    "SyncResult",
+    "TelemetrySample",
+]
+
+
+

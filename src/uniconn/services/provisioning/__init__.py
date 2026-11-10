@@ -63,6 +63,7 @@ from .system import (
     resolve_user_home,
     transform_authorized_keys,
 )
+from .yang import ensure_yang
 
 __all__ = [
     "PACKAGE_STRATEGIES",
@@ -102,6 +103,7 @@ __all__ = [
     "ensure_sysctl",
     "ensure_systemd_unit",
     "ensure_user",
+    "ensure_yang",
     "extract_stat_mode",
     "finalize_ensure_with_notify",
     "get_owner_group",

@@ -59,6 +59,9 @@ from .system import (
 from .system import (
     resolve_user_home as _resolve_user_home,
 )
+from .yang import (
+    ensure_yang as _ensure_yang,
+)
 
 if TYPE_CHECKING:
     from ...core.connection import Connection
@@ -103,13 +106,14 @@ class StateManagementService:
     async def _execute_ensure(
         self,
         notify: NotifySpec,
-        operation: Callable[..., Awaitable[EnsureResult]],
+        op_fn: Callable[..., Awaitable[EnsureResult]],
+        /,
         *args: Any,
         **kwargs: Any,
     ) -> EnsureResult:
         """Провалидировать ``notify`` до старта операции, выполнить её и диспетчеризовать уведомления."""
         entries = normalize_notify_spec(notify)
-        res = await operation(self, *args, **kwargs)
+        res = await op_fn(self, *args, **kwargs)
         if not entries:
             return res
         return await finalize_ensure_with_notify(
@@ -420,3 +424,33 @@ class StateManagementService:
             sudo=sudo,
             dry_run=dry_run,
         )
+
+    async def ensure_yang(
+        self,
+        path: str,
+        data: Mapping[str, Any] | str | bytes | None = None,
+        *,
+        datastore: str = "candidate",
+        operation: Literal["merge", "replace"] = "merge",
+        state: Literal["present", "absent"] = "present",
+        auto_commit: bool = True,
+        validate: bool = False,
+        dry_run: bool | None = None,
+        notify: NotifySpec = None,
+    ) -> EnsureResult:
+        """Идемпотентно управлять состоянием узла YANG-конфигурации (NETCONF / RESTCONF / gNMI)."""
+        return await self._execute_ensure(
+            notify,
+            _ensure_yang,
+            path,
+            data,
+            datastore=datastore,
+            operation=operation,
+            state=state,
+            auto_commit=auto_commit,
+            validate=validate,
+            dry_run=dry_run,
+        )
+
+    ensure_yang_config = ensure_yang
+

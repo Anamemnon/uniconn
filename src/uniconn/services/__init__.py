@@ -18,6 +18,7 @@ from .facts import (
     parse_facts_output,
 )
 from .files import DirectorySynchronizer, FileOperationsService
+from .network import NetworkOperationsService
 from .provisioning import (
     PACKAGE_STRATEGIES,
     SERVICE_STRATEGIES,
@@ -35,6 +36,7 @@ from .provisioning import (
     SysVStrategy,
     UniversalServiceStrategy,
     ZypperStrategy,
+    ensure_yang,
 )
 from .remote_path import RemotePath, RemoteStatResult, SyncRemotePath
 from .templates import TemplateEngine, render_template
@@ -60,6 +62,7 @@ __all__ = [
     "FileSourceSpec",
     "HostFacts",
     "NetworkInterface",
+    "NetworkOperationsService",
     "NotificationBatch",
     "NotifySpec",
     "OpenRCStrategy",
@@ -77,7 +80,9 @@ __all__ = [
     "UniversalServiceStrategy",
     "ZypperStrategy",
     "diff_facts",
+    "ensure_yang",
     "parse_facts_output",
     "render_template",
 ]
+
 

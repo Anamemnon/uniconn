@@ -21,6 +21,7 @@ from ..result import Result
 from ..services.facts import FactCollector
 from ..services.facts_models import FactSpec, HostFacts
 from ..services.files import FileOperationsService
+from ..services.network import NetworkOperationsService
 from ..services.provisioning import StateManagementService
 from ..services.remote_path import RemotePath
 from ..services.templates import render_template as render_template
@@ -101,6 +102,7 @@ class Connection:
         self.files = FileOperationsService(self)
         self.state = StateManagementService(self)
         self.tunnels = TunnelService(self)
+        self.net = NetworkOperationsService(self)
         self._facts_collector = FactCollector(self)
         self._python_worker = RemotePythonWorker(self)
 

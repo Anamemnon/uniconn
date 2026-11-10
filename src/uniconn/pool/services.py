@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..core.bridge import pool_fan_out_dict
 from ..services.files import FileOperationsService
+from ..services.network import NetworkOperationsService
 from ..services.provisioning import StateManagementService
 
 if TYPE_CHECKING:
@@ -251,10 +252,44 @@ class PoolStateManagementService:
     ensure_sysctl = pool_fan_out_dict(
         StateManagementService.ensure_sysctl, conn_attr="state"
     )
+    ensure_yang = pool_fan_out_dict(
+        StateManagementService.ensure_yang, conn_attr="state"
+    )
+    ensure_yang_config = pool_fan_out_dict(
+        StateManagementService.ensure_yang_config, conn_attr="state"
+    )
+
+
+class PoolNetworkOperationsService:
+    """Доменный сервис структурированных сетевых операций для ``ConnectionPool`` (``pool.net``)."""
+
+    def __init__(self, pool: ConnectionPool) -> None:
+        """Инициализировать сетевой сервис пула подключений."""
+        self._pool = pool
+
+    get = pool_fan_out_dict(NetworkOperationsService.get, conn_attr="net")
+    get_config = pool_fan_out_dict(NetworkOperationsService.get_config, conn_attr="net")
+    edit = pool_fan_out_dict(NetworkOperationsService.edit, conn_attr="net")
+    commit = pool_fan_out_dict(NetworkOperationsService.commit, conn_attr="net")
+    commit_confirm = pool_fan_out_dict(
+        NetworkOperationsService.commit_confirm, conn_attr="net"
+    )
+    discard_changes = pool_fan_out_dict(
+        NetworkOperationsService.discard_changes, conn_attr="net"
+    )
+    validate = pool_fan_out_dict(NetworkOperationsService.validate, conn_attr="net")
+    lock = pool_fan_out_dict(NetworkOperationsService.lock, conn_attr="net")
+    unlock = pool_fan_out_dict(NetworkOperationsService.unlock, conn_attr="net")
+    capabilities = pool_fan_out_dict(
+        NetworkOperationsService.capabilities, conn_attr="net"
+    )
+    rpc = pool_fan_out_dict(NetworkOperationsService.rpc, conn_attr="net")
 
 
 __all__ = [
     "PoolFileOperationsService",
+    "PoolNetworkOperationsService",
     "PoolNotificationBatch",
     "PoolStateManagementService",
 ]
+

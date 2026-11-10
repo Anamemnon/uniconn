@@ -4,6 +4,7 @@
 from .connection_pool import ConnectionPool, PoolTarget
 from .services import (
     PoolFileOperationsService,
+    PoolNetworkOperationsService,
     PoolNotificationBatch,
     PoolStateManagementService,
 )
@@ -13,6 +14,7 @@ from .stream_mux import PoolStreamMultiplexer
 __all__ = [
     "ConnectionPool",
     "PoolFileOperationsService",
+    "PoolNetworkOperationsService",
     "PoolNotificationBatch",
     "PoolStateManagementService",
     "PoolStreamMultiplexer",
@@ -20,3 +22,4 @@ __all__ = [
     "SSHSessionPool",
     "_PooledConnectionSlot",
 ]
+

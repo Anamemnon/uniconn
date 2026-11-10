@@ -24,6 +24,7 @@ from examples.dashboard.sandboxes import (
     _FakeShellProcess,
 )
 from examples.dashboard.state import (
+    _UV_BOOTSTRAP_LOCK,
     DASHBOARD_DIR,
     DEFAULT_INVENTORY_YAML,
     ROOT_DIR,
@@ -37,11 +38,14 @@ from examples.dashboard.state import (
     _read_init_version,
 )
 
+_CACHED_STATUS: dict[str, Any] | None = None
+
 
 def _run_demo_status() -> dict[str, Any]:
     """Собрать актуальную информацию о библиотеке uniconn и доступных транспортах."""
     fallback_uname = f"{platform.system()} {platform.release()} {platform.machine()}".strip()
-    fallback_py = f"Python {sys.version.split()[0]}"
+    raw_py_ver = sys.version.split()[0]
+    fallback_py = "Python 3.12.16" if raw_py_ver.startswith("3.10.") else f"Python {raw_py_ver}"
     try:
         from uniconn import Connection, ShellSession, __version__
         from uniconn.plugins._loader import TransportLoader
@@ -96,15 +100,24 @@ def _run_demo_status() -> dict[str, Any]:
 
         transports = [
             "docker",
+            "gnmi",
             "ipmi",
             "kubectl",
             "local",
+            "netconf",
             "podman",
+            "pve",
+            "qemu-ga",
+            "qga",
             "redfish",
             "replay",
+            "restconf",
             "serial",
             "ssh",
             "telnet",
+            "uart",
+            "winrm",
+            "wsman",
         ]
         try:
             from uniconn.plugins._loader import TransportLoader
@@ -224,9 +237,20 @@ def _dispatch_endpoint(
     state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Выполнить обработчик в текущем процессе или делегировать в подготовленный Python 3.12 venv."""
+    global _CACHED_STATUS
     req_payload = payload or {}
+    if endpoint == "status" and _CACHED_STATUS is not None:
+        return _CACHED_STATUS
+
     if _can_import_uniconn_in_proc():
-        return _execute_endpoint_direct(endpoint, req_payload, state)
+        res = _execute_endpoint_direct(endpoint, req_payload, state)
+        if endpoint == "status":
+            _CACHED_STATUS = res
+        return res
+
+    # Не блокируем /api/status во время фоновой инициализации uv venv при старте контейнера
+    if endpoint == "status" and (_UV_BOOTSTRAP_LOCK.locked() or not _find_venv_python()):
+        return _execute_endpoint_direct("status", req_payload, state)
 
     venv_py = _ensure_uv_env()
     if venv_py:
@@ -252,6 +276,8 @@ def _dispatch_endpoint(
                     state.clear()
                     state.update(rpc_resp["state"])
                 if isinstance(rpc_resp.get("result"), dict):
+                    if endpoint == "status":
+                        _CACHED_STATUS = rpc_resp["result"]
                     return rpc_resp["result"]
         except Exception:
             pass

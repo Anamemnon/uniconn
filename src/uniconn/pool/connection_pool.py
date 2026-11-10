@@ -22,9 +22,13 @@ from ..config.models import ConnectionConfig
 from ..core.bridge import pool_fan_out_dict
 from ..core.connection import Connection, _resolve_rate_limiter, format_command
 from ..core.resilience import CircuitBreaker, RateLimiter
-from ..result import EnsureResult, PingResult, Result
+from ..result import EnsureResult, NetResult, PingResult, Result
 from ..services.facts_models import FactsDiffReport, FactSpec, diff_facts
-from .services import PoolFileOperationsService, PoolStateManagementService
+from .services import (
+    PoolFileOperationsService,
+    PoolNetworkOperationsService,
+    PoolStateManagementService,
+)
 from .stream_mux import PoolStreamMultiplexer
 
 if TYPE_CHECKING:
@@ -74,6 +78,7 @@ class ConnectionPool:
         self._stream_mux = PoolStreamMultiplexer(self)
         self.files = PoolFileOperationsService(self)
         self.state = PoolStateManagementService(self)
+        self.net = PoolNetworkOperationsService(self)
         self._rate_limiter = _resolve_rate_limiter(rate_limit, {})
         self._circuit_breaker_enabled = circuit_breaker
         self._failure_threshold = failure_threshold
@@ -365,7 +370,7 @@ class ConnectionPool:
         """Определить, является ли результат выполнения на хосте неуспешным для батчевой раскатки."""
         if isinstance(val, BaseException):
             return True
-        if isinstance(val, Result | EnsureResult):
+        if isinstance(val, Result | EnsureResult | NetResult):
             return not val.ok
         if isinstance(val, PingResult):
             return not val.alive

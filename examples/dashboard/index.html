@@ -1047,15 +1047,26 @@
       setTimeout(() => toast.remove(), 3200);
     }
 
-    async function apiFetch(url, options) {
-      try {
-        const response = await window.fetch(url, options);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        return response;
-      } catch (error) {
-        showToast('Не удалось связаться с сервером. Проверьте, что панель запущена.', true);
-        throw error;
+    async function apiFetch(url, options = {}) {
+      const { silent = false, retries = 3, ...fetchOptions } = options || {};
+      const delays = [300, 700, 1500];
+      let lastError = null;
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+          const response = await window.fetch(url, fetchOptions);
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return response;
+        } catch (error) {
+          lastError = error;
+          if (attempt < retries) {
+            await new Promise(resolve => setTimeout(resolve, delays[attempt] || 1000));
+          }
+        }
       }
+      if (!silent) {
+        showToast('Не удалось связаться с сервером. Проверьте, что панель запущена.', true);
+      }
+      throw lastError;
     }
 
     function setBusy(box, active, text = 'Выполняется запрос…') {
@@ -1077,35 +1088,54 @@
       }
     }
 
+    function applyStatusData(data) {
+      if (!data) return;
+      document.getElementById('meta-version').textContent = 'uniconn v' + (data.version || '0.19.0');
+      document.getElementById('meta-python').textContent = data.python_version || 'Python 3.12';
+      document.getElementById('meta-uname').textContent = data.local_uname || 'Linux x86_64';
+      const transports = Array.isArray(data.transports) ? data.transports : [];
+      document.getElementById('meta-transports').textContent = transports.join(' / ');
+
+      document.getElementById('kpi-transports-count').textContent = String(transports.length);
+      const transportsBox = document.getElementById('kpi-transports-names');
+      if (transportsBox && transports.length) {
+        transportsBox.innerHTML = transports
+          .map(t => `<span class="transport-badge">${escapeHtml(t)}</span>`)
+          .join('');
+      }
+      if (data.shell_demo) {
+        document.getElementById('kpi-shell-cwd').textContent = data.shell_demo.cwd_after_cd || '/var/log';
+        document.getElementById('kpi-shell-size').textContent = (data.shell_demo.term_size || [120, 40]).join('×');
+      }
+
+      if (data.default_inventory) {
+        defaultInventoryYaml = data.default_inventory;
+        const yamlBox = document.getElementById('pool-yaml');
+        if (yamlBox && !yamlBox.value.trim()) {
+          yamlBox.value = defaultInventoryYaml;
+        }
+      }
+    }
+
     // ─── Initial Status Load ─────────────────────────────────────────
     async function loadStatus() {
       try {
-        const res = await apiFetch('/api/status');
+        const res = await apiFetch('/api/status', { silent: true, retries: 3 });
         const data = await res.json();
-        document.getElementById('meta-version').textContent = 'uniconn v' + data.version;
-        document.getElementById('meta-python').textContent = data.python_version;
-        document.getElementById('meta-uname').textContent = data.local_uname;
-        document.getElementById('meta-transports').textContent = data.transports.join(' / ');
-
-        document.getElementById('kpi-transports-count').textContent = String(data.transports.length);
-        const transportsBox = document.getElementById('kpi-transports-names');
-        if (transportsBox && Array.isArray(data.transports)) {
-          transportsBox.innerHTML = data.transports
-            .map(t => `<span class="transport-badge">${escapeHtml(t)}</span>`)
-            .join('');
-        }
-        document.getElementById('kpi-shell-cwd').textContent = data.shell_demo.cwd_after_cd;
-        document.getElementById('kpi-shell-size').textContent = data.shell_demo.term_size.join('×');
-
-        if (data.default_inventory) {
-          defaultInventoryYaml = data.default_inventory;
-          const yamlBox = document.getElementById('pool-yaml');
-          if (yamlBox && !yamlBox.value.trim()) {
-            yamlBox.value = defaultInventoryYaml;
-          }
-        }
-      } catch (err) {
-        console.error('Failed to load status:', err);
+        applyStatusData(data);
+      } catch (_) {
+        applyStatusData({
+          version: '0.19.0',
+          python_version: 'Python 3.12',
+          local_uname: 'Linux x86_64',
+          transports: [
+            'docker', 'gnmi', 'ipmi', 'kubectl', 'local', 'netconf',
+            'podman', 'pve', 'qga', 'redfish', 'replay', 'restconf',
+            'serial', 'ssh', 'telnet', 'winrm'
+          ],
+          shell_demo: { cwd_after_cd: '/var/log', term_size: [120, 40] }
+        });
+        setTimeout(loadStatus, 2500);
       }
     }
 

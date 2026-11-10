@@ -53,6 +53,9 @@ class URIParser:
         "pve": 8006,
         "qga": 22,
         "qemu-ga": 22,
+        "netconf": 830,
+        "restconf": 443,
+        "gnmi": 9339,
     }
 
     @classmethod
@@ -213,7 +216,7 @@ class URIParser:
         port = parsed.port
         if port is None and transport in cls.DEFAULT_PORTS:
             if (
-                transport == "redfish"
+                transport in ("redfish", "restconf")
                 and str(options.get("scheme", "https")).lower() == "http"
             ):
                 port = 80
@@ -225,6 +228,15 @@ class URIParser:
                 port = 5986
             else:
                 port = cls.DEFAULT_PORTS[transport]
+        if transport == "restconf" and parsed.path and parsed.path != "/":
+            clean_path = "/" + unquote(parsed.path).strip("/")
+            if clean_path.endswith("/data"):
+                clean_path = clean_path[: -len("/data")] or "/restconf"
+            elif clean_path.endswith("/operations"):
+                clean_path = clean_path[: -len("/operations")] or "/restconf"
+            options.setdefault("root", clean_path)
+        if transport == "netconf" and "version" in options:
+            options["version"] = str(options["version"])
         key_file = str(options.pop("key_file")) if "key_file" in options else None
         raw_passphrase = options.pop("passphrase", None)
         passphrase = (
@@ -562,6 +574,15 @@ class URIParser:
                 uri = f"{uri}?{query}"
             return uri
 
+        opts = dict(options) if options else {}
+        path_suffix = ""
+        if transport == "restconf" and "root" in opts:
+            root_val = str(opts.pop("root")).strip()
+            if root_val and root_val.lower() not in ("auto", "/auto"):
+                path_suffix = "/" + root_val.strip("/")
+            elif root_val:
+                opts["root"] = "auto"
+
         auth = ""
         if username and password:
             auth = f"{quote(username, safe='')}:{quote(password, safe='')}@"
@@ -570,10 +591,10 @@ class URIParser:
 
         port_str = f":{port}" if port else ""
 
-        uri = f"{transport}://{auth}{host or ''}{port_str}"
+        uri = f"{transport}://{auth}{host or ''}{port_str}{path_suffix}"
 
-        if options:
-            query = "&".join(f"{k}={v}" for k, v in options.items())
+        if opts:
+            query = "&".join(f"{k}={v}" for k, v in opts.items())
             uri = f"{uri}?{query}"
 
         return uri

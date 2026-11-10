@@ -9,10 +9,21 @@ from typing import TYPE_CHECKING, Any, Self
 
 from ..background._diagnostic import DiagnosticResult, DiagnosticSession
 from ..background._models import LogMatchEvent, StallEvent
-from ..core.bridge import EventLoopPortal, SyncProxyMixin, sync_context, sync_method
-from ..pool.services import PoolFileOperationsService, PoolStateManagementService
+from ..core.bridge import (
+    EventLoopPortal,
+    SyncProxyMixin,
+    sync_context,
+    sync_iter,
+    sync_method,
+)
+from ..pool.services import (
+    PoolFileOperationsService,
+    PoolNetworkOperationsService,
+    PoolStateManagementService,
+)
 from ..services.facts_models import FactsDiffReport, HostFacts
 from ..services.files import FileOperationsService
+from ..services.network import NetworkOperationsService
 from ..services.provisioning import StateManagementService
 from ..services.remote_path import RemotePath, SyncRemotePath
 from ..services.tunnels import TunnelService
@@ -104,6 +115,8 @@ class SyncStateManagementService(SyncProxyMixin):
     ensure_authorized_key = sync_method(StateManagementService.ensure_authorized_key)
     ensure_systemd_unit = sync_method(StateManagementService.ensure_systemd_unit)
     ensure_sysctl = sync_method(StateManagementService.ensure_sysctl)
+    ensure_yang = sync_method(StateManagementService.ensure_yang)
+    ensure_yang_config = sync_method(StateManagementService.ensure_yang_config)
 
 
 class SyncTunnelService(SyncProxyMixin):
@@ -122,6 +135,36 @@ class SyncTunnelService(SyncProxyMixin):
 
     forward_local_port = sync_context(TunnelService.forward_local_port, cast_fn=int)
     forward_remote_port = sync_context(TunnelService.forward_remote_port, cast_fn=int)
+
+
+class SyncNetworkOperationsService(SyncProxyMixin):
+    """Синхронное отражение доменного сервиса ``NetworkOperationsService`` (``sync_conn.net``)."""
+
+    def __init__(self, sync_conn: SyncConnection) -> None:
+        self._sync_conn = sync_conn
+
+    @property
+    def _async_target(self) -> NetworkOperationsService:
+        return self._sync_conn._async_conn.net
+
+    @property
+    def _portal(self) -> EventLoopPortal:
+        return self._sync_conn._portal
+
+    get = sync_method(NetworkOperationsService.get)
+    get_config = sync_method(NetworkOperationsService.get_config)
+    edit = sync_method(NetworkOperationsService.edit)
+    commit = sync_method(NetworkOperationsService.commit)
+    commit_confirm = sync_method(NetworkOperationsService.commit_confirm)
+    discard_changes = sync_method(NetworkOperationsService.discard_changes)
+    validate = sync_method(NetworkOperationsService.validate)
+    lock = sync_method(NetworkOperationsService.lock)
+    unlock = sync_method(NetworkOperationsService.unlock)
+    capabilities = sync_method(NetworkOperationsService.capabilities)
+    rpc = sync_method(NetworkOperationsService.rpc)
+    subscribe = sync_iter(NetworkOperationsService.subscribe)
+    locked = sync_context(NetworkOperationsService.locked)
+    transaction = sync_context(NetworkOperationsService.transaction)
 
 
 class SyncPoolFileOperationsService(SyncProxyMixin):
@@ -185,6 +228,35 @@ class SyncPoolStateManagementService(SyncProxyMixin):
     )
     ensure_systemd_unit = sync_method(PoolStateManagementService.ensure_systemd_unit)
     ensure_sysctl = sync_method(PoolStateManagementService.ensure_sysctl)
+    ensure_yang = sync_method(PoolStateManagementService.ensure_yang)
+    ensure_yang_config = sync_method(PoolStateManagementService.ensure_yang_config)
+
+
+class SyncPoolNetworkOperationsService(SyncProxyMixin):
+    """Синхронное отражение ``PoolNetworkOperationsService`` (``sync_pool.net``)."""
+
+    def __init__(self, sync_pool: SyncConnectionPool) -> None:
+        self._sync_pool = sync_pool
+
+    @property
+    def _async_target(self) -> PoolNetworkOperationsService:
+        return self._sync_pool._async_pool.net
+
+    @property
+    def _portal(self) -> EventLoopPortal:
+        return self._sync_pool._portal
+
+    get = sync_method(PoolNetworkOperationsService.get)
+    get_config = sync_method(PoolNetworkOperationsService.get_config)
+    edit = sync_method(PoolNetworkOperationsService.edit)
+    commit = sync_method(PoolNetworkOperationsService.commit)
+    commit_confirm = sync_method(PoolNetworkOperationsService.commit_confirm)
+    discard_changes = sync_method(PoolNetworkOperationsService.discard_changes)
+    validate = sync_method(PoolNetworkOperationsService.validate)
+    lock = sync_method(PoolNetworkOperationsService.lock)
+    unlock = sync_method(PoolNetworkOperationsService.unlock)
+    capabilities = sync_method(PoolNetworkOperationsService.capabilities)
+    rpc = sync_method(PoolNetworkOperationsService.rpc)
 
 
 class SyncDiagnosticSession(SyncProxyMixin):
@@ -270,8 +342,11 @@ class SyncDiagnosticSession(SyncProxyMixin):
 __all__ = [
     "SyncDiagnosticSession",
     "SyncFileOperationsService",
+    "SyncNetworkOperationsService",
     "SyncPoolFileOperationsService",
+    "SyncPoolNetworkOperationsService",
     "SyncPoolStateManagementService",
     "SyncStateManagementService",
     "SyncTunnelService",
 ]
+

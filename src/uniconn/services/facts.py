@@ -239,6 +239,76 @@ class FactCollector:
         cassette = getattr(tr, "cassette", None)
         return getattr(cassette, "transport", "") == "redfish"
 
+    def _is_network_structured_connection(self) -> bool:
+        """Проверить, является ли целевое соединение структурированным сетевым транспортом (netconf/restconf/gnmi)."""
+        net_names = {"netconf", "restconf", "gnmi"}
+        if self._conn.config.transport in net_names:
+            return True
+        tr = self._conn.transport
+        if getattr(tr, "name", "") in net_names or hasattr(tr, "gather_network_native_facts"):
+            return True
+        wrapped = getattr(tr, "_wrapped", None) or getattr(tr, "_inner", None)
+        if getattr(wrapped, "name", "") in net_names or hasattr(wrapped, "gather_network_native_facts"):
+            return True
+        cassette = getattr(tr, "cassette", None)
+        return getattr(cassette, "transport", "") in net_names
+
+    async def _gather_network_structured_facts(
+        self,
+        *,
+        default_host: str,
+        timeout: float | None = None,
+    ) -> HostFacts:
+        """Собрать ``HostFacts`` из YANG-моделей ``ietf-interfaces`` / ``openconfig-interfaces``."""
+        from ..transports.network.base import extract_yang_interfaces_and_system
+
+        tr: Any = getattr(self._conn, "transport", None)
+        wrapped: Any = getattr(tr, "_wrapped", None) or getattr(tr, "_inner", None)
+        can_replay = hasattr(tr, "_can_replay") and tr._can_replay()
+
+        net_data: dict[str, Any] = {}
+        if not can_replay and hasattr(tr, "gather_network_native_facts"):
+            net_data = await tr.gather_network_native_facts(timeout=timeout)
+        elif not can_replay and hasattr(wrapped, "gather_network_native_facts"):
+            if not wrapped.is_connected:
+                await wrapped.connect()
+            net_data = await wrapped.gather_network_native_facts(timeout=timeout)
+        else:
+            res = await self._conn.net.get("", timeout=timeout)
+            extracted = extract_yang_interfaces_and_system(res.data)
+            net_data = {
+                "protocol": self._conn.transport_name,
+                "hostname": extracted.get("hostname"),
+                "os_version": extracted.get("os_version"),
+                "interfaces": extracted.get("interfaces", []),
+                "raw_data": res.data,
+            }
+
+        hostname = str(net_data.get("hostname") or default_host)
+        vendor = str(net_data.get("vendor") or "NetworkOS")
+        os_ver = str(net_data.get("os_version") or vendor)
+        ifaces: list[NetworkInterface] = []
+        for item in net_data.get("interfaces") or []:
+            if not isinstance(item, Mapping) or not item.get("name"):
+                continue
+            ifaces.append(
+                NetworkInterface(
+                    name=str(item["name"]),
+                    mac=str(item.get("mac") or ""),
+                    ipv4=[str(x) for x in (item.get("ipv4") or [])],
+                    ipv6=[str(x) for x in (item.get("ipv6") or [])],
+                    state=str(item.get("state") or "UP"),
+                    mtu=int(item.get("mtu") or 1500),
+                )
+            )
+        return HostFacts(
+            hostname=hostname,
+            os_family="NetworkOS",
+            distro=os_ver,
+            interfaces=ifaces,
+            custom={"net": net_data},
+        )
+
     def _is_windows_connection(self) -> bool:
         """Проверить, является ли целевое соединение WinRM/WSMan (включая Cassette/Replay)."""
         return _is_windows_remote_connection(self._conn)
@@ -269,7 +339,11 @@ class FactCollector:
 
         default_host = self._conn.config.host or "localhost"
         if self._conn.dry_run:
-            os_fam = "Windows" if self._is_windows_connection() else "Unknown"
+            os_fam = (
+                "Windows"
+                if self._is_windows_connection()
+                else ("NetworkOS" if self._is_network_structured_connection() else "Unknown")
+            )
             facts = HostFacts(os_family=os_fam, hostname=default_host)
             self.cached = facts
             self._cached_at = time.monotonic()
@@ -286,6 +360,11 @@ class FactCollector:
                     raise_on_error=False,
                 )
                 facts = parse_redfish_facts(res.stdout, default_host=default_host)
+            elif self._is_network_structured_connection():
+                facts = await self._gather_network_structured_facts(
+                    default_host=default_host,
+                    timeout=timeout,
+                )
             elif self._is_windows_connection():
                 win_res = await self._conn.run(
                     WINDOWS_FACT_POWERSHELL_SCRIPT,

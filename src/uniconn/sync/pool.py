@@ -20,7 +20,11 @@ from ..core.bridge import (
 from ..core.connection import Connection
 from ..core.resilience import CircuitBreaker, RateLimiter
 from ..pool.connection_pool import ConnectionPool
-from .services import SyncPoolFileOperationsService, SyncPoolStateManagementService
+from .services import (
+    SyncPoolFileOperationsService,
+    SyncPoolNetworkOperationsService,
+    SyncPoolStateManagementService,
+)
 
 if TYPE_CHECKING:
     from .connection import SyncConnection
@@ -36,6 +40,7 @@ class SyncConnectionPool(SyncProxyMixin):
     ``sync_pool.gather_facts``), а также доменные пространства имён:
         - ``sync_pool.files`` (``SyncPoolFileOperationsService``)
         - ``sync_pool.state`` (``SyncPoolStateManagementService``)
+        - ``sync_pool.net`` (``SyncPoolNetworkOperationsService``)
     """
 
     def __init__(self, async_pool: ConnectionPool) -> None:
@@ -44,6 +49,7 @@ class SyncConnectionPool(SyncProxyMixin):
         self._portal = EventLoopPortal(owner_name="SyncConnectionPool")
         self.files = SyncPoolFileOperationsService(self)
         self.state = SyncPoolStateManagementService(self)
+        self.net = SyncPoolNetworkOperationsService(self)
 
     @property
     def _closed(self) -> bool:

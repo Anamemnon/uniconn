@@ -45,6 +45,9 @@ class TransportLoader:
             "qga": ("..transports.virtualization.qga", "QgaTransport"),
             "qemu-ga": ("..transports.virtualization.qga", "QgaTransport"),
             "pve": ("..transports.virtualization.pve", "PveTransport"),
+            "netconf": ("..transports.network.netconf", "NetconfTransport"),
+            "restconf": ("..transports.network.restconf", "RestconfTransport"),
+            "gnmi": ("..transports.network.gnmi", "GnmiTransport"),
         }
         if transport_name in builtin_fallbacks and transport_name not in eps.names:
             from importlib import import_module
@@ -94,6 +97,9 @@ class TransportLoader:
             "qga",
             "qemu-ga",
             "pve",
+            "netconf",
+            "restconf",
+            "gnmi",
         ):
             if builtin_name not in names:
                 names.append(builtin_name)

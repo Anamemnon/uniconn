@@ -32,6 +32,7 @@ from ..transports.base import BaseTransport
 from .services import (
     SyncDiagnosticSession,
     SyncFileOperationsService,
+    SyncNetworkOperationsService,
     SyncStateManagementService,
     SyncTunnelService,
 )
@@ -53,6 +54,7 @@ class SyncConnection(SyncProxyMixin):
         - ``sync_conn.files`` (``SyncFileOperationsService``)
         - ``sync_conn.state`` (``SyncStateManagementService``)
         - ``sync_conn.tunnels`` (``SyncTunnelService``)
+        - ``sync_conn.net`` (``SyncNetworkOperationsService``)
     """
 
     def __init__(self, async_conn: Connection) -> None:
@@ -69,6 +71,7 @@ class SyncConnection(SyncProxyMixin):
         self.files = SyncFileOperationsService(self)
         self.state = SyncStateManagementService(self)
         self.tunnels = SyncTunnelService(self)
+        self.net = SyncNetworkOperationsService(self)
 
     # ─── Фабричные методы и клонирование (ParamSpec-дескрипторы) ───
 

@@ -71,6 +71,7 @@ def serve_dev_dashboard(port: int = 3000) -> None:
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 
@@ -85,20 +86,26 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                 return {}
 
         def _is_cross_site_request(self) -> bool:
-            sec_site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
-            if sec_site == "cross-site":
-                return True
             origin = (self.headers.get("Origin") or "").strip()
             if origin:
                 if origin.lower() == "null":
                     return True
                 parsed_origin = urlparse(origin)
                 origin_host = (parsed_origin.hostname or "").lower()
+                if origin_host.endswith((".run.app", ".googleusercontent.com", ".google.com")):
+                    return False
                 host_header = (self.headers.get("Host") or "").split(":", 1)[0].strip().lower()
-                allowed_hosts = {host_header, "localhost", "127.0.0.1", "0.0.0.0"}
+                fwd_host = (self.headers.get("X-Forwarded-Host") or "").split(":", 1)[0].strip().lower()
+                allowed_hosts = {host_header, fwd_host, "localhost", "127.0.0.1", "0.0.0.0"}
                 if origin_host and origin_host not in allowed_hosts:
                     return True
             return False
+
+        def do_OPTIONS(self) -> None:
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.end_headers()
 
         def do_GET(self) -> None:
             try:

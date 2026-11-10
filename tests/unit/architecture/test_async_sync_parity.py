@@ -12,9 +12,14 @@ from uniconn import (
     ConnectionPool,
     FileOperationsService,
     Flow,
+    MockGnmiServer,
+    MockNetconfServer,
+    MockRestconfServer,
     MockSSHServer,
     MockTelnetServer,
+    NetworkOperationsService,
     PoolFileOperationsService,
+    PoolNetworkOperationsService,
     PoolStateManagementService,
     RemotePath,
     ShellSession,
@@ -23,9 +28,14 @@ from uniconn import (
     SyncConnectionPool,
     SyncFileOperationsService,
     SyncFlow,
+    SyncMockGnmiServer,
+    SyncMockNetconfServer,
+    SyncMockRestconfServer,
     SyncMockSSHServer,
     SyncMockTelnetServer,
+    SyncNetworkOperationsService,
     SyncPoolFileOperationsService,
+    SyncPoolNetworkOperationsService,
     SyncPoolStateManagementService,
     SyncRemotePath,
     SyncShellSession,
@@ -92,14 +102,19 @@ def test_domain_services_async_sync_parity() -> None:
         (FileOperationsService, SyncFileOperationsService),
         (StateManagementService, SyncStateManagementService),
         (TunnelService, SyncTunnelService),
+        (NetworkOperationsService, SyncNetworkOperationsService),
         (PoolFileOperationsService, SyncPoolFileOperationsService),
         (PoolStateManagementService, SyncPoolStateManagementService),
+        (PoolNetworkOperationsService, SyncPoolNetworkOperationsService),
         (ShellSession, SyncShellSession),
         (ConnectionPool, SyncConnectionPool),
         (RemotePath, SyncRemotePath),
         (Flow, SyncFlow),
         (MockSSHServer, SyncMockSSHServer),
         (MockTelnetServer, SyncMockTelnetServer),
+        (MockNetconfServer, SyncMockNetconfServer),
+        (MockRestconfServer, SyncMockRestconfServer),
+        (MockGnmiServer, SyncMockGnmiServer),
     ]
     for async_cls, sync_cls in pairs:
         async_m = _public_methods(async_cls) - _ASYNC_ONLY_METHODS
@@ -120,6 +135,7 @@ def test_sync_and_facade_methods_use_descriptors_without_boilerplate() -> None:
     """Методы сервисов в Pool* и Sync* используют типизированные дескрипторы вместо копипасты."""
     assert isinstance(PoolFileOperationsService.__dict__["checksum"], _PoolFanOutDictDescriptor)
     assert isinstance(PoolStateManagementService.__dict__["ensure_package"], _PoolFanOutDictDescriptor)
+    assert isinstance(PoolNetworkOperationsService.__dict__["get"], _PoolFanOutDictDescriptor)
     assert isinstance(ConnectionPool.__dict__["gather_facts"], _PoolFanOutDictDescriptor)
 
     assert isinstance(SyncConnection.__dict__["run"], _SyncMethodDescriptor)
@@ -128,8 +144,12 @@ def test_sync_and_facade_methods_use_descriptors_without_boilerplate() -> None:
     assert isinstance(SyncFileOperationsService.__dict__["upload"], _SyncMethodDescriptor)
     assert isinstance(SyncStateManagementService.__dict__["ensure_user"], _SyncMethodDescriptor)
     assert isinstance(SyncTunnelService.__dict__["forward_local_port"], _SyncContextDescriptor)
+    assert isinstance(SyncNetworkOperationsService.__dict__["get"], _SyncMethodDescriptor)
+    assert isinstance(SyncNetworkOperationsService.__dict__["subscribe"], _SyncIterDescriptor)
+    assert isinstance(SyncNetworkOperationsService.__dict__["transaction"], _SyncContextDescriptor)
     assert isinstance(SyncPoolFileOperationsService.__dict__["checksum"], _SyncMethodDescriptor)
     assert isinstance(SyncPoolStateManagementService.__dict__["ensure_package"], _SyncMethodDescriptor)
+    assert isinstance(SyncPoolNetworkOperationsService.__dict__["get"], _SyncMethodDescriptor)
     assert isinstance(SyncConnectionPool.__dict__["map"], _SyncMethodDescriptor)
 
 

@@ -8,7 +8,9 @@ from .pool import SyncConnectionPool
 from .services import (
     SyncDiagnosticSession,
     SyncFileOperationsService,
+    SyncNetworkOperationsService,
     SyncPoolFileOperationsService,
+    SyncPoolNetworkOperationsService,
     SyncPoolStateManagementService,
     SyncStateManagementService,
     SyncTunnelService,
@@ -21,10 +23,13 @@ __all__ = [
     "SyncDiagnosticSession",
     "SyncFileOperationsService",
     "SyncFlow",
+    "SyncNetworkOperationsService",
     "SyncPoolFileOperationsService",
+    "SyncPoolNetworkOperationsService",
     "SyncPoolStateManagementService",
     "SyncRemotePath",
     "SyncShellSession",
     "SyncStateManagementService",
     "SyncTunnelService",
 ]
+
