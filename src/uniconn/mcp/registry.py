@@ -23,7 +23,7 @@ from ..hooks import (
 from .models import MCPHostEntry, MCPSecurityPolicy
 
 _QUERY_SECRET_RE = re.compile(
-    r"((?:password|passphrase|sudo_password|token|secret|key)=)([^&\s]+)",
+    r"((?:password|passphrase|sudo_password|token_secret|token|secret|key)=)([^&\s]+)",
     re.IGNORECASE,
 )
 
@@ -33,7 +33,8 @@ def mask_uri_secrets(uri: str) -> str:
     if not uri:
         return uri
     try:
-        parts = urlsplit(uri)
+        norm_uri = URIParser._normalize_inline_secret_in_userinfo(uri)
+        parts = urlsplit(norm_uri)
         netloc = parts.netloc
         if "@" in netloc:
             userinfo, hostinfo = netloc.rsplit("@", 1)

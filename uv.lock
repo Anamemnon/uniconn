@@ -2160,6 +2160,9 @@ parsing = [
     { name = "textfsm" },
     { name = "ttp" },
 ]
+pve = [
+    { name = "niquests" },
+]
 serial = [
     { name = "pyserial-asyncio" },
 ]
@@ -2203,6 +2206,7 @@ requires-dist = [
     { name = "niquests", marker = "extra == 'all'", specifier = ">=3.10" },
     { name = "niquests", marker = "extra == 'bmc'", specifier = ">=3.10" },
     { name = "niquests", marker = "extra == 'dev'", specifier = ">=3.10" },
+    { name = "niquests", marker = "extra == 'pve'", specifier = ">=3.10" },
     { name = "ntc-templates", marker = "extra == 'parsing'", specifier = ">=7.0.0" },
     { name = "opentelemetry-api", marker = "extra == 'dev'", specifier = ">=1.25" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.25" },
@@ -2240,7 +2244,7 @@ requires-dist = [
     { name = "textfsm", marker = "extra == 'parsing'", specifier = ">=1.1.3" },
     { name = "ttp", marker = "extra == 'parsing'", specifier = ">=0.9.0" },
 ]
-provides-extras = ["all", "bmc", "cli", "dev", "otel", "parsing", "serial", "ssh", "telnet", "templates", "uart", "winrm", "wsman"]
+provides-extras = ["all", "bmc", "cli", "dev", "otel", "parsing", "pve", "serial", "ssh", "telnet", "templates", "uart", "winrm", "wsman"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "uniconn", extras = ["dev"] }]

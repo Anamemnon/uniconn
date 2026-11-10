@@ -143,6 +143,9 @@ from .mcp import (
 )
 from .mock import (
     CassetteInteractionMatcher,
+    MockPveResponse,
+    MockPveServer,
+    MockQgaServer,
     MockRequestEvent,
     MockServerConfig,
     MockSFTPFile,
@@ -285,8 +288,19 @@ from .transports.serial_protocols import (
     compute_crc16,
 )
 from .transports.ssh import OpenSSHConfigParser, SFTPClientAdapter, SSHJumpChainManager
+from .transports.virtualization import (
+    LocalUnixSocketChannel,
+    PveHttpClient,
+    PveTransport,
+    QgaChannelProtocol,
+    QgaProtocolClient,
+    QgaTransport,
+    SshUnixSocketChannel,
+    VirshCommandChannel,
+    parse_qga_network_interfaces,
+)
 
-__version__ = "0.18.0"
+__version__ = "0.19.0"
 
 
 def __getattr__(name: str) -> Any:
@@ -396,6 +410,7 @@ __all__ = [  # noqa: RUF022
     "KubectlTransport",
     "LocalFileHandler",
     "LocalTransport",
+    "LocalUnixSocketChannel",
     "LogConfig",
     "LogHandler",
     "LogMatchEvent",
@@ -409,6 +424,9 @@ __all__ = [  # noqa: RUF022
     "MCPServer",
     "MCPToolDefinition",
     "MetricsCollector",
+    "MockPveResponse",
+    "MockPveServer",
+    "MockQgaServer",
     "MockRequestEvent",
     "MockSFTPFile",
     "MockSFTPServer",
@@ -451,6 +469,11 @@ __all__ = [  # noqa: RUF022
     "PoolStateManagementService",
     "PoolStreamMultiplexer",
     "PosixMarkerProtocol",
+    "PveHttpClient",
+    "PveTransport",
+    "QgaChannelProtocol",
+    "QgaProtocolClient",
+    "QgaTransport",
     "RateLimitMiddleware",
     "RateLimiter",
     "RecordMode",
@@ -485,6 +508,7 @@ __all__ = [  # noqa: RUF022
     "ShellStdinProtocol",
     "ShellStdoutProtocol",
     "SpanProtocol",
+    "SshUnixSocketChannel",
     "StallEvent",
     "StateManagementService",
     "StreamHandler",
@@ -526,6 +550,7 @@ __all__ = [  # noqa: RUF022
     "URIParser",
     "UniconnCassetteFixture",
     "UniconnError",
+    "VirshCommandChannel",
     "WinRMTransport",
     "WindowsJobBackend",
     "ZmodemSubprocessAdapter",
@@ -552,6 +577,7 @@ __all__ = [  # noqa: RUF022
     "normalize_temp_paths",
     "otel_tracing_hook",
     "parse_output",
+    "parse_qga_network_interfaces",
     "render_template",
     "require_capability",
     "resolve_backend",

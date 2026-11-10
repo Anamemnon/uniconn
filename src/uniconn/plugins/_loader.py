@@ -42,6 +42,9 @@ class TransportLoader:
             "uart": ("..transports._serial", "SerialTransport"),
             "winrm": ("..transports._winrm", "WinRMTransport"),
             "wsman": ("..transports._winrm", "WinRMTransport"),
+            "qga": ("..transports.virtualization.qga", "QgaTransport"),
+            "qemu-ga": ("..transports.virtualization.qga", "QgaTransport"),
+            "pve": ("..transports.virtualization.pve", "PveTransport"),
         }
         if transport_name in builtin_fallbacks and transport_name not in eps.names:
             from importlib import import_module
@@ -88,6 +91,9 @@ class TransportLoader:
             "uart",
             "winrm",
             "wsman",
+            "qga",
+            "qemu-ga",
+            "pve",
         ):
             if builtin_name not in names:
                 names.append(builtin_name)

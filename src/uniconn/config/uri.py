@@ -13,6 +13,9 @@
     - docker://[user@]container[/workdir]
     - podman://[user@]container[/workdir]
     - kubectl://[namespace/]pod[?container=name&context=ctx]
+    - qga://[user[:password]@][host[:port]]/socket_or_vm[?backend=socket&socket=/path]
+    - qemu-ga://[user[:password]@][host[:port]]/socket_or_vm[?backend=socket&socket=/path]
+    - pve://[user[@realm][:password]@]host[:8006][/vmid][?node=pve1&token_id=id&secret=...]
     - replay:///path/to/cassette.yaml
 
 Логин и пароль при парсинге подвергаются percent-decoding (unquote),
@@ -23,6 +26,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 from urllib.parse import ParseResult, parse_qs, quote, unquote, urlparse
 
@@ -30,6 +34,10 @@ from ..exceptions import ConfigurationError
 
 if TYPE_CHECKING:
     from .models import ConnectionConfig
+
+_INLINE_SECRET_URI_RE = re.compile(
+    r"^([a-zA-Z][a-zA-Z0-9+.-]*://[^/?#:]*:)(env|file)://([^@/?#]+)(@.*)$"
+)
 
 
 class URIParser:
@@ -42,7 +50,20 @@ class URIParser:
         "redfish": 443,
         "winrm": 5985,
         "wsman": 5985,
+        "pve": 8006,
+        "qga": 22,
+        "qemu-ga": 22,
     }
+
+    @classmethod
+    def _normalize_inline_secret_in_userinfo(cls, uri: str) -> str:
+        """Экранировать ``env://`` и ``file://`` внутри пароля в userinfo перед ``urlparse``."""
+        match = _INLINE_SECRET_URI_RE.match(uri)
+        if not match:
+            return uri
+        prefix, secret_scheme, secret_target, suffix = match.groups()
+        encoded_secret = f"{secret_scheme}%3A%2F%2F{quote(secret_target, safe='')}"
+        return f"{prefix}{encoded_secret}{suffix}"
 
     @classmethod
     def parse(cls, uri: str) -> ConnectionConfig:
@@ -58,7 +79,8 @@ class URIParser:
             ConfigurationError: Если URI некорректен (наследуется от ValueError)
 
         """
-        parsed = urlparse(uri)
+        normalized_uri = cls._normalize_inline_secret_in_userinfo(uri)
+        parsed = urlparse(normalized_uri)
 
         if not parsed.scheme:
             raise ConfigurationError(
@@ -81,6 +103,12 @@ class URIParser:
 
         if transport == "kubectl":
             return cls._parse_kubectl(parsed)
+
+        if transport in ("qga", "qemu-ga"):
+            return cls._parse_qga(parsed, transport)
+
+        if transport == "pve":
+            return cls._parse_pve(parsed)
 
         return cls._parse_network(parsed, transport)
 
@@ -299,6 +327,131 @@ class URIParser:
         )
 
     @classmethod
+    def _parse_qga(cls, parsed: ParseResult, transport: str) -> ConnectionConfig:
+        """Парсинг qga:// и qemu-ga:// URI (локальный сокет, SSH-туннель к сокету, virsh)."""
+        from pydantic import SecretStr
+
+        from .models import ConnectionConfig
+
+        options = cls._parse_options(parsed.query)
+        key_file = str(options.pop("key_file")) if "key_file" in options else None
+        raw_passphrase = options.pop("passphrase", None)
+        passphrase = (
+            SecretStr(str(raw_passphrase)) if raw_passphrase is not None else None
+        )
+        raw_query_password = options.pop("password", None)
+        password_val = (
+            SecretStr(unquote(parsed.password))
+            if parsed.password
+            else (
+                SecretStr(str(raw_query_password))
+                if raw_query_password is not None
+                else None
+            )
+        )
+        ssh_config: str | bool | None = None
+        if "ssh_config" in options:
+            raw_ssh_cfg = options["ssh_config"]
+            ssh_config = (
+                raw_ssh_cfg if isinstance(raw_ssh_cfg, bool) else str(raw_ssh_cfg)
+            )
+
+        # Случай 1: qga:///path/to/socket.sock (без сетевого хоста гипервизора)
+        if not parsed.netloc:
+            socket_path = unquote(parsed.path) if parsed.path else ""
+            if socket_path:
+                options.setdefault("socket", socket_path)
+            elif "socket" in options:
+                socket_path = str(options["socket"])
+            options.setdefault("backend", "socket")
+            return ConnectionConfig(
+                transport=transport,
+                host=socket_path or "localhost",
+                port=None,
+                username=None,
+                password=None,
+                options=options,
+            )
+
+        # Случай 2: qga://[user@]hypervisor[:port]/vm-name[?socket=...&backend=...]
+        path_trimmed = unquote(parsed.path.strip("/")) if parsed.path else ""
+        if path_trimmed:
+            options.setdefault("vm", path_trimmed)
+            options.setdefault("domain", path_trimmed)
+
+        port = parsed.port
+        if port is None and parsed.hostname not in (None, "", "localhost", "127.0.0.1"):
+            port = cls.DEFAULT_PORTS.get(transport, 22)
+
+        return ConnectionConfig(
+            transport=transport,
+            host=parsed.hostname,
+            port=port,
+            username=unquote(parsed.username) if parsed.username else None,
+            password=password_val,
+            key_file=key_file,
+            passphrase=passphrase,
+            ssh_config=ssh_config,
+            options=options,
+        )
+
+    @classmethod
+    def _parse_pve(cls, parsed: ParseResult) -> ConnectionConfig:
+        """Парсинг pve://[user[@realm][!token_id][:password]@]host[:8006][/vmid][?node=...&token_id=...&secret=...]."""
+        from pydantic import SecretStr
+
+        from .models import ConnectionConfig
+
+        options = cls._parse_options(parsed.query)
+        port = parsed.port if parsed.port is not None else cls.DEFAULT_PORTS["pve"]
+
+        raw_user = unquote(parsed.username) if parsed.username else None
+        username: str | None = raw_user
+        if raw_user and "!" in raw_user:
+            user_part, token_part = raw_user.split("!", 1)
+            username = user_part or None
+            if token_part and "token_id" not in options:
+                options["token_id"] = token_part
+
+        if username and "@" in username:
+            _, realm_part = username.rsplit("@", 1)
+            if realm_part and "realm" not in options:
+                options["realm"] = realm_part
+        elif username and "realm" in options:
+            username = f"{username}@{options['realm']}"
+
+        raw_query_password = options.pop("password", None)
+        password_str = (
+            unquote(parsed.password)
+            if parsed.password
+            else (str(raw_query_password) if raw_query_password is not None else None)
+        )
+        if (
+            password_str is not None
+            and "token_id" in options
+            and "secret" not in options
+            and "token_secret" not in options
+        ):
+            options["secret"] = password_str
+
+        password_val = SecretStr(password_str) if password_str is not None else None
+
+        path_trimmed = unquote(parsed.path.strip("/")) if parsed.path else ""
+        if path_trimmed:
+            vmid_token = path_trimmed.split("/")[-1]
+            if vmid_token and "vmid" not in options:
+                options["vmid"] = int(vmid_token) if vmid_token.isdigit() else vmid_token
+
+        return ConnectionConfig(
+            transport="pve",
+            host=parsed.hostname,
+            port=port,
+            username=username,
+            password=password_val,
+            options=options,
+        )
+
+    @classmethod
     def _parse_options(cls, query: str) -> dict[str, Any]:
         """Парсинг query строки в словарь опций."""
         if not query:
@@ -366,6 +519,48 @@ class URIParser:
                 query = "&".join(f"{k}={v}" for k, v in opts.items())
                 return f"kubectl://{target}?{query}"
             return f"kubectl://{target}"
+
+        if transport in ("qga", "qemu-ga"):
+            opts = dict(options) if options else {}
+            if (host and host.startswith("/")) or (not host and "socket" in opts):
+                sock_path = host if (host and host.startswith("/")) else str(opts.pop("socket", ""))
+                opts.pop("socket", None)
+                if opts.get("backend") == "socket":
+                    opts.pop("backend", None)
+                if opts:
+                    query = "&".join(f"{k}={v}" for k, v in opts.items())
+                    return f"{transport}://{sock_path}?{query}"
+                return f"{transport}://{sock_path}"
+            vm_name = opts.pop("vm", None) or opts.pop("domain", None)
+            opts.pop("domain", None)
+            auth = ""
+            if username and password:
+                auth = f"{quote(username, safe='')}:{quote(password, safe='')}@"
+            elif username:
+                auth = f"{quote(username, safe='')}@"
+            port_str = f":{port}" if port else ""
+            vm_suffix = f"/{vm_name}" if vm_name else ""
+            uri = f"{transport}://{auth}{host or ''}{port_str}{vm_suffix}"
+            if opts:
+                query = "&".join(f"{k}={v}" for k, v in opts.items())
+                uri = f"{uri}?{query}"
+            return uri
+
+        if transport == "pve":
+            opts = dict(options) if options else {}
+            vmid = opts.pop("vmid", None)
+            auth = ""
+            if username and password:
+                auth = f"{quote(username, safe='@!')}:{quote(password, safe='')}@"
+            elif username:
+                auth = f"{quote(username, safe='@!')}@"
+            port_str = f":{port}" if port else ""
+            vmid_suffix = f"/{vmid}" if vmid is not None else ""
+            uri = f"pve://{auth}{host or ''}{port_str}{vmid_suffix}"
+            if opts:
+                query = "&".join(f"{k}={v}" for k, v in opts.items())
+                uri = f"{uri}?{query}"
+            return uri
 
         auth = ""
         if username and password:

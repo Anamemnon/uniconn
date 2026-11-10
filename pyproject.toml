@@ -53,6 +53,7 @@ Changelog = "https://github.com/ChekirDmitry/uniconn/blob/main/FEATURES.md"
 [project.optional-dependencies]
 ssh = ["asyncssh>=2.24"]
 bmc = ["pyghmi>=1.6", "niquests>=3.10"]
+pve = ["niquests>=3.10"]
 serial = ["pyserial-asyncio>=0.6"]
 uart = ["pyserial-asyncio>=0.6"]
 telnet = ["telnetlib3>=5.0"]
@@ -101,6 +102,9 @@ replay = "uniconn.transports.replay:ReplayTransport"
 docker = "uniconn.transports._docker:DockerTransport"
 podman = "uniconn.transports._docker:PodmanTransport"
 kubectl = "uniconn.transports._kubectl:KubectlTransport"
+qga = "uniconn.transports.virtualization.qga:QgaTransport"
+"qemu-ga" = "uniconn.transports.virtualization.qga:QgaTransport"
+pve = "uniconn.transports.virtualization.pve:PveTransport"
 
 [project.entry-points.pytest11]
 uniconn = "uniconn.pytest_plugin"

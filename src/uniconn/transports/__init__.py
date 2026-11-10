@@ -49,6 +49,17 @@ from .serial_protocols import (
     compute_checksum8,
     compute_crc16,
 )
+from .virtualization import (
+    LocalUnixSocketChannel,
+    PveHttpClient,
+    PveTransport,
+    QgaChannelProtocol,
+    QgaProtocolClient,
+    QgaTransport,
+    SshUnixSocketChannel,
+    VirshCommandChannel,
+    parse_qga_network_interfaces,
+)
 
 __all__ = [
     "AsyncXmodemReceiver",
@@ -63,6 +74,7 @@ __all__ = [
     "IPMITransport",
     "KubectlTransport",
     "LocalTransport",
+    "LocalUnixSocketChannel",
     "ModemCancelledError",
     "ModemChecksumMismatchError",
     "ModemHandshakeTimeoutError",
@@ -70,6 +82,11 @@ __all__ = [
     "ModemProtocolError",
     "ModemTransferError",
     "PodmanTransport",
+    "PveHttpClient",
+    "PveTransport",
+    "QgaChannelProtocol",
+    "QgaProtocolClient",
+    "QgaTransport",
     "RecordMode",
     "RecordedExecInteraction",
     "RecordedFsInteraction",
@@ -81,11 +98,14 @@ __all__ = [
     "SerialPortInfo",
     "SerialTransport",
     "ShellDialogStep",
+    "SshUnixSocketChannel",
     "SyncCassetteContext",
+    "VirshCommandChannel",
     "WinRMTransport",
     "ZmodemSubprocessAdapter",
     "compute_checksum8",
     "compute_crc16",
     "list_serial_ports",
     "normalize_temp_paths",
+    "parse_qga_network_interfaces",
 ]

@@ -44,6 +44,18 @@ class ConnectionConfig(BaseModel):
             baud = self.port or self.options.get("baudrate")
             suffix = f":{baud}" if baud else ""
             return f"{self.transport}://{dev}{suffix}"
+        if self.transport in ("qga", "qemu-ga"):
+            if self.host and self.host.startswith("/"):
+                return f"{self.transport}://{self.host}"
+            user_prefix = f"{self.username}@" if self.username else ""
+            port_part = f":{self.port}" if self.port else ""
+            vm_part = f"/{self.options['vm']}" if self.options.get("vm") else ""
+            return f"{self.transport}://{user_prefix}{self.host or 'localhost'}{port_part}{vm_part}"
+        if self.transport == "pve":
+            user_prefix = f"{self.username}@" if self.username else ""
+            port_part = f":{self.port}" if self.port else ""
+            vmid_part = f"/{self.options['vmid']}" if self.options.get("vmid") is not None else ""
+            return f"pve://{user_prefix}{self.host}:{self.port or 8006}{vmid_part}"
         if self.password:
             return f"{self.transport}://{self.username}@{self.host}:{self.port}"
         return f"{self.transport}://{self.host}:{self.port}"

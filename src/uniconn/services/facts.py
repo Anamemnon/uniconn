@@ -47,15 +47,15 @@ def _collect_windows_local_facts(default_host: str) -> HostFacts:
 
 
 def _is_windows_remote_connection(conn: Connection) -> bool:
-    """Проверить, является ли подключение удалённым Windows-хостом (winrm/wsman, включая Cassette)."""
+    """Проверить, является ли подключение удалённым Windows-хостом (winrm/wsman/qga/pve, включая Cassette)."""
     cfg = getattr(conn, "config", None)
     if getattr(cfg, "transport", "") in ("winrm", "wsman"):
         return True
     tr = getattr(conn, "transport", None)
-    if getattr(tr, "name", "") in ("winrm", "wsman"):
+    if getattr(tr, "name", "") in ("winrm", "wsman") or bool(getattr(tr, "_is_windows", False)):
         return True
     wrapped = getattr(tr, "_wrapped", None) or getattr(tr, "_inner", None)
-    if getattr(wrapped, "name", "") in ("winrm", "wsman"):
+    if getattr(wrapped, "name", "") in ("winrm", "wsman") or bool(getattr(wrapped, "_is_windows", False)):
         return True
     cassette = getattr(tr, "cassette", None)
     return getattr(cassette, "transport", "") in ("winrm", "wsman")
@@ -295,6 +295,11 @@ class FactCollector:
                 facts = parse_windows_facts_output(
                     win_res.stdout, default_host=default_host
                 )
+                await self._enrich_with_qga_native_facts(
+                    facts,
+                    default_host=default_host,
+                    timeout=timeout,
+                )
             else:
                 worker = getattr(self._conn, "_python_worker", None)
                 worker_facts: HostFacts | None = None
@@ -331,6 +336,11 @@ class FactCollector:
                             )
                             if win_facts.os_family == "Windows":
                                 facts = win_facts
+                    await self._enrich_with_qga_native_facts(
+                        facts,
+                        default_host=default_host,
+                        timeout=timeout,
+                    )
         else:
             facts = HostFacts(hostname=default_host)
 
@@ -346,6 +356,109 @@ class FactCollector:
             self.cached = facts
             self._cached_at = time.monotonic()
         return facts
+
+    async def _enrich_with_qga_native_facts(
+        self,
+        facts: HostFacts,
+        *,
+        default_host: str,
+        timeout: float | None = None,
+    ) -> None:
+        """Обогатить ``HostFacts`` нативными RPC-данными QEMU Guest Agent (для ``qga://`` и ``pve://``)."""
+        tr: Any = getattr(self._conn, "transport", None)
+        wrapped: Any = getattr(tr, "_wrapped", None) or getattr(tr, "_inner", None)
+        target_tr: Any = wrapped if hasattr(wrapped, "gather_qga_native_facts") else tr
+        if not hasattr(target_tr, "gather_qga_native_facts"):
+            return
+
+        with contextlib.suppress(Exception):
+            qga_data = await target_tr.gather_qga_native_facts(timeout=timeout or 5.0)
+            if not isinstance(qga_data, dict) or not qga_data:
+                return
+
+            tr_name = getattr(target_tr, "name", "qga")
+            custom_key = "pve" if tr_name == "pve" else "qga"
+            facts.custom[custom_key] = qga_data
+
+            qga_hn = str(qga_data.get("hostname") or "").strip()
+            if qga_hn and facts.hostname in ("localhost", default_host, "Unknown", ""):
+                facts.hostname = qga_hn
+
+            osinfo = qga_data.get("osinfo")
+            if isinstance(osinfo, dict) and osinfo:
+                if facts.distro == "Unknown":
+                    facts.distro = str(
+                        osinfo.get("pretty-name") or osinfo.get("name") or "Unknown"
+                    )
+                if facts.kernel == "Unknown" and osinfo.get("kernel-release"):
+                    facts.kernel = str(osinfo["kernel-release"])
+                if facts.arch == "Unknown" and osinfo.get("machine"):
+                    facts.arch = str(osinfo["machine"])
+                if facts.os_family == "Unknown":
+                    os_id = str(osinfo.get("id") or "").lower()
+                    if "mswindows" in os_id:
+                        facts.os_family = "Windows"
+                    elif os_id:
+                        from .facts_models import _detect_os_family
+
+                        facts.os_family = _detect_os_family({"ID": os_id}, "Linux")
+
+            vcpus = qga_data.get("vcpus")
+            if isinstance(vcpus, list) and vcpus and facts.cpu_count <= 1:
+                facts.cpu_count = len(vcpus)
+
+            native_ifaces = qga_data.get("interfaces")
+            if isinstance(native_ifaces, list) and native_ifaces:
+                by_name = {iface.name: iface for iface in facts.interfaces}
+                for item in native_ifaces:
+                    if not isinstance(item, dict) or not item.get("name"):
+                        continue
+                    if_name = str(item["name"])
+                    if if_name in by_name:
+                        existing = by_name[if_name]
+                        if not existing.mac or existing.mac == "00:00:00:00:00:00":
+                            existing.mac = str(item.get("mac") or existing.mac)
+                        for ip4 in item.get("ipv4") or []:
+                            if ip4 not in existing.ipv4:
+                                existing.ipv4.append(str(ip4))
+                        for ip6 in item.get("ipv6") or []:
+                            if ip6 not in existing.ipv6:
+                                existing.ipv6.append(str(ip6))
+                    else:
+                        new_iface = NetworkInterface(
+                            name=if_name,
+                            mac=str(item.get("mac") or ""),
+                            ipv4=[str(x) for x in (item.get("ipv4") or [])],
+                            ipv6=[str(x) for x in (item.get("ipv6") or [])],
+                            state=str(item.get("state") or "UP"),
+                            mtu=int(item.get("mtu") or 1500),
+                        )
+                        facts.interfaces.append(new_iface)
+                        by_name[if_name] = new_iface
+
+            fsinfo = qga_data.get("fsinfo")
+            if isinstance(fsinfo, list) and fsinfo and not facts.disks:
+                for fs in fsinfo:
+                    if not isinstance(fs, dict):
+                        continue
+                    mount = str(fs.get("mountpoint") or "")
+                    if not mount:
+                        continue
+                    total_b = int(fs.get("total-bytes") or 0)
+                    used_b = int(fs.get("used-bytes") or 0)
+                    avail_b = max(0, total_b - used_b)
+                    pct = round((used_b / total_b) * 100.0, 1) if total_b > 0 else 0.0
+                    facts.disks.append(
+                        DiskInfo(
+                            device=str(fs.get("name") or mount),
+                            mountpoint=mount,
+                            fstype=str(fs.get("type") or ""),
+                            total_bytes=total_b,
+                            used_bytes=used_b,
+                            available_bytes=avail_b,
+                            use_percent=pct,
+                        )
+                    )
 
     @staticmethod
     def _parse_custom_value(raw: str, parse_json: bool) -> Any:
