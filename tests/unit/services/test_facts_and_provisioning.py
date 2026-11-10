@@ -417,11 +417,12 @@ class TestIdempotentEnsureMethods:
             )
             conn.run = run_mock  # type: ignore[method-assign]
 
-            res = await conn.state.ensure_service("nginx", state="started", enabled=True)
+            res = await conn.state.ensure_service("nginx", state="started", enabled=True, manager="systemd")
             assert res.ok is True
             assert res.changed is True
             assert "start" in res.details
             assert "enable" in res.details
+
 
 
 class TestConnectionPoolStreamAndSyncPool:
