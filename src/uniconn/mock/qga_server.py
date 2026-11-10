@@ -38,11 +38,12 @@ class MockQgaServer:
         polls_before_exit: int = 1,
     ) -> None:
         self._tmp_dir: tempfile.TemporaryDirectory[str] | None = None
-        if socket_path is not None:
+        if socket_path is not None and len(str(socket_path).encode("utf-8")) <= 90:
             self.socket_path = str(socket_path)
         else:
-            self._tmp_dir = tempfile.TemporaryDirectory(prefix="uniconn_qga_")
-            self.socket_path = str(Path(self._tmp_dir.name) / "qga.sock")
+            short_base = "/tmp" if Path("/tmp").is_dir() else None
+            self._tmp_dir = tempfile.TemporaryDirectory(prefix="uqga_", dir=short_base)
+            self.socket_path = str(Path(self._tmp_dir.name) / "q.sock")
 
         self.hostname = hostname
         self.osinfo: dict[str, Any] = osinfo or {

@@ -144,14 +144,12 @@ class TestQgaTransportAndMockServer:
 
     @pytest.mark.skipif(sys.platform == "win32", reason="UNIX domain sockets test requires POSIX")
     async def test_qga_real_unix_domain_socket_handshake_and_files(self, tmp_path: Path) -> None:
-        sock_path = tmp_path / "qga_test.sock"
         large_payload = b"0123456789abcdef" * 4096  # 64 KB (> 48 KB single chunk)
 
         async with MockQgaServer(
-            socket_path=sock_path,
             files={"/etc/hostname": b"isolated-vm\n"},
         ) as server:
-            conn = Connection.from_uri(f"qga://{sock_path}")
+            conn = Connection.from_uri(f"qga://{server.socket_path}")
             async with conn:
                 content = await conn.files.read_file("/etc/hostname", encoding="utf-8")
                 assert content == "isolated-vm\n"

@@ -434,10 +434,16 @@ class VirshCommandChannel:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-                exit_code = int(proc.returncode or 0)
-                stdout = out_b.decode("utf-8", errors="replace").strip()
-                stderr = err_b.decode("utf-8", errors="replace").strip()
+                try:
+                    out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+                    exit_code = int(proc.returncode or 0)
+                    stdout = out_b.decode("utf-8", errors="replace").strip()
+                    stderr = err_b.decode("utf-8", errors="replace").strip()
+                finally:
+                    proc_tr = getattr(proc, "_transport", None)
+                    if proc_tr is not None:
+                        with contextlib.suppress(Exception):
+                            proc_tr.close()
         except builtins.TimeoutError as exc:
             raise TimeoutError(f"virsh qemu-agent-command {command!r} timed out after {timeout}s") from exc
         except Exception as exc:

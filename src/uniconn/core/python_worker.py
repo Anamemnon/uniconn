@@ -810,15 +810,21 @@ class RemotePythonWorker:
                 WORKER_BOOTSTRAP_SCRIPT,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
             )
             assert proc.stdout is not None
             raw_line = await asyncio.wait_for(proc.stdout.readline(), timeout=timeout)
             line = raw_line.decode("utf-8", errors="replace").strip()
             if WORKER_READY_MARKER not in line:
                 with contextlib.suppress(Exception):
+                    if proc.stdin is not None:
+                        proc.stdin.close()
                     proc.kill()
                     await proc.wait()
+                transport = getattr(proc, "_transport", None)
+                if transport is not None:
+                    with contextlib.suppress(Exception):
+                        transport.close()
                 self._unavailable = True
                 return False
             self._local_proc = proc
@@ -1226,14 +1232,24 @@ class RemotePythonWorker:
         return list(res or [])
 
     async def _reset_worker(self) -> None:
-        """Сбросить аварийно завершённый процесс воркера."""
+        """Сбросить аварийно завершённый процесс воркера и закрыть пайп-транспорты (Windows Proactor)."""
         self._active = False
         if self._local_proc is not None:
             proc = self._local_proc
             self._local_proc = None
+            if proc.stdin is not None:
+                with contextlib.suppress(Exception):
+                    proc.stdin.close()
             with contextlib.suppress(Exception):
-                proc.kill()
+                if proc.returncode is None:
+                    proc.kill()
                 await proc.wait()
+            transport = getattr(proc, "_transport", None)
+            if transport is not None:
+                with contextlib.suppress(Exception):
+                    transport.close()
+                with contextlib.suppress(Exception):
+                    await asyncio.sleep(0)
         if self._shell_proc is not None:
             sproc = self._shell_proc
             self._shell_proc = None
@@ -1254,6 +1270,7 @@ class RemotePythonWorker:
                         self._local_proc.stdin.write(b'{"id": 0, "op": "exit"}\n')
                         await self._local_proc.stdin.drain()
                         self._local_proc.stdin.close()
+                    await asyncio.wait_for(self._local_proc.wait(), timeout=1.0)
             if self._shell_proc is not None:
                 with contextlib.suppress(Exception):
                     self._shell_proc.stdin.write('{"id": 0, "op": "exit"}\n')

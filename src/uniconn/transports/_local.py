@@ -90,6 +90,8 @@ class _LocalShellProcess:
         with contextlib.suppress(Exception):
             await asyncio.wait_for(self._proc.wait(), timeout=1.0)
         self.close()
+        with contextlib.suppress(Exception):
+            await asyncio.sleep(0)
 
 
 def _resolve_default_shell(requested: str | None = None) -> str:
@@ -504,6 +506,8 @@ class LocalTransport(BaseTransport):
             if transport is not None:
                 with contextlib.suppress(Exception):
                     transport.close()
+                with contextlib.suppress(Exception):
+                    await asyncio.sleep(0)
 
         duration = time.monotonic() - start_time
         return (proc.returncode or 0, stdout or b"", stderr or b"", duration)
@@ -786,4 +790,6 @@ class LocalTransport(BaseTransport):
             if transport is not None:
                 with contextlib.suppress(Exception):
                     transport.close()
+                with contextlib.suppress(Exception):
+                    await asyncio.sleep(0)
 
