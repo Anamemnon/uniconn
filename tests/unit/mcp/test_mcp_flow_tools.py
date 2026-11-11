@@ -556,6 +556,12 @@ async def test_mcp_flow_registry_loads_from_python_file_and_cli_config(
     assert len(flows) == 1
     assert flows[0].name == "fleet_health"
 
+    # Загрузка через явную спецификацию file.py:attr
+    flow_reg_attr = MCPFlowRegistry.from_sources(specs=[f"{flow_file}:health_flow"])
+    flows_attr = flow_reg_attr.list_flows()
+    assert len(flows_attr) == 1
+    assert flows_attr[0].name == "fleet_health"
+
     cfg = build_mcp_client_config(
         local=True,
         hitl=True,

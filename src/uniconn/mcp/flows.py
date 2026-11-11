@@ -1110,8 +1110,17 @@ class MCPFlowRegistry:
                 loaded.extend(self._load_from_module(self._import_file(py_file), attr_name=None))
             return loaded
 
-        target_part, sep, attr_part = spec_str.partition(":")
-        attr_name = attr_part.strip() if sep and attr_part.strip() else None
+        if path_candidate.is_file():
+            return self._load_from_module(self._import_file(path_candidate), attr_name=None)
+
+        attr_name: str | None = None
+        target_part = spec_str
+        if ":" in spec_str:
+            candidate_target, _, candidate_attr = spec_str.rpartition(":")
+            if candidate_target and candidate_attr.isidentifier():
+                target_part = candidate_target
+                attr_name = candidate_attr
+
         file_candidate = Path(target_part).expanduser()
 
         if file_candidate.is_file() or target_part.endswith(".py"):
