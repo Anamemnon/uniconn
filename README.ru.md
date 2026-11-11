@@ -11,7 +11,7 @@
 
 ---
 
-### Язык: **[ 🇬🇧 English ](README.md)** &nbsp;|&nbsp; **[ 🇷🇺 Русский ]**
+### Язык: **[ English ](README.md)** &nbsp;|&nbsp; **[ Русский ]**
 
 ---
 
