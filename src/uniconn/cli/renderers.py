@@ -250,7 +250,45 @@ class CLIOutputRenderer:
             if result.stderr:
                 self.console.print("[bold red]stderr:[/bold red]")
                 self.console.print(result.stderr)
+            diag = getattr(result, "diagnostic", None)
+            if diag is not None:
+                self.render_diagnostic_summary(diag)
             sys.exit(result.exit_code)
+
+    def render_diagnostic_summary(self, diag: Any) -> None:
+        """Отрисовать панель автоматической диагностики (Self-Healing) в CLI."""
+        cat_val = getattr(diag.category, "value", str(diag.category))
+        lines: list[str] = [
+            f"[bold yellow]Category:[/bold yellow] [bold red]{cat_val}[/bold red]",
+            f"[bold yellow]Root Cause:[/bold yellow] {diag.root_cause_hint}",
+        ]
+        if diag.port_conflict is not None:
+            pc = diag.port_conflict
+            lines.append(
+                f"[bold yellow]Port Conflict:[/bold yellow] {pc.listen_address}:{pc.port}/{pc.protocol} "
+                f"(PID={pc.conflicting_pid}, process={pc.conflicting_process})"
+            )
+        v = diag.vitals
+        vital_parts: list[str] = []
+        if v.cpu_load_1m is not None:
+            vital_parts.append(f"load_1m={v.cpu_load_1m}")
+        if v.memory_available_mb is not None and v.memory_total_mb is not None:
+            vital_parts.append(f"mem={v.memory_available_mb}/{v.memory_total_mb}MB")
+        if v.disk_root_free_mb is not None:
+            vital_parts.append(f"disk_root_free={v.disk_root_free_mb}MB")
+        if vital_parts:
+            lines.append(f"[dim]Vitals: {', '.join(vital_parts)}[/dim]")
+        if diag.suggested_actions:
+            lines.append("[bold cyan]Suggested Actions:[/bold cyan]")
+            for act in diag.suggested_actions:
+                lines.append(f"  • {act}")
+        self.console.print(
+            Panel(
+                "\n".join(lines),
+                title="Auto-Diagnostic Summary",
+                border_style="yellow",
+            )
+        )
 
 
 def build_cli_pool(

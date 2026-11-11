@@ -322,6 +322,7 @@ class MCPServer:
 
         timeout = float(arguments.get("timeout", 30.0))
         cwd = arguments.get("cwd")
+        diagnose = bool(arguments.get("diagnose", True))
         raw_parse = arguments.get("parse", True)
         parse_spec: ParseSpec
         if raw_parse is True:
@@ -341,6 +342,7 @@ class MCPServer:
                 timeout=timeout,
                 sudo=sudo,
                 parse=parse_spec,
+                diagnose=diagnose,
                 raise_on_error=False,
                 **run_kwargs,
             )
@@ -351,7 +353,7 @@ class MCPServer:
                 except Exception:
                     parsed_data = None
 
-            return {
+            payload: dict[str, Any] = {
                 "host": res.host or target,
                 "command": SecretMaskingFilter._mask_string(res.command),
                 "ok": res.ok,
@@ -362,6 +364,9 @@ class MCPServer:
                 "parsed": parsed_data,
                 "dry_run": self.policy.dry_run,
             }
+            if res.diagnostic is not None:
+                payload["diagnostic"] = _sanitize_json_value(res.diagnostic.to_dict())
+            return payload
 
     async def _tool_gather_facts(self, arguments: dict[str, Any]) -> dict[str, Any]:
         target = arguments.get("target")

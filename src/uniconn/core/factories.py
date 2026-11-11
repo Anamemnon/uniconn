@@ -14,6 +14,7 @@ from ..config.inventory import InventoryLoader
 from ..config.models import ConnectionConfig
 from ..plugins._loader import TransportLoader
 from .pipeline import (
+    AutoDiagnosticMiddleware,
     CircuitBreakerMiddleware,
     ContextMiddleware,
     DryRunMiddleware,
@@ -47,6 +48,7 @@ _META_KEYS = (
     "groups",
     "rate_limit",
     "circuit_breaker",
+    "auto_diagnostics",
 )
 
 _DEFAULT_MW_TYPES = (
@@ -55,6 +57,7 @@ _DEFAULT_MW_TYPES = (
     HookMiddleware,
     DryRunMiddleware,
     ObservabilityMiddleware,
+    AutoDiagnosticMiddleware,
     CircuitBreakerMiddleware,
     RateLimitMiddleware,
     RetryMiddleware,
@@ -99,6 +102,21 @@ def _resolve_circuit_breaker(
     return None
 
 
+def _resolve_auto_diagnostics(
+    auto_diagnostics: bool | None,
+    options: Mapping[str, Any],
+) -> bool:
+    """Определить флаг ``auto_diagnostics`` из явного параметра или ``config.options``."""
+    if auto_diagnostics is not None:
+        return bool(auto_diagnostics)
+    opt_val = options.get("auto_diagnostics")
+    if isinstance(opt_val, bool):
+        return opt_val
+    if isinstance(opt_val, str):
+        return opt_val.strip().lower() in ("1", "true", "yes", "on")
+    return False
+
+
 def build_from_uri(
     cls: type[ConnT],
     uri: str,
@@ -110,6 +128,7 @@ def build_from_uri(
     on_error: Sequence[HookCallback] | None = None,
     rate_limit: float | RateLimiter | None = None,
     circuit_breaker: CircuitBreaker | bool | None = None,
+    auto_diagnostics: bool | None = None,
 ) -> ConnT:
     """Создать подключение из URI строки."""
     config = ConnectionConfig.from_uri(uri)
@@ -126,6 +145,7 @@ def build_from_uri(
         on_error=on_error,
         rate_limit=rate_limit,
         circuit_breaker=circuit_breaker,
+        auto_diagnostics=auto_diagnostics,
     )
 
 
@@ -140,6 +160,7 @@ def build_local(
     on_error: Sequence[HookCallback] | None = None,
     rate_limit: float | RateLimiter | None = None,
     circuit_breaker: CircuitBreaker | bool | None = None,
+    auto_diagnostics: bool | None = None,
     **options: Any,
 ) -> ConnT:
     """Создать подключение к локальному хосту (local://)."""
@@ -164,6 +185,7 @@ def build_local(
         on_error=on_error,
         rate_limit=rate_limit,
         circuit_breaker=circuit_breaker,
+        auto_diagnostics=auto_diagnostics,
     )
 
 
@@ -178,6 +200,7 @@ def build_from_config(
     on_error: Sequence[HookCallback] | None = None,
     rate_limit: float | RateLimiter | None = None,
     circuit_breaker: CircuitBreaker | bool | None = None,
+    auto_diagnostics: bool | None = None,
 ) -> ConnT:
     """Создать подключение из конфигурации."""
     transport_class = TransportLoader.get(config.transport)
@@ -193,6 +216,7 @@ def build_from_config(
         on_error=on_error,
         rate_limit=rate_limit,
         circuit_breaker=circuit_breaker,
+        auto_diagnostics=auto_diagnostics,
     )
 
 
@@ -208,6 +232,7 @@ def build_from_dict(
     effective_dry_run = bool(data.get("dry_run", dry_run))
     rate_limit = data.get("rate_limit")
     circuit_breaker = data.get("circuit_breaker")
+    auto_diagnostics = data.get("auto_diagnostics")
     if "uri" in data:
         conn = cls.from_uri(
             str(data["uri"]),
@@ -216,6 +241,7 @@ def build_from_dict(
             dry_run=effective_dry_run,
             rate_limit=rate_limit,
             circuit_breaker=circuit_breaker,
+            auto_diagnostics=auto_diagnostics,
         )
         overrides = {
             k: v
@@ -247,6 +273,7 @@ def build_from_dict(
         dry_run=effective_dry_run,
         rate_limit=rate_limit,
         circuit_breaker=circuit_breaker,
+        auto_diagnostics=auto_diagnostics,
     )
 
 
@@ -297,6 +324,7 @@ def clone_connection(
     dry_run: bool | None = None,
     rate_limit: float | RateLimiter | None = None,
     circuit_breaker: CircuitBreaker | bool | None = None,
+    auto_diagnostics: bool | None = None,
 ) -> ConnT:
     """Создать копию подключения с возможностью изменения параметров."""
     cfg = conn.config
@@ -339,6 +367,9 @@ def clone_connection(
         circuit_breaker=(
             conn.circuit_breaker if circuit_breaker is None else circuit_breaker
         ),
+        auto_diagnostics=(
+            conn.auto_diagnostics if auto_diagnostics is None else auto_diagnostics
+        ),
     )
     for obs in conn.operation_observers:
         attach_fn = getattr(obs, "_attach_connection", None)
@@ -373,6 +404,7 @@ def with_overrides_connection(conn: ConnT, **overrides: Any) -> ConnT:
         dry_run=overrides.get("dry_run"),
         rate_limit=overrides.get("rate_limit"),
         circuit_breaker=overrides.get("circuit_breaker"),
+        auto_diagnostics=overrides.get("auto_diagnostics"),
     )
 
 

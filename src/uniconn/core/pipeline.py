@@ -8,6 +8,7 @@ lifecycle-хуки, маскирование секретов, dry-run, логи
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import dataclasses
 import inspect
@@ -16,6 +17,7 @@ import shlex
 import sys
 import time
 from collections.abc import Awaitable, Callable, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
@@ -29,11 +31,20 @@ from tenacity import (
 
 from .._logging import log_context, log_event
 from ..exceptions import CircuitOpenError, ConnectionError, TimeoutError
-from ..result import Result
+from ..result import DiagnosticSummary, Result
+from .auto_diagnostics import (
+    DiagnosticStrategy,
+    PassiveDiagnosticStrategy,
+    resolve_diagnostic_strategy,
+)
 from .resilience import CircuitBreaker, RateLimiter
 
 if TYPE_CHECKING:
     from .connection import Connection
+
+_ACTIVE_DIAGNOSTIC_PROBE: ContextVar[bool] = ContextVar(
+    "_active_diagnostic_probe", default=False
+)
 
 HookEvent = Literal["before_run", "after_run", "on_error"]
 BeforeRunHook = Callable[..., Awaitable[None] | None]
@@ -110,6 +121,7 @@ class CommandRequest:
     output_format: Literal["text", "bytes"] = "text"
     parse: Any = None
     eager_parse: bool = False
+    diagnose: bool | None = None
     transport_kwargs: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -309,6 +321,223 @@ class ObservabilityMiddleware:
                 raise
 
 
+class AutoDiagnosticMiddleware:
+    """Атомарно собирает диагностический контекст (Self-Healing) при сбоях команд."""
+
+    def __init__(
+        self,
+        conn: Connection,
+        *,
+        enabled: bool | None = None,
+        timeout_budget: float = 2.0,
+        max_log_lines: int = 25,
+        strategy: DiagnosticStrategy | None = None,
+    ) -> None:
+        """Инициализировать AutoDiagnosticMiddleware."""
+        self._conn = conn
+        self._enabled = enabled
+        self._timeout_budget = timeout_budget
+        self._max_log_lines = max_log_lines
+        self._strategy = strategy
+
+    @property
+    def enabled(self) -> bool | None:
+        """Явный флаг активности middleware (если ``None`` — наследуется от ``conn.auto_diagnostics``)."""
+        return self._enabled
+
+    @enabled.setter
+    def enabled(self, value: bool | None) -> None:
+        self._enabled = value
+
+    @property
+    def timeout_budget(self) -> float:
+        """Максимальный бюджет времени (в секундах) на сбор диагностики."""
+        return self._timeout_budget
+
+    @timeout_budget.setter
+    def timeout_budget(self, value: float) -> None:
+        self._timeout_budget = max(0.05, float(value))
+
+    @property
+    def max_log_lines(self) -> int:
+        """Максимальное число строк релевантных логов в отчёте."""
+        return self._max_log_lines
+
+    @property
+    def _is_probing(self) -> bool:
+        """Флаг активного зондирования в текущей асинхронной задаче (защита от рекурсии)."""
+        return _ACTIVE_DIAGNOSTIC_PROBE.get()
+
+    def _known_secrets(self, request: CommandRequest) -> list[str]:
+        """Собрать известные секретные строки соединения и запроса для гарантированного редактирования."""
+        secrets: list[str] = []
+        cfg = self._conn.config
+        for val in (
+            request.sudo_password,
+            cfg.password,
+            cfg.passphrase,
+            cfg.options.get("sudo_password"),
+        ):
+            if isinstance(val, SecretStr):
+                raw = val.get_secret_value()
+                if raw:
+                    secrets.append(raw)
+            elif isinstance(val, str) and val:
+                secrets.append(val)
+        return secrets
+
+    def _scrub_summary_secrets(
+        self,
+        summary: DiagnosticSummary,
+        request: CommandRequest,
+    ) -> DiagnosticSummary:
+        """Удалить возможные вхождения сырых паролей соединения из диагностического отчёта."""
+        secrets = self._known_secrets(request)
+        if not secrets:
+            return summary
+
+        def _scrub(text: str) -> str:
+            res = text
+            for secret in secrets:
+                if secret in res:
+                    res = res.replace(secret, "***REDACTED***")
+            return res
+
+        return dataclasses.replace(
+            summary,
+            root_cause_hint=_scrub(summary.root_cause_hint),
+            relevant_logs=[_scrub(line) for line in summary.relevant_logs],
+            dmesg_tail=[_scrub(line) for line in summary.dmesg_tail],
+            suggested_actions=[_scrub(act) for act in summary.suggested_actions],
+        )
+
+    async def _collect_diagnostics(
+        self,
+        request: CommandRequest,
+        result: Result,
+    ) -> DiagnosticSummary:
+        """Собрать диагностический контекст через изолированные зонды с контролем тайм-бюджета."""
+        strategy = self._strategy or resolve_diagnostic_strategy(self._conn)
+        t0 = time.monotonic()
+        deadline = t0 + self._timeout_budget
+
+        async def _run_probe(probe_cmd: str) -> Result:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.02:
+                raise builtins.TimeoutError("Diagnostic timeout budget exhausted")
+
+            exec_cmd, effective_input = prepare_sudo_command(
+                probe_cmd,
+                sudo=request.sudo,
+                sudo_user=request.sudo_user,
+                sudo_password=request.sudo_password,
+                input_data=None,
+                config_options=self._conn.config.options,
+                config_password=self._conn.config.password,
+            )
+            probe_kwargs: dict[str, Any] = {}
+            if effective_input is not None:
+                probe_kwargs["input"] = effective_input
+
+            try:
+                return await asyncio.wait_for(
+                    self._conn.transport.run(
+                        exec_cmd,
+                        timeout=remaining,
+                        **probe_kwargs,
+                    ),
+                    timeout=remaining,
+                )
+            except builtins.TimeoutError:
+                raise
+            except Exception as exc:
+                log_event(
+                    self._conn.logger,
+                    logging.DEBUG,
+                    "diagnostic.probe_failed",
+                    f"Diagnostic probe failed: {exc}",
+                    probe_command=probe_cmd,
+                    error=str(exc),
+                )
+                return Result(
+                    exit_code=1,
+                    stdout="",
+                    stderr="",
+                    duration=0.0,
+                    command=probe_cmd,
+                    host=self._conn.config.host,
+                )
+
+        try:
+            summary = await asyncio.wait_for(
+                strategy.collect(
+                    request.command,
+                    result.stdout,
+                    result.stderr,
+                    result.exit_code,
+                    _run_probe,
+                    max_log_lines=self._max_log_lines,
+                ),
+                timeout=self._timeout_budget,
+            )
+        except builtins.TimeoutError:
+            fallback = await PassiveDiagnosticStrategy().collect(
+                request.command,
+                result.stdout,
+                result.stderr,
+                result.exit_code,
+                _run_probe,
+                max_log_lines=self._max_log_lines,
+            )
+            summary = dataclasses.replace(
+                fallback,
+                collection_duration_ms=round((time.monotonic() - t0) * 1000.0, 3),
+            )
+        return self._scrub_summary_secrets(summary, request)
+
+    async def __call__(self, request: CommandRequest, call_next: NextHandler) -> Result:
+        """Запустить сбор диагностики при ``result.exit_code != 0`` и активном ``diagnose``."""
+        result = await call_next(request)
+
+        if (
+            not isinstance(result, Result)
+            or result.ok
+            or request.sensitive
+            or request.dry_run
+            or request.output_format == "bytes"
+            or _ACTIVE_DIAGNOSTIC_PROBE.get()
+        ):
+            return result
+
+        effective_diagnose = (
+            request.diagnose
+            if request.diagnose is not None
+            else (
+                self._enabled
+                if self._enabled is not None
+                else getattr(self._conn, "auto_diagnostics", False)
+            )
+        )
+        if not effective_diagnose:
+            return result
+
+        token = _ACTIVE_DIAGNOSTIC_PROBE.set(True)
+        try:
+            diagnostic = await self._collect_diagnostics(request, result)
+            return dataclasses.replace(result, diagnostic=diagnostic)
+        except Exception as exc:
+            log_event(
+                self._conn.logger,
+                logging.DEBUG,
+                "diagnostic.error",
+                f"AutoDiagnosticMiddleware error: {exc}",
+                error=str(exc),
+            )
+            return result
+        finally:
+            _ACTIVE_DIAGNOSTIC_PROBE.reset(token)
+
+
 class CircuitBreakerMiddleware:
     """Контролирует состояние ``CircuitBreaker`` до обращения к транспорту и фиксирует сбои."""
 
@@ -450,6 +679,7 @@ class CommandPipeline:
                     hook_mw,
                     DryRunMiddleware(self._conn),
                     ObservabilityMiddleware(self._conn, hook_mw),
+                    AutoDiagnosticMiddleware(self._conn),
                     CircuitBreakerMiddleware(self._conn),
                     RateLimitMiddleware(self._conn),
                     RetryMiddleware(self._conn),

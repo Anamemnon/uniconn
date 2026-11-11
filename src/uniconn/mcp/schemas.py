@@ -71,8 +71,8 @@ def build_default_tools(policy: MCPSecurityPolicy) -> list[MCPToolDefinition]:
             name="uniconn_run",
             description=(
                 "Execute a command on a target host through the resilient uniconn pipeline "
-                "with automatic structured CLI output parsing (parse='auto'). "
-                f"Sudo status: {sudo_note}"
+                "with automatic structured CLI output parsing (parse='auto') and zero-turn "
+                f"self-healing diagnostics on failure. Sudo status: {sudo_note}"
             ),
             input_schema={
                 "type": "object",
@@ -90,6 +90,14 @@ def build_default_tools(policy: MCPSecurityPolicy) -> list[MCPToolDefinition]:
                         "description": (
                             "Enable semantic output parsing (true/'auto', false, or explicit "
                             "parser spec like 'df', 'ip_addr', 'jc:uname'). Default: true."
+                        ),
+                        "default": True,
+                    },
+                    "diagnose": {
+                        "type": "boolean",
+                        "description": (
+                            "Automatically collect root-cause diagnostic context (category, vitals, "
+                            "logs, port conflicts, suggested actions) when exit_code != 0. Default: true."
                         ),
                         "default": True,
                     },

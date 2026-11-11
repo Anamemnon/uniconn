@@ -16,6 +16,7 @@ class UniconnError(Exception):
         stdout: str | None = None,
         stderr: str | None = None,
         host: str | None = None,
+        diagnostic: object | None = None,
     ) -> None:
         """Инициализировать исключение с контекстом выполнения команды."""
         super().__init__(message)
@@ -24,6 +25,7 @@ class UniconnError(Exception):
         self.stdout = stdout
         self.stderr = stderr
         self.host = host
+        self.diagnostic = diagnostic
 
     def __str__(self) -> str:
         """Вернуть строковое представление ошибки с командой и хостом."""

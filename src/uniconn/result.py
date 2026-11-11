@@ -4,8 +4,10 @@
 import contextlib
 import dataclasses
 import json as json_module
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -13,6 +15,202 @@ from pydantic import BaseModel
 
 T = TypeVar("T")
 _UNSET: Any = object()
+
+
+class ErrorCategory(StrEnum):
+    """Семантическая категория системного сбоя для автодиагностики и AI-агентов."""
+
+    PORT_CONFLICT = "PORT_CONFLICT"
+    DISK_FULL = "DISK_FULL"
+    OUT_OF_MEMORY = "OUT_OF_MEMORY"
+    PERMISSION_DENIED = "PERMISSION_DENIED"
+    SERVICE_CRASH = "SERVICE_CRASH"
+    COMMAND_NOT_FOUND = "COMMAND_NOT_FOUND"
+    NETWORK_UNREACHABLE = "NETWORK_UNREACHABLE"
+    CONFIG_SYNTAX_ERROR = "CONFIG_SYNTAX_ERROR"
+    PACKAGE_LOCK_CONFLICT = "PACKAGE_LOCK_CONFLICT"
+    GENERIC_FAILURE = "GENERIC_FAILURE"
+
+
+@dataclass(frozen=True, slots=True)
+class SystemVitals:
+    """Срез жизненных показателей системы на момент сбоя команды."""
+
+    cpu_load_1m: float | None = None
+    memory_total_mb: int | None = None
+    memory_available_mb: int | None = None
+    memory_free_ratio: float | None = None
+    disk_root_free_mb: int | None = None
+    disk_tmp_free_mb: int | None = None
+    disk_root_inodes_free: int | None = None
+    oom_kill_count: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Преобразовать срез витальных метрик в сериализуемый словарь."""
+        return {
+            "cpu_load_1m": self.cpu_load_1m,
+            "memory_total_mb": self.memory_total_mb,
+            "memory_available_mb": self.memory_available_mb,
+            "memory_free_ratio": (
+                round(self.memory_free_ratio, 4)
+                if self.memory_free_ratio is not None
+                else None
+            ),
+            "disk_root_free_mb": self.disk_root_free_mb,
+            "disk_tmp_free_mb": self.disk_tmp_free_mb,
+            "disk_root_inodes_free": self.disk_root_inodes_free,
+            "oom_kill_count": self.oom_kill_count,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "SystemVitals":
+        """Восстановить ``SystemVitals`` из словаря."""
+        return cls(
+            cpu_load_1m=(
+                float(payload["cpu_load_1m"])
+                if payload.get("cpu_load_1m") is not None
+                else None
+            ),
+            memory_total_mb=(
+                int(payload["memory_total_mb"])
+                if payload.get("memory_total_mb") is not None
+                else None
+            ),
+            memory_available_mb=(
+                int(payload["memory_available_mb"])
+                if payload.get("memory_available_mb") is not None
+                else None
+            ),
+            memory_free_ratio=(
+                float(payload["memory_free_ratio"])
+                if payload.get("memory_free_ratio") is not None
+                else None
+            ),
+            disk_root_free_mb=(
+                int(payload["disk_root_free_mb"])
+                if payload.get("disk_root_free_mb") is not None
+                else None
+            ),
+            disk_tmp_free_mb=(
+                int(payload["disk_tmp_free_mb"])
+                if payload.get("disk_tmp_free_mb") is not None
+                else None
+            ),
+            disk_root_inodes_free=(
+                int(payload["disk_root_inodes_free"])
+                if payload.get("disk_root_inodes_free") is not None
+                else None
+            ),
+            oom_kill_count=(
+                int(payload["oom_kill_count"])
+                if payload.get("oom_kill_count") is not None
+                else None
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PortConflictInfo:
+    """Детализация конфликта сетевых портов (занятый порт и удерживающий процесс)."""
+
+    port: int
+    protocol: str = "tcp"
+    conflicting_pid: int | None = None
+    conflicting_process: str | None = None
+    listen_address: str = "0.0.0.0"
+
+    def to_dict(self) -> dict[str, Any]:
+        """Преобразовать информацию о конфликте порта в сериализуемый словарь."""
+        return {
+            "port": self.port,
+            "protocol": self.protocol,
+            "conflicting_pid": self.conflicting_pid,
+            "conflicting_process": self.conflicting_process,
+            "listen_address": self.listen_address,
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "PortConflictInfo":
+        """Восстановить ``PortConflictInfo`` из словаря."""
+        return cls(
+            port=int(payload["port"]),
+            protocol=str(payload.get("protocol") or "tcp"),
+            conflicting_pid=(
+                int(payload["conflicting_pid"])
+                if payload.get("conflicting_pid") is not None
+                else None
+            ),
+            conflicting_process=(
+                str(payload["conflicting_process"])
+                if payload.get("conflicting_process") is not None
+                else None
+            ),
+            listen_address=str(payload.get("listen_address") or "0.0.0.0"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticSummary:
+    """Структурированный диагностический контекст сбоя для AI-агентов (Self-Healing)."""
+
+    category: ErrorCategory = ErrorCategory.GENERIC_FAILURE
+    root_cause_hint: str = ""
+    vitals: SystemVitals = field(default_factory=SystemVitals)
+    relevant_logs: list[str] = field(default_factory=list)
+    port_conflict: PortConflictInfo | None = None
+    dmesg_tail: list[str] = field(default_factory=list)
+    suggested_actions: list[str] = field(default_factory=list)
+    collection_duration_ms: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        """Преобразовать диагностический отчёт в сериализуемый словарь."""
+        return {
+            "category": str(self.category.value),
+            "root_cause_hint": self.root_cause_hint,
+            "vitals": self.vitals.to_dict(),
+            "relevant_logs": list(self.relevant_logs),
+            "port_conflict": (
+                self.port_conflict.to_dict()
+                if self.port_conflict is not None
+                else None
+            ),
+            "dmesg_tail": list(self.dmesg_tail),
+            "suggested_actions": list(self.suggested_actions),
+            "collection_duration_ms": round(self.collection_duration_ms, 3),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "DiagnosticSummary":
+        """Восстановить ``DiagnosticSummary`` из сериализованного словаря."""
+        raw_cat = str(payload.get("category") or ErrorCategory.GENERIC_FAILURE.value)
+        try:
+            cat = ErrorCategory(raw_cat)
+        except ValueError:
+            cat = ErrorCategory.GENERIC_FAILURE
+        raw_vitals = payload.get("vitals")
+        vitals = (
+            SystemVitals.from_dict(raw_vitals)
+            if isinstance(raw_vitals, Mapping)
+            else SystemVitals()
+        )
+        raw_pc = payload.get("port_conflict")
+        port_conflict = (
+            PortConflictInfo.from_dict(raw_pc)
+            if isinstance(raw_pc, Mapping) and "port" in raw_pc
+            else None
+        )
+        return cls(
+            category=cat,
+            root_cause_hint=str(payload.get("root_cause_hint") or ""),
+            vitals=vitals,
+            relevant_logs=[str(x) for x in (payload.get("relevant_logs") or [])],
+            port_conflict=port_conflict,
+            dmesg_tail=[str(x) for x in (payload.get("dmesg_tail") or [])],
+            suggested_actions=[
+                str(x) for x in (payload.get("suggested_actions") or [])
+            ],
+            collection_duration_ms=float(payload.get("collection_duration_ms") or 0.0),
+        )
 
 
 def _serialize_parsed_value(val: Any) -> Any:
@@ -48,8 +246,14 @@ class Result:
     sensitive: bool = False
     raw_bytes: bytes = b""
     parse_spec: Any = field(default=None, compare=False, repr=False)
+    diagnostic: DiagnosticSummary | None = field(default=None, compare=False, repr=False)
     _dry_run: bool = field(default=False, compare=False, repr=False)
     _parsed_cache: Any = field(default=_UNSET, init=False, compare=False, repr=False)
+
+    @property
+    def diagnostic_summary(self) -> DiagnosticSummary | None:
+        """Псевдоним для ``result.diagnostic`` (обратная совместимость)."""
+        return self.diagnostic
 
     @property
     def ok(self) -> bool:
@@ -108,7 +312,7 @@ class Result:
         return self._parsed_cache
 
     def to_dict(self) -> dict[str, Any]:
-        """Преобразовать результат в сериализуемый словарь (с учётом ``sensitive`` и ``parsed``)."""
+        """Преобразовать результат в сериализуемый словарь (с учётом ``sensitive``, ``parsed`` и ``diagnostic``)."""
         payload: dict[str, Any] = {
             "host": self.host,
             "command": "***REDACTED***" if self.sensitive else self.command,
@@ -126,6 +330,10 @@ class Result:
             else:
                 with contextlib.suppress(Exception):
                     payload["parsed"] = _serialize_parsed_value(self.parsed)
+        if self.diagnostic is not None:
+            payload["diagnostic"] = (
+                "***REDACTED***" if self.sensitive else self.diagnostic.to_dict()
+            )
         return payload
 
     def raise_for_status(self) -> None:
@@ -138,6 +346,8 @@ class Result:
                 exit_code=self.exit_code,
                 stdout="***REDACTED***" if self.sensitive else self.stdout,
                 stderr="***REDACTED***" if self.sensitive else self.stderr,
+                host=self.host,
+                diagnostic=None if self.sensitive else self.diagnostic,
             )
 
     def __repr__(self) -> str:
@@ -403,11 +613,15 @@ class TelemetrySample:
 
 
 __all__ = [
+    "DiagnosticSummary",
     "EnsureResult",
+    "ErrorCategory",
     "NetResult",
     "PingResult",
+    "PortConflictInfo",
     "Result",
     "SyncResult",
+    "SystemVitals",
     "TelemetrySample",
 ]
 

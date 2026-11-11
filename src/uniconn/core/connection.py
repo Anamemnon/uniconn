@@ -29,6 +29,7 @@ from ..services.tunnels import TunnelService
 from ..transports.base import BaseTransport
 from .context import CwdContext, EnvContext, ExecutionContext, TempDirContext
 from .factories import (
+    _resolve_auto_diagnostics,
     _resolve_circuit_breaker,
     _resolve_rate_limiter,
     build_from_config,
@@ -70,17 +71,14 @@ class Connection:
     """Основной класс-фасад для работы с удалёнными и локальными хостами."""
 
     def __init__(
-        self,
-        transport: BaseTransport,
-        config: ConnectionConfig,
-        retry_attempts: int = 3,
-        logger: logging.Logger | None = None,
-        dry_run: bool = False,
+        self, transport: BaseTransport, config: ConnectionConfig, retry_attempts: int = 3,
+        logger: logging.Logger | None = None, dry_run: bool = False,
         before_run: Sequence[HookCallback] | None = None,
         after_run: Sequence[HookCallback] | None = None,
         on_error: Sequence[HookCallback] | None = None,
         rate_limit: float | RateLimiter | None = None,
         circuit_breaker: CircuitBreaker | bool | None = None,
+        auto_diagnostics: bool | None = None,
     ) -> None:
         self._transport = transport
         self._config = config
@@ -89,6 +87,7 @@ class Connection:
         self._dry_run = dry_run
         self._rate_limiter = _resolve_rate_limiter(rate_limit, config.options)
         self._circuit_breaker = _resolve_circuit_breaker(circuit_breaker, config.options)
+        self._auto_diagnostics = _resolve_auto_diagnostics(auto_diagnostics, config.options)
         self._context = ExecutionContext()
         self._cwd_stack = self._context.cwd_stack
         self._env_stack = self._context.env_stack
@@ -138,6 +137,15 @@ class Connection:
     @property
     def dry_run(self) -> bool:
         return self._dry_run
+
+    @property
+    def auto_diagnostics(self) -> bool:
+        """Включён ли автоматический сбор диагностического контекста при сбоях команд."""
+        return self._auto_diagnostics
+
+    @auto_diagnostics.setter
+    def auto_diagnostics(self, value: bool) -> None:
+        self._auto_diagnostics = bool(value)
 
     @property
     def is_dry_run(self) -> bool:
@@ -242,7 +250,8 @@ class Connection:
         raise_on_error: bool = False, input: str | bytes | None = None, sudo: bool = False,
         sudo_user: str | None = None, sudo_password: str | SecretStr | None = None,
         sensitive: bool = False, dry_run: bool | None = None, *,
-        parse: Any = None, eager_parse: bool = False, **kwargs: Any,
+        parse: Any = None, eager_parse: bool = False, diagnose: bool | None = None,
+        **kwargs: Any,
     ) -> Result:
         """Выполнить команду на хосте через конвейер ``CommandPipeline``."""
         cmd_str = format_command(command)
@@ -252,7 +261,7 @@ class Connection:
             sudo_password=sudo_password, sensitive=sensitive,
             dry_run=self._dry_run if dry_run is None else dry_run,
             output_format="text", parse=parse, eager_parse=eager_parse,
-            transport_kwargs=dict(kwargs),
+            diagnose=diagnose, transport_kwargs=dict(kwargs),
         )
         return await self._pipeline.execute(req)
 
@@ -277,12 +286,13 @@ class Connection:
 
     async def run_commands(
         self, commands: Sequence[str | Sequence[str]], stop_on_error: bool = True,
-        *, parse: Any = None, eager_parse: bool = False, **kwargs: Any,
+        *, parse: Any = None, eager_parse: bool = False, diagnose: bool | None = None,
+        **kwargs: Any,
     ) -> list[Result]:
         """Последовательно выполнить список команд на хосте."""
         results: list[Result] = []
         for command in commands:
-            result = await self.run(command, parse=parse, eager_parse=eager_parse, **kwargs)
+            result = await self.run(command, parse=parse, eager_parse=eager_parse, diagnose=diagnose, **kwargs)
             results.append(result)
             if stop_on_error and not result.ok:
                 log_event(
@@ -335,12 +345,9 @@ class Connection:
     diagnostic_session = open_diagnostic_session
 
     async def gather_facts(
-        self,
-        refresh: bool = False,
-        timeout: float | None = None,
+        self, refresh: bool = False, timeout: float | None = None,
         spec: FactSpec | Mapping[str, Any] | str | Path | None = None,
-        artifact_dir: str | Path | None = None,
-        ttl: float | None = None,
+        artifact_dir: str | Path | None = None, ttl: float | None = None,
     ) -> HostFacts:
         return await self._facts_collector.gather(
             refresh=refresh, timeout=timeout, spec=spec, artifact_dir=artifact_dir, ttl=ttl
@@ -373,14 +380,7 @@ class Connection:
 
 
 __all__ = [
-    "Connection",
-    "HostTempManager",
-    "ObserverContext",
-    "OperationObserver",
-    "ScriptExecutionManager",
-    "_resolve_circuit_breaker",
-    "_resolve_rate_limiter",
-    "format_command",
-    "render_template",
-    "wait_exponential_jitter",
+    "Connection", "HostTempManager", "ObserverContext", "OperationObserver",
+    "ScriptExecutionManager", "_resolve_circuit_breaker", "_resolve_rate_limiter",
+    "format_command", "render_template", "wait_exponential_jitter",
 ]

@@ -9,13 +9,16 @@ import pytest
 
 from uniconn import (
     Connection,
+    DiagnosticSummary,
     EnsureResult,
     FactsDiffReport,
     InMemoryTracer,
     PingResult,
+    PortConflictInfo,
     Result,
     SecretMaskingFilter,
     SyncResult,
+    SystemVitals,
     otel_tracing_hook,
 )
 from uniconn._logging import _sanitize_value
@@ -31,6 +34,9 @@ def test_dataclass_models_use_slots() -> None:
         SyncResult(),
         EnsureResult(target="nginx", state="present", changed=False, ok=True),
         PingResult(host="localhost", alive=True, latency_ms=1.0, transport="local"),
+        SystemVitals(),
+        PortConflictInfo(port=80),
+        DiagnosticSummary(),
         FactsDiffReport(
             baseline_host="h1",
             in_sync_hosts=["h1"],

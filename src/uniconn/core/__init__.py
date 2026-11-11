@@ -6,9 +6,20 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ..telemetry import TracingMiddleware
+from .auto_diagnostics import (
+    ClassificationMatch,
+    ContainerDiagnosticStrategy,
+    DiagnosticStrategy,
+    ErrorClassifier,
+    LinuxDiagnosticStrategy,
+    PassiveDiagnosticStrategy,
+    WindowsDiagnosticStrategy,
+    resolve_diagnostic_strategy,
+)
 from .bridge import EventLoopPortal, SyncContextBridge
 from .context import CwdContext, EnvContext, ExecutionContext, TempDirContext
 from .pipeline import (
+    AutoDiagnosticMiddleware,
     CircuitBreakerMiddleware,
     CommandMiddleware,
     CommandPipeline,
@@ -46,26 +57,33 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [
+    "AutoDiagnosticMiddleware",
     "CallableSerializer",
     "CircuitBreaker",
     "CircuitBreakerMiddleware",
     "CircuitState",
+    "ClassificationMatch",
     "CommandMiddleware",
     "CommandPipeline",
     "CommandRequest",
     "Connection",
+    "ContainerDiagnosticStrategy",
     "ContextMiddleware",
     "CwdContext",
+    "DiagnosticStrategy",
     "DryRunMiddleware",
     "EnvContext",
+    "ErrorClassifier",
     "EventLoopPortal",
     "ExecutionContext",
     "HookCallback",
     "HookEvent",
     "HookMiddleware",
     "HostTempManager",
+    "LinuxDiagnosticStrategy",
     "ObservabilityMiddleware",
     "ObserverContext",
+    "PassiveDiagnosticStrategy",
     "RateLimitMiddleware",
     "RateLimiter",
     "RemotePythonWorker",
@@ -75,8 +93,10 @@ __all__ = [
     "SyncContextBridge",
     "TempDirContext",
     "TracingMiddleware",
+    "WindowsDiagnosticStrategy",
     "format_command",
     "prepare_sudo_command",
+    "resolve_diagnostic_strategy",
     "run_python",
 ]
 

@@ -95,6 +95,14 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                 help="Semantic parser spec (e.g. 'auto', 'df', 'jc:df', 'table', 'kv')",
             ),
         ] = None,
+        diagnose: Annotated[
+            bool,
+            Parameter(
+                name=["--diagnose", "-D"],
+                negative="--no-diagnose",
+                help="Collect self-healing diagnostics on command failure",
+            ),
+        ] = False,
         verbose: Annotated[
             bool, Parameter(name=["--verbose", "-v"], negative="", help="Verbose output")
         ] = False,
@@ -114,6 +122,7 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                         sudo=sudo,
                         raise_on_error=raise_on_error,
                         parse=parse,
+                        diagnose=diagnose,
                     )
                     renderer.render_single_result(result, output_format=output_format)
             except Exception as e:
@@ -170,6 +179,14 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                 help="Semantic parser spec (e.g. 'auto', 'df', 'jc:df', 'table', 'kv')",
             ),
         ] = None,
+        diagnose: Annotated[
+            bool,
+            Parameter(
+                name=["--diagnose", "-D"],
+                negative="--no-diagnose",
+                help="Collect self-healing diagnostics on command failure",
+            ),
+        ] = False,
     ) -> None:
         """Execute command on multiple hosts in parallel (from URIs or inventory)."""
         host_uris = list(uris)
@@ -200,6 +217,7 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                     sudo=sudo,
                     raise_on_error=False,
                     parse=parse,
+                    diagnose=diagnose,
                 )
 
                 if output_format == "json":
@@ -213,6 +231,11 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                             **(
                                 {"parsed": result.to_dict().get("parsed")}
                                 if parse is not None
+                                else {}
+                            ),
+                            **(
+                                {"diagnostic": result.diagnostic.to_dict()}
+                                if result.diagnostic is not None
                                 else {}
                             ),
                         }

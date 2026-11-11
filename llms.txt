@@ -14,11 +14,11 @@
 - Documentation & Feature Matrix: `AGENTS.md` (architecture & rules), `FEATURES.md` (full catalog of implemented features — consult on-demand only)
 
 ## Public Exports (`from uniconn import ...`)
-- **Core & Facade**: `Connection`, `SyncConnection`, `ConnectionConfig`, `SecretResolver`, `URIParser`, `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `NetResult`, `TelemetrySample`, `HostFacts`, `FactSpec`, `CustomCommandSpec`, `FileSourceSpec`, `ExternalToolSpec`, `ExternalToolRunner`, `FactsDiffReport`, `DiskInfo`, `NetworkInterface`, `diff_facts`, `render_template`, `OperationObserver`, `ObserverContext`, `HostTempManager`, `ScriptExecutionManager`, `RemotePythonWorker`, `CallableSerializer`, `BeforeRunHook`, `AfterRunHook`, `OnErrorHook`, `HookCallback`, `HookEvent`
+- **Core & Facade**: `Connection`, `SyncConnection`, `ConnectionConfig`, `SecretResolver`, `URIParser`, `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `NetResult`, `DiagnosticSummary`, `SystemVitals`, `PortConflictInfo`, `ErrorCategory`, `TelemetrySample`, `HostFacts`, `FactSpec`, `CustomCommandSpec`, `FileSourceSpec`, `ExternalToolSpec`, `ExternalToolRunner`, `FactsDiffReport`, `DiskInfo`, `NetworkInterface`, `diff_facts`, `render_template`, `OperationObserver`, `ObserverContext`, `HostTempManager`, `ScriptExecutionManager`, `RemotePythonWorker`, `CallableSerializer`, `BeforeRunHook`, `AfterRunHook`, `OnErrorHook`, `HookCallback`, `HookEvent`
 - **Resilience (`uniconn.core.resilience`)**: `CircuitBreaker`, `CircuitState`, `RateLimiter`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`
 - **Domain Services & Object-Oriented FS (`uniconn.services` / `uniconn.pool`)**: `FileOperationsService`, `RemotePath`, `SyncRemotePath`, `RemoteStatResult`, `DirectorySynchronizer`, `TemplateEngine`, `StateManagementService`, `NetworkOperationsService`, `NotificationBatch`, `PoolNotificationBatch`, `NotifySpec`, `FactCollector`, `TunnelService`, `PoolFileOperationsService`, `PoolStateManagementService`, `PoolNetworkOperationsService`, `SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`, `SyncNetworkOperationsService`, `SyncPoolFileOperationsService`, `SyncPoolStateManagementService`, `SyncPoolNetworkOperationsService`, `ensure_windows_service`, `ensure_registry_key`, `ensure_windows_feature`, `ensure_yang`
 - **Strategies (`uniconn.services.provisioning`)**: `PackageManagerStrategy`, `AptStrategy`, `ApkStrategy`, `DnfYumStrategy`, `PacmanStrategy`, `ZypperStrategy`, `WingetStrategy`, `ChocoStrategy`, `ScoopStrategy`, `ServiceManagerStrategy`, `SystemdStrategy`, `OpenRCStrategy`, `SysVStrategy`
-- **Middleware Pipeline & Context (`uniconn.core`)**: `CommandRequest`, `CommandPipeline`, `CommandMiddleware`, `ContextMiddleware`, `SudoMiddleware`, `HookMiddleware`, `DryRunMiddleware`, `ObservabilityMiddleware`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`, `RetryMiddleware`, `TracingMiddleware`, `ExecutionContext`, `EventLoopPortal`, `SyncContextBridge`, `InventoryLoader`
+- **Middleware Pipeline, Auto-Diagnostics & Context (`uniconn.core`)**: `CommandRequest`, `CommandPipeline`, `CommandMiddleware`, `ContextMiddleware`, `SudoMiddleware`, `HookMiddleware`, `DryRunMiddleware`, `ObservabilityMiddleware`, `AutoDiagnosticMiddleware`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`, `RetryMiddleware`, `TracingMiddleware`, `ErrorClassifier`, `ClassificationMatch`, `DiagnosticStrategy`, `PassiveDiagnosticStrategy`, `LinuxDiagnosticStrategy`, `ContainerDiagnosticStrategy`, `WindowsDiagnosticStrategy`, `resolve_diagnostic_strategy`, `ExecutionContext`, `EventLoopPortal`, `SyncContextBridge`, `InventoryLoader`
 - **Transport Protocols, Structured Network (NETCONF/RESTCONF/gNMI), Virtualization (QGA/PVE), BMC, Container/K8s, WinRM, Serial Modem, Replay/Cassette, Socket Mock Servers & Helpers (`uniconn.transports` / `uniconn.mock` / `uniconn.pytest_plugin`)**: `BaseTransport`, `CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `ShellStdinProtocol`, `ShellStdoutProtocol`, `TunnelCapableTransport`, `StructuredNetworkTransport`, `require_capability`, `supports_capability`, `NetconfTransport`, `NetconfFrameCodec`, `NetconfVendorAdapter`, `RestconfTransport`, `RestconfClient`, `GnmiTransport`, `GnmiWireCodec`, `GnmiPath`, `GnmiPathElem`, `parse_gnmi_path`, `format_gnmi_path`, `safe_parse_xml`, `xml_to_data`, `data_to_xml`, `parse_rpc_reply`, `parse_yang_path_steps`, `query_yang_tree`, `apply_yang_edit`, `deep_merge_yang`, `yang_subset_matches`, `compute_yang_diff`, `MockNetconfServer`, `SyncMockNetconfServer`, `MockRestconfServer`, `SyncMockRestconfServer`, `MockGnmiServer`, `SyncMockGnmiServer`, `QgaTransport`, `QgaProtocolClient`, `QgaChannelProtocol`, `LocalUnixSocketChannel`, `SshUnixSocketChannel`, `VirshCommandChannel`, `parse_qga_network_interfaces`, `PveTransport`, `PveHttpClient`, `MockQgaServer`, `MockPveServer`, `MockPveResponse`, `WinRMTransport`, `SerialTransport`, `SerialPortInfo`, `list_serial_ports`, `AsyncXmodemSender`, `AsyncXmodemReceiver`, `AsyncYmodemSender`, `AsyncYmodemReceiver`, `ZmodemSubprocessAdapter`, `compute_crc16`, `compute_checksum8`, `IPMITransport`, `RedfishTransport`, `DockerTransport`, `PodmanTransport`, `KubectlTransport`, `LocalTransport`, `ReplayTransport`, `CassetteTransportProxy`, `Cassette`, `CassetteDiffReport`, `InteractionDiff`, `CassetteContext`, `SyncCassetteContext`, `UniconnCassetteFixture`, `MockServerConfig`, `MockRequestEvent`, `CassetteInteractionMatcher`, `MockSSHServer`, `SyncMockSSHServer`, `MockSSHServerInterface`, `MockSSHServerSession`, `MockSFTPServer`, `MockSFTPFile`, `MockTelnetServer`, `SyncMockTelnetServer`, `RecordMode`, `RecordedExecInteraction`, `RecordedStreamInteraction`, `RecordedFsInteraction`, `RecordedShellInteraction`, `RecordedPyRpcInteraction`, `ShellDialogStep`, `ReplayShellProcess`, `normalize_temp_paths`, `OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`
 - **Pools & Task DAG Orchestration (`uniconn.pool` / `uniconn.orchestration`)**: `ConnectionPool`, `SyncConnectionPool`, `PoolFileOperationsService`, `PoolStateManagementService`, `PoolNetworkOperationsService`, `PoolNotificationBatch`, `SyncPoolFileOperationsService`, `SyncPoolStateManagementService`, `SyncPoolNetworkOperationsService`, `PoolStreamMultiplexer`, `SSHSessionPool`, `Flow`, `SyncFlow`, `Task`, `TaskOptions`, `FlowContext`, `TaskResult`, `FlowReport`, `task`
 - **Interactive PTY Shell (`uniconn.shell`)**: `ShellSession`, `SyncShellSession`, `PosixMarkerProtocol`, `ExpectStateMachine`
@@ -30,7 +30,7 @@
 - **Exceptions**: `UniconnError`, `ConfigurationError`, `CyclicDependencyError`, `ConnectionError`, `CircuitOpenError`, `BatchAbortedError`, `CassetteError`, `CassetteMissError`, `AuthenticationError`, `ExecutionError`, `FlowExecutionError`, `FileTransferError`, `ModemTransferError`, `ModemHandshakeTimeoutError`, `ModemCancelledError`, `ModemMaxRetriesError`, `ModemProtocolError`, `ModemChecksumMismatchError`, `ParsingError`, `ParserNotFoundError`, `OptionalDependencyError`, `TimeoutError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `BackgroundError`, `BackgroundBackendError`, `BackgroundSessionExistsError`, `BackgroundPoolFullError`, `HardwareFaultDetectedError`
 
 ## URI Schemes & Secret Resolution (`SecretResolver`)
-- `ssh://[user[:password]@]host[:22][?key_file=...&password=env://SSH_PASS&known_hosts=strict&keepalive=30&ssh_config=true&use_agent=true&proxy=jump1,jump2&proxy_command=...&rate_limit=10&circuit_breaker_threshold=5&circuit_breaker_timeout=30]`
+- `ssh://[user[:password]@]host[:22][?key_file=...&password=env://SSH_PASS&known_hosts=strict&keepalive=30&ssh_config=true&use_agent=true&proxy=jump1,jump2&proxy_command=...&rate_limit=10&circuit_breaker_threshold=5&circuit_breaker_timeout=30&auto_diagnostics=true]`
 - `netconf://[user[:password]@]host[:830][?vendor=default|junos|iosxr|iosxe|eos|sros|huawei&version=1.1|1.0&verify_host_key=false&key_file=...]`
 - `restconf://[user[:password]@]host[:443][/restconf][?scheme=https|http&root=auto|/restconf&verify_tls=false&format=json|xml]`
 - `gnmi://[user[:password]@]host[:9339][?insecure=true|false&encoding=json_ietf|json|proto&origin=openconfig&target=...]`
@@ -60,20 +60,21 @@ conn = Connection.from_uri(
     dry_run: bool = False,
     rate_limit: float | RateLimiter | None = None,
     circuit_breaker: bool | CircuitBreaker | None = None,
+    auto_diagnostics: bool | None = None,
 )
 conn = Connection.from_config(config: ConnectionConfig, ...)
 conn = Connection.from_dict(data: dict, ...)
 conns = Connection.from_file(path: str | Path, *, host: str | None = None, group: str | None = None)
 conn = Connection.from_inventory(path: str | Path, host: str)
-conn = Connection.local(timeout: float = 30.0, retry_attempts: int = 3, dry_run: bool = False, **options)
+conn = Connection.local(timeout: float = 30.0, retry_attempts: int = 3, dry_run: bool = False, auto_diagnostics: bool | None = None, **options)
 sync_conn = SyncConnection.from_uri(uri: str, ...)
 sync_conn = SyncConnection.local(timeout: float = 30.0, retry_attempts: int = 3, dry_run: bool = False, **options)
 
 # Cloning (available on both Connection and SyncConnection)
-conn2 = conn.copy(host=..., port=..., username=..., password=..., timeout=..., dry_run=...)
+conn2 = conn.copy(host=..., port=..., username=..., password=..., timeout=..., dry_run=..., auto_diagnostics=...)
 conn2 = conn.with_overrides(**overrides)
 
-# Execution, Semantic Parsing & Scripts
+# Execution, Semantic Parsing, Auto-Diagnostics & Scripts
 res: Result = await conn.run(
     command: str | Sequence[str],
     timeout: float | None = None,
@@ -87,6 +88,7 @@ res: Result = await conn.run(
     *,
     parse: ParseSpec = None,       # True | "auto" | "df" | "jc:df" | "textfsm:..." | "ttp:..." | list[BaseModel] | Callable
     eager_parse: bool = False,
+    diagnose: bool | None = None,  # True populates res.diagnostic (DiagnosticSummary) on non-zero exit_code
     **kwargs,  # cwd, env
 )
 raw: bytes = await conn.run_bytes(command, timeout=None, raise_on_error=False, input=None, sudo=False, **kwargs)
@@ -386,8 +388,12 @@ async with Connection.from_uri("uart://COM3:115200?parity=even&stopbits=1.5") as
     sent_x: int = await s_conn.files.upload_xmodem("uImage", mode="1k", trigger_command="loadx $loadaddr\r")
 ```
 
-### `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `HostFacts`, `FactsDiffReport` & `CassetteDiffReport`
-- `Result`: `exit_code: int`, `stdout: str`, `stderr: str`, `duration: float`, `command: str`, `host: str | None`, `ok: bool`, `text: str` (`stdout.strip()`), `lines: list[str]`, `sensitive: bool`, `raw_bytes: bytes`, `parse_spec: Any`, `result.json() -> Any`, `result.parse(spec=None, **kwargs) -> Any`, `result.parsed -> Any` (lazy cached property), `result.raise_for_status() -> Self`, `result.to_dict() -> dict` (includes `"parsed"` when `parse_spec` is set or `parse()` was called)
+### `Result`, `DiagnosticSummary`, `PingResult`, `SyncResult`, `EnsureResult`, `HostFacts`, `FactsDiffReport` & `CassetteDiffReport`
+- `Result`: `exit_code: int`, `stdout: str`, `stderr: str`, `duration: float`, `command: str`, `host: str | None`, `ok: bool`, `text: str` (`stdout.strip()`), `lines: list[str]`, `sensitive: bool`, `raw_bytes: bytes`, `parse_spec: Any`, `diagnostic: DiagnosticSummary | None` (alias `result.diagnostic_summary`), `result.json() -> Any`, `result.parse(spec=None, **kwargs) -> Any`, `result.parsed -> Any` (lazy cached property), `result.raise_for_status() -> Self` (attaches `diagnostic` to `ExecutionError`), `result.to_dict() -> dict` (includes `"parsed"` and `"diagnostic"` when present)
+- `DiagnosticSummary`: `category: ErrorCategory`, `root_cause_hint: str`, `vitals: SystemVitals`, `relevant_logs: list[str]`, `port_conflict: PortConflictInfo | None`, `dmesg_tail: list[str]`, `suggested_actions: list[str]`, `collection_duration_ms: float`, `diag.to_dict() -> dict`, `DiagnosticSummary.from_dict(data) -> DiagnosticSummary`
+- `SystemVitals`: `cpu_load_1m: float | None`, `memory_total_mb: int | None`, `memory_available_mb: int | None`, `memory_free_ratio: float | None`, `disk_root_free_mb: int | None`, `disk_tmp_free_mb: int | None`, `disk_root_inodes_free: int | None`, `oom_kill_count: int | None`
+- `PortConflictInfo`: `port: int`, `protocol: str = "tcp"`, `conflicting_pid: int | None = None`, `conflicting_process: str | None = None`, `listen_address: str = "0.0.0.0"`
+- `ErrorCategory`: `PORT_CONFLICT`, `DISK_FULL`, `OUT_OF_MEMORY`, `PACKAGE_LOCK_CONFLICT`, `CONFIG_SYNTAX_ERROR`, `COMMAND_NOT_FOUND`, `PERMISSION_DENIED`, `SERVICE_CRASH`, `NETWORK_UNREACHABLE`, `GENERIC_FAILURE`
 - `PingResult`: `host: str`, `alive: bool`, `latency_ms: float`, `transport: str`, `error: str | None`, `bool(ping_res) == ping_res.alive`, `ping_res.to_dict() -> dict`
 - `SyncResult`: `uploaded: list[str]`, `skipped: list[str]`, `deleted: list[str]`, `bytes_transferred: int`, `duration: float`, `dry_run: bool`, `total_checked: int`, `sync_res.to_dict() -> dict`
 - `EnsureResult`: `target: str`, `state: str`, `changed: bool`, `ok: bool`, `details: str`, `dry_run: bool`, `diff: str | None = None`, `reboot_required: bool = False`, `notified: bool = False`, `notify_results: tuple[Any, ...] = ()`, `ensure_res.to_dict() -> dict`

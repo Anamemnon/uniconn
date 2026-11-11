@@ -126,6 +126,15 @@ class SyncConnection(SyncProxyMixin):
         return self._async_conn.dry_run
 
     @property
+    def auto_diagnostics(self) -> bool:
+        """Включён ли автоматический сбор диагностического контекста при сбоях команд."""
+        return self._async_conn.auto_diagnostics
+
+    @auto_diagnostics.setter
+    def auto_diagnostics(self, value: bool) -> None:
+        self._async_conn.auto_diagnostics = value
+
+    @property
     def is_dry_run(self) -> bool:
         """Устаревший псевдоним для ``sync_conn.dry_run``."""
         warnings.warn(
