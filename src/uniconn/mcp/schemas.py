@@ -308,20 +308,33 @@ def build_default_tools(policy: MCPSecurityPolicy) -> list[MCPToolDefinition]:
             name="uniconn_propose_action",
             description=(
                 "Evaluate risk tier (SAFE, MUTATING, DESTRUCTIVE, FORBIDDEN) and create a "
-                "Human-in-the-Loop (HITL) approval request with unified diff preview before executing "
-                "a command or file modification."
+                "Human-in-the-Loop (HITL) approval request with unified diff or DAG plan preview "
+                "before executing a command, file modification, or orchestration Flow."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "target": {
                         "type": "string",
-                        "description": "Registered target host name/alias.",
+                        "description": "Registered target host name/alias (or comma-separated aliases for flows).",
+                    },
+                    "targets": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                        "description": "Target host alias or list of host aliases when proposing a Flow.",
+                    },
+                    "group": {
+                        "type": "string",
+                        "description": "Optional inventory group name when proposing a Flow.",
                     },
                     "tool_name": {
                         "type": "string",
-                        "enum": ["uniconn_run", "uniconn_write_file"],
-                        "description": "Tool to propose ('uniconn_run' or 'uniconn_write_file').",
+                        "description": (
+                            "Tool to propose ('uniconn_run', 'uniconn_write_file', "
+                            "'uniconn_run_flow', or dynamic 'flow_<name>')."
+                        ),
                         "default": "uniconn_run",
                     },
                     "command": {
@@ -350,13 +363,30 @@ def build_default_tools(policy: MCPSecurityPolicy) -> list[MCPToolDefinition]:
                         "description": "Atomic write flag when proposing 'uniconn_write_file'.",
                         "default": True,
                     },
+                    "flow_name": {
+                        "type": "string",
+                        "description": "Flow name when proposing 'uniconn_run_flow'.",
+                    },
+                    "vars": {
+                        "type": "object",
+                        "description": "Flow parameters dictionary when proposing a Flow.",
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional task tag filter when proposing a Flow.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["barrier", "independent"],
+                        "description": "Optional rollout mode when proposing a Flow.",
+                    },
                     "agent_id": {
                         "type": "string",
                         "description": "Optional identifier of the AI agent proposing the action.",
                     },
                 },
-                "required": ["target"],
-                "additionalProperties": False,
+                "additionalProperties": True,
             },
         ),
         MCPToolDefinition(
@@ -404,6 +434,159 @@ def build_default_tools(policy: MCPSecurityPolicy) -> list[MCPToolDefinition]:
                 "additionalProperties": False,
             },
         ),
+        MCPToolDefinition(
+            name="uniconn_list_flows",
+            description=(
+                "List all registered declarative DAG orchestration Flows exported as MCP tools, "
+                "including their waves, tasks, input parameter schemas, and risk assessments."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "include_checkpoints": {
+                        "type": "boolean",
+                        "description": "Include resumable flow checkpoints (default: true).",
+                        "default": True,
+                    }
+                },
+                "additionalProperties": False,
+            },
+        ),
+        MCPToolDefinition(
+            name="uniconn_inspect_flow",
+            description=(
+                "Inspect a registered orchestration Flow in detail: returns its ASCII DAG execution plan, "
+                "topological waves, task dependencies, JSON Schema of parameters, and HITL risk assessment."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "flow_name": {
+                        "type": "string",
+                        "description": (
+                            "Registered Flow name or MCP tool name "
+                            "(e.g. 'zero_downtime_deploy' or 'flow_zero_downtime_deploy')."
+                        ),
+                    },
+                    "targets": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                        "description": "Optional target hosts to preview in the execution plan.",
+                    },
+                    "group": {
+                        "type": "string",
+                        "description": "Optional host group to preview in the execution plan.",
+                    },
+                    "vars": {
+                        "type": "object",
+                        "description": "Optional parameter values to preview in the execution plan.",
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional tag filter to preview active tasks in the DAG.",
+                    },
+                },
+                "required": ["flow_name"],
+                "additionalProperties": False,
+            },
+        ),
+        MCPToolDefinition(
+            name="uniconn_run_flow",
+            description=(
+                "Execute a registered declarative DAG orchestration Flow across one or more target hosts "
+                "or an inventory group with two-phase HITL approval, automatic root-cause diagnostics on "
+                "task failure, and resumable checkpointing."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "flow_name": {
+                        "type": "string",
+                        "description": "Registered Flow name or tool name to execute.",
+                    },
+                    "targets": {
+                        "oneOf": [
+                            {"type": "string"},
+                            {"type": "array", "items": {"type": "string"}},
+                        ],
+                        "description": "Target host alias or list of host aliases.",
+                    },
+                    "group": {
+                        "type": "string",
+                        "description": "Optional inventory group name to target.",
+                    },
+                    "vars": {
+                        "type": "object",
+                        "description": (
+                            "Dictionary of Flow parameters "
+                            "(passed to FlowContext.vars and @task functions)."
+                        ),
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of task tags to filter execution.",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["barrier", "independent"],
+                        "description": "Optional override for fleet execution mode ('barrier' or 'independent').",
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "Run Flow in dry-run simulation mode without mutating hosts.",
+                        "default": False,
+                    },
+                    "approval_id": {
+                        "type": "string",
+                        "description": "Single-use HITL approval token ID (e.g. 'appr_...').",
+                    },
+                    "wait_for_approval": {
+                        "type": "boolean",
+                        "description": "Wait synchronously for human operator approval if HITL is triggered.",
+                    },
+                    "resume_run_id": {
+                        "type": "string",
+                        "description": "Optional checkpoint run_id (e.g. 'run_...') to resume from.",
+                    },
+                },
+                "required": ["flow_name"],
+                "additionalProperties": True,
+            },
+        ),
+        MCPToolDefinition(
+            name="uniconn_resume_flow",
+            description=(
+                "Resume a previously failed Flow execution from its checkpoint run_id, skipping "
+                "(host, task) nodes that already succeeded in earlier runs."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "run_id": {
+                        "type": "string",
+                        "description": "Checkpoint run_id (e.g. 'run_...') from a failed Flow execution.",
+                    },
+                    "vars": {
+                        "type": "object",
+                        "description": "Optional updated FlowContext.vars parameters for the resumed run.",
+                    },
+                    "approval_id": {
+                        "type": "string",
+                        "description": "Single-use HITL approval token ID (e.g. 'appr_...') if approval is required.",
+                    },
+                    "wait_for_approval": {
+                        "type": "boolean",
+                        "description": "Wait synchronously for human operator approval if HITL is triggered.",
+                    },
+                },
+                "required": ["run_id"],
+                "additionalProperties": False,
+            },
+        ),
     ]
 
 
@@ -419,6 +602,11 @@ def build_default_resources() -> list[MCPResourceDefinition]:
             uri="uniconn://approvals/pending",
             name="Pending HITL Approvals",
             description="Active Human-in-the-Loop approval requests awaiting operator decision.",
+        ),
+        MCPResourceDefinition(
+            uri="uniconn://flows",
+            name="Registered Orchestration Flows & Checkpoints",
+            description="Registered DAG orchestration Flows exported as tools and resumable checkpoints.",
         ),
     ]
 

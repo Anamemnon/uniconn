@@ -48,6 +48,7 @@ def build_mcp_client_config(
     hitl_timeout: float = 300.0,
     hitl_wait: bool = False,
     hitl_webhook_url: str | None = None,
+    flows: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Сформировать готовый JSON-конфиг ``mcpServers`` для Claude Desktop / Cursor."""
     args: list[str] = ["--from", "uniconn[cli]", "uniconn", "mcp"]
@@ -87,6 +88,8 @@ def build_mcp_client_config(
         args.append("--hitl-wait")
     if hitl_webhook_url:
         args.extend(["--hitl-webhook-url", hitl_webhook_url])
+    if flows:
+        args.extend(["--flows", ",".join(flows)])
 
     return {
         "mcpServers": {
@@ -245,6 +248,13 @@ def register_mcp_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                 help="Webhook URL to notify on pending HITL approval requests",
             ),
         ] = None,
+        flows: Annotated[
+            str | None,
+            Parameter(
+                name=["--flows", "-F"],
+                help="Comma-separated Python files, directories, or module[:attr] specs to export as MCP Flow tools",
+            ),
+        ] = None,
         print_config: Annotated[
             bool,
             Parameter(
@@ -256,6 +266,7 @@ def register_mcp_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
     ) -> None:
         """Start the official uniconn Model Context Protocol (MCP) server over JSON-RPC 2.0 stdio."""
         parsed_uris = _split_csv(uri)
+        parsed_flows = _split_csv(flows)
 
         if print_config:
             cfg_snippet = build_mcp_client_config(
@@ -277,6 +288,7 @@ def register_mcp_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                 hitl_timeout=hitl_timeout,
                 hitl_wait=hitl_wait,
                 hitl_webhook_url=hitl_webhook_url,
+                flows=parsed_flows,
             )
             sys.stdout.write(json.dumps(cfg_snippet, ensure_ascii=False, indent=2) + "\n")
             sys.stdout.flush()
@@ -326,7 +338,7 @@ def register_mcp_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                 default_to_local=True,
                 policy=policy,
             )
-            server = MCPServer(registry=registry)
+            server = MCPServer(registry=registry, flow_specs=parsed_flows)
         except Exception as exc:
             renderer.print_error_and_exit(exc, title="MCP Server Configuration Error")
             return

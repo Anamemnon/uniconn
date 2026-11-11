@@ -6,17 +6,34 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import sys
-from collections.abc import AsyncIterable, Callable, Coroutine
+import uuid
+from collections.abc import AsyncIterable, Callable, Coroutine, Sequence
+from pathlib import Path
 from typing import Any, Literal
 
 from .._logging import SecretMaskingFilter
 from ..exceptions import ApprovalRejectedError
+from ..orchestration.flow import Flow, SyncFlow
+from ..orchestration.scheduler import coerce_to_flow
 from ..parsing import ParseSpec
 from ..result import _serialize_parsed_value
 from ..services.facts_models import HostFacts, diff_facts
+from .flows import (
+    FlowCheckpointStore,
+    FlowRiskEvaluator,
+    FlowSchemaGenerator,
+    MCPFlowRegistry,
+)
 from .hitl import ActionRiskClassifier, ApprovalManager, build_unified_diff
-from .models import ActionRiskTier, ApprovalRequest, ApprovalStatus, MCPHostEntry, MCPSecurityPolicy
+from .models import (
+    ActionRiskTier,
+    ApprovalRequest,
+    ApprovalStatus,
+    MCPHostEntry,
+    MCPSecurityPolicy,
+)
 from .registry import MCPHostRegistry
 from .schemas import (
     build_default_resource_templates,
@@ -46,9 +63,13 @@ def _sanitize_json_value(val: Any) -> Any:
     return serialized
 
 
-def _build_pending_approval_payload(req: ApprovalRequest) -> dict[str, Any]:
+def _build_pending_approval_payload(
+    req: ApprovalRequest,
+    *,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Сформировать ответ со статусом PENDING_APPROVAL для двухфазного протокола MCP."""
-    return {
+    payload: dict[str, Any] = {
         "status": "PENDING_APPROVAL",
         "ok": False,
         "requires_approval": True,
@@ -66,6 +87,9 @@ def _build_pending_approval_payload(req: ApprovalRequest) -> dict[str, Any]:
             f"Then call 'uniconn_wait_approval' or re-invoke {req.tool_name!r} with approval_id={req.approval_id!r}."
         ),
     }
+    if extra:
+        payload.update(extra)
+    return payload
 
 
 class MCPServer:
@@ -76,10 +100,14 @@ class MCPServer:
         registry: MCPHostRegistry | None = None,
         *,
         approval_manager: ApprovalManager | None = None,
+        flow_registry: MCPFlowRegistry | None = None,
+        flows: Sequence[Flow | SyncFlow] = (),
+        flow_specs: Sequence[str | Path] = (),
+        checkpoint_store: FlowCheckpointStore | None = None,
         server_name: str = "uniconn-mcp",
         server_version: str | None = None,
     ) -> None:
-        """Создать экземпляр MCP-сервера с реестром хостов, политикой безопасности и HITL."""
+        """Создать экземпляр MCP-сервера с реестром хостов, сценариев Flow, политикой и HITL."""
         from .. import __version__
 
         self.registry = registry or MCPHostRegistry.from_sources()
@@ -87,12 +115,30 @@ class MCPServer:
         self.server_version = server_version or __version__
         hitl_pol = self.registry.policy.hitl
         if hitl_pol.audit_log_path is None and self.registry.policy.audit_log_path:
-            hitl_pol = hitl_pol.model_copy(update={"audit_log_path": self.registry.policy.audit_log_path})
+            hitl_pol = hitl_pol.model_copy(
+                update={"audit_log_path": self.registry.policy.audit_log_path}
+            )
         self.approval_manager = approval_manager or ApprovalManager(policy=hitl_pol)
+        self.flow_registry = flow_registry or MCPFlowRegistry.from_sources(
+            specs=flow_specs,
+            flows=flows,
+        )
+        default_cp_path: str | Path | None = os.environ.get(
+            "UNICONN_FLOW_CHECKPOINT_STORE"
+        )
+        if default_cp_path is None and hitl_pol.store_path:
+            default_cp_path = Path(hitl_pol.store_path).with_name(
+                "flow_checkpoints.json"
+            )
+        self.checkpoint_store = checkpoint_store or FlowCheckpointStore(
+            store_path=default_cp_path
+        )
         self._tools = build_default_tools(self.registry.policy)
         self._resources = build_default_resources()
         self._resource_templates = build_default_resource_templates()
-        self._tool_handlers: dict[str, Callable[[dict[str, Any]], Coroutine[Any, Any, dict[str, Any]]]] = {
+        self._tool_handlers: dict[
+            str, Callable[[dict[str, Any]], Coroutine[Any, Any, dict[str, Any]]]
+        ] = {
             "uniconn_list_hosts": self._tool_list_hosts,
             "uniconn_ping": self._tool_ping,
             "uniconn_run": self._tool_run,
@@ -105,7 +151,20 @@ class MCPServer:
             "uniconn_propose_action": self._tool_propose_action,
             "uniconn_check_approval": self._tool_check_approval,
             "uniconn_wait_approval": self._tool_wait_approval,
+            "uniconn_list_flows": self._tool_list_flows,
+            "uniconn_inspect_flow": self._tool_inspect_flow,
+            "uniconn_run_flow": self._tool_run_flow,
+            "uniconn_resume_flow": self._tool_resume_flow,
         }
+
+    def register_flow(
+        self,
+        flow: Flow | SyncFlow,
+        *,
+        tool_name: str | None = None,
+    ) -> Flow:
+        """Зарегистрировать сценарий ``Flow`` для динамического экспорта как MCP-инструмент."""
+        return self.flow_registry.register(flow, tool_name=tool_name)
 
     @property
     def policy(self) -> MCPSecurityPolicy:
@@ -243,7 +302,8 @@ class MCPServer:
             return {}
 
         if method == "tools/list":
-            return {"tools": [t.to_mcp_dict() for t in self._tools]}
+            all_tools = (*self._tools, *self.flow_registry.build_dynamic_tools())
+            return {"tools": [t.to_mcp_dict() for t in all_tools]}
 
         if method == "tools/call":
             tool_name = params.get("name")
@@ -275,17 +335,31 @@ class MCPServer:
     async def _call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Выполнить MCP-инструмент и обернуть результат в формат ``CallToolResult``."""
         handler = self._tool_handlers.get(name)
+        dynamic_flow: Flow | None = None
         if handler is None:
+            with contextlib.suppress(KeyError):
+                dynamic_flow = self.flow_registry.get_flow(name)
+
+        if handler is None and dynamic_flow is None:
+            dyn_names = [t.name for t in self.flow_registry.build_dynamic_tools()]
             return self._tool_response(
                 {
                     "error": f"Unknown tool: {name!r}",
-                    "available_tools": sorted(self._tool_handlers.keys()),
+                    "available_tools": sorted([*self._tool_handlers.keys(), *dyn_names]),
                 },
                 is_error=True,
             )
 
         try:
-            payload = await handler(arguments)
+            if handler is not None:
+                payload = await handler(arguments)
+            else:
+                assert dynamic_flow is not None
+                payload = await self._execute_flow_by_object(
+                    dynamic_flow,
+                    tool_name=self.flow_registry.get_tool_name(dynamic_flow.name),
+                    arguments=arguments,
+                )
             return self._tool_response(payload, is_error=False)
         except Exception as exc:
             err_dict: dict[str, Any] = {
@@ -300,8 +374,10 @@ class MCPServer:
     async def _resolve_hitl_gate(
         self,
         *,
-        entry: MCPHostEntry,
+        entry: MCPHostEntry | None = None,
+        target_host: str | None = None,
         tool_name: str,
+        allowed_tool_names: Sequence[str] = (),
         risk_tier: ActionRiskTier,
         risk_reasons: tuple[str, ...],
         requires_approval: bool,
@@ -313,13 +389,22 @@ class MCPServer:
         parameters: dict[str, Any] | None = None,
         diff: str | None = None,
         agent_id: str | None = None,
+        pending_extra: dict[str, Any] | None = None,
     ) -> tuple[ApprovalRequest | None, dict[str, Any] | None]:
         """Выполнить проверку HITL-шлюза: вернуть (consumed_request, pending_payload)."""
+        host_label = target_host or (entry.name if entry is not None else "fleet")
         if approval_id is not None and str(approval_id).strip():
+            appr_key = str(approval_id).strip()
+            effective_tool = tool_name
+            if allowed_tool_names:
+                with contextlib.suppress(KeyError):
+                    existing_req = await self.approval_manager.get_request(appr_key)
+                    if existing_req.tool_name in allowed_tool_names:
+                        effective_tool = existing_req.tool_name
             consumed = await self.approval_manager.verify_and_consume(
-                str(approval_id).strip(),
-                target_host=entry.name,
-                tool_name=tool_name,
+                appr_key,
+                target_host=host_label,
+                tool_name=effective_tool,
                 command=command,
                 sudo=sudo,
                 cwd=cwd,
@@ -331,7 +416,7 @@ class MCPServer:
             return None, None
 
         req = await self.approval_manager.create_request(
-            target_host=entry.name,
+            target_host=host_label,
             tool_name=tool_name,
             risk_tier=risk_tier,
             risk_reasons=risk_reasons,
@@ -345,7 +430,7 @@ class MCPServer:
         if req.status == ApprovalStatus.APPROVED:
             consumed = await self.approval_manager.verify_and_consume(
                 req.approval_id,
-                target_host=entry.name,
+                target_host=host_label,
                 tool_name=tool_name,
                 command=command,
                 sudo=sudo,
@@ -362,7 +447,7 @@ class MCPServer:
                 decision_reason=req.decision_reason,
                 approval_request=req,
                 command=command,
-                host=entry.name,
+                host=host_label,
             )
 
         if wait_for_approval:
@@ -373,7 +458,7 @@ class MCPServer:
             if decided.status == ApprovalStatus.APPROVED:
                 consumed = await self.approval_manager.verify_and_consume(
                     decided.approval_id,
-                    target_host=entry.name,
+                    target_host=host_label,
                     tool_name=tool_name,
                     command=command,
                     sudo=sudo,
@@ -390,11 +475,11 @@ class MCPServer:
                     decision_reason=decided.decision_reason,
                     approval_request=decided,
                     command=command,
-                    host=entry.name,
+                    host=host_label,
                 )
-            return None, _build_pending_approval_payload(decided)
+            return None, _build_pending_approval_payload(decided, extra=pending_extra)
 
-        return None, _build_pending_approval_payload(req)
+        return None, _build_pending_approval_payload(req, extra=pending_extra)
 
     async def _tool_list_hosts(self, arguments: dict[str, Any]) -> dict[str, Any]:
         group = arguments.get("group")
@@ -772,11 +857,73 @@ class MCPServer:
             return result_payload
 
     async def _tool_propose_action(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        tool_name = str(arguments.get("tool_name") or "uniconn_run").strip()
+        agent_id = arguments.get("agent_id")
+
+        if tool_name == "uniconn_run_flow" or tool_name.startswith("flow_"):
+            flow_key = str(arguments.get("flow_name") or tool_name).strip()
+            flow_obj = self.flow_registry.get_flow(flow_key)
+            canonical_tool = self.flow_registry.get_tool_name(flow_obj.name)
+            eff_tool = tool_name if tool_name == "uniconn_run_flow" else canonical_tool
+            raw_targets = arguments.get("targets") or arguments.get("target")
+            if isinstance(raw_targets, str) and "," in raw_targets:
+                raw_targets = [t.strip() for t in raw_targets.split(",") if t.strip()]
+            raw_group = arguments.get("group")
+            group_str = str(raw_group).strip() if raw_group else None
+            entries = self.registry.resolve_targets(raw_targets, group=group_str)
+            raw_tags = arguments.get("tags")
+            tags_list: list[str] | None = None
+            if isinstance(raw_tags, str) and raw_tags.strip():
+                tags_list = [t.strip() for t in raw_tags.split(",") if t.strip()]
+            elif isinstance(raw_tags, Sequence) and not isinstance(raw_tags, str):
+                tags_list = [str(t).strip() for t in raw_tags if str(t).strip()]
+            validated_vars = FlowSchemaGenerator.extract_and_validate_vars(
+                flow_obj,
+                arguments,
+                tags=tags_list,
+            )
+            eff_mode = str(arguments.get("mode") or flow_obj.mode)
+            assessment, plan_preview = FlowRiskEvaluator.evaluate(
+                flow_obj,
+                entries=entries,
+                vars=validated_vars,
+                tags=tags_list,
+                mode=eff_mode,
+                dry_run=False,
+                policy=self.policy.hitl,
+            )
+            if assessment.risk_tier == ActionRiskTier.TIER_3_FORBIDDEN:
+                raise PermissionError(
+                    f"Proposed flow {flow_obj.name!r} is forbidden: {'; '.join(assessment.reasons)}"
+                )
+            host_label = ",".join(e.name for e in entries)
+            hmac_params = {
+                "flow_name": flow_obj.name,
+                "targets": [e.name for e in entries],
+                "group": group_str or "",
+                "vars": validated_vars,
+                "tags": list(tags_list or ()),
+                "mode": eff_mode,
+            }
+            req = await self.approval_manager.create_request(
+                target_host=host_label,
+                tool_name=eff_tool,
+                risk_tier=assessment.risk_tier,
+                risk_reasons=assessment.reasons,
+                command=f"flow:{flow_obj.name}",
+                parameters=hmac_params,
+                diff=plan_preview,
+                agent_id=str(agent_id) if agent_id else None,
+            )
+            return {
+                "assessment": assessment.to_dict(),
+                "plan_preview": plan_preview,
+                "approval": req.to_public_dict(),
+            }
+
         target = arguments.get("target")
         if not isinstance(target, str) or not target.strip():
             raise ValueError("Parameter 'target' is required")
-        tool_name = str(arguments.get("tool_name") or "uniconn_run").strip()
-        agent_id = arguments.get("agent_id")
         entry = self.registry.get_entry(target)
         is_prod = entry.is_production(self.policy.hitl.prod_groups)
 
@@ -871,6 +1018,314 @@ class MCPServer:
             "approval": req.to_public_dict(),
         }
 
+    async def _tool_list_flows(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        include_cp = bool(arguments.get("include_checkpoints", True))
+        flows_list = self.flow_registry.to_summary_list(policy=self.policy.hitl)
+        out: dict[str, Any] = {
+            "flows": flows_list,
+            "count": len(flows_list),
+        }
+        if include_cp:
+            records = self.checkpoint_store.list_records(only_resumable=True)
+            out["resumable_checkpoints"] = [r.to_dict() for r in records]
+        return out
+
+    async def _tool_inspect_flow(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        flow_name = arguments.get("flow_name")
+        if not isinstance(flow_name, str) or not flow_name.strip():
+            raise ValueError("Parameter 'flow_name' is required")
+        flow_obj = self.flow_registry.get_flow(flow_name.strip())
+        raw_targets = arguments.get("targets")
+        group = arguments.get("group")
+        entries: list[MCPHostEntry] = []
+        if raw_targets or group:
+            entries = self.registry.resolve_targets(
+                raw_targets,
+                group=str(group) if group else None,
+            )
+        else:
+            with contextlib.suppress(Exception):
+                entries = self.registry.list_entries()
+
+        raw_tags = arguments.get("tags")
+        tags_list = (
+            [str(t) for t in raw_tags]
+            if isinstance(raw_tags, Sequence) and not isinstance(raw_tags, str)
+            else None
+        )
+        raw_vars = arguments.get("vars")
+        vars_dict = dict(raw_vars) if isinstance(raw_vars, dict) else {}
+        assessment, plan_preview = FlowRiskEvaluator.evaluate(
+            flow_obj,
+            entries=entries,
+            vars=vars_dict,
+            tags=tags_list,
+            policy=self.policy.hitl,
+        )
+        tool_def = FlowSchemaGenerator.generate_tool_definition(
+            flow_obj,
+            tool_name=self.flow_registry.get_tool_name(flow_obj.name),
+        )
+        return {
+            "flow_name": flow_obj.name,
+            "tool_name": tool_def.name,
+            "description": tool_def.description,
+            "mode": flow_obj.mode,
+            "fail_fast": flow_obj.fail_fast,
+            "risk_assessment": assessment.to_dict(),
+            "plan_preview": plan_preview,
+            "input_schema": tool_def.input_schema,
+            "waves": [[t.name for t in layer] for layer in flow_obj.get_layers()],
+        }
+
+    async def _tool_run_flow(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        flow_name = arguments.get("flow_name")
+        if not isinstance(flow_name, str) or not flow_name.strip():
+            raise ValueError("Parameter 'flow_name' is required")
+        flow_obj = self.flow_registry.get_flow(flow_name.strip())
+        return await self._execute_flow_by_object(
+            flow_obj,
+            tool_name="uniconn_run_flow",
+            arguments=arguments,
+        )
+
+    async def _tool_resume_flow(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        run_id = arguments.get("run_id")
+        if not isinstance(run_id, str) or not run_id.strip():
+            raise ValueError("Parameter 'run_id' is required")
+        cp_record = self.checkpoint_store.get(run_id.strip())
+        flow_obj = self.flow_registry.get_flow(cp_record.flow_name)
+        merged_args: dict[str, Any] = {
+            "resume_run_id": cp_record.run_id,
+            "targets": cp_record.targets,
+            "group": cp_record.group,
+            "tags": cp_record.tags,
+            "mode": cp_record.mode,
+            "vars": dict(cp_record.vars),
+        }
+        override_vars = arguments.get("vars")
+        if isinstance(override_vars, dict):
+            merged_args["vars"].update(override_vars)
+        if "approval_id" in arguments:
+            merged_args["approval_id"] = arguments["approval_id"]
+        if "wait_for_approval" in arguments:
+            merged_args["wait_for_approval"] = arguments["wait_for_approval"]
+        return await self._execute_flow_by_object(
+            flow_obj,
+            tool_name=self.flow_registry.get_tool_name(flow_obj.name),
+            arguments=merged_args,
+        )
+
+    async def _execute_flow_by_object(
+        self,
+        flow_obj: Flow,
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Единый конвейер запуска ``Flow`` с поддержкой HITL 4.2, диагностики 4.1 и чекпоинтов."""
+        resume_id_raw = arguments.get("resume_run_id") or arguments.get("run_id")
+        resume_run_id = (
+            str(resume_id_raw).strip()
+            if isinstance(resume_id_raw, str) and str(resume_id_raw).strip()
+            else None
+        )
+        prior_completed: dict[str, list[str]] = {}
+        prior_outputs: dict[str, dict[str, Any]] = {}
+        base_vars: dict[str, Any] = {}
+        default_targets: Any = None
+        default_group: str | None = None
+        default_tags: list[str] | None = None
+        default_mode: str | None = None
+
+        if resume_run_id is not None:
+            cp = self.checkpoint_store.get(resume_run_id)
+            if cp.flow_name != flow_obj.name:
+                raise ValueError(
+                    f"Checkpoint {resume_run_id!r} belongs to flow {cp.flow_name!r}, "
+                    f"cannot resume flow {flow_obj.name!r}"
+                )
+            prior_completed = {h: list(t_list) for h, t_list in cp.completed_by_host.items()}
+            prior_outputs = {
+                h: dict(out_dict) for h, out_dict in cp.task_outputs_by_host.items()
+            }
+            base_vars = dict(cp.vars)
+            default_targets = cp.targets
+            default_group = cp.group
+            default_tags = cp.tags or None
+            default_mode = cp.mode
+
+        raw_targets = arguments.get("targets") or arguments.get("target") or default_targets
+        if isinstance(raw_targets, str) and "," in raw_targets:
+            raw_targets = [t.strip() for t in raw_targets.split(",") if t.strip()]
+        raw_group = arguments.get("group") if "group" in arguments else default_group
+        group_str = str(raw_group).strip() if raw_group else None
+        entries = self.registry.resolve_targets(raw_targets, group=group_str)
+
+        raw_tags = arguments.get("tags") if "tags" in arguments else default_tags
+        tags_list: list[str] | None = None
+        if isinstance(raw_tags, str) and raw_tags.strip():
+            tags_list = [t.strip() for t in raw_tags.split(",") if t.strip()]
+        elif isinstance(raw_tags, Sequence) and not isinstance(raw_tags, str):
+            tags_list = [str(t).strip() for t in raw_tags if str(t).strip()]
+
+        validated_vars = FlowSchemaGenerator.extract_and_validate_vars(
+            flow_obj,
+            arguments,
+            base_vars=base_vars,
+            tags=tags_list,
+        )
+
+        raw_mode = arguments.get("mode") or default_mode or flow_obj.mode
+        eff_mode: Literal["barrier", "independent"] = (
+            "independent" if str(raw_mode) == "independent" else "barrier"
+        )
+        req_dry_run = bool(arguments.get("dry_run", False))
+        eff_dry_run = self.policy.dry_run or req_dry_run
+
+        assessment, plan_preview = FlowRiskEvaluator.evaluate(
+            flow_obj,
+            entries=entries,
+            vars=validated_vars,
+            tags=tags_list,
+            mode=eff_mode,
+            dry_run=eff_dry_run,
+            policy=self.policy.hitl,
+        )
+        if assessment.risk_tier == ActionRiskTier.TIER_3_FORBIDDEN:
+            raise PermissionError(
+                f"Flow {flow_obj.name!r} is forbidden by security policy: "
+                f"{'; '.join(assessment.reasons)}"
+            )
+
+        approval_id = arguments.get("approval_id")
+        wait_for_appr = bool(
+            arguments.get("wait_for_approval", self.policy.hitl.wait_for_approval)
+        )
+        needs_approval = self.policy.hitl.enabled and assessment.requires_approval
+        target_names = [e.name for e in entries]
+        host_label = ",".join(target_names)
+        hmac_params = {
+            "flow_name": flow_obj.name,
+            "targets": target_names,
+            "group": group_str or "",
+            "vars": validated_vars,
+            "tags": list(tags_list or ()),
+            "mode": eff_mode,
+        }
+        canonical_flow_tool = self.flow_registry.get_tool_name(flow_obj.name)
+        allowed_tools = (tool_name, canonical_flow_tool, "uniconn_run_flow")
+
+        consumed_req, pending_payload = await self._resolve_hitl_gate(
+            target_host=host_label,
+            tool_name=tool_name,
+            allowed_tool_names=allowed_tools,
+            risk_tier=assessment.risk_tier,
+            risk_reasons=assessment.reasons,
+            requires_approval=needs_approval,
+            approval_id=str(approval_id) if approval_id is not None else None,
+            wait_for_approval=wait_for_appr,
+            command=f"flow:{flow_obj.name}",
+            parameters=hmac_params,
+            diff=plan_preview,
+            pending_extra={
+                "flow_name": flow_obj.name,
+                "targets": target_names,
+                "plan_preview": plan_preview,
+            },
+        )
+        if pending_payload is not None:
+            return pending_payload
+
+        active_flow = coerce_to_flow(flow_obj, mode=eff_mode)
+        run_id = resume_run_id or f"run_{uuid.uuid4().hex[:12]}"
+
+        if len(entries) == 1:
+            async with self.registry.create_connection(
+                entries[0],
+                dry_run=eff_dry_run,
+                auto_diagnostics=True,
+            ) as conn:
+                report = await active_flow.run(
+                    conn,
+                    vars=validated_vars,
+                    tags=tags_list,
+                    dry_run=eff_dry_run,
+                    completed_tasks_by_host=prior_completed,
+                    checkpoint_outputs_by_host=prior_outputs,
+                    run_id=run_id,
+                    resumed_from=resume_run_id,
+                )
+        else:
+            pool = self.registry.create_pool(
+                entries,
+                dry_run=eff_dry_run,
+                auto_diagnostics=True,
+            )
+            async with pool:
+                report = await active_flow.run(
+                    pool,
+                    vars=validated_vars,
+                    tags=tags_list,
+                    dry_run=eff_dry_run,
+                    completed_tasks_by_host=prior_completed,
+                    checkpoint_outputs_by_host=prior_outputs,
+                    run_id=run_id,
+                    resumed_from=resume_run_id,
+                )
+
+        cp_record = self.checkpoint_store.record_from_report(
+            report,
+            targets=target_names,
+            group=group_str,
+            vars=validated_vars,
+            tags=tags_list,
+            mode=eff_mode,
+            prior_completed=prior_completed,
+            prior_outputs=prior_outputs,
+            run_id=run_id,
+        )
+
+        report_dict = report.to_dict()
+        payload: dict[str, Any] = {
+            "status": "COMPLETED" if report.ok else "FAILED",
+            "ok": report.ok,
+            "flow_name": flow_obj.name,
+            "tool_name": canonical_flow_tool,
+            "mode": report.mode,
+            "run_id": cp_record.run_id,
+            "can_resume": not report.ok,
+            "resumed_from": resume_run_id,
+            "duration_ms": round(report.duration * 1000, 3),
+            "dry_run": eff_dry_run,
+            "risk_tier": assessment.risk_tier.value,
+            "targets": target_names,
+            "summary": {
+                "total_tasks": report.total_tasks,
+                "succeeded_count": report.succeeded_count,
+                "failed_count": report.failed_count,
+                "skipped_count": report.skipped_count,
+                "changed_count": report.changed_count,
+                "failed_hosts": report.failed_hosts,
+            },
+            "failed_tasks": cp_record.failed_tasks,
+            "completed_by_host": cp_record.completed_by_host,
+            "results": report_dict["results"],
+        }
+        if consumed_req is not None:
+            payload["approval"] = {
+                "approval_id": consumed_req.approval_id,
+                "status": consumed_req.status.value,
+                "approved_by": consumed_req.decided_by,
+                "approved_at": (
+                    consumed_req.decided_at.isoformat()
+                    if consumed_req.decided_at
+                    else None
+                ),
+                "decision_reason": consumed_req.decision_reason,
+            }
+        return payload
+
     async def _read_resource(self, uri: str) -> dict[str, Any]:
         """Прочитать MCP-ресурс по URI."""
         if uri == "uniconn://inventory/hosts":
@@ -891,6 +1346,18 @@ class MCPServer:
                 "pending_approvals": [r.to_public_dict() for r in pending],
                 "count": len(pending),
             }
+            return {
+                "contents": [
+                    {
+                        "uri": uri,
+                        "mimeType": "application/json",
+                        "text": json.dumps(data, ensure_ascii=False, indent=2),
+                    }
+                ]
+            }
+
+        if uri == "uniconn://flows":
+            data = await self._tool_list_flows({"include_checkpoints": True})
             return {
                 "contents": [
                     {

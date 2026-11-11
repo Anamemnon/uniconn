@@ -163,6 +163,29 @@ class FlowContext:
             bucket = self._resolve_host_bucket(host_or_conn)
             return self._task_results.get(bucket, {}).get(task_name)
 
+    def get_result(
+        self,
+        task_or_name: Any,
+        host: Any = None,
+        default: Any = None,
+    ) -> Any:
+        """Получить возвращаемое значение (``return_value``) ранее выполненной задачи."""
+        task_name = (
+            task_or_name
+            if isinstance(task_or_name, str)
+            else getattr(task_or_name, "name", str(task_or_name))
+        )
+        with self._thread_lock:
+            if host is not None:
+                res = self.get_task_result(host, task_name)
+                if res is not None and res.return_value is not None:
+                    return res.return_value
+                return default
+            for host_map in self._task_results.values():
+                if task_name in host_map and host_map[task_name].return_value is not None:
+                    return host_map[task_name].return_value
+            return default
+
 
 __all__ = [
     "FlowContext",

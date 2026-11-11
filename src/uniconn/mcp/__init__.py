@@ -3,6 +3,14 @@
 
 from __future__ import annotations
 
+from .flows import (
+    FlowCheckpointRecord,
+    FlowCheckpointStore,
+    FlowRiskEvaluator,
+    FlowSchemaGenerator,
+    MCPFlowRegistry,
+    normalize_flow_tool_name,
+)
 from .hitl import (
     DEFAULT_APPROVAL_STORE_PATH,
     ActionRiskClassifier,
@@ -36,7 +44,12 @@ __all__ = [
     "ApprovalManager",
     "ApprovalRequest",
     "ApprovalStatus",
+    "FlowCheckpointRecord",
+    "FlowCheckpointStore",
+    "FlowRiskEvaluator",
+    "FlowSchemaGenerator",
     "HITLPolicy",
+    "MCPFlowRegistry",
     "MCPHostEntry",
     "MCPHostRegistry",
     "MCPResourceDefinition",
@@ -49,5 +62,6 @@ __all__ = [
     "WebhookApprovalChannel",
     "build_unified_diff",
     "mask_uri_secrets",
+    "normalize_flow_tool_name",
 ]
 

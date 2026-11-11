@@ -249,14 +249,54 @@ class MCPHostRegistry:
             raise ConfigurationError("No valid targets specified")
         return resolved
 
-    def create_connection(self, target: str | MCPHostEntry) -> Connection:
+    def create_connection(
+        self,
+        target: str | MCPHostEntry,
+        *,
+        dry_run: bool | None = None,
+        auto_diagnostics: bool | None = None,
+    ) -> Connection:
         """Создать ``Connection`` для целевого хоста с подключёнными хуками безопасности."""
         entry = target if isinstance(target, MCPHostEntry) else self.get_entry(target)
         raw = dict(entry.raw_config)
-        raw["dry_run"] = self.policy.dry_run
-        conn = Connection.from_dict(raw, dry_run=self.policy.dry_run)
+        eff_dry_run = (
+            self.policy.dry_run
+            if dry_run is None
+            else (self.policy.dry_run or bool(dry_run))
+        )
+        raw["dry_run"] = eff_dry_run
+        if auto_diagnostics is not None:
+            raw["auto_diagnostics"] = bool(auto_diagnostics)
+        if entry.transport == "local" and entry.name:
+            raw["host"] = entry.name
+        conn = Connection.from_dict(raw, dry_run=eff_dry_run)
         self._attach_security_hooks(conn)
         return conn
+
+    def create_pool(
+        self,
+        entries: Sequence[str | MCPHostEntry],
+        *,
+        max_concurrent: int = 10,
+        dry_run: bool | None = None,
+        auto_diagnostics: bool | None = None,
+    ) -> Any:
+        """Создать ``ConnectionPool`` для списка хостов с применёнными политиками безопасности."""
+        from ..pool.connection_pool import ConnectionPool
+
+        resolved = [
+            e if isinstance(e, MCPHostEntry) else self.get_entry(e)
+            for e in entries
+        ]
+        conns = [
+            self.create_connection(
+                entry,
+                dry_run=dry_run,
+                auto_diagnostics=auto_diagnostics,
+            )
+            for entry in resolved
+        ]
+        return ConnectionPool(conns, max_concurrent=max_concurrent)
 
     def _attach_security_hooks(self, conn: Connection) -> None:
         """Навесить на ``Connection`` guardrails согласно ``MCPSecurityPolicy``."""

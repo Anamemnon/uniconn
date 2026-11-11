@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from graphlib import CycleError, TopologicalSorter
 from typing import TYPE_CHECKING, Any, Literal, Self
 
@@ -11,7 +12,7 @@ from ..core.bridge import EventLoopPortal, SyncProxyMixin
 from ..exceptions import ConfigurationError, CyclicDependencyError
 from .context import FlowContext
 from .models import FlowReport
-from .scheduler import execute_flow
+from .scheduler import compute_active_tasks_by_tags, execute_flow
 from .task import Task, task
 
 if TYPE_CHECKING:
@@ -39,6 +40,10 @@ class Flow:
         max_fail_ratio: float = 0.0,
         batch_size: int | None = None,
         batch_notifications: bool = True,
+        description: str | None = None,
+        params_model: Any | None = None,
+        risk_tier: str | None = None,
+        expose_as_tool: bool = True,
     ) -> None:
         """Инициализировать сценарий ``Flow`` и провалидировать граф задач."""
         if mode not in ("barrier", "independent"):
@@ -58,6 +63,10 @@ class Flow:
         self.max_fail_ratio = max_fail_ratio
         self.batch_size = batch_size
         self.batch_notifications = batch_notifications
+        self.description = description.strip() if isinstance(description, str) and description.strip() else None
+        self.params_model = params_model
+        self.risk_tier = risk_tier.strip().lower() if isinstance(risk_tier, str) and risk_tier.strip() else None
+        self.expose_as_tool = bool(expose_as_tool)
         self._tasks: dict[str, Task[Any, Any]] = {}
         self._dag: dict[str, set[str]] = {}
 
@@ -155,6 +164,54 @@ class Flow:
             sorter.done(*ready)
         return layers
 
+    def describe_plan(
+        self,
+        *,
+        targets: Sequence[str] = (),
+        vars: Mapping[str, Any] | None = None,
+        tags: Sequence[str] | None = None,
+        mode: str | None = None,
+        dry_run: bool | None = None,
+    ) -> str:
+        """Сформировать детерминированный ASCII-план выполнения DAG по волнам."""
+        layers = self.get_layers()
+        active_set = compute_active_tasks_by_tags(self._tasks, self._dag, tags)
+        eff_mode = mode or self.mode
+        lines: list[str] = [
+            f"Flow: {self.name} (mode={eff_mode}, tasks={len(self._tasks)}, waves={len(layers)})"
+        ]
+        if self.description:
+            lines.append(f"Description: {self.description}")
+        if targets:
+            lines.append(f"Targets ({len(targets)}): {', '.join(str(t) for t in targets)}")
+        if tags:
+            lines.append(f"Tag Filter: {', '.join(str(t) for t in tags)}")
+        if dry_run is not None:
+            lines.append(f"Dry Run: {dry_run}")
+        if vars:
+            kv = ", ".join(f"{k}={v!r}" for k, v in sorted(vars.items()))
+            lines.append(f"Parameters: {kv}")
+        lines.append("DAG Execution Plan:")
+        for idx, layer in enumerate(layers, 1):
+            lines.append(f"  Wave {idx} (parallel={len(layer)}):")
+            for t_obj in layer:
+                is_active = active_set is None or t_obj.name in active_set
+                status_prefix = "+" if is_active else "~ (tag_filtered)"
+                deps = sorted(self._dag.get(t_obj.name, ()))
+                dep_str = f" <- [{', '.join(deps)}]" if deps else ""
+                meta: list[str] = []
+                if t_obj.tags:
+                    meta.append(f"tags={list(t_obj.tags)}")
+                if t_obj.always_run:
+                    meta.append("always_run")
+                if t_obj.options.ignore_errors:
+                    meta.append("ignore_errors")
+                if t_obj.options.retries > 0:
+                    meta.append(f"retries={t_obj.options.retries}")
+                meta_str = f" ({', '.join(meta)})" if meta else ""
+                lines.append(f"    {status_prefix} {t_obj.name}{dep_str}{meta_str}")
+        return "\n".join(lines)
+
     async def run(
         self,
         target: Connection | ConnectionPool,
@@ -165,6 +222,12 @@ class Flow:
         dry_run: bool | None = None,
         batch_size: int | None = None,
         max_fail_ratio: float | None = None,
+        completed_tasks_by_host: (
+            Mapping[str, AbstractSet[str] | Sequence[str] | Mapping[str, Any]] | None
+        ) = None,
+        checkpoint_outputs_by_host: Mapping[str, Mapping[str, Any]] | None = None,
+        run_id: str | None = None,
+        resumed_from: str | None = None,
     ) -> FlowReport:
         """Асинхронно выполнить сценарий ``Flow`` на ``Connection`` или ``ConnectionPool``."""
         return await execute_flow(
@@ -176,6 +239,10 @@ class Flow:
             dry_run=dry_run,
             batch_size=batch_size,
             max_fail_ratio=max_fail_ratio,
+            completed_tasks_by_host=completed_tasks_by_host,
+            checkpoint_outputs_by_host=checkpoint_outputs_by_host,
+            run_id=run_id,
+            resumed_from=resumed_from,
         )
 
     def to_sync(self) -> SyncFlow:
@@ -238,6 +305,26 @@ class SyncFlow(SyncProxyMixin):
         return self._async_flow.mode
 
     @property
+    def description(self) -> str | None:
+        """Описание сценария."""
+        return self._async_flow.description
+
+    @property
+    def params_model(self) -> Any | None:
+        """Модель параметров сценария."""
+        return self._async_flow.params_model
+
+    @property
+    def risk_tier(self) -> str | None:
+        """Явный уровень риска сценария."""
+        return self._async_flow.risk_tier
+
+    @property
+    def expose_as_tool(self) -> bool:
+        """Флаг экспорта в MCP."""
+        return self._async_flow.expose_as_tool
+
+    @property
     def tasks(self) -> dict[str, Task[Any, Any]]:
         """Словарь зарегистрированных задач."""
         return self._async_flow.tasks
@@ -264,6 +351,24 @@ class SyncFlow(SyncProxyMixin):
         """Вернуть слои параллельного выполнения задач."""
         return self._async_flow.get_layers()
 
+    def describe_plan(
+        self,
+        *,
+        targets: Sequence[str] = (),
+        vars: Mapping[str, Any] | None = None,
+        tags: Sequence[str] | None = None,
+        mode: str | None = None,
+        dry_run: bool | None = None,
+    ) -> str:
+        """Сформировать детерминированный ASCII-план выполнения DAG по волнам."""
+        return self._async_flow.describe_plan(
+            targets=targets,
+            vars=vars,
+            tags=tags,
+            mode=mode,
+            dry_run=dry_run,
+        )
+
     def to_rich_tree(self) -> Any:
         """Построить ``rich.tree.Tree`` для визуализации графа."""
         return self._async_flow.to_rich_tree()
@@ -278,6 +383,12 @@ class SyncFlow(SyncProxyMixin):
         dry_run: bool | None = None,
         batch_size: int | None = None,
         max_fail_ratio: float | None = None,
+        completed_tasks_by_host: (
+            Mapping[str, AbstractSet[str] | Sequence[str] | Mapping[str, Any]] | None
+        ) = None,
+        checkpoint_outputs_by_host: Mapping[str, Mapping[str, Any]] | None = None,
+        run_id: str | None = None,
+        resumed_from: str | None = None,
     ) -> FlowReport:
         """Синхронно выполнить сценарий на ``SyncConnection``, ``SyncConnectionPool`` или async-цели."""
         async_target: Any = getattr(
@@ -295,6 +406,10 @@ class SyncFlow(SyncProxyMixin):
                 dry_run=dry_run,
                 batch_size=batch_size,
                 max_fail_ratio=max_fail_ratio,
+                completed_tasks_by_host=completed_tasks_by_host,
+                checkpoint_outputs_by_host=checkpoint_outputs_by_host,
+                run_id=run_id,
+                resumed_from=resumed_from,
             )
         )
 

@@ -8,6 +8,7 @@ from .models import (
     SkipReason,
     TaskResult,
     TaskStatus,
+    extract_task_diagnostic,
     extract_task_outcome_metadata,
 )
 from .scheduler import (
@@ -31,6 +32,7 @@ __all__ = [
     "TaskStatus",
     "compute_active_tasks_by_tags",
     "execute_flow",
+    "extract_task_diagnostic",
     "extract_task_outcome_metadata",
     "invoke_flow_callable",
     "normalize_host_id",

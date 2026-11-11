@@ -47,6 +47,19 @@ def _is_explicit_async_conn_param(param: inspect.Parameter) -> bool:
     return "Connection" in ann and "SyncConnection" not in ann
 
 
+def _resolve_host_label(conn: Any) -> str:
+    """Извлечь строковое имя хоста из объекта ``Connection`` или ``SyncConnection``."""
+    cfg = getattr(conn, "config", None)
+    if cfg is not None:
+        host_val = getattr(cfg, "host", None)
+        if isinstance(host_val, str) and host_val:
+            return host_val
+        uri_safe = getattr(cfg, "uri_safe", None)
+        if isinstance(uri_safe, str) and uri_safe:
+            return uri_safe
+    return "localhost"
+
+
 def _bind_callable_args(
     fn: Callable[..., Any],
     conn: Any,
@@ -79,6 +92,17 @@ def _bind_callable_args(
     kw_args: dict[str, Any] = {}
     conn_consumed = False
     ctx_consumed = False
+    use_kw_for_pos_or_kw = False
+
+    def _assign_arg(p: inspect.Parameter, val: Any) -> None:
+        nonlocal use_kw_for_pos_or_kw
+        if p.kind == inspect.Parameter.POSITIONAL_ONLY or (
+            p.kind == inspect.Parameter.POSITIONAL_OR_KEYWORD
+            and not use_kw_for_pos_or_kw
+        ):
+            pos_args.append(val)
+        else:
+            kw_args[p.name] = val
 
     for idx, param in enumerate(params):
         if param.kind == inspect.Parameter.VAR_POSITIONAL:
@@ -88,33 +112,52 @@ def _bind_callable_args(
         if param.kind == inspect.Parameter.VAR_KEYWORD:
             continue
 
-        if param.kind in (
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        ):
-            if _is_ctx_param(param):
-                pos_args.append(ctx)
-                ctx_consumed = True
-            elif not conn_consumed and (
-                idx == 0
-                or param.name in _CONN_PARAM_NAMES
-                or "Connection" in str(param.annotation)
-            ):
-                pos_args.append(_resolve_conn_for_param(param))
-                conn_consumed = True
-            elif not ctx_consumed and param.default is inspect.Parameter.empty:
-                pos_args.append(ctx)
-                ctx_consumed = True
-        elif param.kind == inspect.Parameter.KEYWORD_ONLY:
-            if _is_ctx_param(param):
-                kw_args[param.name] = ctx
-                ctx_consumed = True
-            elif (
+        ann_str = str(param.annotation)
+        is_conn_candidate = (
+            not conn_consumed
+            and not _is_ctx_param(param)
+            and (
                 param.name in _CONN_PARAM_NAMES
-                or "Connection" in str(param.annotation)
-            ):
-                kw_args[param.name] = _resolve_conn_for_param(param)
-                conn_consumed = True
+                or "Connection" in ann_str
+                or (
+                    idx == 0
+                    and param.name != "host"
+                    and param.name not in ctx.vars
+                )
+            )
+        )
+
+        if _is_ctx_param(param):
+            _assign_arg(param, ctx)
+            ctx_consumed = True
+        elif is_conn_candidate:
+            _assign_arg(param, _resolve_conn_for_param(param))
+            conn_consumed = True
+        elif param.name in ctx.vars:
+            _assign_arg(param, ctx.vars[param.name])
+        elif param.name == "host" and param.default is inspect.Parameter.empty:
+            _assign_arg(param, _resolve_host_label(conn))
+        elif (
+            not ctx_consumed
+            and idx == 1
+            and getattr(fn, "__name__", "") == "<lambda>"
+            and param.kind
+            in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
+            and param.default is inspect.Parameter.empty
+            and param.annotation is inspect.Parameter.empty
+        ):
+            _assign_arg(param, ctx)
+            ctx_consumed = True
+        elif param.default is not inspect.Parameter.empty:
+            use_kw_for_pos_or_kw = True
+        else:
+            fn_name = getattr(fn, "__name__", repr(fn))
+            raise ValueError(
+                f"Task {fn_name!r} missing required flow variable {param.name!r} in FlowContext.vars"
+            )
 
     return tuple(pos_args), kw_args
 

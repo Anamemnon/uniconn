@@ -7,15 +7,22 @@ import asyncio
 import builtins
 import contextlib
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from graphlib import TopologicalSorter
 from typing import TYPE_CHECKING, Any
 
 from ..exceptions import BatchAbortedError
 from ..exceptions import TimeoutError as UniconnTimeoutError
 from ..services.provisioning._notify import NotificationBatch
-from .context import FlowContext
-from .models import FlowReport, SkipReason, TaskResult, extract_task_outcome_metadata
+from .context import FlowContext, normalize_host_id
+from .models import (
+    FlowReport,
+    SkipReason,
+    TaskResult,
+    extract_task_diagnostic,
+    extract_task_outcome_metadata,
+)
 from .task import Task, invoke_flow_callable
 
 if TYPE_CHECKING:
@@ -139,6 +146,7 @@ async def _flush_host_notifications(
                 error=f"notify handler raised {type(exc).__name__}: {exc}",
                 duration=time.perf_counter() - start_ts,
                 notified=True,
+                diagnostic=extract_task_diagnostic(None, exc),
             )
         )
         return notified_keys
@@ -157,6 +165,7 @@ async def _flush_host_notifications(
                     changed=changed,
                     diff=diff,
                     notified=True,
+                    diagnostic=extract_task_diagnostic(outcome, None),
                 )
             )
     return notified_keys
@@ -171,16 +180,76 @@ class _TaskExecutionEngine:
         ctx: FlowContext,
         active_by_tags: set[str] | None,
         dry_run_override: bool | None,
+        completed_tasks_by_host: (
+            Mapping[str, AbstractSet[str] | Sequence[str] | Mapping[str, Any]] | None
+        ) = None,
+        checkpoint_outputs_by_host: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
         self.flow = flow
         self.ctx = ctx
         self.active_by_tags = active_by_tags
         self.dry_run_override = dry_run_override
+        self.completed_by_host: dict[str, set[str]] = {}
+        self.checkpoint_outputs_by_host: dict[str, dict[str, Any]] = {}
+        for h, tasks in (completed_tasks_by_host or {}).items():
+            h_str = str(h)
+            if isinstance(tasks, Mapping):
+                self.completed_by_host[h_str] = {str(k) for k in tasks}
+                self.checkpoint_outputs_by_host[h_str] = {
+                    str(k): v for k, v in tasks.items()
+                }
+            else:
+                self.completed_by_host[h_str] = {str(t) for t in tasks}
+        for h, outputs in (checkpoint_outputs_by_host or {}).items():
+            h_str = str(h)
+            if isinstance(outputs, Mapping):
+                self.checkpoint_outputs_by_host.setdefault(h_str, {}).update(
+                    {str(k): v for k, v in outputs.items()}
+                )
         self._task_semaphores: dict[str, asyncio.Semaphore] = {
             name: asyncio.Semaphore(t.options.concurrency)
             for name, t in flow.tasks.items()
             if t.options.concurrency is not None and t.options.concurrency > 0
         }
+
+    def _host_lookup_candidates(
+        self,
+        host_key: str,
+        conn: Connection,
+    ) -> tuple[str, ...]:
+        primary, short = normalize_host_id(conn)
+        key_short = host_key.split("://", 1)[-1].rsplit("@", 1)[-1].split(":", 1)[0]
+        return (host_key, primary, short, key_short)
+
+    def _is_completed_in_checkpoint(
+        self,
+        task_name: str,
+        host_key: str,
+        conn: Connection,
+    ) -> bool:
+        """Проверить, была ли задача уже успешно выполнена на этом хосте в чекпоинте."""
+        if not self.completed_by_host:
+            return False
+        for cand in self._host_lookup_candidates(host_key, conn):
+            if cand and task_name in self.completed_by_host.get(cand, ()):
+                return True
+        return False
+
+    def _get_checkpoint_output(
+        self,
+        task_name: str,
+        host_key: str,
+        conn: Connection,
+    ) -> Any:
+        """Вернуть сохранённое возвращаемое значение задачи из чекпоинта (если имеется)."""
+        if not self.checkpoint_outputs_by_host:
+            return None
+        for cand in self._host_lookup_candidates(host_key, conn):
+            if cand and cand in self.checkpoint_outputs_by_host:
+                host_map = self.checkpoint_outputs_by_host[cand]
+                if task_name in host_map:
+                    return host_map[task_name]
+        return None
 
     def check_skip_reason(
         self,
@@ -192,6 +261,9 @@ class _TaskExecutionEngine:
     ) -> SkipReason | None:
         """Проверить статические и графовые условия пропуска задачи до её вызова."""
         name = task_obj.name
+        if self._is_completed_in_checkpoint(name, host_key, conn):
+            return "checkpoint_completed"
+
         if self.active_by_tags is not None and name not in self.active_by_tags:
             return "tag_filtered"
 
@@ -302,10 +374,16 @@ class _TaskExecutionEngine:
             task_obj, host_key, conn, host_results, host_aborted
         )
         if skip_reason is not None:
+            restored_val = (
+                self._get_checkpoint_output(name, host_key, conn)
+                if skip_reason == "checkpoint_completed"
+                else None
+            )
             res = TaskResult(
                 task_name=name,
                 host=host_key,
                 status="skipped",
+                return_value=restored_val,
                 skip_reason=skip_reason,
                 attempts=0,
             )
@@ -346,6 +424,7 @@ class _TaskExecutionEngine:
                         diff=diff,
                         changed=changed,
                         notified=notified,
+                        diagnostic=extract_task_diagnostic(last_val, None),
                     )
                     self.ctx.record_task_result(host_key, res)
                     return res
@@ -371,6 +450,7 @@ class _TaskExecutionEngine:
             changed=changed,
             notified=notified,
             ignored_error=opts.ignore_errors,
+            diagnostic=extract_task_diagnostic(last_val, last_exc),
         )
         self.ctx.record_task_result(host_key, res)
         return res
@@ -480,6 +560,7 @@ async def run_independent_fleet(
                     status="failed",
                     exception=exc,
                     error=str(exc),
+                    diagnostic=extract_task_diagnostic(None, exc),
                 )
                 results_by_host[key] = [err_res]
                 batch_failures[key] = exc
@@ -596,6 +677,7 @@ async def run_barrier_fleet(
                             status="failed",
                             exception=exc,
                             error=str(exc),
+                            diagnostic=extract_task_diagnostic(None, exc),
                         )
                         results_by_host[key].append(err_res)
                         host_aborted[key] = True
@@ -649,6 +731,12 @@ async def execute_flow(
     dry_run: bool | None = None,
     batch_size: int | None = None,
     max_fail_ratio: float | None = None,
+    completed_tasks_by_host: (
+        Mapping[str, AbstractSet[str] | Sequence[str] | Mapping[str, Any]] | None
+    ) = None,
+    checkpoint_outputs_by_host: Mapping[str, Mapping[str, Any]] | None = None,
+    run_id: str | None = None,
+    resumed_from: str | None = None,
 ) -> FlowReport:
     """Точка входа исполнения сценария ``Flow`` на ``Connection`` или ``ConnectionPool``."""
     from ..pool.connection_pool import ConnectionPool
@@ -659,7 +747,14 @@ async def execute_flow(
         ctx.update(vars)
 
     active_by_tags = compute_active_tasks_by_tags(flow.tasks, flow.dag, tags)
-    engine = _TaskExecutionEngine(flow, ctx, active_by_tags, dry_run)
+    engine = _TaskExecutionEngine(
+        flow,
+        ctx,
+        active_by_tags,
+        dry_run,
+        completed_tasks_by_host=completed_tasks_by_host,
+        checkpoint_outputs_by_host=checkpoint_outputs_by_host,
+    )
     start_ts = time.perf_counter()
 
     if isinstance(target, ConnectionPool):
@@ -701,6 +796,9 @@ async def execute_flow(
         results=results_map,
         mode=mode_label,  # type: ignore[arg-type]
         notified_handlers=notified_map,
+        run_id=run_id,
+        can_resume=(not overall_ok) if run_id is not None else False,
+        resumed_from=resumed_from,
     )
 
 
@@ -743,6 +841,10 @@ def coerce_to_flow(
             max_fail_ratio=flow_obj.max_fail_ratio,
             batch_size=flow_obj.batch_size,
             batch_notifications=flow_obj.batch_notifications,
+            description=flow_obj.description,
+            params_model=flow_obj.params_model,
+            risk_tier=flow_obj.risk_tier,
+            expose_as_tool=flow_obj.expose_as_tool,
         )
     return flow_obj
 

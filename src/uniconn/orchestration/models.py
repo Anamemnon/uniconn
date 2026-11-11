@@ -16,7 +16,47 @@ SkipReason = Literal[
     "tag_filtered",
     "upstream_failed",
     "aborted",
+    "checkpoint_completed",
 ]
+
+
+def extract_task_diagnostic(
+    val: Any = None,
+    exc: BaseException | None = None,
+) -> dict[str, Any] | None:
+    """Извлечь сериализованный ``DiagnosticSummary`` из результата задачи или исключения."""
+    for candidate in (val, exc):
+        if candidate is None:
+            continue
+        diag = getattr(candidate, "diagnostic", None)
+        if diag is None:
+            res_attr = getattr(candidate, "result", None)
+            if res_attr is not None:
+                diag = getattr(res_attr, "diagnostic", None)
+        if diag is None:
+            continue
+        payload: dict[str, Any] | None = None
+        if hasattr(diag, "to_dict"):
+            to_dict_fn = getattr(diag, "to_dict", None)
+            if callable(to_dict_fn):
+                raw = to_dict_fn()
+                if isinstance(raw, dict):
+                    payload = dict(raw)
+        elif isinstance(diag, dict):
+            payload = dict(diag)
+        if payload is not None:
+            src = getattr(candidate, "result", candidate)
+            exit_code = getattr(src, "exit_code", None)
+            if exit_code is not None and "exit_code" not in payload:
+                payload["exit_code"] = exit_code
+            stderr = getattr(src, "stderr", None)
+            if isinstance(stderr, str) and stderr and "stderr_tail" not in payload:
+                payload["stderr_tail"] = stderr[-500:]
+            command = getattr(src, "command", None)
+            if isinstance(command, str) and command and "command" not in payload:
+                payload["command"] = command
+            return payload
+    return None
 
 
 def extract_task_outcome_metadata(
@@ -70,6 +110,7 @@ class TaskResult:
     changed: bool = False
     notified: bool = False
     ignored_error: bool = False
+    diagnostic: dict[str, Any] | None = None
 
     @property
     def ok(self) -> bool:
@@ -86,7 +127,10 @@ class TaskResult:
         ):
             serialized_ret = repr(serialized_ret)
 
-        return {
+        diag_dict = self.diagnostic or extract_task_diagnostic(
+            self.return_value, self.exception
+        )
+        out: dict[str, Any] = {
             "task_name": self.task_name,
             "host": self.host,
             "status": self.status,
@@ -102,6 +146,9 @@ class TaskResult:
             "diff": self.diff,
             "return_value": serialized_ret,
         }
+        if diag_dict is not None:
+            out["diagnostic"] = diag_dict
+        return out
 
 
 @dataclass(slots=True)
@@ -114,6 +161,9 @@ class FlowReport:
     results: dict[str, list[TaskResult]] = field(default_factory=dict)
     mode: Literal["single", "barrier", "independent"] = "single"
     notified_handlers: dict[str, list[str]] = field(default_factory=dict)
+    run_id: str | None = None
+    can_resume: bool = False
+    resumed_from: str | None = None
 
     @property
     def total_tasks(self) -> int:
@@ -217,7 +267,7 @@ class FlowReport:
 
     def to_dict(self) -> dict[str, Any]:
         """Преобразовать сводный отчёт в сериализуемый словарь."""
-        return {
+        out: dict[str, Any] = {
             "flow_name": self.flow_name,
             "mode": self.mode,
             "ok": self.ok,
@@ -236,6 +286,12 @@ class FlowReport:
                 for host, items in self.results.items()
             },
         }
+        if self.run_id is not None:
+            out["run_id"] = self.run_id
+            out["can_resume"] = self.can_resume
+        if self.resumed_from is not None:
+            out["resumed_from"] = self.resumed_from
+        return out
 
     def to_rich_table(self) -> Any:
         """Построить ``rich.table.Table`` со сводкой выполнения по хостам и задачам."""
@@ -290,5 +346,6 @@ __all__ = [
     "SkipReason",
     "TaskResult",
     "TaskStatus",
+    "extract_task_diagnostic",
     "extract_task_outcome_metadata",
 ]

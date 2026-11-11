@@ -567,15 +567,30 @@ uniconn flow list deploy.py [--format table|json]
 uniconn flow inspect deploy.py:deploy_flow [--format tree|json]
 uniconn flow run deploy.py:deploy_flow ssh://node-01 ssh://node-02 [--mode barrier|independent] [--batch-size 2] [--max-fail-ratio 0.0] [--tags preflight,deploy] [--var env=prod] [--dry-run] [--format table|json]
 
-# Official MCP Server over JSON-RPC 2.0 stdio:
-uniconn mcp [--inventory hosts.yaml] [--uri ssh://node-01] [--group web] [--local] [--allow-write] [--allow-sudo] [--allow-dynamic-uri] [--dry-run] [--allowlist "df,uptime"] [--blocklist "..."] [--audit-log audit.jsonl] [--print-config]
+# Official MCP Server over JSON-RPC 2.0 stdio (including HITL and Flow-as-Tool):
+uniconn mcp [--inventory hosts.yaml] [--uri ssh://node-01] [--group web] [--local] [--allow-write] [--allow-sudo] [--allow-dynamic-uri] [--dry-run] [--allowlist "df,uptime"] [--blocklist "..."] [--audit-log audit.jsonl] [--hitl] [--hitl-store ~/.uniconn/approvals.json] [--flows deploy.py,ops_flows.py] [--print-config]
+uniconn approval list [--status PENDING] [--format table|json]
+uniconn approval show appr_123456789abc
+uniconn approval approve appr_123456789abc [--by operator] [--reason "Verified rollout plan"]
+uniconn approval reject appr_123456789abc [--by operator] [--reason "Freeze window"]
 ```
 
-### Declarative Task DAG Orchestration (`uniconn.orchestration`)
+### Declarative Task DAG Orchestration & MCP Flow-as-Tool (`uniconn.orchestration`, `uniconn.mcp`)
 ```python
-from uniconn import Connection, ConnectionPool, Flow, FlowContext, task
+from uniconn import (
+    Connection,
+    ConnectionPool,
+    Flow,
+    FlowCheckpointStore,
+    FlowContext,
+    FlowRiskEvaluator,
+    FlowSchemaGenerator,
+    MCPFlowRegistry,
+    MCPServer,
+    task,
+)
 
-@task(name="check_env", tags=["preflight"])
+@task(name="check_env", tags=["preflight", "safe"])
 async def check_env(conn: Connection, ctx: FlowContext):
     facts = await conn.gather_facts()
     ctx.host_set(conn, "os_family", facts.os_family)
@@ -593,12 +608,14 @@ async def cleanup(conn: Connection):
     retries=2,
     retry_delay=0.5,
     ignore_errors=False,
+    tags=["deploy"],
     hosts=["web-01", "web-02"],      # sequence of hosts or predicate Callable[[str], bool]
 )
-async def deploy_app(conn: Connection):
+async def deploy_app(conn: Connection, ctx: FlowContext, version: str, port: int = 8080):
+    # Named parameters (`version`, `port`) are auto-injected from FlowContext.vars!
     return await conn.state.ensure_file(
         "/etc/app.conf",
-        content="PORT=8080\n",
+        content=f"VERSION={version}\nPORT={port}\n",
         notify=("reload_app", lambda c: c.state.ensure_service("app", state="reloaded")),
     )
 
@@ -610,10 +627,20 @@ flow = Flow(
     batch_size=2,
     max_fail_ratio=0.0,
     batch_notifications=True,        # deduplicates all `notify` handlers across tasks in the flow
+    description="Zero-downtime application deployment across web fleet.",
+    risk_tier="high",                # "safe" | "low" | "medium" | "high"
+    expose_as_tool=True,             # dynamically exports as MCP tool `flow_prod_deploy`
 )
 
-report = await pool.run_flow(flow, vars={"env": "prod"}, tags=["deploy"])
+# 1. Direct execution on Connection or ConnectionPool:
+report = await pool.run_flow(flow, vars={"version": "1.4.2", "port": 9090}, tags=["deploy"])
 report.raise_for_status()            # raises FlowExecutionError if report.ok is False
+
+# 2. Export Flow as typed MCP Tool (`flow_prod_deploy`) + `uniconn_run_flow` / `uniconn_resume_flow`:
+mcp_server = MCPServer(flows=[flow])
+tool_def = FlowSchemaGenerator.generate_tool_definition(flow)
+plan_ascii = flow.describe_plan(targets=["web-01", "web-02"], vars={"version": "1.4.2"})
 ```
+
 
 
