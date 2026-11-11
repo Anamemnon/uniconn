@@ -4,16 +4,19 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sys
 from collections.abc import AsyncIterable, Callable, Coroutine
 from typing import Any, Literal
 
 from .._logging import SecretMaskingFilter
+from ..exceptions import ApprovalRejectedError
 from ..parsing import ParseSpec
 from ..result import _serialize_parsed_value
 from ..services.facts_models import HostFacts, diff_facts
-from .models import MCPHostEntry, MCPSecurityPolicy
+from .hitl import ActionRiskClassifier, ApprovalManager, build_unified_diff
+from .models import ActionRiskTier, ApprovalRequest, ApprovalStatus, MCPHostEntry, MCPSecurityPolicy
 from .registry import MCPHostRegistry
 from .schemas import (
     build_default_resource_templates,
@@ -43,6 +46,28 @@ def _sanitize_json_value(val: Any) -> Any:
     return serialized
 
 
+def _build_pending_approval_payload(req: ApprovalRequest) -> dict[str, Any]:
+    """Сформировать ответ со статусом PENDING_APPROVAL для двухфазного протокола MCP."""
+    return {
+        "status": "PENDING_APPROVAL",
+        "ok": False,
+        "requires_approval": True,
+        "approval_id": req.approval_id,
+        "target_host": req.target_host,
+        "tool_name": req.tool_name,
+        "risk_tier": req.risk_tier.value,
+        "risk_reasons": list(req.risk_reasons),
+        "diff": req.diff,
+        "expires_at": req.expires_at.isoformat(),
+        "approval": req.to_public_dict(),
+        "next_step": (
+            f"Action requires human operator approval (id={req.approval_id}). "
+            f"Operator can run 'uniconn approval approve {req.approval_id}' or approve in the Dashboard. "
+            f"Then call 'uniconn_wait_approval' or re-invoke {req.tool_name!r} with approval_id={req.approval_id!r}."
+        ),
+    }
+
+
 class MCPServer:
     """Асинхронный сервер протокола Model Context Protocol (MCP) для ``uniconn``."""
 
@@ -50,15 +75,20 @@ class MCPServer:
         self,
         registry: MCPHostRegistry | None = None,
         *,
+        approval_manager: ApprovalManager | None = None,
         server_name: str = "uniconn-mcp",
         server_version: str | None = None,
     ) -> None:
-        """Создать экземпляр MCP-сервера с реестром хостов и политикой безопасности."""
+        """Создать экземпляр MCP-сервера с реестром хостов, политикой безопасности и HITL."""
         from .. import __version__
 
         self.registry = registry or MCPHostRegistry.from_sources()
         self.server_name = server_name
         self.server_version = server_version or __version__
+        hitl_pol = self.registry.policy.hitl
+        if hitl_pol.audit_log_path is None and self.registry.policy.audit_log_path:
+            hitl_pol = hitl_pol.model_copy(update={"audit_log_path": self.registry.policy.audit_log_path})
+        self.approval_manager = approval_manager or ApprovalManager(policy=hitl_pol)
         self._tools = build_default_tools(self.registry.policy)
         self._resources = build_default_resources()
         self._resource_templates = build_default_resource_templates()
@@ -72,6 +102,9 @@ class MCPServer:
             "uniconn_stat_path": self._tool_stat_path,
             "uniconn_checksum": self._tool_checksum,
             "uniconn_write_file": self._tool_write_file,
+            "uniconn_propose_action": self._tool_propose_action,
+            "uniconn_check_approval": self._tool_check_approval,
+            "uniconn_wait_approval": self._tool_wait_approval,
         }
 
     @property
@@ -120,7 +153,6 @@ class MCPServer:
                 return None
             return self._error_response(msg_id, JSONRPC_INVALID_PARAMS, "Params must be an object")
 
-        # Уведомления JSON-RPC (без id) не требуют ответа
         if not has_id:
             return None
 
@@ -256,13 +288,113 @@ class MCPServer:
             payload = await handler(arguments)
             return self._tool_response(payload, is_error=False)
         except Exception as exc:
-            return self._tool_response(
-                {
-                    "error": type(exc).__name__,
-                    "message": SecretMaskingFilter._mask_string(str(exc)),
-                },
-                is_error=True,
+            err_dict: dict[str, Any] = {
+                "error": type(exc).__name__,
+                "message": SecretMaskingFilter._mask_string(str(exc)),
+            }
+            appr_id = getattr(exc, "approval_id", None)
+            if appr_id:
+                err_dict["approval_id"] = appr_id
+            return self._tool_response(err_dict, is_error=True)
+
+    async def _resolve_hitl_gate(
+        self,
+        *,
+        entry: MCPHostEntry,
+        tool_name: str,
+        risk_tier: ActionRiskTier,
+        risk_reasons: tuple[str, ...],
+        requires_approval: bool,
+        approval_id: str | None,
+        wait_for_approval: bool,
+        command: str | None = None,
+        sudo: bool = False,
+        cwd: str | None = None,
+        parameters: dict[str, Any] | None = None,
+        diff: str | None = None,
+        agent_id: str | None = None,
+    ) -> tuple[ApprovalRequest | None, dict[str, Any] | None]:
+        """Выполнить проверку HITL-шлюза: вернуть (consumed_request, pending_payload)."""
+        if approval_id is not None and str(approval_id).strip():
+            consumed = await self.approval_manager.verify_and_consume(
+                str(approval_id).strip(),
+                target_host=entry.name,
+                tool_name=tool_name,
+                command=command,
+                sudo=sudo,
+                cwd=cwd,
+                parameters=parameters,
             )
+            return consumed, None
+
+        if not requires_approval:
+            return None, None
+
+        req = await self.approval_manager.create_request(
+            target_host=entry.name,
+            tool_name=tool_name,
+            risk_tier=risk_tier,
+            risk_reasons=risk_reasons,
+            command=command,
+            sudo=sudo,
+            cwd=cwd,
+            parameters=parameters,
+            diff=diff,
+            agent_id=agent_id,
+        )
+        if req.status == ApprovalStatus.APPROVED:
+            consumed = await self.approval_manager.verify_and_consume(
+                req.approval_id,
+                target_host=entry.name,
+                tool_name=tool_name,
+                command=command,
+                sudo=sudo,
+                cwd=cwd,
+                parameters=parameters,
+            )
+            return consumed, None
+        if req.status == ApprovalStatus.REJECTED:
+            raise ApprovalRejectedError(
+                f"Action rejected by operator ({req.decided_by or 'operator'}): "
+                f"{req.decision_reason or 'Rejected'}",
+                approval_id=req.approval_id,
+                decided_by=req.decided_by,
+                decision_reason=req.decision_reason,
+                approval_request=req,
+                command=command,
+                host=entry.name,
+            )
+
+        if wait_for_approval:
+            decided = await self.approval_manager.wait_for_decision(
+                req.approval_id,
+                timeout=self.policy.hitl.wait_timeout_seconds,
+            )
+            if decided.status == ApprovalStatus.APPROVED:
+                consumed = await self.approval_manager.verify_and_consume(
+                    decided.approval_id,
+                    target_host=entry.name,
+                    tool_name=tool_name,
+                    command=command,
+                    sudo=sudo,
+                    cwd=cwd,
+                    parameters=parameters,
+                )
+                return consumed, None
+            if decided.status == ApprovalStatus.REJECTED:
+                raise ApprovalRejectedError(
+                    f"Action rejected by operator ({decided.decided_by or 'operator'}): "
+                    f"{decided.decision_reason or 'Rejected'}",
+                    approval_id=decided.approval_id,
+                    decided_by=decided.decided_by,
+                    decision_reason=decided.decision_reason,
+                    approval_request=decided,
+                    command=command,
+                    host=entry.name,
+                )
+            return None, _build_pending_approval_payload(decided)
+
+        return None, _build_pending_approval_payload(req)
 
     async def _tool_list_hosts(self, arguments: dict[str, Any]) -> dict[str, Any]:
         group = arguments.get("group")
@@ -314,14 +446,30 @@ class MCPServer:
             raise ValueError("Parameter 'command' must be a non-empty string")
 
         sudo = bool(arguments.get("sudo", False))
-        if sudo and not self.policy.allow_sudo:
+        hitl_override_ok = self.policy.hitl.enabled and self.policy.hitl.allow_operator_override
+        if sudo and not self.policy.allow_sudo and not hitl_override_ok:
             raise PermissionError(
                 "Privileged execution (sudo=True) is disabled by MCP security policy "
                 "(start server with --allow-sudo to enable)."
             )
 
+        entry = self.registry.get_entry(target)
+        is_prod = entry.is_production(self.policy.hitl.prod_groups)
+        assessment = ActionRiskClassifier.classify_command(
+            command,
+            sudo=sudo,
+            is_production=is_prod,
+            policy=self.policy.hitl,
+        )
+        if assessment.risk_tier == ActionRiskTier.TIER_3_FORBIDDEN:
+            raise PermissionError(
+                f"Command {command!r} on host {entry.name!r} is forbidden by security policy: "
+                f"{'; '.join(assessment.reasons)}"
+            )
+
         timeout = float(arguments.get("timeout", 30.0))
         cwd = arguments.get("cwd")
+        cwd_str = cwd.strip() if isinstance(cwd, str) and cwd.strip() else None
         diagnose = bool(arguments.get("diagnose", True))
         raw_parse = arguments.get("parse", True)
         parse_spec: ParseSpec
@@ -332,11 +480,34 @@ class MCPServer:
         else:
             parse_spec = str(raw_parse)
 
-        run_kwargs: dict[str, Any] = {}
-        if isinstance(cwd, str) and cwd.strip():
-            run_kwargs["cwd"] = cwd.strip()
+        approval_id = arguments.get("approval_id")
+        wait_for_appr = bool(arguments.get("wait_for_approval", self.policy.hitl.wait_for_approval))
+        needs_approval = self.policy.hitl.enabled and (
+            assessment.requires_approval or (sudo and not self.policy.allow_sudo)
+        )
+        hmac_params = {"command": command, "sudo": sudo, "cwd": cwd_str or ""}
 
-        async with self.registry.create_connection(target) as conn:
+        consumed_req, pending_payload = await self._resolve_hitl_gate(
+            entry=entry,
+            tool_name="uniconn_run",
+            risk_tier=assessment.risk_tier,
+            risk_reasons=assessment.reasons,
+            requires_approval=needs_approval,
+            approval_id=str(approval_id) if approval_id is not None else None,
+            wait_for_approval=wait_for_appr,
+            command=command,
+            sudo=sudo,
+            cwd=cwd_str,
+            parameters=hmac_params,
+        )
+        if pending_payload is not None:
+            return pending_payload
+
+        run_kwargs: dict[str, Any] = {}
+        if cwd_str:
+            run_kwargs["cwd"] = cwd_str
+
+        async with self.registry.create_connection(entry) as conn:
             res = await conn.run(
                 command,
                 timeout=timeout,
@@ -354,7 +525,7 @@ class MCPServer:
                     parsed_data = None
 
             payload: dict[str, Any] = {
-                "host": res.host or target,
+                "host": res.host or entry.name,
                 "command": SecretMaskingFilter._mask_string(res.command),
                 "ok": res.ok,
                 "exit_code": res.exit_code,
@@ -362,10 +533,19 @@ class MCPServer:
                 "stdout": SecretMaskingFilter._mask_string(res.stdout),
                 "stderr": SecretMaskingFilter._mask_string(res.stderr),
                 "parsed": parsed_data,
+                "risk_tier": assessment.risk_tier.value,
                 "dry_run": self.policy.dry_run,
             }
             if res.diagnostic is not None:
                 payload["diagnostic"] = _sanitize_json_value(res.diagnostic.to_dict())
+            if consumed_req is not None:
+                payload["approval"] = {
+                    "approval_id": consumed_req.approval_id,
+                    "status": consumed_req.status.value,
+                    "approved_by": consumed_req.decided_by,
+                    "approved_at": consumed_req.decided_at.isoformat() if consumed_req.decided_at else None,
+                    "decision_reason": consumed_req.decision_reason,
+                }
             return payload
 
     async def _tool_gather_facts(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -493,8 +673,27 @@ class MCPServer:
             "all_match": len(unique_hashes) == 1 and None not in checksums.values(),
         }
 
+    async def _inspect_remote_file_for_diff(
+        self,
+        entry: MCPHostEntry,
+        path: str,
+        new_content: str,
+    ) -> tuple[bool, str]:
+        """Проверить существование целевого файла и вычислить unified diff."""
+        old_text: str | None = None
+        exists = False
+        with contextlib.suppress(Exception):
+            async with self.registry.create_connection(entry) as conn:
+                exists = await conn.files.exists(path)
+                if exists:
+                    raw = await conn.files.read_file(path, encoding=None)
+                    raw_bytes = raw if isinstance(raw, bytes) else str(raw).encode("utf-8")
+                    old_text = raw_bytes[: self.policy.max_read_bytes].decode("utf-8", errors="replace")
+        return exists, build_unified_diff(path, old_text, new_content)
+
     async def _tool_write_file(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        if not self.policy.allow_write:
+        hitl_override_ok = self.policy.hitl.enabled and self.policy.hitl.allow_operator_override
+        if not self.policy.allow_write and not hitl_override_ok:
             raise PermissionError(
                 "File modification (uniconn_write_file) is disabled by default MCP security "
                 "policy (start server with --allow-write to enable)."
@@ -511,20 +710,187 @@ class MCPServer:
             raise ValueError("Parameter 'content' must be a string")
 
         atomic = bool(arguments.get("atomic", True))
-        async with self.registry.create_connection(target) as conn:
+        entry = self.registry.get_entry(target)
+        is_prod = entry.is_production(self.policy.hitl.prod_groups)
+
+        file_exists = False
+        diff_str: str | None = None
+        if self.policy.hitl.enabled:
+            file_exists, diff_str = await self._inspect_remote_file_for_diff(entry, path, content)
+
+        assessment = ActionRiskClassifier.classify_file_write(
+            path,
+            file_exists=file_exists,
+            is_production=is_prod,
+            policy=self.policy.hitl,
+        )
+        if assessment.risk_tier == ActionRiskTier.TIER_3_FORBIDDEN:
+            raise PermissionError(
+                f"Writing to {path!r} on host {entry.name!r} is forbidden by security policy: "
+                f"{'; '.join(assessment.reasons)}"
+            )
+
+        approval_id = arguments.get("approval_id")
+        wait_for_appr = bool(arguments.get("wait_for_approval", self.policy.hitl.wait_for_approval))
+        needs_approval = self.policy.hitl.enabled and (
+            assessment.requires_approval or not self.policy.allow_write
+        )
+        hmac_params = {"path": path, "content": content, "atomic": atomic}
+
+        consumed_req, pending_payload = await self._resolve_hitl_gate(
+            entry=entry,
+            tool_name="uniconn_write_file",
+            risk_tier=assessment.risk_tier,
+            risk_reasons=assessment.reasons,
+            requires_approval=needs_approval,
+            approval_id=str(approval_id) if approval_id is not None else None,
+            wait_for_approval=wait_for_appr,
+            parameters=hmac_params,
+            diff=diff_str,
+        )
+        if pending_payload is not None:
+            return pending_payload
+
+        async with self.registry.create_connection(entry) as conn:
             await conn.files.write_file(path, content, atomic=atomic)
-            return {
-                "target": target,
+            result_payload: dict[str, Any] = {
+                "target": entry.name,
                 "path": path,
                 "bytes_written": len(content.encode("utf-8")),
                 "atomic": atomic,
+                "risk_tier": assessment.risk_tier.value,
                 "dry_run": self.policy.dry_run,
             }
+            if consumed_req is not None:
+                result_payload["approval"] = {
+                    "approval_id": consumed_req.approval_id,
+                    "status": consumed_req.status.value,
+                    "approved_by": consumed_req.decided_by,
+                    "approved_at": consumed_req.decided_at.isoformat() if consumed_req.decided_at else None,
+                    "decision_reason": consumed_req.decision_reason,
+                }
+            return result_payload
+
+    async def _tool_propose_action(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        target = arguments.get("target")
+        if not isinstance(target, str) or not target.strip():
+            raise ValueError("Parameter 'target' is required")
+        tool_name = str(arguments.get("tool_name") or "uniconn_run").strip()
+        agent_id = arguments.get("agent_id")
+        entry = self.registry.get_entry(target)
+        is_prod = entry.is_production(self.policy.hitl.prod_groups)
+
+        if tool_name == "uniconn_write_file":
+            path = str(arguments.get("path") or "").strip()
+            content = arguments.get("content")
+            if not path or not isinstance(content, str):
+                raise ValueError("Parameters 'path' and 'content' are required when proposing 'uniconn_write_file'")
+            atomic = bool(arguments.get("atomic", True))
+            file_exists, diff_str = await self._inspect_remote_file_for_diff(entry, path, content)
+            assessment = ActionRiskClassifier.classify_file_write(
+                path,
+                file_exists=file_exists,
+                is_production=is_prod,
+                policy=self.policy.hitl,
+            )
+            if assessment.risk_tier == ActionRiskTier.TIER_3_FORBIDDEN:
+                raise PermissionError(
+                    f"Proposed file write to {path!r} is forbidden: {'; '.join(assessment.reasons)}"
+                )
+            req = await self.approval_manager.create_request(
+                target_host=entry.name,
+                tool_name="uniconn_write_file",
+                risk_tier=assessment.risk_tier,
+                risk_reasons=assessment.reasons,
+                parameters={"path": path, "content": content, "atomic": atomic},
+                diff=diff_str,
+                agent_id=str(agent_id) if agent_id else None,
+            )
+            return {
+                "assessment": assessment.to_dict(),
+                "approval": req.to_public_dict(),
+            }
+
+        command = str(arguments.get("command") or "").strip()
+        if not command:
+            raise ValueError("Parameter 'command' is required when proposing 'uniconn_run'")
+        sudo = bool(arguments.get("sudo", False))
+        cwd = arguments.get("cwd")
+        cwd_str = cwd.strip() if isinstance(cwd, str) and cwd.strip() else None
+        assessment = ActionRiskClassifier.classify_command(
+            command,
+            sudo=sudo,
+            is_production=is_prod,
+            policy=self.policy.hitl,
+        )
+        if assessment.risk_tier == ActionRiskTier.TIER_3_FORBIDDEN:
+            raise PermissionError(
+                f"Proposed command {command!r} is forbidden: {'; '.join(assessment.reasons)}"
+            )
+        req = await self.approval_manager.create_request(
+            target_host=entry.name,
+            tool_name="uniconn_run",
+            risk_tier=assessment.risk_tier,
+            risk_reasons=assessment.reasons,
+            command=command,
+            sudo=sudo,
+            cwd=cwd_str,
+            parameters={"command": command, "sudo": sudo, "cwd": cwd_str or ""},
+            agent_id=str(agent_id) if agent_id else None,
+        )
+        return {
+            "assessment": assessment.to_dict(),
+            "approval": req.to_public_dict(),
+        }
+
+    async def _tool_check_approval(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        approval_id = arguments.get("approval_id")
+        if isinstance(approval_id, str) and approval_id.strip():
+            req = await self.approval_manager.get_request(approval_id.strip())
+            return {"approval": req.to_public_dict()}
+
+        status_filter = arguments.get("status")
+        reqs = await self.approval_manager.list_requests(
+            status=str(status_filter) if status_filter else None
+        )
+        return {
+            "approvals": [r.to_public_dict() for r in reqs],
+            "count": len(reqs),
+        }
+
+    async def _tool_wait_approval(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        approval_id = arguments.get("approval_id")
+        if not isinstance(approval_id, str) or not approval_id.strip():
+            raise ValueError("Parameter 'approval_id' is required")
+        timeout = float(arguments.get("timeout", self.policy.hitl.wait_timeout_seconds))
+        req = await self.approval_manager.wait_for_decision(approval_id.strip(), timeout=timeout)
+        return {
+            "approval_id": req.approval_id,
+            "status": req.status.value,
+            "approved": req.status == ApprovalStatus.APPROVED,
+            "approval": req.to_public_dict(),
+        }
 
     async def _read_resource(self, uri: str) -> dict[str, Any]:
         """Прочитать MCP-ресурс по URI."""
         if uri == "uniconn://inventory/hosts":
             data = await self._tool_list_hosts({})
+            return {
+                "contents": [
+                    {
+                        "uri": uri,
+                        "mimeType": "application/json",
+                        "text": json.dumps(data, ensure_ascii=False, indent=2),
+                    }
+                ]
+            }
+
+        if uri == "uniconn://approvals/pending":
+            pending = await self.approval_manager.list_requests(status=ApprovalStatus.PENDING)
+            data = {
+                "pending_approvals": [r.to_public_dict() for r in pending],
+                "count": len(pending),
+            }
             return {
                 "contents": [
                     {
@@ -591,3 +957,4 @@ __all__ = [
     "SUPPORTED_PROTOCOL_VERSION",
     "MCPServer",
 ]
+

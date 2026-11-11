@@ -140,6 +140,12 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                     suite = qs.get("suite", ["all"])[0]
                     self._send_json(_execute_pytest(suite))
                     return
+                if parsed.path == "/api/hitl":
+                    status_param = qs.get("status", [None])[0]
+                    self._send_json(
+                        _dispatch_endpoint("hitl", {"action": "list", "status": status_param})
+                    )
+                    return
 
                 if parsed.path.startswith("/api/"):
                     self._send_json({"error": "Not found"}, status=404)
@@ -223,6 +229,9 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                     return
                 if parsed.path == "/api/v090":
                     self._send_json(_dispatch_endpoint("v090", payload))
+                    return
+                if parsed.path == "/api/hitl":
+                    self._send_json(_dispatch_endpoint("hitl", payload))
                     return
 
                 self._send_json({"error": "Not found"}, status=404)

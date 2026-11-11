@@ -112,8 +112,22 @@ def build_default_tools(policy: MCPSecurityPolicy) -> list[MCPToolDefinition]:
                     },
                     "sudo": {
                         "type": "boolean",
-                        "description": "Execute command with sudo privileges (requires --allow-sudo).",
+                        "description": "Execute command with sudo privileges (requires --allow-sudo or HITL).",
                         "default": False,
+                    },
+                    "approval_id": {
+                        "type": "string",
+                        "description": (
+                            "Single-use HITL approval token ID (e.g. 'appr_...') obtained after "
+                            "human operator approval."
+                        ),
+                    },
+                    "wait_for_approval": {
+                        "type": "boolean",
+                        "description": (
+                            "Wait synchronously up to wait_timeout_seconds for operator approval "
+                            "if action triggers HITL policy."
+                        ),
                     },
                 },
                 "required": ["target", "command"],
@@ -271,8 +285,122 @@ def build_default_tools(policy: MCPSecurityPolicy) -> list[MCPToolDefinition]:
                         "description": "Write atomically via temporary file rename (default: true).",
                         "default": True,
                     },
+                    "approval_id": {
+                        "type": "string",
+                        "description": (
+                            "Single-use HITL approval token ID (e.g. 'appr_...') obtained after "
+                            "human operator approval."
+                        ),
+                    },
+                    "wait_for_approval": {
+                        "type": "boolean",
+                        "description": (
+                            "Wait synchronously up to wait_timeout_seconds for operator approval "
+                            "if action triggers HITL policy."
+                        ),
+                    },
                 },
                 "required": ["target", "path", "content"],
+                "additionalProperties": False,
+            },
+        ),
+        MCPToolDefinition(
+            name="uniconn_propose_action",
+            description=(
+                "Evaluate risk tier (SAFE, MUTATING, DESTRUCTIVE, FORBIDDEN) and create a "
+                "Human-in-the-Loop (HITL) approval request with unified diff preview before executing "
+                "a command or file modification."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Registered target host name/alias.",
+                    },
+                    "tool_name": {
+                        "type": "string",
+                        "enum": ["uniconn_run", "uniconn_write_file"],
+                        "description": "Tool to propose ('uniconn_run' or 'uniconn_write_file').",
+                        "default": "uniconn_run",
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Command string when proposing 'uniconn_run'.",
+                    },
+                    "sudo": {
+                        "type": "boolean",
+                        "description": "Whether command requires sudo privileges.",
+                        "default": False,
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Optional working directory for 'uniconn_run'.",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Destination file path when proposing 'uniconn_write_file'.",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "New UTF-8 file content when proposing 'uniconn_write_file'.",
+                    },
+                    "atomic": {
+                        "type": "boolean",
+                        "description": "Atomic write flag when proposing 'uniconn_write_file'.",
+                        "default": True,
+                    },
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Optional identifier of the AI agent proposing the action.",
+                    },
+                },
+                "required": ["target"],
+                "additionalProperties": False,
+            },
+        ),
+        MCPToolDefinition(
+            name="uniconn_check_approval",
+            description=(
+                "Check the status of a specific Human-in-the-Loop approval request by approval_id, "
+                "or list active approval requests."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "approval_id": {
+                        "type": "string",
+                        "description": "Optional approval_id (e.g. 'appr_...') to inspect.",
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": ["PENDING", "APPROVED", "CONSUMED", "REJECTED", "EXPIRED"],
+                        "description": "Optional status filter when listing approval requests.",
+                    },
+                },
+                "additionalProperties": False,
+            },
+        ),
+        MCPToolDefinition(
+            name="uniconn_wait_approval",
+            description=(
+                "Wait asynchronously for a human operator to approve or reject a pending "
+                "approval_id up to timeout seconds."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "approval_id": {
+                        "type": "string",
+                        "description": "Approval request ID (e.g. 'appr_...') to wait for.",
+                    },
+                    "timeout": {
+                        "type": "number",
+                        "description": "Maximum seconds to wait for operator decision (default: 30.0).",
+                        "default": 30.0,
+                    },
+                },
+                "required": ["approval_id"],
                 "additionalProperties": False,
             },
         ),
@@ -286,7 +414,12 @@ def build_default_resources() -> list[MCPResourceDefinition]:
             uri="uniconn://inventory/hosts",
             name="uniconn Inventory & Security Policy",
             description="Registered hosts, groups, and active MCP security policy.",
-        )
+        ),
+        MCPResourceDefinition(
+            uri="uniconn://approvals/pending",
+            name="Pending HITL Approvals",
+            description="Active Human-in-the-Loop approval requests awaiting operator decision.",
+        ),
     ]
 
 
@@ -306,3 +439,4 @@ __all__ = [
     "build_default_resources",
     "build_default_tools",
 ]
+

@@ -74,6 +74,7 @@ from .core import (
     ErrorClassifier,
     EventLoopPortal,
     ExecutionContext,
+    HITLApprovalMiddleware,
     HookMiddleware,
     HostTempManager,
     LinuxDiagnosticStrategy,
@@ -93,6 +94,12 @@ from .core import (
 from .core.connection import Connection, OperationObserver
 from .core.pipeline import AfterRunHook, BeforeRunHook, HookCallback, HookEvent, OnErrorHook
 from .exceptions import (
+    ApprovalAlreadyConsumedError,
+    ApprovalError,
+    ApprovalExpiredError,
+    ApprovalRejectedError,
+    ApprovalRequiredError,
+    ApprovalTamperingError,
     AuthenticationError,
     BackgroundBackendError,
     BackgroundError,
@@ -141,6 +148,14 @@ from .hooks import (
     structured_log_hook,
 )
 from .mcp import (
+    DEFAULT_APPROVAL_STORE_PATH,
+    ActionRiskClassifier,
+    ActionRiskTier,
+    ApprovalChannel,
+    ApprovalManager,
+    ApprovalRequest,
+    ApprovalStatus,
+    HITLPolicy,
     MCPHostEntry,
     MCPHostRegistry,
     MCPResourceDefinition,
@@ -148,6 +163,10 @@ from .mcp import (
     MCPSecurityPolicy,
     MCPServer,
     MCPToolDefinition,
+    RiskAssessment,
+    TerminalApprovalChannel,
+    WebhookApprovalChannel,
+    build_unified_diff,
     mask_uri_secrets,
 )
 from .mock import (
@@ -375,8 +394,20 @@ def __getattr__(name: str) -> Any:
 
 
 __all__ = [  # noqa: RUF022
+    "ActionRiskClassifier",
+    "ActionRiskTier",
     "AfterRunHook",
     "ApkStrategy",
+    "ApprovalAlreadyConsumedError",
+    "ApprovalChannel",
+    "ApprovalError",
+    "ApprovalExpiredError",
+    "ApprovalManager",
+    "ApprovalRejectedError",
+    "ApprovalRequest",
+    "ApprovalRequiredError",
+    "ApprovalStatus",
+    "ApprovalTamperingError",
     "AptStrategy",
     "ArchiveHandler",
     "AsyncXmodemReceiver",
@@ -430,6 +461,7 @@ __all__ = [  # noqa: RUF022
     "ContextMiddleware",
     "CustomCommandSpec",
     "CyclicDependencyError",
+    "DEFAULT_APPROVAL_STORE_PATH",
     "DiagnosticConfig",
     "DiagnosticResult",
     "DiagnosticSession",
@@ -468,6 +500,8 @@ __all__ = [  # noqa: RUF022
     "GnmiTransport",
     "GnmiWireCodec",
     "HARDWARE_ERROR_RULES",
+    "HITLApprovalMiddleware",
+    "HITLPolicy",
     "HardwareFaultDetectedError",
     "HookCallback",
     "HookEvent",
@@ -578,6 +612,7 @@ __all__ = [  # noqa: RUF022
     "RestconfTransport",
     "Result",
     "RetryMiddleware",
+    "RiskAssessment",
     "SFTPClientAdapter",
     "SSHJumpChainManager",
     "SSHSessionPool",
@@ -634,6 +669,7 @@ __all__ = [  # noqa: RUF022
     "TaskResult",
     "TelemetrySample",
     "TemplateEngine",
+    "TerminalApprovalChannel",
     "TextFSMEngine",
     "TimelineHandler",
     "TimeoutError",
@@ -647,6 +683,7 @@ __all__ = [  # noqa: RUF022
     "UniconnCassetteFixture",
     "UniconnError",
     "VirshCommandChannel",
+    "WebhookApprovalChannel",
     "WinRMTransport",
     "WindowsDiagnosticStrategy",
     "WindowsJobBackend",
@@ -658,6 +695,7 @@ __all__ = [  # noqa: RUF022
     "audit_log_hook",
     "bind_log_context",
     "blocklist_hook",
+    "build_unified_diff",
     "clear_log_context",
     "compute_checksum8",
     "compute_crc16",
@@ -704,4 +742,5 @@ __all__ = [  # noqa: RUF022
     "xml_to_data",
     "yang_subset_matches",
 ]
+
 

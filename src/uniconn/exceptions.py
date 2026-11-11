@@ -238,3 +238,63 @@ class OptionalDependencyError(ParsingError, ImportError):
     """Требуемая для парсинга опциональная библиотека не установлена (uniconn[parsing])."""
 
 
+class ApprovalError(UniconnError, PermissionError):
+    """Базовое исключение подсистемы двухфазного согласования Human-in-the-Loop (HITL)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        approval_id: str | None = None,
+        approval_request: object | None = None,
+        command: str | None = None,
+        host: str | None = None,
+    ) -> None:
+        """Инициализировать исключение согласования действия."""
+        super().__init__(message, command=command, host=host)
+        self.approval_id = approval_id
+        self.approval_request = approval_request
+
+
+class ApprovalRequiredError(ApprovalError):
+    """Действие требует предварительного двухфазного одобрения оператором (PENDING_APPROVAL)."""
+
+
+class ApprovalRejectedError(ApprovalError):
+    """Заявка на выполнение действия была отклонена оператором (REJECTED)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        approval_id: str | None = None,
+        decided_by: str | None = None,
+        decision_reason: str | None = None,
+        approval_request: object | None = None,
+        command: str | None = None,
+        host: str | None = None,
+    ) -> None:
+        """Инициализировать ошибку отклонённой оператором заявки."""
+        super().__init__(
+            message,
+            approval_id=approval_id,
+            approval_request=approval_request,
+            command=command,
+            host=host,
+        )
+        self.decided_by = decided_by
+        self.decision_reason = decision_reason
+
+
+class ApprovalExpiredError(ApprovalError, TimeoutError):
+    """Срок ожидания подтверждения заявки оператором истёк (EXPIRED)."""
+
+
+class ApprovalTamperingError(ApprovalError):
+    """Обнаружено несовпадение HMAC-подписи или параметров вызова с одобренной заявкой."""
+
+
+class ApprovalAlreadyConsumedError(ApprovalError):
+    """Одобренная одноразовая заявка уже была использована ранее (CONSUMED)."""
+
+

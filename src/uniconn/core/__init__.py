@@ -26,6 +26,7 @@ from .pipeline import (
     CommandRequest,
     ContextMiddleware,
     DryRunMiddleware,
+    HITLApprovalMiddleware,
     HookCallback,
     HookEvent,
     HookMiddleware,
@@ -76,6 +77,7 @@ __all__ = [
     "ErrorClassifier",
     "EventLoopPortal",
     "ExecutionContext",
+    "HITLApprovalMiddleware",
     "HookCallback",
     "HookEvent",
     "HookMiddleware",
@@ -99,4 +101,5 @@ __all__ = [
     "resolve_diagnostic_strategy",
     "run_python",
 ]
+
 

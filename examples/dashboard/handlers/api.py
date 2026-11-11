@@ -228,7 +228,101 @@ def _execute_endpoint_direct(
         return _execute_v080_sandbox(payload)
     if endpoint == "v090":
         return _execute_v090_sandbox(payload)
+    if endpoint == "hitl":
+        return _execute_hitl_sandbox(payload)
     return {"error": f"Unknown endpoint: {endpoint}"}
+
+
+def _execute_hitl_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
+    """Интерактивный обработчик API для Human-in-the-Loop (классификация рисков и управление заявками)."""
+    from uniconn.mcp import (
+        DEFAULT_APPROVAL_STORE_PATH,
+        ActionRiskClassifier,
+        ApprovalManager,
+        HITLPolicy,
+        build_unified_diff,
+    )
+
+    action = str(payload.get("action") or "list").strip().lower()
+    store_str = payload.get("store_path")
+    store_path = store_str if isinstance(store_str, str) and store_str.strip() else str(DEFAULT_APPROVAL_STORE_PATH)
+    pol = HITLPolicy(enabled=True, store_path=store_path)
+    mgr = ApprovalManager(policy=pol, store_path=store_path)
+
+    async def _run() -> dict[str, Any]:
+        if action == "classify":
+            cmd = str(payload.get("command") or "")
+            sudo = bool(payload.get("sudo", False))
+            is_prod = bool(payload.get("is_production", False))
+            res = ActionRiskClassifier.classify_command(
+                cmd,
+                sudo=sudo,
+                is_production=is_prod,
+                policy=pol,
+            )
+            return {"ok": True, "assessment": res.to_dict()}
+        if action in ("propose", "create"):
+            target_host = str(payload.get("target_host") or payload.get("target") or "prod-node")
+            tool_name = str(payload.get("tool_name") or "uniconn_run")
+            cmd = str(payload.get("command") or "")
+            sudo = bool(payload.get("sudo", False))
+            is_prod = bool(payload.get("is_production", True))
+            res = ActionRiskClassifier.classify_command(
+                cmd,
+                sudo=sudo,
+                is_production=is_prod,
+                policy=pol,
+            )
+            old_content = payload.get("old_content")
+            new_content = payload.get("new_content")
+            diff_preview = (
+                build_unified_diff(
+                    str(payload.get("path") or "/etc/app.conf"),
+                    str(old_content) if old_content is not None else None,
+                    str(new_content),
+                )
+                if new_content is not None
+                else None
+            )
+            req = await mgr.create_request(
+                target_host=target_host,
+                tool_name=tool_name,
+                risk_tier=res.risk_tier,
+                risk_reasons=res.reasons,
+                command=cmd or None,
+                sudo=sudo,
+                diff=diff_preview,
+            )
+            return {
+                "ok": True,
+                "assessment": res.to_dict(),
+                "approval": req.to_public_dict(),
+            }
+        if action in ("show", "get"):
+            appr_id = str(payload.get("approval_id") or "")
+            req = await mgr.get_request(appr_id)
+            return {"ok": True, "approval": req.to_public_dict()}
+        if action == "approve":
+            appr_id = str(payload.get("approval_id") or "")
+            by = str(payload.get("decided_by") or "dashboard_operator")
+            reason = payload.get("reason")
+            req = await mgr.approve(appr_id, decided_by=by, reason=str(reason) if reason else None)
+            return {"ok": True, "approval": req.to_public_dict()}
+        if action == "reject":
+            appr_id = str(payload.get("approval_id") or "")
+            by = str(payload.get("decided_by") or "dashboard_operator")
+            reason = payload.get("reason")
+            req = await mgr.reject(appr_id, decided_by=by, reason=str(reason) if reason else None)
+            return {"ok": True, "approval": req.to_public_dict()}
+        status_filter = payload.get("status")
+        reqs = await mgr.list_requests(status=str(status_filter) if status_filter else None)
+        return {
+            "ok": True,
+            "approvals": [r.to_public_dict() for r in reqs],
+            "count": len(reqs),
+        }
+
+    return asyncio.run(_run())
 
 
 def _dispatch_endpoint(

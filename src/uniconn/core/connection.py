@@ -251,7 +251,7 @@ class Connection:
         sudo_user: str | None = None, sudo_password: str | SecretStr | None = None,
         sensitive: bool = False, dry_run: bool | None = None, *,
         parse: Any = None, eager_parse: bool = False, diagnose: bool | None = None,
-        **kwargs: Any,
+        approval_id: str | None = None, **kwargs: Any,
     ) -> Result:
         """Выполнить команду на хосте через конвейер ``CommandPipeline``."""
         cmd_str = format_command(command)
@@ -261,7 +261,7 @@ class Connection:
             sudo_password=sudo_password, sensitive=sensitive,
             dry_run=self._dry_run if dry_run is None else dry_run,
             output_format="text", parse=parse, eager_parse=eager_parse,
-            diagnose=diagnose, transport_kwargs=dict(kwargs),
+            diagnose=diagnose, approval_id=approval_id, transport_kwargs=dict(kwargs),
         )
         return await self._pipeline.execute(req)
 
@@ -269,7 +269,8 @@ class Connection:
         self, command: str | Sequence[str], timeout: float | None = None,
         raise_on_error: bool = False, input: str | bytes | None = None, sudo: bool = False,
         sudo_user: str | None = None, sudo_password: str | SecretStr | None = None,
-        sensitive: bool = False, dry_run: bool | None = None, **kwargs: Any,
+        sensitive: bool = False, dry_run: bool | None = None, *,
+        approval_id: str | None = None, **kwargs: Any,
     ) -> bytes:
         """Выполнить команду через конвейер ``CommandPipeline`` и вернуть сырой байтовый вывод (``bytes``)."""
         effective_dry_run = self._dry_run if dry_run is None else dry_run
@@ -280,7 +281,7 @@ class Connection:
             raw_command=command, command=cmd_str, exec_command=cmd_str, timeout=timeout,
             raise_on_error=raise_on_error, input_data=input, sudo=sudo, sudo_user=sudo_user,
             sudo_password=sudo_password, sensitive=sensitive, dry_run=effective_dry_run,
-            output_format="bytes", transport_kwargs=dict(kwargs),
+            output_format="bytes", approval_id=approval_id, transport_kwargs=dict(kwargs),
         )
         return (await self._pipeline.execute(req)).raw_bytes
 
