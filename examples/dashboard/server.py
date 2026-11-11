@@ -233,6 +233,9 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                 if parsed.path == "/api/hitl":
                     self._send_json(_dispatch_endpoint("hitl", payload))
                     return
+                if parsed.path == "/api/policy":
+                    self._send_json(_dispatch_endpoint("policy", payload))
+                    return
 
                 self._send_json({"error": "Not found"}, status=404)
             except Exception as exc:

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ..security.engine import PolicyGuardrailMiddleware
 from ..telemetry import TracingMiddleware
 from .auto_diagnostics import (
     ClassificationMatch,
@@ -86,6 +87,7 @@ __all__ = [
     "ObservabilityMiddleware",
     "ObserverContext",
     "PassiveDiagnosticStrategy",
+    "PolicyGuardrailMiddleware",
     "RateLimitMiddleware",
     "RateLimiter",
     "RemotePythonWorker",

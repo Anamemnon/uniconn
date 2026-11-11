@@ -519,9 +519,11 @@ class ActionRiskClassifier:
         sudo: bool = False,
         is_production: bool = False,
         policy: HITLPolicy | None = None,
+        ast: Any = None,
         _depth: int = 0,
+        _preparsed_ast: Any = None,
     ) -> RiskAssessment:
-        """Оценить уровень риска shell-команды (включая цепочки и вложенные оболочки)."""
+        """Оценить уровень риска shell-команды (включая AST-анализ, обфускацию и вложенные оболочки)."""
         cmd_stripped = command.strip()
         if not cmd_stripped:
             return RiskAssessment(
@@ -544,6 +546,24 @@ class ActionRiskClassifier:
                     requires_approval=False,
                 )
 
+        # 2. Глубокий синтаксический AST-разбор (детекция обфускации и косвенных вызовов)
+        ast_obj = ast if ast is not None else _preparsed_ast
+        if ast_obj is None and _depth == 0:
+            from ..security.ast_parser import CommandASTParser
+
+            ast_obj = CommandASTParser.parse(cmd_stripped, sudo=sudo)
+
+        if ast_obj is not None and getattr(ast_obj, "is_obfuscated", False):
+            obf_reasons = tuple(
+                getattr(ast_obj, "obfuscation_reasons", ()) or ("Obfuscated command syntax detected",)
+            )
+            return RiskAssessment(
+                risk_tier=ActionRiskTier.TIER_3_FORBIDDEN,
+                reasons=obf_reasons,
+                is_production=is_production,
+                requires_approval=False,
+            )
+
         segments = _split_shell_segments(cmd_stripped) or [cmd_stripped]
         for seg in segments:
             seg_tier, seg_reasons = cls._classify_single_segment(
@@ -558,6 +578,16 @@ class ActionRiskClassifier:
             for r in seg_reasons:
                 if r not in reasons:
                     reasons.append(r)
+
+        if ast_obj is not None:
+            dest_sev = ActionRiskTier.TIER_2_DESTRUCTIVE.severity
+            if getattr(ast_obj, "has_destructive_verbs", False) and max_tier.severity < dest_sev:
+                max_tier = ActionRiskTier.TIER_2_DESTRUCTIVE
+                ast_execs = ", ".join(getattr(ast_obj, "executables", ()))
+                reasons.append(f"AST analysis detected nested destructive operation ({ast_execs})")
+            if getattr(ast_obj, "complexity_exceeded", False) and max_tier.severity < dest_sev:
+                max_tier = ActionRiskTier.TIER_2_DESTRUCTIVE
+                reasons.append("Command exceeds AST complexity threshold (opaque script)")
 
         if sudo and max_tier == ActionRiskTier.TIER_1_MUTATING and is_production:
             max_tier = ActionRiskTier.TIER_2_DESTRUCTIVE

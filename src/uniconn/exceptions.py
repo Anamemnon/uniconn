@@ -298,3 +298,55 @@ class ApprovalAlreadyConsumedError(ApprovalError):
     """Одобренная одноразовая заявка уже была использована ранее (CONSUMED)."""
 
 
+class PolicyError(UniconnError, PermissionError):
+    """Базовое исключение подсистемы Policy-as-Code Guardrails и AST-верификации."""
+
+
+class PolicyViolationError(PolicyError):
+    """Операция заблокирована движком политик безопасности (решение DENY)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        decision: str = "DENY",
+        violations: list[object] | tuple[object, ...] = (),
+        rule_names: list[str] | tuple[str, ...] = (),
+        remediation_hint: str | None = None,
+        command: str | None = None,
+        host: str | None = None,
+    ) -> None:
+        """Инициализировать исключение нарушения политики безопасности."""
+        super().__init__(message, command=command, host=host)
+        self.decision = decision
+        self.violations: list[object] = list(violations)
+        self.rule_names: list[str] = [str(r) for r in rule_names]
+        self.remediation_hint = remediation_hint
+
+    def serialized_violations(self) -> list[object]:
+        """Вернуть список нарушений в JSON-сериализуемом формате словарей."""
+        out: list[object] = []
+        for item in self.violations:
+            to_dict_fn = getattr(item, "to_dict", None)
+            out.append(to_dict_fn() if callable(to_dict_fn) else item)
+        return out
+
+
+class PolicyEngineUnavailableError(PolicyError, ConnectionError):
+    """Внешний движок политик (например, сервер OPA) недоступен при активном режиме fail_closed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        engine_name: str = "opa",
+        endpoint: str | None = None,
+        command: str | None = None,
+        host: str | None = None,
+    ) -> None:
+        """Инициализировать ошибку недоступности внешнего сервера политик."""
+        super().__init__(message, command=command, host=host)
+        self.engine_name = engine_name
+        self.endpoint = endpoint
+
+

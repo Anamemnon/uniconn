@@ -405,6 +405,9 @@
         <button type="button" class="nav-link" data-tab="tests" onclick="switchTab('tests')">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3M8 15h8"/></svg>Тесты и Background
         </button>
+        <button type="button" class="nav-link" data-tab="policy" onclick="switchTab('policy')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Policy &amp; AST Guardrails
+        </button>
       </nav>
       <div class="sidebar-note">
         <strong>Среда выполнения</strong>
@@ -989,6 +992,143 @@
         </div>
       </div>
     </section>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 6: POLICY-AS-CODE & AST COMMAND VERIFICATION                      -->
+    <!-- ===================================================================== -->
+    <section id="tab-policy" class="tab-panel" hidden>
+      <div class="kpi-strip">
+        <div class="kpi-box">
+          <div class="kpi-label">Policy Decision</div>
+          <div class="kpi-value" id="pol-kpi-decision">ALLOW</div>
+          <div class="kpi-sub" id="pol-kpi-engine">Preset: prod-guard (embedded)</div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label">Tiered Risk Classification</div>
+          <div class="kpi-value" id="pol-kpi-risk">SAFE</div>
+          <div class="kpi-sub" id="pol-kpi-appr">Requires HITL Approval: false</div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label">AST Integrity &amp; Obfuscation</div>
+          <div class="kpi-value" id="pol-kpi-ast">CLEAN AST</div>
+          <div class="kpi-sub" id="pol-kpi-depth">Pipeline: 1 · Max Subshell Depth: 0</div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label">Extracted Atomic Verbs</div>
+          <div class="kpi-value" id="pol-kpi-verbs">ls</div>
+          <div class="kpi-sub" id="pol-kpi-context">Role: operator · Env: prod</div>
+        </div>
+      </div>
+
+      <div class="split-grid">
+        <!-- Left: Policy & AST Evaluation Controls -->
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2 class="panel-title">Policy-as-Code &amp; AST Guardrail Simulator</h2>
+              <p class="panel-subtitle">Test obfuscation resistance, indirect wrapper unwrapping, and ABAC policy presets</p>
+            </div>
+            <span id="pol-status-badge" class="status-text status-ok">ALLOW</span>
+          </div>
+
+          <div class="preset-bar">
+            <span class="preset-caption">Attack &amp; Policy Presets:</span>
+            <button type="button" class="btn ghost" onclick="applyPolicyPreset('safe')">1. Safe Read (ls /var/log)</button>
+            <button type="button" class="btn ghost" onclick="applyPolicyPreset('base64')">2. Base64 Bypass (echo ... | base64 -d | sh)</button>
+            <button type="button" class="btn ghost" onclick="applyPolicyPreset('find_exec')">3. Indirect Wrapper (find / -exec rm -rf)</button>
+            <button type="button" class="btn ghost" onclick="applyPolicyPreset('prod_restart')">4. Prod Service Restart (Outside Window)</button>
+            <button type="button" class="btn ghost" onclick="applyPolicyPreset('readonly_violation')">5. Read-Only Agent Mutation</button>
+          </div>
+
+          <div class="field-group" style="margin-bottom: 0.85rem;">
+            <label for="pol-cmd">Shell Command to Decompose &amp; Evaluate</label>
+            <input
+              type="text"
+              id="pol-cmd"
+              value="ls -la /var/log"
+              onkeydown="if (event.key === 'Enter') { event.preventDefault(); runPolicySandbox(); }"
+            />
+          </div>
+
+          <div class="form-row">
+            <div class="field-group">
+              <label for="pol-preset">Policy-as-Code Preset</label>
+              <select id="pol-preset" onchange="runPolicySandbox()">
+                <option value="prod-guard" selected>prod-guard (Prod Window + Sudo HITL)</option>
+                <option value="default">default (AST Anti-Obfuscation + Tier 3 Deny)</option>
+                <option value="least-privilege">least-privilege (RBAC + System Path Guard)</option>
+                <option value="strict">strict (Strict Prod + Junior AI Lock)</option>
+              </select>
+            </div>
+            <div class="field-group">
+              <label for="pol-role">Agent Role (SubjectContext)</label>
+              <select id="pol-role" onchange="runPolicySandbox()">
+                <option value="operator" selected>operator</option>
+                <option value="sre">sre / admin</option>
+                <option value="readonly">readonly / observer</option>
+                <option value="junior-ai">junior-ai</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="field-group">
+              <label for="pol-host">Target Host (ResourceContext)</label>
+              <input type="text" id="pol-host" value="prod-db-01" />
+            </div>
+            <div class="field-group">
+              <label for="pol-env">Environment</label>
+              <select id="pol-env" onchange="runPolicySandbox()">
+                <option value="prod" selected>prod (Production)</option>
+                <option value="staging">staging</option>
+                <option value="dev">dev</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="checkbox-grid">
+            <label class="checkbox-label"><input type="checkbox" id="pol-sudo" onchange="runPolicySandbox()" /> sudo=True</label>
+            <label class="checkbox-label"><input type="checkbox" id="pol-mw" onchange="runPolicySandbox()" /> maintenance_window_active</label>
+          </div>
+
+          <div class="form-row" style="margin-top: 1rem;">
+            <button type="button" class="btn" onclick="runPolicySandbox()">Evaluate AST &amp; Policy</button>
+          </div>
+        </div>
+
+        <!-- Right: AST Decomposition & AuthContext Inspector -->
+        <div class="panel">
+          <div class="panel-header" style="flex-direction: column; align-items: stretch; gap: 0.85rem;">
+            <div>
+              <h2 class="panel-title">AST Decomposition &amp; Policy Decision Inspector</h2>
+              <p class="panel-subtitle">Inspect unwrapped atomic commands, obfuscation vectors, and ABAC AuthContext</p>
+            </div>
+            <div class="segmented" style="align-self: flex-start;">
+              <button type="button" class="active" id="pol-view-btn-summary" onclick="setPolicyView('summary')">Policy &amp; AST Summary</button>
+              <button type="button" id="pol-view-btn-ast" onclick="setPolicyView('ast')">ParsedCommandAST</button>
+              <button type="button" id="pol-view-btn-auth" onclick="setPolicyView('auth')">AuthContext (OPA Input)</button>
+            </div>
+          </div>
+
+          <pre class="code-view" id="pol-output-box" style="min-height: 220px; margin-bottom: 1rem;">Click "Evaluate AST &amp; Policy" or choose a preset on the left to inspect AST decomposition.</pre>
+
+          <h3 style="font-size: 0.85rem; color: var(--muted); margin-bottom: 0.5rem;">Decomposed Atomic Commands (`CommandASTParser`)</h3>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Executable</th>
+                <th>Args &amp; Flags</th>
+                <th>Unwrapped Wrappers</th>
+                <th class="num">Depth</th>
+              </tr>
+            </thead>
+            <tbody id="pol-atoms-body">
+              <tr><td colspan="4" style="color: var(--muted);">Run an evaluation to see decomposed atomic commands.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
     </main>
   </div>
   <div class="toast-region" id="toast-region" role="status" aria-live="polite"></div>
@@ -1011,12 +1151,16 @@
     let currentSnippetView = 'async_python';
     let defaultInventoryYaml = '';
 
+    let lastPolicyData = null;
+    let currentPolicyView = 'summary';
+
     const WORKSPACES = {
       shell: ['Песочница', 'Выполнение команд', 'Запускайте команды в интерактивной сессии, проверяйте результат и состояние окружения.'],
       hooks: ['Наблюдаемость', 'Хуки и телеметрия', 'Проверяйте политики безопасности, маскирование секретов и структурированные события.'],
       pool: ['Оркестрация', 'Хосты и инвентарь', 'Настройте YAML-инвентарь и выполните операцию на группе хостов параллельно.'],
       uri: ['Конструктор', 'URI и готовый код', 'Соберите подключение и получите проверенный фрагмент для Async Python, Sync Python или CLI.'],
-      tests: ['Качество', 'Тесты и фоновые задачи', 'Запускайте пакеты unit-тестов и проверяйте обработку логов BackgroundPool.']
+      tests: ['Качество', 'Тесты и фоновые задачи', 'Запускайте пакеты unit-тестов и проверяйте обработку логов BackgroundPool.'],
+      policy: ['Guardrails 4.4', 'Policy-as-Code и AST-верификация', 'Декомпозиция команд в AST, защита от обфускации и проверка ABAC-политик для ИИ-агентов.']
     };
 
     function switchTab(tabId) {
@@ -1037,6 +1181,7 @@
       document.getElementById('page-description').textContent = workspace[2];
       history.replaceState(null, '', '#' + tabId);
       if (tabId === 'uri' && !lastUriData) buildUriLive();
+      if (tabId === 'policy' && !lastPolicyData) runPolicySandbox();
     }
 
     function showToast(message, isError = false) {
@@ -1760,6 +1905,123 @@
         box.textContent = JSON.stringify(data.current || data, null, 2);
       } catch (_) {
         box.textContent = 'Error running BackgroundPool LogPipeline sandbox.';
+      } finally {
+        setBusy(box, false);
+      }
+    }
+
+    // ─── Tab 6: Policy-as-Code & AST Guardrails ──────────────────────
+    function applyPolicyPreset(kind) {
+      const cmdEl = document.getElementById('pol-cmd');
+      const presetEl = document.getElementById('pol-preset');
+      const roleEl = document.getElementById('pol-role');
+      const envEl = document.getElementById('pol-env');
+      const sudoEl = document.getElementById('pol-sudo');
+      const mwEl = document.getElementById('pol-mw');
+
+      sudoEl.checked = false;
+      mwEl.checked = false;
+      roleEl.value = 'operator';
+      envEl.value = 'prod';
+      presetEl.value = 'prod-guard';
+
+      if (kind === 'safe') {
+        cmdEl.value = 'ls -la /var/log && df -h';
+      } else if (kind === 'base64') {
+        cmdEl.value = 'echo cm0gLXJmIC8= | base64 -d | sh';
+      } else if (kind === 'find_exec') {
+        cmdEl.value = 'sudo find /var/tmp -name "*.old" -exec rm -rf / \\;';
+        sudoEl.checked = true;
+      } else if (kind === 'prod_restart') {
+        cmdEl.value = 'systemctl restart postgresql';
+        sudoEl.checked = true;
+        mwEl.checked = false;
+      } else if (kind === 'readonly_violation') {
+        cmdEl.value = 'apt-get install -y nginx';
+        roleEl.value = 'readonly';
+        presetEl.value = 'least-privilege';
+      }
+      runPolicySandbox();
+    }
+
+    function setPolicyView(view) {
+      currentPolicyView = view;
+      ['summary', 'ast', 'auth'].forEach(v => {
+        const btn = document.getElementById('pol-view-btn-' + v);
+        if (btn) btn.classList.toggle('active', v === view);
+      });
+      renderPolicyBox();
+    }
+
+    function renderPolicyBox() {
+      const box = document.getElementById('pol-output-box');
+      if (!lastPolicyData) return;
+      if (currentPolicyView === 'summary') {
+        box.textContent = JSON.stringify({
+          decision: lastPolicyData.decision,
+          risk_assessment: lastPolicyData.risk_assessment,
+          policy: lastPolicyData.policy
+        }, null, 2);
+      } else if (currentPolicyView === 'ast') {
+        box.textContent = JSON.stringify(lastPolicyData.ast, null, 2);
+      } else if (currentPolicyView === 'auth') {
+        box.textContent = JSON.stringify(lastPolicyData.auth_context, null, 2);
+      }
+    }
+
+    async function runPolicySandbox() {
+      const box = document.getElementById('pol-output-box');
+      setBusy(box, true, 'Evaluating CommandASTParser & PolicyEngine...');
+      const payload = {
+        command: document.getElementById('pol-cmd').value,
+        preset: document.getElementById('pol-preset').value,
+        role: document.getElementById('pol-role').value,
+        host: document.getElementById('pol-host').value,
+        environment: document.getElementById('pol-env').value,
+        sudo: document.getElementById('pol-sudo').checked,
+        maintenance_window_active: document.getElementById('pol-mw').checked
+      };
+      try {
+        const res = await apiFetch('/api/policy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        lastPolicyData = data;
+
+        const dec = data.decision || 'ALLOW';
+        const badge = document.getElementById('pol-status-badge');
+        badge.textContent = dec;
+        badge.className = 'status-text ' + (dec === 'ALLOW' ? 'status-ok' : (dec === 'REQUIRE_APPROVAL' ? 'status-warn' : 'status-err'));
+
+        document.getElementById('pol-kpi-decision').textContent = dec;
+        document.getElementById('pol-kpi-engine').textContent = `Preset: ${payload.preset} (${data.policy?.engine || 'embedded'})`;
+        document.getElementById('pol-kpi-risk').textContent = data.risk_assessment?.risk_tier || 'SAFE';
+        document.getElementById('pol-kpi-appr').textContent = `Requires HITL Approval: ${Boolean(data.requires_approval)}`;
+
+        const ast = data.ast || {};
+        document.getElementById('pol-kpi-ast').textContent = (ast.is_obfuscated || ast.complexity_exceeded) ? 'OBFUSCATED / OPAQUE' : 'CLEAN AST';
+        document.getElementById('pol-kpi-depth').textContent = `Pipeline: ${ast.pipeline_length || 0} · Max Depth: ${ast.max_depth || 0}`;
+        document.getElementById('pol-kpi-verbs').textContent = (ast.verbs || []).join(', ') || '(none)';
+        document.getElementById('pol-kpi-context').textContent = `Role: ${payload.role} · Env: ${payload.environment}`;
+
+        const tbody = document.getElementById('pol-atoms-body');
+        const cmds = ast.commands || [];
+        if (!cmds.length) {
+          tbody.innerHTML = '<tr><td colspan="4" style="color: var(--muted);">No atomic commands extracted.</td></tr>';
+        } else {
+          tbody.innerHTML = cmds.map(c => `<tr>
+            <td class="mono"><strong>${escapeHtml(c.executable)}</strong></td>
+            <td class="mono">${escapeHtml([...(c.flags || []), ...(c.args || [])].join(' ') || '-')}</td>
+            <td class="mono">${escapeHtml((c.wrappers || []).join(' → ') || '-')}</td>
+            <td class="num">${Number(c.subshell_depth || 0)}</td>
+          </tr>`).join('');
+        }
+
+        renderPolicyBox();
+      } catch (_) {
+        box.textContent = 'Error evaluating command against PolicyEngine.';
       } finally {
         setBusy(box, false);
       }

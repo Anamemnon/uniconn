@@ -10,6 +10,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..security.models import PolicyGuardrailConfig
+
 
 class ActionRiskTier(StrEnum):
     """Уровень риска операции ИИ-агента согласно Tiered Risk Model."""
@@ -195,6 +197,7 @@ class MCPSecurityPolicy(BaseModel):
     audit_log_path: str | None = None
     max_read_bytes: int = Field(default=65536, ge=1024, le=10_485_760)
     hitl: HITLPolicy = Field(default_factory=HITLPolicy)
+    guardrails: PolicyGuardrailConfig = Field(default_factory=PolicyGuardrailConfig)
 
     def to_summary_dict(self) -> dict[str, Any]:
         """Вернуть публичную сводку активной политики безопасности."""
@@ -208,6 +211,7 @@ class MCPSecurityPolicy(BaseModel):
             "audit_log_enabled": self.audit_log_path is not None,
             "max_read_bytes": self.max_read_bytes,
             "hitl": self.hitl.to_summary_dict(),
+            "guardrails": self.guardrails.to_summary_dict(),
         }
 
 

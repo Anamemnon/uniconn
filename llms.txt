@@ -567,12 +567,53 @@ uniconn flow list deploy.py [--format table|json]
 uniconn flow inspect deploy.py:deploy_flow [--format tree|json]
 uniconn flow run deploy.py:deploy_flow ssh://node-01 ssh://node-02 [--mode barrier|independent] [--batch-size 2] [--max-fail-ratio 0.0] [--tags preflight,deploy] [--var env=prod] [--dry-run] [--format table|json]
 
-# Official MCP Server over JSON-RPC 2.0 stdio (including HITL and Flow-as-Tool):
-uniconn mcp [--inventory hosts.yaml] [--uri ssh://node-01] [--group web] [--local] [--allow-write] [--allow-sudo] [--allow-dynamic-uri] [--dry-run] [--allowlist "df,uptime"] [--blocklist "..."] [--audit-log audit.jsonl] [--hitl] [--hitl-store ~/.uniconn/approvals.json] [--flows deploy.py,ops_flows.py] [--print-config]
+# Official MCP Server over JSON-RPC 2.0 stdio (including HITL, Flow-as-Tool, and Policy-as-Code Guardrails):
+uniconn mcp [--inventory hosts.yaml] [--uri ssh://node-01] [--group web] [--local] [--allow-write] [--allow-sudo] [--allow-dynamic-uri] [--dry-run] [--allowlist "df,uptime"] [--blocklist "..."] [--audit-log audit.jsonl] [--hitl] [--hitl-store ~/.uniconn/approvals.json] [--flows deploy.py,ops_flows.py] [--policy-engine embedded|opa] [--policy-preset default|prod-guard|least-privilege|strict] [--policy-file policy.yaml] [--opa-url http://localhost:8181/v1/data/uniconn/authz] [--agent-role operator] [--print-config]
 uniconn approval list [--status PENDING] [--format table|json]
 uniconn approval show appr_123456789abc
 uniconn approval approve appr_123456789abc [--by operator] [--reason "Verified rollout plan"]
 uniconn approval reject appr_123456789abc [--by operator] [--reason "Freeze window"]
+
+# AST Command Verification & Policy-as-Code Evaluation CLI (v0.19.0):
+uniconn policy parse "sudo find /var/tmp -exec rm -rf {} \;" [--format panel|json]
+uniconn policy eval "systemctl restart postgresql" [--host prod-db-01] [--env prod] [--role operator] [--sudo] [--preset prod-guard] [--policy-file policy.yaml] [--opa-url http://...] [--maintenance-window] [--format panel|json]
+```
+
+### Policy-as-Code Guardrails & AST Command Verification (`uniconn.security`)
+```python
+from uniconn import (
+    CommandASTParser,
+    EmbeddedPolicyEngine,
+    OPAPolicyEngine,
+    PolicyDecision,
+    PolicyGuardrailConfig,
+    PolicyGuardrailMiddleware,
+    build_auth_context,
+    create_policy_engine,
+)
+
+# 1. Deep AST decomposition, indirect wrapper unwrapping & obfuscation detection:
+ast = CommandASTParser.parse("echo cm0gLXJmIC8= | base64 -d | sh")
+assert ast.is_obfuscated is True
+assert "rm" in ast.verbs
+
+# 2. Evaluate against Embedded Policy Engine (presets: default, prod-guard, least-privilege, strict) or OPA:
+cfg = PolicyGuardrailConfig(enabled=True, preset="prod-guard", default_role="operator")
+engine = create_policy_engine(cfg)
+auth_ctx = build_auth_context(
+    agent_id="triage-bot",
+    role="operator",
+    host_name="prod-db-01",
+    environment="prod",
+    is_production=True,
+    tool_name="uniconn_run",
+    command="systemctl restart postgresql",
+    ast=CommandASTParser.parse("systemctl restart postgresql"),
+    sudo=True,
+    risk_tier="MUTATING",
+)
+eval_res = await engine.evaluate(auth_ctx)
+# eval_res.decision -> PolicyDecision.REQUIRE_APPROVAL | PolicyDecision.ALLOW | PolicyDecision.DENY
 ```
 
 ### Declarative Task DAG Orchestration & MCP Flow-as-Tool (`uniconn.orchestration`, `uniconn.mcp`)

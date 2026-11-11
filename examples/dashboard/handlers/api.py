@@ -230,6 +230,8 @@ def _execute_endpoint_direct(
         return _execute_v090_sandbox(payload)
     if endpoint == "hitl":
         return _execute_hitl_sandbox(payload)
+    if endpoint == "policy":
+        return _execute_policy_sandbox(payload)
     return {"error": f"Unknown endpoint: {endpoint}"}
 
 
@@ -323,6 +325,103 @@ def _execute_hitl_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
         }
 
     return asyncio.run(_run())
+
+
+def _execute_policy_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
+    """Интерактивный обработчик API для AST-анализатора команд и Policy-as-Code Guardrails."""
+    from uniconn.mcp import ActionRiskClassifier, HITLPolicy
+    from uniconn.security import (
+        CommandASTParser,
+        PolicyGuardrailConfig,
+        build_auth_context,
+        create_policy_engine,
+    )
+
+    command = str(payload.get("command") or "ls -la /var/log").strip()
+    tool_name = str(payload.get("tool_name") or "uniconn_run").strip()
+    path = payload.get("path")
+    path_str = str(path).strip() if isinstance(path, str) and path.strip() else None
+    host = str(payload.get("host") or "prod-db-01").strip()
+    env = str(payload.get("environment") or payload.get("env") or "prod").strip()
+    role = str(payload.get("role") or "operator").strip()
+    agent_id = str(payload.get("agent_id") or "mcp-agent").strip()
+    sudo = bool(payload.get("sudo", False))
+    preset = str(payload.get("preset") or "prod-guard").strip()
+    engine_type = str(payload.get("engine") or "embedded").strip().lower()
+    opa_url = payload.get("opa_url")
+    opa_url_str = str(opa_url).strip() if isinstance(opa_url, str) and opa_url.strip() else None
+    mw_raw = payload.get("maintenance_window_active")
+    mw_override: bool | None = bool(mw_raw) if isinstance(mw_raw, bool) else None
+    max_depth = int(payload.get("max_ast_depth") or 4)
+    max_pipe = int(payload.get("max_pipeline_length") or 8)
+
+    is_prod = env.lower() in ("prod", "production", "prd", "critical")
+    cfg = PolicyGuardrailConfig(
+        enabled=True,
+        engine="opa" if (engine_type == "opa" and opa_url_str) else "embedded",
+        preset=preset,
+        opa_url=opa_url_str,
+        default_agent_id=agent_id,
+        default_role=role,
+        maintenance_window_active=mw_override,
+        max_ast_depth=max_depth,
+        max_pipeline_length=max_pipe,
+    )
+    engine = create_policy_engine(cfg)
+    hitl_pol = HITLPolicy(enabled=True)
+
+    ast = CommandASTParser.parse(
+        command,
+        max_depth=max_depth,
+        max_pipeline_length=max_pipe,
+    )
+    if tool_name == "uniconn_write_file" and path_str:
+        assessment = ActionRiskClassifier.classify_file_write(
+            path_str,
+            file_exists=True,
+            is_production=is_prod,
+            policy=hitl_pol,
+        )
+    else:
+        assessment = ActionRiskClassifier.classify_command(
+            command,
+            sudo=sudo,
+            is_production=is_prod,
+            policy=hitl_pol,
+            ast=ast,
+        )
+
+    auth_ctx = build_auth_context(
+        agent_id=agent_id,
+        role=role,
+        host_name=host,
+        groups=("prod", "database") if is_prod else ("staging",),
+        environment=env,
+        is_production=is_prod,
+        tool_name=tool_name,
+        command=command if tool_name != "uniconn_write_file" else None,
+        ast=ast if tool_name != "uniconn_write_file" else None,
+        sudo=sudo,
+        path=path_str,
+        risk_tier=assessment.risk_tier.value,
+        risk_reasons=assessment.reasons,
+        maintenance_window_override=mw_override,
+    )
+
+    async def _eval() -> dict[str, Any]:
+        eval_res = await engine.evaluate(auth_ctx)
+        return {
+            "ok": True,
+            "decision": eval_res.decision.value,
+            "allowed": eval_res.allowed,
+            "requires_approval": eval_res.requires_approval or assessment.requires_approval,
+            "risk_assessment": assessment.to_dict(),
+            "policy": eval_res.to_dict(),
+            "ast": ast.to_dict(),
+            "auth_context": auth_ctx.to_dict(),
+        }
+
+    return asyncio.run(_eval())
 
 
 def _dispatch_endpoint(

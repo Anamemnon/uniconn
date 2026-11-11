@@ -150,9 +150,12 @@ async def collect_sensors(
                             "status": shealth,
                         }
                     )
-                elif rtype == "power" or runits == "W":
-                    if power_watts is None and isinstance(sreading, (int, float)):
-                        power_watts = sreading
+                elif (
+                    (rtype == "power" or runits == "W")
+                    and power_watts is None
+                    and isinstance(sreading, (int, float))
+                ):
+                    power_watts = sreading
 
             if not legacy_ok:
                 th_status = sens_status

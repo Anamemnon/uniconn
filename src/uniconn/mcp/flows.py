@@ -759,13 +759,12 @@ class FlowRiskEvaluator:
                 )
             if has_post_hooks:
                 reasons.append("Flow tasks trigger post-execution handlers")
-        elif active_tags and active_tags <= _SAFE_TAGS:
-            if tier is None:
-                tier = ActionRiskTier.TIER_0_SAFE
-                reasons.append(
-                    "All active tasks are marked read-only/safe "
-                    f"({', '.join(sorted(active_tags))})"
-                )
+        elif active_tags and active_tags <= _SAFE_TAGS and tier is None:
+            tier = ActionRiskTier.TIER_0_SAFE
+            reasons.append(
+                "All active tasks are marked read-only/safe "
+                f"({', '.join(sorted(active_tags))})"
+            )
         if tier is None:
             tier = ActionRiskTier.TIER_1_MUTATING
             reasons.append(

@@ -13,11 +13,18 @@ from typing import Annotated, Any
 
 from ..mcp import (
     DEFAULT_APPROVAL_STORE_PATH,
+    ActionRiskClassifier,
     ApprovalManager,
     HITLPolicy,
     MCPHostRegistry,
     MCPSecurityPolicy,
     MCPServer,
+)
+from ..security import (
+    CommandASTParser,
+    PolicyGuardrailConfig,
+    build_auth_context,
+    create_policy_engine,
 )
 from .renderers import CLIOutputRenderer, Panel, Parameter, Table, box, cyclopts, print_json
 
@@ -49,6 +56,11 @@ def build_mcp_client_config(
     hitl_wait: bool = False,
     hitl_webhook_url: str | None = None,
     flows: tuple[str, ...] = (),
+    policy_engine: str = "embedded",
+    policy_preset: str = "default",
+    policy_file: str | None = None,
+    opa_url: str | None = None,
+    agent_role: str = "operator",
 ) -> dict[str, Any]:
     """Сформировать готовый JSON-конфиг ``mcpServers`` для Claude Desktop / Cursor."""
     args: list[str] = ["--from", "uniconn[cli]", "uniconn", "mcp"]
@@ -90,6 +102,16 @@ def build_mcp_client_config(
         args.extend(["--hitl-webhook-url", hitl_webhook_url])
     if flows:
         args.extend(["--flows", ",".join(flows)])
+    if policy_engine != "embedded":
+        args.extend(["--policy-engine", policy_engine])
+    if policy_preset != "default":
+        args.extend(["--policy-preset", policy_preset])
+    if policy_file:
+        args.extend(["--policy-file", str(Path(policy_file).resolve())])
+    if opa_url:
+        args.extend(["--opa-url", opa_url])
+    if agent_role != "operator":
+        args.extend(["--agent-role", agent_role])
 
     return {
         "mcpServers": {
@@ -255,6 +277,41 @@ def register_mcp_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                 help="Comma-separated Python files, directories, or module[:attr] specs to export as MCP Flow tools",
             ),
         ] = None,
+        policy_engine: Annotated[
+            str,
+            Parameter(
+                name=["--policy-engine"],
+                help="Policy-as-Code backend engine: 'embedded' or 'opa' (default: embedded)",
+            ),
+        ] = "embedded",
+        policy_preset: Annotated[
+            str,
+            Parameter(
+                name=["--policy-preset"],
+                help="Built-in Policy-as-Code preset: default, prod-guard, least-privilege, strict",
+            ),
+        ] = "default",
+        policy_file: Annotated[
+            str | None,
+            Parameter(
+                name=["--policy-file"],
+                help="Optional YAML/JSON declarative policy rules file",
+            ),
+        ] = None,
+        opa_url: Annotated[
+            str | None,
+            Parameter(
+                name=["--opa-url"],
+                help="Open Policy Agent (OPA) REST endpoint URL (enables OPA evaluation)",
+            ),
+        ] = None,
+        agent_role: Annotated[
+            str,
+            Parameter(
+                name=["--agent-role"],
+                help="Default RBAC/ABAC role for AI agent calls (default: operator)",
+            ),
+        ] = "operator",
         print_config: Annotated[
             bool,
             Parameter(
@@ -289,6 +346,11 @@ def register_mcp_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                 hitl_wait=hitl_wait,
                 hitl_webhook_url=hitl_webhook_url,
                 flows=parsed_flows,
+                policy_engine=policy_engine,
+                policy_preset=policy_preset,
+                policy_file=policy_file,
+                opa_url=opa_url,
+                agent_role=agent_role,
             )
             sys.stdout.write(json.dumps(cfg_snippet, ensure_ascii=False, indent=2) + "\n")
             sys.stdout.flush()
@@ -318,6 +380,15 @@ def register_mcp_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                 webhook_url=hitl_webhook_url,
                 audit_log_path=audit_log,
             )
+            eff_engine = "opa" if (policy_engine == "opa" or opa_url) else "embedded"
+            guardrails_cfg = PolicyGuardrailConfig(
+                enabled=True,
+                engine="opa" if eff_engine == "opa" else "embedded",
+                preset=policy_preset,
+                policy_file=policy_file,
+                opa_url=opa_url,
+                default_role=agent_role,
+            )
             policy = MCPSecurityPolicy(
                 allow_write=allow_write,
                 allow_sudo=allow_sudo,
@@ -328,6 +399,7 @@ def register_mcp_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                 audit_log_path=audit_log,
                 max_read_bytes=max_read_bytes,
                 hitl=hitl_policy,
+                guardrails=guardrails_cfg,
             )
             registry = MCPHostRegistry.from_sources(
                 inventory=inventory,
@@ -593,4 +665,250 @@ def register_mcp_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
         )
 
     app.command(approval_app)
+
+    policy_app = cyclopts.App(
+        name="policy",
+        help="AST command verification and Policy-as-Code evaluation for AI agents",
+    )
+
+    @policy_app.command(name="parse")
+    def policy_parse(
+        command: Annotated[str, Parameter(help="Shell command string to decompose into AST")],
+        max_depth: Annotated[
+            int,
+            Parameter(
+                name=["--max-depth"],
+                help="Maximum recursive subshell/wrapper AST depth (default: 4)",
+            ),
+        ] = 4,
+        max_pipeline: Annotated[
+            int,
+            Parameter(
+                name=["--max-pipeline"],
+                help="Maximum atomic commands in pipeline/chain (default: 8)",
+            ),
+        ] = 8,
+        output_format: Annotated[
+            str,
+            Parameter(
+                name=["--format", "-f"],
+                help="Output format: panel, json",
+            ),
+        ] = "panel",
+    ) -> None:
+        """Parse a shell command into an AST and inspect atomic verbs, wrappers, and obfuscation."""
+        ast = CommandASTParser.parse(
+            command,
+            max_depth=max_depth,
+            max_pipeline_length=max_pipeline,
+        )
+        if output_format == "json":
+            print_json(console, ast.to_dict())
+            return
+
+        status_badge = (
+            "[bold red]OBFUSCATED / OPAQUE[/bold red]"
+            if (ast.is_obfuscated or ast.complexity_exceeded)
+            else "[bold green]CLEAN AST[/bold green]"
+        )
+        lines = [
+            f"[bold]Raw Command[/bold]      : {ast.raw_command}",
+            f"[bold]AST Status[/bold]       : {status_badge}",
+            f"[bold]Verbs[/bold]            : {', '.join(ast.verbs) or '-'}",
+            f"[bold]Pipeline Length[/bold]  : {ast.pipeline_length} (Max Depth: {ast.max_depth})",
+            f"[bold]Destructive Verbs[/bold]: {ast.has_destructive_verbs}",
+        ]
+        if ast.obfuscation_reasons:
+            lines.append(
+                f"[bold red]Obfuscation[/bold red]      : {'; '.join(ast.obfuscation_reasons)}"
+            )
+        console.print(
+            Panel(
+                "\n".join(lines),
+                title="Command AST Verification",
+                border_style="red" if ast.is_obfuscated else "cyan",
+            )
+        )
+        if ast.commands:
+            tbl = Table(
+                title="Decomposed Atomic Commands",
+                box=box.ROUNDED,
+                show_header=True,
+                header_style="bold cyan",
+            )
+            tbl.add_column("#", width=4)
+            tbl.add_column("Executable", style="bold white", width=16)
+            tbl.add_column("Args", style="white")
+            tbl.add_column("Flags", style="yellow", width=14)
+            tbl.add_column("Wrappers", style="magenta", width=18)
+            tbl.add_column("Depth", width=6)
+            for idx, atom in enumerate(ast.commands, start=1):
+                tbl.add_row(
+                    str(idx),
+                    atom.executable,
+                    " ".join(atom.args) or "-",
+                    " ".join(atom.flags) or "-",
+                    ", ".join(atom.wrappers) or "-",
+                    str(atom.subshell_depth),
+                )
+            console.print(tbl)
+
+    @policy_app.command(name="eval")
+    def policy_eval(
+        command: Annotated[str, Parameter(help="Shell command string to evaluate against Policy-as-Code")],
+        host: Annotated[
+            str,
+            Parameter(
+                name=["--host", "-H"],
+                help="Target host alias for ABAC resource context (default: local)",
+            ),
+        ] = "local",
+        env: Annotated[
+            str,
+            Parameter(
+                name=["--env", "-e"],
+                help="Target environment tag: default, staging, prod (default: default)",
+            ),
+        ] = "default",
+        role: Annotated[
+            str,
+            Parameter(
+                name=["--role", "-r"],
+                help="Agent RBAC/ABAC role: operator, readonly, junior-ai, sre (default: operator)",
+            ),
+        ] = "operator",
+        agent_id: Annotated[
+            str,
+            Parameter(
+                name=["--agent-id"],
+                help="Agent identifier (default: mcp-agent)",
+            ),
+        ] = "mcp-agent",
+        sudo: Annotated[
+            bool,
+            Parameter(
+                name=["--sudo"],
+                negative="",
+                help="Evaluate command with sudo=True",
+            ),
+        ] = False,
+        preset: Annotated[
+            str,
+            Parameter(
+                name=["--preset", "-p"],
+                help="Built-in policy preset: default, prod-guard, least-privilege, strict",
+            ),
+        ] = "default",
+        policy_file: Annotated[
+            str | None,
+            Parameter(
+                name=["--policy-file"],
+                help="Path to declarative YAML/JSON policy rules file",
+            ),
+        ] = None,
+        opa_url: Annotated[
+            str | None,
+            Parameter(
+                name=["--opa-url"],
+                help="Open Policy Agent (OPA) REST URL",
+            ),
+        ] = None,
+        maintenance_window: Annotated[
+            bool | None,
+            Parameter(
+                name=["--maintenance-window"],
+                help="Explicitly override maintenance_window_active (true/false)",
+            ),
+        ] = None,
+        output_format: Annotated[
+            str,
+            Parameter(
+                name=["--format", "-f"],
+                help="Output format: panel, json",
+            ),
+        ] = "panel",
+    ) -> None:
+        """Evaluate a command against CommandASTParser, ActionRiskClassifier, and PolicyEngine."""
+        try:
+            cfg = PolicyGuardrailConfig(
+                enabled=True,
+                engine="opa" if opa_url else "embedded",
+                preset=preset,
+                policy_file=policy_file,
+                opa_url=opa_url,
+                default_agent_id=agent_id,
+                default_role=role,
+                maintenance_window_active=maintenance_window,
+            )
+            engine = create_policy_engine(cfg)
+            ast = CommandASTParser.parse(
+                command,
+                max_depth=cfg.max_ast_depth,
+                max_pipeline_length=cfg.max_pipeline_length,
+            )
+            is_prod = env.strip().lower() in ("prod", "production", "prd", "critical")
+            hitl_pol = HITLPolicy(enabled=True)
+            assessment = ActionRiskClassifier.classify_command(
+                command,
+                sudo=sudo,
+                is_production=is_prod,
+                policy=hitl_pol,
+                ast=ast,
+            )
+            auth_ctx = build_auth_context(
+                agent_id=agent_id,
+                role=role,
+                host_name=host,
+                groups=("prod",) if is_prod else ("default",),
+                environment=env,
+                is_production=is_prod,
+                tool_name="uniconn_run",
+                command=command,
+                ast=ast,
+                sudo=sudo,
+                risk_tier=assessment.risk_tier.value,
+                risk_reasons=assessment.reasons,
+                maintenance_window_override=maintenance_window,
+            )
+            eval_res = asyncio.run(engine.evaluate(auth_ctx))
+        except Exception as exc:
+            renderer.print_error_and_exit(exc, title="Policy Evaluation Error")
+            return
+
+        payload = {
+            "decision": eval_res.decision.value,
+            "allowed": eval_res.allowed,
+            "requires_approval": eval_res.requires_approval or assessment.requires_approval,
+            "risk_assessment": assessment.to_dict(),
+            "policy": eval_res.to_dict(),
+            "ast": ast.to_dict(),
+            "auth_context": auth_ctx.to_dict(),
+        }
+        if output_format == "json":
+            print_json(console, payload)
+            return
+
+        dec = eval_res.decision.value
+        color = "green" if dec == "ALLOW" else ("yellow" if dec == "REQUIRE_APPROVAL" else "red")
+        lines = [
+            f"[bold]Decision[/bold]     : [bold {color}]{dec}[/bold {color}]",
+            f"[bold]Risk Tier[/bold]    : {assessment.risk_tier.value}",
+            f"[bold]Preset/Engine[/bold]: {cfg.preset} ({eval_res.engine})",
+            f"[bold]Subject[/bold]      : {agent_id} (role={role})",
+            f"[bold]Resource[/bold]     : {host} (env={env}, prod={is_prod})",
+            f"[bold]AST Verbs[/bold]    : {', '.join(ast.verbs) or '-'}",
+        ]
+        if eval_res.reasons:
+            lines.append(f"[bold]Policy Reasons[/bold]: {'; '.join(eval_res.reasons)}")
+        if eval_res.remediation_hint:
+            lines.append(f"[bold cyan]Remediation[/bold cyan]  : {eval_res.remediation_hint}")
+        console.print(
+            Panel(
+                "\n".join(lines),
+                title="Policy-as-Code Evaluation Result",
+                border_style=color,
+            )
+        )
+
+    app.command(policy_app)
 

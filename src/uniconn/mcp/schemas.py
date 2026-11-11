@@ -129,6 +129,14 @@ def build_default_tools(policy: MCPSecurityPolicy) -> list[MCPToolDefinition]:
                             "if action triggers HITL policy."
                         ),
                     },
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Optional identifier of the AI agent invoking the command.",
+                    },
+                    "role": {
+                        "type": "string",
+                        "description": "Optional RBAC/ABAC role of the agent (e.g. 'operator', 'readonly', 'sre').",
+                    },
                 },
                 "required": ["target", "command"],
                 "additionalProperties": False,
@@ -299,6 +307,14 @@ def build_default_tools(policy: MCPSecurityPolicy) -> list[MCPToolDefinition]:
                             "if action triggers HITL policy."
                         ),
                     },
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Optional identifier of the AI agent writing the file.",
+                    },
+                    "role": {
+                        "type": "string",
+                        "description": "Optional RBAC/ABAC role of the agent (e.g. 'operator', 'readonly', 'sre').",
+                    },
                 },
                 "required": ["target", "path", "content"],
                 "additionalProperties": False,
@@ -385,8 +401,68 @@ def build_default_tools(policy: MCPSecurityPolicy) -> list[MCPToolDefinition]:
                         "type": "string",
                         "description": "Optional identifier of the AI agent proposing the action.",
                     },
+                    "role": {
+                        "type": "string",
+                        "description": "Optional RBAC/ABAC role of the agent proposing the action.",
+                    },
                 },
                 "additionalProperties": True,
+            },
+        ),
+        MCPToolDefinition(
+            name="uniconn_evaluate_policy",
+            description=(
+                "Perform dry-run AST command verification and Policy-as-Code evaluation "
+                "(Embedded Python/YAML or OPA) without executing the action. Returns the "
+                "decomposed command AST, detected obfuscation or indirect execution wrappers, "
+                "risk tier, policy decision (ALLOW, REQUIRE_APPROVAL, DENY), and remediation hints."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Optional registered target host alias to evaluate against.",
+                    },
+                    "tool_name": {
+                        "type": "string",
+                        "description": (
+                            "Tool name to evaluate ('uniconn_run', 'uniconn_write_file', "
+                            "or 'uniconn_run_flow'). Default: 'uniconn_run'."
+                        ),
+                        "default": "uniconn_run",
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command string to decompose into AST and evaluate.",
+                    },
+                    "sudo": {
+                        "type": "boolean",
+                        "description": "Whether the command is requested with sudo privileges.",
+                        "default": False,
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Optional working directory context.",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Target file path when evaluating 'uniconn_write_file'.",
+                    },
+                    "flow_name": {
+                        "type": "string",
+                        "description": "Flow name when evaluating 'uniconn_run_flow'.",
+                    },
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Optional agent identifier for ABAC subject context.",
+                    },
+                    "role": {
+                        "type": "string",
+                        "description": "Optional agent role (e.g. 'operator', 'readonly', 'junior-ai', 'sre').",
+                    },
+                },
+                "additionalProperties": False,
             },
         ),
         MCPToolDefinition(
@@ -552,6 +628,14 @@ def build_default_tools(policy: MCPSecurityPolicy) -> list[MCPToolDefinition]:
                         "type": "string",
                         "description": "Optional checkpoint run_id (e.g. 'run_...') to resume from.",
                     },
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Optional identifier of the AI agent executing the Flow.",
+                    },
+                    "role": {
+                        "type": "string",
+                        "description": "Optional RBAC/ABAC role of the agent executing the Flow.",
+                    },
                 },
                 "required": ["flow_name"],
                 "additionalProperties": True,
@@ -582,6 +666,14 @@ def build_default_tools(policy: MCPSecurityPolicy) -> list[MCPToolDefinition]:
                         "type": "boolean",
                         "description": "Wait synchronously for human operator approval if HITL is triggered.",
                     },
+                    "agent_id": {
+                        "type": "string",
+                        "description": "Optional identifier of the AI agent resuming the Flow.",
+                    },
+                    "role": {
+                        "type": "string",
+                        "description": "Optional RBAC/ABAC role of the agent resuming the Flow.",
+                    },
                 },
                 "required": ["run_id"],
                 "additionalProperties": False,
@@ -607,6 +699,14 @@ def build_default_resources() -> list[MCPResourceDefinition]:
             uri="uniconn://flows",
             name="Registered Orchestration Flows & Checkpoints",
             description="Registered DAG orchestration Flows exported as tools and resumable checkpoints.",
+        ),
+        MCPResourceDefinition(
+            uri="uniconn://security/guardrails",
+            name="Policy-as-Code Guardrails & AST Verification",
+            description=(
+                "Active Policy-as-Code engine configuration, preset rules, maintenance windows, "
+                "and AST command verification settings."
+            ),
         ),
     ]
 

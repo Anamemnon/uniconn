@@ -18,7 +18,7 @@ from .cmd_ops import register_ops_commands
 from .renderers import CLIOutputRenderer, Console, Parameter, check_cli_deps, cyclopts
 
 
-def create_cli_app() -> Any:
+def create_cli_app(*, console: Any = None) -> Any:
     """Собрать и вернуть настроенный экземпляр ``cyclopts.App`` со всеми подкомандами."""
     check_cli_deps()
 
@@ -27,8 +27,8 @@ def create_cli_app() -> Any:
         help="Universal CLI for remote command execution",
         result_action="sys_exit",
     )
-    console = Console()
-    renderer = CLIOutputRenderer(console)
+    active_console = console if console is not None else Console()
+    renderer = CLIOutputRenderer(active_console)
 
     @app.meta.default
     def meta_launcher(
@@ -58,14 +58,14 @@ def create_cli_app() -> Any:
             )
         return app(tokens)
 
-    register_exec_commands(app, console, renderer)
-    register_file_commands(app, console, renderer)
-    register_ops_commands(app, console, renderer)
-    register_bg_commands(app, console, renderer)
-    register_cassette_commands(app, console, renderer)
-    register_flow_commands(app, console, renderer)
-    register_mock_commands(app, console, renderer)
-    register_mcp_commands(app, console, renderer)
+    register_exec_commands(app, active_console, renderer)
+    register_file_commands(app, active_console, renderer)
+    register_ops_commands(app, active_console, renderer)
+    register_bg_commands(app, active_console, renderer)
+    register_cassette_commands(app, active_console, renderer)
+    register_flow_commands(app, active_console, renderer)
+    register_mock_commands(app, active_console, renderer)
+    register_mcp_commands(app, active_console, renderer)
     return app
 
 
