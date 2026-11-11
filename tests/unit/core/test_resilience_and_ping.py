@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -67,7 +68,15 @@ class TestCircuitBreakerAndRateLimiter:
         assert exc_info.value.remaining_seconds > 0
 
         # Ждём истечения recovery_timeout -> переход в HALF_OPEN
-        await asyncio.sleep(0.06)
+        async def _wait_for_half_open() -> None:
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                if cb.state == CircuitState.HALF_OPEN:
+                    return
+                await asyncio.sleep(0.01)
+            assert cb.state == CircuitState.HALF_OPEN
+
+        await _wait_for_half_open()
         assert cb.state == CircuitState.HALF_OPEN
         cb.check_or_raise(host="node-01", command="probe-1")
 
@@ -80,7 +89,7 @@ class TestCircuitBreakerAndRateLimiter:
         assert cb.state == CircuitState.OPEN
 
         # После повторного таймаута успешный вызов закрывает прерыватель в CLOSED
-        await asyncio.sleep(0.06)
+        await _wait_for_half_open()
         assert cb.state == CircuitState.HALF_OPEN
         cb.check_or_raise(host="node-01", command="probe-ok")
         cb.record_success()
@@ -107,13 +116,16 @@ class TestCircuitBreakerAndRateLimiter:
     def test_circuit_breaker_thread_safety_half_open_admissions(self) -> None:
         """В состоянии HALF_OPEN ровно half_open_max_calls параллельных запросов разрешаются."""
         import concurrent.futures
-        import time
 
         cb = CircuitBreaker(failure_threshold=1, recovery_timeout=0.04, half_open_max_calls=2)
         cb.record_failure()
         assert cb.state == CircuitState.OPEN
 
-        time.sleep(0.05)
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and cb.state != CircuitState.HALF_OPEN:
+            time.sleep(0.01)
+        assert cb.state == CircuitState.HALF_OPEN
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
             futures = [executor.submit(cb.allow_request) for _ in range(50)]
             results = [f.result() for f in futures]
