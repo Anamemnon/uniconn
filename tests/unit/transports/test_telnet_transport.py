@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from uniconn._config import ConnectionConfig
+from uniconn.config.models import ConnectionConfig
 from uniconn.exceptions import ConnectionError
 from uniconn.transports._telnet import TelnetTransport
 

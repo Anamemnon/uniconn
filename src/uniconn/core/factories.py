@@ -226,22 +226,31 @@ def build_from_dict(
     retry_attempts: int = 3,
     logger: logging.Logger | None = None,
     dry_run: bool = False,
+    before_run: Sequence[HookCallback] | None = None,
+    after_run: Sequence[HookCallback] | None = None,
+    on_error: Sequence[HookCallback] | None = None,
+    rate_limit: float | RateLimiter | None = None,
+    circuit_breaker: CircuitBreaker | bool | None = None,
+    auto_diagnostics: bool | None = None,
 ) -> ConnT:
     """Создать подключение из словаря."""
     retry = data.get("retry_attempts", retry_attempts)
     effective_dry_run = bool(data.get("dry_run", dry_run))
-    rate_limit = data.get("rate_limit")
-    circuit_breaker = data.get("circuit_breaker")
-    auto_diagnostics = data.get("auto_diagnostics")
+    effective_rate_limit = data.get("rate_limit", rate_limit)
+    effective_cb = data.get("circuit_breaker", circuit_breaker)
+    effective_auto_diag = data.get("auto_diagnostics", auto_diagnostics)
     if "uri" in data:
         conn = cls.from_uri(
             str(data["uri"]),
             retry_attempts=retry,
             logger=logger,
             dry_run=effective_dry_run,
-            rate_limit=rate_limit,
-            circuit_breaker=circuit_breaker,
-            auto_diagnostics=auto_diagnostics,
+            before_run=before_run,
+            after_run=after_run,
+            on_error=on_error,
+            rate_limit=effective_rate_limit,
+            circuit_breaker=effective_cb,
+            auto_diagnostics=effective_auto_diag,
         )
         overrides = {
             k: v
@@ -271,9 +280,12 @@ def build_from_dict(
         retry,
         logger,
         dry_run=effective_dry_run,
-        rate_limit=rate_limit,
-        circuit_breaker=circuit_breaker,
-        auto_diagnostics=auto_diagnostics,
+        before_run=before_run,
+        after_run=after_run,
+        on_error=on_error,
+        rate_limit=effective_rate_limit,
+        circuit_breaker=effective_cb,
+        auto_diagnostics=effective_auto_diag,
     )
 
 
@@ -285,10 +297,21 @@ def build_from_file(
     *,
     host: str | None = None,
     group: str | None = None,
+    dry_run: bool = False,
+    auto_diagnostics: bool | None = None,
 ) -> list[ConnT]:
     """Создать подключения из JSON/YAML/TOML файла (включая инвентарь с хостами и группами)."""
     entries = InventoryLoader.load_file(path, host=host, group=group)
-    return [cls.from_dict(data, retry_attempts, logger) for data in entries]
+    return [
+        cls.from_dict(
+            data,
+            retry_attempts,
+            logger,
+            dry_run=dry_run,
+            auto_diagnostics=auto_diagnostics,
+        )
+        for data in entries
+    ]
 
 
 def build_from_inventory(
@@ -297,6 +320,9 @@ def build_from_inventory(
     host: str,
     retry_attempts: int = 3,
     logger: logging.Logger | None = None,
+    *,
+    dry_run: bool = False,
+    auto_diagnostics: bool | None = None,
 ) -> ConnT:
     """Создать одиночное подключение по имени хоста из инвентарного файла (YAML/JSON)."""
     conns = cls.from_file(
@@ -304,6 +330,8 @@ def build_from_inventory(
         retry_attempts=retry_attempts,
         logger=logger,
         host=host,
+        dry_run=dry_run,
+        auto_diagnostics=auto_diagnostics,
     )
     return conns[0]
 
@@ -327,6 +355,8 @@ def clone_connection(
     auto_diagnostics: bool | None = None,
 ) -> ConnT:
     """Создать копию подключения с возможностью изменения параметров."""
+    from .pipeline import HITLApprovalMiddleware
+
     cfg = conn.config
     new_config = ConnectionConfig(
         transport=cfg.transport,
@@ -350,7 +380,7 @@ def clone_connection(
         ),
         ssh_config=ssh_config if ssh_config is not None else cfg.ssh_config,
         timeout=timeout if timeout is not None else cfg.timeout,
-        options=options if options is not None else cfg.options,
+        options=dict(options) if options is not None else dict(cfg.options),
     )
     transport_class = TransportLoader.get(new_config.transport)
     transport = transport_class(new_config)
@@ -371,6 +401,10 @@ def clone_connection(
             conn.auto_diagnostics if auto_diagnostics is None else auto_diagnostics
         ),
     )
+    for attr in ("_hitl_policy", "_approval_manager"):
+        if hasattr(conn, attr):
+            setattr(new_conn, attr, getattr(conn, attr))
+
     for obs in conn.operation_observers:
         attach_fn = getattr(obs, "_attach_connection", None)
         if callable(attach_fn):
@@ -380,7 +414,14 @@ def clone_connection(
 
     existing_mw_types = tuple(type(m) for m in new_conn.pipeline.middlewares)
     for mw in conn.pipeline.middlewares:
-        if not isinstance(mw, _DEFAULT_MW_TYPES) and not isinstance(
+        if isinstance(mw, HITLApprovalMiddleware):
+            HITLApprovalMiddleware(
+                new_conn,
+                policy=mw._policy,
+                manager=mw._manager,
+                is_production=mw._is_production,
+            ).attach(new_conn)
+        elif not isinstance(mw, _DEFAULT_MW_TYPES) and not isinstance(
             mw, existing_mw_types
         ):
             new_conn.pipeline.add_middleware(mw)

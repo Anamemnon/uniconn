@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from uniconn._config import ConnectionConfig
+from uniconn.config.models import ConnectionConfig
 from uniconn.exceptions import AuthenticationError, ConnectionError
 from uniconn.transports._ssh import SSHTransport
 

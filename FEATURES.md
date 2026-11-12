@@ -1,6 +1,6 @@
 # Реализованные возможности и архитектура библиотеки uniconn
 
-> **Версия**: v0.14.0 | **600+ unit-тестов** | 10 транспортов (`ssh`, `telnet`, `serial`, `local`, `ipmi`, `redfish`, `replay`, `docker`, `podman`, `kubectl`) | Модульный CLI (`cyclopts` + `rich`) | Интерактивная веб-панель (`examples/dashboard/`) | PEP 561 (`py.typed`)
+> **Версия**: v0.20.0 | **915+ unit-тестов** | 16+ транспортов (`ssh`, `winrm`/`wsman`, `netconf`, `restconf`, `gnmi`, `qga`/`qemu-ga`, `pve`, `docker`, `podman`, `kubectl`, `telnet`, `serial`/`uart`, `ipmi`, `redfish`, `replay`, `local`) | Модульный CLI (`cyclopts` + `rich`) | Встроенный MCP-сервер (`uniconn mcp`) | Интерактивная веб-панель (`examples/dashboard/`) | PEP 561 (`py.typed`) + PEP 562 Lazy Exports
 >
 > **Для ИИ-агентов**: этот файл (`FEATURES.md`) является полным каталогом реализованных фич и архитектурных решений библиотеки `uniconn`. **Не загружайте его в контекст при каждом запросе** — используйте `llms.txt` для быстрого обзора сигнатур API, а к `FEATURES.md` обращайтесь только по требованию (on-demand), когда нужно сверить наличие конкретной функциональности или обновить список возможностей после релиза.
 >
@@ -10,42 +10,32 @@
 
 | Область | Статус | Детали |
 |---------|--------|--------|
-| Транспорты | ✅ 10/10 | SSH (`~/.ssh/config`, `SSHJumpChainManager`, `ProxyCommand`), Docker (`docker://`), Podman (`podman://`), Kubernetes (`kubectl://`), Telnet, Serial/UART, Local, IPMI (`ipmi://`), Redfish BMC (`redfish://` на `niquests`), Replay (`replay://`) |
-| Протоколы ISP | ✅ `transports.base` | `CommandTransport`, `FileCapableTransport`, `ShellCapableTransport`, `TunnelCapableTransport`, `require_capability()` |
-| Конвейер команд | ✅ `CommandPipeline` | Цепочка `CommandMiddleware`: `Context`, `Sudo`, `Hook`, `DryRun`, `Observability`, `CircuitBreaker`, `RateLimit`, `Retry` (`conn.pipeline`) |
-| Отказоустойчивость (`v0.9.0`) | ✅ `CircuitBreaker` + `RateLimiter` | Состояния `CLOSED` → `OPEN` → `HALF_OPEN` (`CircuitOpenError`), Token Bucket `RateLimiter` на уровне `Connection`, `ConnectionPool` и `SSHSessionPool` |
-| Доменные сервисы | ✅ `conn.files` / `state` / `tunnels` | `FileOperationsService`, `DirectorySynchronizer`, `StateManagementService`, `FactCollector`, `TunnelService`, `TemplateEngine` |
-| SSH мультиплексинг | ✅ `SSHSessionPool` | Адаптивное авто-понижение лимитов (`adaptive=True` при `MaxSessions`/`MaxStartups`), динамический `resize()` (graceful drain), `health_check`, `rate_limit`, `circuit_breaker` |
-| Screen-сессии | ✅ `ScreenPool` | Долгоживущие команды в GNU screen, `LogPipeline`, `ScreenSession`, многоуровневый cleanup |
-| PTY Shell & Expect | ✅ `ShellSession` + `expect()` | Stateful сессии (`open_shell`, `execute`, `SyncShellSession`) для SSH, Local, Telnet, Serial + декларативный `expect()` (`ExpectStateMachine`) |
-| Инспекция и сравнение | ✅ `gather_facts()` + `diff_facts()` | `FactCollector` → `HostFacts` + детектор конфигурационного дрейфа `diff_facts()` (`FactsDiffReport`, `uniconn facts --diff`) |
-| Идемпотентность (`v0.12.0`) | ✅ `ensure_*` (`EnsureResult` + `diff`) | `ensure_package` (`apt`/`apk`/`dnf`/`yum`/`pacman`/`zypper`), `ensure_service` (`systemd`/`openrc`/`sysv`), `ensure_line`, `ensure_file` (`content`, `link`, `mode`, `owner`, `group`, `validate`), `ensure_directory` (`recurse`), расчёт unified diff при `dry_run=True` |
-| Запись/реплей кассет (`v0.12.0`) | ✅ `Cassette` + `pytest_plugin` | `conn.use_cassette()`, `pool.use_cassette()`, `Cassette.diff()` (`CassetteDiffReport`), `uniconn.pytest_plugin`, CLI `record`, `replay`, `cassette info/sanitize/verify/diff` |
-| Синхронизация и шаблоны | ✅ `sync_dir` & `write_template` | Дельта-синхронизация директорий (`SyncResult`, `delete`, `exclude`) и рендеринг шаблонов (`jinja2` / `string.Template`) |
-| Выполнение скриптов | ✅ `run_script()` / `exec-script` | Автозагрузка локального скрипта в `temp_dir`, `chmod 0o700`, запуск с аргументами/интерпретатором и гарантированная очистка |
-| SSH-туннелирование | ✅ `TunnelService` | Контекстные менеджеры `forward_local_port` (`-L`) и `forward_remote_port` (`-R`) в async и sync режимах |
-| API (Async + Sync) | ✅ Полный паритет | `Connection` ↔ `SyncConnection`, `ConnectionPool` ↔ `SyncConnectionPool`, `ShellSession` ↔ `SyncShellSession` на базе `EventLoopPortal` |
-| Фабрики, инвентарь и секреты | ✅ `InventoryLoader` + `SecretResolver` | `from_uri`, `from_config`, `from_dict`, `from_file` (YAML/TOML/JSON), `from_inventory`, разрешение `env://` и `file://` с `?default=` |
-| Клонирование | ✅ 2 метода | `copy()`, `with_overrides()` |
-| Пул подключений | ✅ `ConnectionPool` | `async with pool:`, `to_sync()`, `from_file`, `use_cassette`, `map`, `map_safe`, `map_with_callback`, `ping`, `run_script`, `stream` (`PoolStreamMultiplexer`), `upload`, `download`, `sync_dir`, `write_template`, `gather_facts`, `diff_facts`, `ensure_line`, `ensure_file`, `ensure_directory`, `apply` |
-| Health check & Latency | ✅ `is_alive()` + `ping()` | `is_alive() -> bool` и `ping() -> PingResult` (замер `latency_ms`) для всех транспортов и пулов + `uniconn ping` |
-| Retry & Hooks | ✅ `tenacity` + `uniconn.hooks` | Exponential backoff + jitter, `before_run`/`after_run`/`on_error`, `audit_log_hook`, `structured_log_hook`, `allowlist_hook`, `blocklist_hook`, `metrics_collector_hook`, `otel_tracing_hook`, `dry_run` |
-| Логирование | ✅ `structlog` + `stdlib` | JSONL/Console (`configure_logging`), `contextvars` (`log_context`), метрики для Grafana/ClickHouse/InfluxDB, `SecretMaskingFilter` |
-| Security | ✅ `SecretStr` + `SecretResolver` | `env://`, `file://`, `passphrase`, `sudo` через `stdin`, `sensitive=True`, `shlex.join`/`quote`, `allowlist_hook`/`blocklist_hook` |
-| CLI | ✅ `cyclopts` + `rich` | Модульный CLI (`src/uniconn/cli/`): `run`, `run-multi`, `stream-multi`, `exec-script`, `ping`, `expect`, `upload`, `download`, `sync-dir`, `template`, `facts` (`--diff`), `ensure-package`, `ensure-service`, `ensure-line`, `tunnel`, `bmc`, `shell`, `transports`, `screen-*`, `record`, `replay`, `cassette *`, `version` |
-| Веб-панель (Dashboard) | ✅ `examples/dashboard/` | Интерактивный веб-интерфейс и HTTP API (`python3 main.py --serve` на порту `3000`) с 5 рабочими вкладками и песочницами |
-| Тесты | ✅ 550+ unit | 38 тестовых модулей в `tests/unit/`, 0 failed, 0 warnings (`error::RuntimeWarning`) |
-| Linting & Types | ✅ `ruff` + `pyright` | Лимит строки 120 символов (0 ошибок `ruff`), `pyright` в режиме `standard` (0 ошибок) + `py.typed` (PEP 561) |
-| AI Agent Docs | ✅ Настроено | `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.claude/skills/`, `.cursor/rules/`, `llms.txt`, `FEATURES.md` |
-| CI/CD | ❌ | GitHub Actions не настроены (осознанно исключено) |
+| Транспорты | ✅ 16+ | SSH (`~/.ssh/config`, `SSHJumpChainManager`, `ProxyCommand`), WinRM/WSMan (`winrm://`, `pywinrm`), NETCONF (`netconf://`), RESTCONF (`restconf://`), gNMI (`gnmi://`), QEMU Guest Agent (`qga://`), Proxmox VE (`pve://`), Docker (`docker://`), Podman (`podman://`), Kubernetes (`kubectl://`), Telnet, Serial/UART (X/Y/ZMODEM), Local, IPMI (`ipmi://`), Redfish BMC (`redfish://` на `niquests`), Replay (`replay://`) |
+| Протоколы ISP | ✅ `transports.base` | `CommandTransport`, `FileCapableTransport`, `ShellCapableTransport`, `TunnelCapableTransport`, `StructuredNetworkTransport`, `require_capability()` |
+| Конвейер команд | ✅ `CommandPipeline` | Цепочка `CommandMiddleware`: `Context`, `HITLApproval`, `PolicyGuardrail`, `Sudo`, `Hook`, `DryRun`, `Observability`, `AutoDiagnostic`, `CircuitBreaker`, `RateLimit`, `Retry` (`conn.pipeline`) |
+| Отказоустойчивость и раскатка | ✅ `CircuitBreaker` + `RateLimiter` + Waves | Состояния `CLOSED` → `OPEN` → `HALF_OPEN` (`CircuitOpenError`), Token Bucket `RateLimiter`, волновая раскатка `batch_size` / `max_fail_ratio` (`BatchAbortedError`) |
+| Доменные сервисы | ✅ `conn.files` / `path` / `state` / `tunnels` / `net` | `FileOperationsService`, `RemotePath` (`pathlib.Path` API), `DirectorySynchronizer`, `StateManagementService`, `NetworkOperationsService`, `FactCollector`, `TunnelService`, `TemplateEngine` |
+| Zero-Fork Python RPC (`v0.18.0`) | ✅ `RemotePythonWorker` | `conn.run_python()` / `pool.run_python()` — постоянный Python-воркер по `stdin`/`stdout` с временем вызова `< 2 мс` |
+| DAG-оркестрация задач (`v0.18.0`) | ✅ `uniconn.orchestration` | Декларативные графы `@task(depends_on=..., post=..., when=...)`, `Flow` / `SyncFlow`, режимы `barrier` и `independent`, экспорт `Flow` как MCP Tool |
+| Семантический парсинг (`v0.17.0`) | ✅ `uniconn.parsing` | `conn.run(..., parse="auto" | "df" | "jc:..." | "textfsm:..." | "ttp:...")`, `Result.parse()`, `Result.parsed`, валидация через Pydantic-модели |
+| Policy-as-Code & AST (`v0.19.0`) | ✅ `uniconn.security` | Глубокий AST-анализ команд (`CommandASTParser`, детектор обфускации `base64`/`eval`) и оценка политик (`EmbeddedPolicyEngine`, `OPAPolicyEngine`) |
+| MCP Server & HITL (`v0.16.0`–`v0.19.0`) | ✅ `uniconn.mcp` | JSON-RPC 2.0 `stdio` сервер (`uniconn mcp`), классификатор риска (`ActionRiskClassifier`), криптографически подписанные HITL-аппрувы (`uniconn approval *`) |
+| Фоновые сессии и диагностика | ✅ `BackgroundPool` + `DiagnosticSession` | Бэкенды `TmuxBackend`, `ScreenBackend`, `NohupBackend`, `WindowsJobBackend`, реактивный `LogPipeline` с `LogWatchRule` и `AutoDiagnosticMiddleware` |
+| PTY Shell & Expect | ✅ `ShellSession` + `expect()` | Stateful сессии (`open_shell`, `execute`, `SyncShellSession`) и декларативный `expect()` на уровне `Connection`, `ShellSession` и `ConnectionPool` |
+| Инспекция и сравнение | ✅ `gather_facts()` + `diff_facts()` | `FactCollector` → `HostFacts` (Linux + Windows PowerShell) + детектор конфигурационного дрейфа `diff_facts()` (`FactsDiffReport`) |
+| Идемпотентность (`v0.12.0`–`v0.18.0`) | ✅ `ensure_*` (`EnsureResult` + `notify`) | Пакеты (`apt`/`apk`/`dnf`/`yum`/`pacman`/`zypper`/`winget`/`choco`/`scoop`), сервисы (`systemd`/`openrc`/`sysv`/Windows Services), `ensure_file`, `ensure_directory`, `ensure_line`, `ensure_user`, `ensure_authorized_key`, `ensure_systemd_unit`, `ensure_sysctl`, `ensure_registry_key`, `ensure_windows_feature`, `ensure_yang`, дедупликация `batch_notifications()` |
+| Запись/реплей кассет и Mock-серверы | ✅ `Cassette` + `uniconn.mock` | `conn.use_cassette()`, `pool.use_cassette()`, `Cassette.diff()`, `uniconn.pytest_plugin`, сокетные серверы `MockSSHServer`, `MockNetconfServer`, `MockRestconfServer`, `MockGnmiServer`, `MockQgaServer`, `MockPveServer` |
+| API (Async + Sync) и Lazy Loading | ✅ Полный паритет + PEP 562 | `Connection` ↔ `SyncConnection`, `ConnectionPool` ↔ `SyncConnectionPool`, `Flow` ↔ `SyncFlow` на базе `EventLoopPortal` и ленивая загрузка `__getattr__` в `uniconn/__init__.py` |
+| Пул подключений (`v0.20.0`) | ✅ `ConnectionPool` | `from_file(..., dry_run, auto_diagnostics)`, `select()`, `use_cassette`, `map`, `map_safe`, `ping`, `wait_for_*`, `run_script`, `run_python`, `expect`, `run_flow`, `stream`, `.files`, `.state`, `.net`, `apply` |
+| Тесты и качество кода | ✅ 915+ unit-тестов | `tests/unit/`, 0 failed, 0 warnings (`error::RuntimeWarning`), `ruff` (120 символов, 0 ошибок), `pyright` (`standard`, 0 ошибок), CI матрица в `.github/workflows/ci.yml` |
 
 ---
 
 ## P0 — Базовое ядро и транспорты
 
 ### 1. Абстракция подключения и фабрики
-- ✅ Единый фасад `Connection` (`src/uniconn/_connection.py`), объединяющий конвейер `CommandPipeline` и доменные сервисы (`conn.files`, `conn.state`, `conn.tunnels`)
-- ✅ Фабрики: `from_uri()`, `from_config()`, `from_dict()`, `from_file()`, `from_inventory()`
+- ✅ Единый фасад `Connection` (`src/uniconn/core/connection.py`), объединяющий конвейер `CommandPipeline` и доменные сервисы (`conn.files`, `conn.state`, `conn.tunnels`, `conn.net`)
+- ✅ Фабрики: `from_uri()`, `from_config()`, `from_dict()`, `from_file()`, `from_inventory()`, `local()`
 - ✅ URI-схемы: `ssh://`, `telnet://`, `serial://`, `local://`, `ipmi://`
 - ✅ Загрузчик инвентаря `InventoryLoader` (`src/uniconn/config/inventory.py`): парсинг dict / JSON / YAML / TOML с поддержкой секций `hosts`, `groups` и `defaults` (с сохранением URI query-опций)
 
@@ -103,14 +93,14 @@
 - ✅ `is_alive()` / `ping()` для всех транспортов
 
 ### 10. Пул подключений (`ConnectionPool` и `SyncConnectionPool`)
-- ✅ `ConnectionPool` (`src/uniconn/_pool.py`) на базе `asyncio.TaskGroup` с единым движком распределения задач (`_fan_out_list`, `_fan_out_dict`) и ограничением параллелизма `max_concurrent` (`asyncio.Semaphore`)
+- ✅ `ConnectionPool` (`src/uniconn/pool/connection_pool.py`) на базе `asyncio.TaskGroup` с единым движком распределения задач (`_fan_out_list`, `_fan_out_dict`) и ограничением параллелизма `max_concurrent` (`asyncio.Semaphore`)
 - ✅ Контекстный менеджер `async with pool:` для удержания открытых соединений между групповыми операциями
 - ✅ Синхронная обёртка `SyncConnectionPool` (`with pool.to_sync() as sync_pool:`)
-- ✅ Загрузка из инвентаря `ConnectionPool.from_file()` с фильтрацией по `group` и `host`
-- ✅ Групповые операции: `map()`, `map_safe()`, `map_with_callback()`, `stream()` (`PoolStreamMultiplexer`), `upload()`, `download()`, `sync_dir()`, `write_template()`, `gather_facts()`, `ensure_line()`, `apply()`
+- ✅ Загрузка из инвентаря `ConnectionPool.from_file()` с фильтрацией по `group` и `host`, а также пробросом `dry_run` и `auto_diagnostics`
+- ✅ Групповые операции: `map()`, `map_safe()`, `map_with_callback()`, `expect()`, `stream()` (`PoolStreamMultiplexer`), `upload()`, `download()`, `sync_dir()`, `write_template()`, `gather_facts()`, `ensure_line()`, `apply()`
 
 ### 10a. SSH Session Pool (мультиплексинг каналов к одному хосту)
-- ✅ `SSHSessionPool` (`src/uniconn/_session_pool.py`) — пул SSH-сессий к одному хосту
+- ✅ `SSHSessionPool` (`src/uniconn/pool/session_pool.py`) — пул SSH-сессий к одному хосту
 - ✅ Настройка `max_sessions_per_conn` и `max_connections` с авто-созданием соединений при пиковой нагрузке
 - ✅ Адаптивный режим по умолчанию (`adaptive=True`): автоматическое снижение `max_sessions_per_conn` (при отказе открытия каналов `MaxSessions`) и `max_connections` (при отказе новых подключений `MaxStartups`) с фиксацией найденного потолка и прозрачным повтором команд
 - ✅ Динамическое изменение лимитов `await pool.resize(max_sessions_per_conn=..., max_connections=...)` с мягким дренажем (`graceful drain`) избыточных соединений и телеметрией `pool.stats()`
@@ -236,11 +226,9 @@
 | `arun()` с префиксом `a` | Выбрана async-first архитектура: базовый `run()` уже асинхронный, синхронный доступ — через `.to_sync()` |
 | `paramiko` | Используется нативный асинхронный `asyncssh` |
 | `typing_extensions` | Не требуется на Python 3.11+ (`Self` и современные типы доступны в стандартном `typing`) |
-| CI/CD (GitHub Actions, PyPI) | Не входит в контур репозитория |
-| Прямая зависимость от `prometheus_client` | Решается без утяжеления ядра через встроенный `MetricsCollector` и `structured_log_hook` в `uniconn.hooks` |
 | Интерактивный GUI OS Keyring | Серверные и контейнерные окружения автоматизации не используют десктопный Keyring |
 | OpenSSH `ControlMaster` | Заменён кроссплатформенным нативным мультиплексором `SSHSessionPool` |
-| Парсеры вывода в `Result` (`Result.parse()`, `Result.table()`) | Осознанно исключены в `v0.9.0`: системные данные собираются через типизированный `FactCollector` (`gather_facts()`), а JSON-вывод разбирается через `Result.json()` |
+| Приватные модули-заглушки `_*.py` и `is_dry_run` | Полностью удалены в `v0.20.0` в пользу канонических подпакетов и свойства `.dry_run` |
 
 ---
 

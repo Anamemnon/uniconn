@@ -72,10 +72,10 @@ parsing = [
 ]
 otel = ["opentelemetry-api>=1.25"]
 all = [
-    "uniconn[bmc,serial,telnet,winrm,cli,templates]",
+    "uniconn[bmc,pve,restconf,netconf,gnmi,serial,telnet,winrm,cli,templates,parsing,otel]",
 ]
 dev = [
-    "uniconn[all,otel]",
+    "uniconn[all]",
     "poethepoet>=0.30",
     "pytest>=8.0",
     "pytest-asyncio>=1.0",
@@ -196,6 +196,10 @@ test-services = "pytest tests/unit/services -m 'not integration' -q"
 test-transports = "pytest tests/unit/transports -m 'not integration' -q"
 test-pools = "pytest tests/unit/pools -m 'not integration' -q"
 test-background = "pytest tests/unit/background -m 'not integration' -q"
+test-mcp = "pytest tests/unit/mcp -m 'not integration' -q"
+test-mock = "pytest tests/unit/mock -m 'not integration' -q"
+test-orchestration = "pytest tests/unit/orchestration -m 'not integration' -q"
+test-parsing = "pytest tests/unit/parsing -m 'not integration' -q"
 test-cli = "pytest tests/unit/cli -m 'not integration' -q"
 test-arch = "pytest tests/unit/architecture -m 'not integration' -q"
 check = ["lint", "typecheck", "test-arch"]

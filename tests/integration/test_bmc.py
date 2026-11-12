@@ -8,7 +8,7 @@ import pytest
 @pytest.mark.integration
 async def test_ipmi_power_status(mocker):
     """Тест IPMI транспорта"""
-    from uniconn._config import ConnectionConfig
+    from uniconn.config.models import ConnectionConfig
     from uniconn.transports.bmc._ipmi import IPMITransport
 
     config = ConnectionConfig(

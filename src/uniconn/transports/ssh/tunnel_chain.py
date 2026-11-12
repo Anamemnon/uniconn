@@ -8,7 +8,7 @@ import contextlib
 import inspect
 from typing import Any
 
-from ..._config import ConnectionConfig
+from ...config.models import ConnectionConfig
 
 
 class SSHJumpChainManager:

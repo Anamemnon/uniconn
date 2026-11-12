@@ -24,7 +24,7 @@ python3 main.py --serve
 ```
 
 ## Инварианты проекта
-1. **Async + Sync паритет**: Любой новый публичный метод или контекстный менеджер в `Connection` (`src/uniconn/_connection.py`) должен иметь синхронный аналог в `SyncConnection` (`src/uniconn/_sync.py`).
+1. **Async + Sync паритет**: Любой новый публичный метод или контекстный менеджер в `Connection` (`src/uniconn/core/connection.py`) должен иметь синхронный аналог в `SyncConnection` (`src/uniconn/sync/connection.py`).
 2. **Тестирование и покрытие**: Каждое изменение или новая функция обязаны сопровождаться новыми unit-тестами в `tests/unit/` и прогоном `uv run pytest -m "not integration"` (0 ошибок, 0 `RuntimeWarning`).
 3. **Безопасность**: Пароли и парольные фразы хранятся в `pydantic.SecretStr`. При `sensitive=True` вывод маскируется в `Result.__repr__`, `Result.to_dict()`, `ExecutionError` и структурированных логах `structlog`.
 4. **Точка входа**: `main.py` запускает либо CLI-демонстрацию, либо (с флагом `--serve`) веб-панель из `examples/dashboard/server.py` на порту `3000`.

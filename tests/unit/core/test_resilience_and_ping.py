@@ -287,7 +287,7 @@ class TestPipelineAndPoolResilience:
         mock_conn.run = AsyncMock(side_effect=ConnectionError("SSH channel error"))
         mock_conn.close = AsyncMock()
 
-        with patch("uniconn._session_pool.Connection.from_uri", return_value=mock_conn):
+        with patch("uniconn.pool.session_pool.Connection.from_uri", return_value=mock_conn):
             pool = SSHSessionPool(
                 "ssh://admin@bastion",
                 rate_limit=100.0,

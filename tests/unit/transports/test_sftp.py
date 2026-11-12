@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from uniconn._config import ConnectionConfig
-from uniconn._connection import Connection
+from uniconn.config.models import ConnectionConfig
+from uniconn.core.connection import Connection
 from uniconn.exceptions import ConnectionError
 from uniconn.result import Result
 
@@ -378,7 +378,7 @@ class TestBaseTransportFileOps:
     @pytest.mark.asyncio
     async def test_base_upload_not_implemented(self):
         """Базовый транспорт не поддерживает upload."""
-        from uniconn.transports._base import BaseTransport
+        from uniconn.transports.base import BaseTransport
 
         class MockTransport(BaseTransport):
             @property
@@ -410,7 +410,7 @@ class TestBaseTransportFileOps:
     @pytest.mark.asyncio
     async def test_base_chmod_not_implemented(self):
         """Базовый транспорт не поддерживает chmod."""
-        from uniconn.transports._base import BaseTransport
+        from uniconn.transports.base import BaseTransport
 
         class MockTransport(BaseTransport):
             @property

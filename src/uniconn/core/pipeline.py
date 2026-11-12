@@ -748,7 +748,7 @@ class RetryMiddleware:
 
     async def __call__(self, request: CommandRequest, call_next: NextHandler) -> Result:
         """Выполнить запрос с экспоненциальными повторными попытками при сбоях сети."""
-        conn_mod = sys.modules.get("uniconn._connection")
+        conn_mod = sys.modules.get("uniconn.core.connection")
         wait_fn = getattr(conn_mod, "wait_exponential_jitter", wait_exponential_jitter)
 
         log_cmd = "***SENSITIVE***" if request.sensitive else repr(request.command)

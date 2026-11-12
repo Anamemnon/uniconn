@@ -346,7 +346,7 @@ class TestSSHSessionPoolHealthCheck:
             )
         )
 
-        with patch("uniconn._session_pool.Connection.from_uri", return_value=conn):
+        with patch("uniconn.pool.session_pool.Connection.from_uri", return_value=conn):
             pool = SSHSessionPool("ssh://user@host", health_check=True)
             res = await pool.run("uptime")
 

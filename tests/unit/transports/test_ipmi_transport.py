@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
-from uniconn._config import ConnectionConfig
+from uniconn.config.models import ConnectionConfig
 from uniconn.exceptions import BMCCapabilityError
 
 

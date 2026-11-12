@@ -1,15 +1,13 @@
 # tests/unit/architecture/test_public_api_surface.py
-"""Архитектурные тесты чистоты публичной витрины API и модульного дерева (v0.11.0)."""
+"""Архитектурные тесты чистоты публичной витрины API и модульного дерева (v0.20.0)."""
 
 from __future__ import annotations
 
+import importlib
+
+import pytest
+
 import uniconn
-from uniconn._config import ConnectionConfig as ReexportedConfig
-from uniconn._connection import Connection as ReexportedConn
-from uniconn._facts import HostFacts as ReexportedFacts
-from uniconn._pool import ConnectionPool as ReexportedPool
-from uniconn._session_pool import SSHSessionPool as ReexportedSessionPool
-from uniconn._sync import SyncConnection as ReexportedSyncConn
 from uniconn.config.models import ConnectionConfig as CanonicalConfig
 from uniconn.core.connection import Connection as CanonicalConn
 from uniconn.pool.connection_pool import ConnectionPool as CanonicalPool
@@ -19,26 +17,45 @@ from uniconn.sync.connection import SyncConnection as CanonicalSyncConn
 
 
 def test_no_stdlib_quote_leak_in_public_api() -> None:
-    """Убедиться, что shlex.quote не входит в публичную витрину __all__ и __dict__ пакета."""
+    """Убедиться, что shlex.quote не входит в публичную витрину __all__, __dict__ и __getattr__ пакета."""
     assert "quote" not in uniconn.__all__
     assert "quote" not in uniconn.__dict__
+    with pytest.raises(AttributeError, match="has no attribute 'quote'"):
+        _ = uniconn.quote
 
 
 def test_all_exports_exist_and_are_sorted() -> None:
-    """Все имена из __all__ должны существовать в модуле uniconn и быть отсортированы."""
+    """Все имена из __all__ должны существовать в модуле uniconn (включая PEP 562 __getattr__) и быть отсортированы."""
+    dir_entries = dir(uniconn)
     for symbol in uniconn.__all__:
+        assert symbol in dir_entries, f"Missing symbol in dir(uniconn): {symbol}"
         assert hasattr(uniconn, symbol), f"Missing symbol in uniconn: {symbol}"
     assert list(uniconn.__all__) == sorted(uniconn.__all__)
 
 
-def test_canonical_modules_match_backward_compat_reexports() -> None:
-    """Классы в _*.py реэкспортах идентичны классам в канонических подпакетах."""
-    assert ReexportedConn is CanonicalConn
-    assert ReexportedConfig is CanonicalConfig
-    assert ReexportedFacts is CanonicalFacts
-    assert ReexportedPool is CanonicalPool
-    assert ReexportedSessionPool is CanonicalSessionPool
-    assert ReexportedSyncConn is CanonicalSyncConn
+def test_deprecated_private_shims_are_removed_and_canonical_modules_match() -> None:
+    """Устаревшие модули-заглушки _*.py удалены, а публичные экспорты указывают на канонические подпакеты."""
+    assert uniconn.Connection is CanonicalConn
+    assert uniconn.ConnectionConfig is CanonicalConfig
+    assert uniconn.HostFacts is CanonicalFacts
+    assert uniconn.ConnectionPool is CanonicalPool
+    assert uniconn.SSHSessionPool is CanonicalSessionPool
+    assert uniconn.SyncConnection is CanonicalSyncConn
+
+    removed_shims = (
+        "uniconn._config",
+        "uniconn._connection",
+        "uniconn._facts",
+        "uniconn._pool",
+        "uniconn._session_pool",
+        "uniconn._shell",
+        "uniconn._sync",
+        "uniconn._uri",
+        "uniconn.transports._base",
+    )
+    for mod_name in removed_shims:
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(mod_name)
 
 
 def test_public_version_matches_pyproject() -> None:
@@ -153,4 +170,47 @@ async def test_shell_and_screen_examples_win32_branches(monkeypatch) -> None:
         spec.loader.exec_module(module)
         monkeypatch.setattr(module, "sys", types.SimpleNamespace(platform="win32"))
         await module.main()
+
+
+def test_pep562_lazy_submodules_and_dir_resolution() -> None:
+    """PEP 562 __getattr__ и __dir__ разрешают доступ к доменным подпакетам uniconn.<submodule>."""
+    dir_names = set(dir(uniconn))
+    for submod in ("mcp", "mock", "orchestration", "parsing", "security", "background", "cli"):
+        assert submod in dir_names
+        uniconn.__dict__.pop(submod, None)
+        resolved = getattr(uniconn, submod)
+        assert resolved is importlib.import_module(f"uniconn.{submod}")
+        assert uniconn.__dict__[submod] is resolved
+
+
+@pytest.mark.asyncio
+async def test_from_dict_hooks_and_clone_isolates_options_and_hitl() -> None:
+    """from_dict принимает хуки before_run/after_run, а copy() изолирует options и перепривязывает HITL."""
+    from uniconn.core.pipeline import HITLApprovalMiddleware
+    from uniconn.mcp.models import HITLPolicy
+
+    events: list[str] = []
+    conn = uniconn.Connection.from_dict(
+        {"transport": "local", "host": "localhost", "options": {"env": "stage"}},
+        before_run=[lambda cmd, host, kw: events.append(f"before:{cmd}")],
+        after_run=[lambda res: events.append(f"after:{res.command}:{res._dry_run}")],
+    )
+    hitl = HITLApprovalMiddleware(conn, policy=HITLPolicy(enabled=False), is_production=True).attach(conn)
+    assert hitl._conn is conn
+
+    res = await conn.run("echo hook-test", dry_run=True)
+    assert res.ok
+    assert events == ["before:echo hook-test", "after:echo hook-test:True"]
+
+    cloned = conn.copy(host="cloned-host")
+    cloned.config.options["env"] = "prod"
+    assert conn.config.options["env"] == "stage"
+
+    cloned_hitl = [m for m in cloned.pipeline.middlewares if isinstance(m, HITLApprovalMiddleware)]
+    assert len(cloned_hitl) == 1
+    assert cloned_hitl[0] is not hitl
+    assert cloned_hitl[0]._conn is cloned
+    await conn.close()
+    await cloned.close()
+
 

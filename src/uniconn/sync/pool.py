@@ -62,6 +62,16 @@ class SyncConnectionPool(SyncProxyMixin):
         return self._async_pool.targets
 
     @property
+    def dry_run(self) -> bool:
+        """Включён ли режим ``dry_run`` для синхронного пула подключений."""
+        return self._async_pool.dry_run
+
+    @property
+    def auto_diagnostics(self) -> bool | None:
+        """Настройка автоматического сбора диагностики при сбоях команд в пуле."""
+        return self._async_pool.auto_diagnostics
+
+    @property
     def batch_size(self) -> int | None:
         """Размер батча волновой раскатки пула (если настроен)."""
         return self._async_pool.batch_size
@@ -102,12 +112,14 @@ class SyncConnectionPool(SyncProxyMixin):
         max_concurrent: int = 10,
         retry_attempts: int = 3,
         logger: logging.Logger | None = None,
+        dry_run: bool = False,
         rate_limit: float | RateLimiter | None = None,
         circuit_breaker: bool = False,
         failure_threshold: int = 5,
         recovery_timeout: float = 30.0,
         batch_size: int | None = None,
         max_fail_ratio: float = 0.0,
+        auto_diagnostics: bool | None = None,
     ) -> Self:
         """Создать синхронный пул подключений из JSON или YAML инвентарного файла."""
         pool = ConnectionPool.from_file(
@@ -117,12 +129,14 @@ class SyncConnectionPool(SyncProxyMixin):
             max_concurrent=max_concurrent,
             retry_attempts=retry_attempts,
             logger=logger,
+            dry_run=dry_run,
             rate_limit=rate_limit,
             circuit_breaker=circuit_breaker,
             failure_threshold=failure_threshold,
             recovery_timeout=recovery_timeout,
             batch_size=batch_size,
             max_fail_ratio=max_fail_ratio,
+            auto_diagnostics=auto_diagnostics,
         )
         return cls(pool)
 
@@ -222,6 +236,7 @@ class SyncConnectionPool(SyncProxyMixin):
     wait_for_path = sync_method(ConnectionPool.wait_for_path)
     run_script = sync_method(ConnectionPool.run_script)
     run_python = sync_method(ConnectionPool.run_python)
+    expect = sync_method(ConnectionPool.expect)
     run_flow = sync_method(ConnectionPool.run_flow)
     use_cassette = sync_context(ConnectionPool.use_cassette, reopen_portal=True)
     stream = sync_iter(ConnectionPool.stream)

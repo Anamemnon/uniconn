@@ -8,11 +8,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from uniconn._config import ConnectionConfig
-from uniconn._connection import Connection
-from uniconn._sync import SyncConnection
+from uniconn.config.models import ConnectionConfig
 from uniconn.core.bridge import EventLoopPortal
+from uniconn.core.connection import Connection
 from uniconn.result import Result
+from uniconn.sync.connection import SyncConnection
 
 
 def _make_transport(stream_lines: list[str] | None = None, stream_delay: float = 0.0):

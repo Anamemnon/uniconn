@@ -8,7 +8,7 @@ import fnmatch
 from pathlib import Path
 from typing import Any
 
-from ..._config import ConnectionConfig
+from ...config.models import ConnectionConfig
 from ...exceptions import ConnectionError
 
 

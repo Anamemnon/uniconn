@@ -3,7 +3,7 @@
 
 import pytest
 
-from uniconn._uri import URIParser
+from uniconn.config.uri import URIParser
 
 
 class TestNetworkURIParsing:

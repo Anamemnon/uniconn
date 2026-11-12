@@ -1420,7 +1420,7 @@
 
     function applyStatusData(data) {
       if (!data) return;
-      document.getElementById('meta-version').textContent = 'uniconn v' + (data.version || '0.19.0');
+      document.getElementById('meta-version').textContent = 'uniconn v' + (data.version || '0.20.0');
       document.getElementById('meta-python').textContent = data.python_version || 'Python 3.12';
       document.getElementById('meta-uname').textContent = data.local_uname || 'Linux x86_64';
       const transports = Array.isArray(data.transports) ? data.transports : [];
@@ -1455,7 +1455,7 @@
         applyStatusData(data);
       } catch (_) {
         applyStatusData({
-          version: '0.19.0',
+          version: '0.20.0',
           python_version: 'Python 3.12',
           local_uname: 'Linux x86_64',
           transports: [

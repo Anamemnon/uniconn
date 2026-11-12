@@ -63,7 +63,9 @@ def test_optional_dependencies_contain_required_extras() -> None:
     assert any("textfsm" in dep for dep in extras["parsing"])
 
     assert "all" in extras
-    assert extras["all"] == ["uniconn[bmc,serial,telnet,winrm,cli,templates]"]
+    assert extras["all"] == [
+        "uniconn[bmc,pve,restconf,netconf,gnmi,serial,telnet,winrm,cli,templates,parsing,otel]"
+    ]
 
 
 def test_telnet_transport_missing_dependency_hint() -> None:

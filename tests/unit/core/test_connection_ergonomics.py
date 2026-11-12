@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from shlex import quote
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from uniconn import Connection, ConnectionConfig, ShellSession, quote
+from uniconn import Connection, ConnectionConfig, ShellSession
+from uniconn.core.pipeline import format_command
 from uniconn.exceptions import ConnectionError
 from uniconn.transports._local import LocalTransport
 from uniconn.transports._ssh import SSHTransport
@@ -26,10 +28,11 @@ from uniconn.transports._ssh import SSHTransport
 # ─── 1. List-based команды и shlex.quote ───────────────────────────────
 
 
-def test_exported_quote():
-    """Функция quote экспортируется из корня пакета uniconn."""
+def test_format_command_and_quote():
+    """Функция format_command безопасно экранирует аргументы через shlex.join / shlex.quote."""
     escaped = quote("hello world; rm -rf /")
     assert escaped == "'hello world; rm -rf /'"
+    assert format_command(["echo", "hello world; rm -rf /"]) == "echo 'hello world; rm -rf /'"
 
 
 @pytest.mark.asyncio

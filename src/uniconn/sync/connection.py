@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import logging
 import os
-import warnings
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self
@@ -133,16 +132,6 @@ class SyncConnection(SyncProxyMixin):
     @auto_diagnostics.setter
     def auto_diagnostics(self, value: bool) -> None:
         self._async_conn.auto_diagnostics = value
-
-    @property
-    def is_dry_run(self) -> bool:
-        """Устаревший псевдоним для ``sync_conn.dry_run``."""
-        warnings.warn(
-            "SyncConnection.is_dry_run is deprecated, use SyncConnection.dry_run instead",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self._async_conn.dry_run
 
     @property
     def transport_name(self) -> str:

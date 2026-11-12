@@ -64,7 +64,7 @@ async def test_connection_retry_on_failure(mock_transport, mocker):
     # чтобы тест не ждал реальные секунды backoff'а
     from tenacity import wait_none
     mocker.patch(
-        'uniconn._connection.wait_exponential_jitter',
+        'uniconn.core.connection.wait_exponential_jitter',
         return_value=wait_none()
     )
 
@@ -76,7 +76,7 @@ async def test_connection_retry_on_failure(mock_transport, mocker):
 
 def test_sync_connection_wrapper(mocker):
     """Тест синхронной обертки"""
-    from uniconn._sync import SyncConnection
+    from uniconn.sync.connection import SyncConnection
 
     mock_async_conn = mocker.AsyncMock()
     mock_async_conn.run = mocker.AsyncMock(
@@ -178,7 +178,7 @@ async def test_run_commands_empty_list(mock_transport, mocker):
 
 def test_sync_run_commands(mocker):
     """Тест синхронной обертки run_commands."""
-    from uniconn._sync import SyncConnection
+    from uniconn.sync.connection import SyncConnection
 
     mock_async_conn = mocker.AsyncMock()
     mock_async_conn.run_commands = mocker.AsyncMock(

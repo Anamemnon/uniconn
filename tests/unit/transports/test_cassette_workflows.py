@@ -21,7 +21,7 @@ from uniconn import (
     RecordedFsInteraction,
     otel_tracing_hook,
 )
-from uniconn._facts import FACT_COLLECTION_SCRIPT
+from uniconn.services.facts_models import FACT_COLLECTION_SCRIPT
 
 
 class TestReleaseV0100Integration:

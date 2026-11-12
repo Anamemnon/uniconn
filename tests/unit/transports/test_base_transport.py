@@ -3,9 +3,9 @@
 
 import pytest
 
-from uniconn._config import ConnectionConfig
+from uniconn.config.models import ConnectionConfig
 from uniconn.result import Result
-from uniconn.transports._base import BaseTransport
+from uniconn.transports.base import BaseTransport
 
 
 class DummyTransport(BaseTransport):

@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from uniconn._pool import ConnectionPool
 from uniconn.exceptions import ConnectionError
+from uniconn.pool.connection_pool import ConnectionPool
 from uniconn.result import Result
 
 
@@ -53,7 +53,7 @@ def patch_connection(mocker):
     mock_conn = make_mock_connection()
 
     with patch(
-        "uniconn._pool.Connection.from_uri",
+        "uniconn.pool.connection_pool.Connection.from_uri",
         return_value=mock_conn
     ) as mock_from_uri:
         yield mock_from_uri, mock_conn
@@ -65,7 +65,7 @@ def patch_connection_factory():
     def _patch(return_value=None):
         mock_conn = return_value or make_mock_connection()
         return patch(
-            "uniconn._pool.Connection.from_uri",
+            "uniconn.pool.connection_pool.Connection.from_uri",
             return_value=mock_conn
         )
     return _patch
@@ -155,7 +155,7 @@ async def test_pool_map_safe_with_error():
         return make_mock_connection()
 
     with patch(
-        "uniconn._pool.Connection.from_uri",
+        "uniconn.pool.connection_pool.Connection.from_uri",
         side_effect=side_effect
     ):
         pool = ConnectionPool(["ssh://host1", "ssh://host2"])
@@ -235,3 +235,105 @@ async def test_pool_logger(patch_connection):
     # Проверяем что Connection.from_uri вызвался с правильным логером
     call_kwargs = mock_from_uri.call_args[1]
     assert call_kwargs["logger"] is test_logger
+
+
+@pytest.mark.asyncio
+async def test_pool_expect_and_sync_pool_expect() -> None:
+    """Групповой метод pool.expect() и sync_pool.expect() параллельно выполняют интерактивный диалог."""
+    from uniconn.core.connection import Connection
+
+    c1 = Connection.from_uri("local://").with_overrides(host="node-1")
+    c2 = Connection.from_uri("local://").with_overrides(host="node-2")
+
+    async def fake_expect(command, patterns=None, **kwargs):
+        return Result(
+            exit_code=0,
+            stdout=f"expected:{command}",
+            stderr="",
+            duration=0.01,
+            command=str(command),
+            timestamp=datetime.now(),
+        )
+
+    c1.expect = AsyncMock(side_effect=fake_expect)  # type: ignore[method-assign]
+    c2.expect = AsyncMock(side_effect=fake_expect)  # type: ignore[method-assign]
+
+    pool = ConnectionPool([c1, c2])
+    res_map = await pool.expect("passwd", patterns={"New password:": "secret\n"})
+    assert set(res_map.keys()) == {"node-1", "node-2"}
+    assert res_map["node-1"].stdout == "expected:passwd"
+
+    with pool.to_sync() as sync_pool:
+        sync_map = sync_pool.expect("confirm", patterns={"Continue?": "y\n"})
+        assert set(sync_map.keys()) == {"node-1", "node-2"}
+        assert sync_map["node-2"].stdout == "expected:confirm"
+
+
+def test_pool_from_file_propagates_dry_run_and_auto_diagnostics(tmp_path) -> None:
+    """ConnectionPool.from_file и SyncConnectionPool.from_file пробрасывают dry_run и auto_diagnostics."""
+    from uniconn.sync.pool import SyncConnectionPool
+
+    inv_file = tmp_path / "hosts.yaml"
+    inv_file.write_text(
+        "hosts:\n  web1:\n    uri: local://\n  web2:\n    uri: local://\n",
+        encoding="utf-8",
+    )
+
+    pool = ConnectionPool.from_file(
+        inv_file,
+        dry_run=True,
+        auto_diagnostics=True,
+    )
+    assert pool.dry_run is True
+    assert pool.auto_diagnostics is True
+    assert len(pool.targets) == 2
+    for target in pool.targets:
+        assert getattr(target, "dry_run", False) is True
+        assert getattr(target, "auto_diagnostics", False) is True
+
+    sub_pool = pool.select(["web1"])
+    assert sub_pool.dry_run is True
+    assert sub_pool.auto_diagnostics is True
+
+    sync_pool = SyncConnectionPool.from_file(
+        inv_file,
+        dry_run=True,
+        auto_diagnostics=True,
+    )
+    assert sync_pool.dry_run is True
+    assert sync_pool.auto_diagnostics is True
+    assert len(sync_pool.targets) == 2
+    for target in sync_pool.targets:
+        assert getattr(target, "dry_run", False) is True
+        assert getattr(target, "auto_diagnostics", False) is True
+
+
+@pytest.mark.asyncio
+async def test_pool_map_safe_and_callback_propagate_retry_and_dry_run(patch_connection) -> None:
+    """map_safe и map_with_callback передают retry_attempts и logger в Connection.from_uri и применяют dry_run."""
+    import logging
+
+    mock_from_uri, mock_conn = patch_connection
+    custom_logger = logging.getLogger("pool_safe_cb")
+
+    pool = ConnectionPool(
+        ["ssh://host1"],
+        retry_attempts=7,
+        logger=custom_logger,
+        dry_run=True,
+        auto_diagnostics=True,
+    )
+    await pool.map_safe("uptime")
+    assert mock_from_uri.call_args.kwargs["retry_attempts"] == 7
+    assert mock_from_uri.call_args.kwargs["logger"] is custom_logger
+    assert mock_conn._dry_run is True
+    assert mock_conn.auto_diagnostics is True
+
+    mock_from_uri.reset_mock()
+    seen: list[str] = []
+    await pool.map_with_callback("uptime", lambda h, _r: seen.append(h))
+    assert seen == ["ssh://host1"]
+    assert mock_from_uri.call_args.kwargs["retry_attempts"] == 7
+    assert mock_from_uri.call_args.kwargs["logger"] is custom_logger
+
+

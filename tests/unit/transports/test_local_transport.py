@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from uniconn._config import ConnectionConfig
+from uniconn.config.models import ConnectionConfig
 from uniconn.transports._local import LocalTransport
 
 

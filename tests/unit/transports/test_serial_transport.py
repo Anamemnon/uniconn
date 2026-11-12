@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from uniconn._config import ConnectionConfig
+from uniconn.config.models import ConnectionConfig
 from uniconn.exceptions import ConnectionError
 
 
@@ -647,7 +647,7 @@ class TestSerialURIAndConfiguration:
 
     def test_parity_comprehensive(self):
         """Поддержка строковых обозначений четности (even, odd, none)."""
-        from uniconn._config import ConnectionConfig
+        from uniconn.config.models import ConnectionConfig
         from uniconn.transports._serial import SerialTransport
 
         with patch("uniconn.transports._serial.serial_asyncio", MagicMock()):
@@ -667,7 +667,7 @@ class TestSerialURIAndConfiguration:
 
     def test_stopbits_comprehensive(self):
         """Поддержка стоп-битов 1, 1.5, 2 в виде float, int и str."""
-        from uniconn._config import ConnectionConfig
+        from uniconn.config.models import ConnectionConfig
         from uniconn.transports._serial import SerialTransport
 
         with patch("uniconn.transports._serial.serial_asyncio", MagicMock()):
@@ -687,7 +687,7 @@ class TestSerialURIAndConfiguration:
 
     def test_invalid_parity_raises(self):
         """Невалидная четность вызывает ConfigurationError."""
-        from uniconn._config import ConnectionConfig
+        from uniconn.config.models import ConnectionConfig
         from uniconn.exceptions import ConfigurationError
         from uniconn.transports._serial import SerialTransport
 
@@ -737,7 +737,7 @@ class TestSerialPortDiscovery:
             patch("uniconn.transports._serial.serial_asyncio", MagicMock()),
             patch("serial.tools.list_ports.comports", return_value=[mock_port]),
         ):
-            from uniconn._config import ConnectionConfig
+            from uniconn.config.models import ConnectionConfig
             from uniconn.transports._serial import SerialTransport
 
             cfg = ConnectionConfig(transport="serial", options={"vid": "0x10c4", "pid": "0xea60"})
@@ -758,7 +758,7 @@ class TestSerialPortDiscovery:
             patch("uniconn.transports._serial.serial_asyncio", MagicMock()),
             patch("serial.tools.list_ports.comports", return_value=[mock_port]),
         ):
-            from uniconn._config import ConnectionConfig
+            from uniconn.config.models import ConnectionConfig
             from uniconn.transports._serial import SerialTransport
 
             cfg = ConnectionConfig(transport="serial", options={"vid": "10c4", "pid": "ea60"})
@@ -779,7 +779,7 @@ class TestSerialPortDiscovery:
             patch("uniconn.transports._serial.serial_asyncio", MagicMock()),
             patch("serial.tools.list_ports.comports", return_value=[mock_port]),
         ):
-            from uniconn._config import ConnectionConfig
+            from uniconn.config.models import ConnectionConfig
             from uniconn.transports._serial import SerialTransport
 
             cfg = ConnectionConfig(transport="serial", options={"vid_pid": "10c4:ea60"})
@@ -792,7 +792,7 @@ class TestSerialPortDiscovery:
             patch("uniconn.transports._serial.serial_asyncio", MagicMock()),
             patch("serial.tools.list_ports.comports", return_value=[]),
         ):
-            from uniconn._config import ConnectionConfig
+            from uniconn.config.models import ConnectionConfig
             from uniconn.exceptions import ConnectionError
             from uniconn.transports._serial import SerialTransport
 

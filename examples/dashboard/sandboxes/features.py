@@ -287,7 +287,7 @@ def _execute_v090_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
                     return conn
 
                 with patch(
-                    "uniconn._session_pool.Connection.from_uri",
+                    "uniconn.pool.session_pool.Connection.from_uri",
                     side_effect=_make_server_conn,
                 ):
                     async with SSHSessionPool(

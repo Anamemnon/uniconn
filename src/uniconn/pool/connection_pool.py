@@ -63,11 +63,15 @@ class ConnectionPool:
         *,
         batch_size: int | None = None,
         max_fail_ratio: float = 0.0,
+        dry_run: bool = False,
+        auto_diagnostics: bool | None = None,
     ) -> None:
         self._uris = list(uris)
         self._max_concurrent = max_concurrent
         self._retry_attempts = retry_attempts
         self._logger = logger or logging.getLogger(__name__)
+        self._dry_run = dry_run
+        self._auto_diagnostics = auto_diagnostics
         self._semaphore = asyncio.Semaphore(max_concurrent)
         self._active_conns: dict[int, Connection] = {}
         self._cassette_conns: dict[int, Connection] = {}
@@ -88,6 +92,10 @@ class ConnectionPool:
         for target in self._uris:
             key = self._target_key(target)
             if isinstance(target, Connection):
+                if self._dry_run:
+                    target._dry_run = True
+                if self._auto_diagnostics is not None:
+                    target.auto_diagnostics = self._auto_diagnostics
                 if self._rate_limiter is not None and not isinstance(
                     getattr(target, "rate_limiter", None), RateLimiter
                 ):
@@ -112,6 +120,16 @@ class ConnectionPool:
     def targets(self) -> list[PoolTarget]:
         """Список целевых хостов/конфигураций/соединений пула."""
         return list(self._uris)
+
+    @property
+    def dry_run(self) -> bool:
+        """Включён ли режим ``dry_run`` для пула подключений."""
+        return self._dry_run
+
+    @property
+    def auto_diagnostics(self) -> bool | None:
+        """Настройка автоматического сбора диагностики при сбоях команд в пуле."""
+        return self._auto_diagnostics
 
     @property
     def batch_size(self) -> int | None:
@@ -160,12 +178,14 @@ class ConnectionPool:
         max_concurrent: int = 10,
         retry_attempts: int = 3,
         logger: logging.Logger | None = None,
+        dry_run: bool = False,
         rate_limit: float | RateLimiter | None = None,
         circuit_breaker: bool = False,
         failure_threshold: int = 5,
         recovery_timeout: float = 30.0,
         batch_size: int | None = None,
         max_fail_ratio: float = 0.0,
+        auto_diagnostics: bool | None = None,
     ) -> Self:
         """Создать пул подключений из JSON или YAML инвентарного файла."""
         conns = Connection.from_file(
@@ -174,6 +194,8 @@ class ConnectionPool:
             logger=logger,
             host=host,
             group=group,
+            dry_run=dry_run,
+            auto_diagnostics=auto_diagnostics,
         )
         return cls(
             conns,
@@ -186,6 +208,8 @@ class ConnectionPool:
             recovery_timeout=recovery_timeout,
             batch_size=batch_size,
             max_fail_ratio=max_fail_ratio,
+            dry_run=dry_run,
+            auto_diagnostics=auto_diagnostics,
         )
 
     def select(
@@ -250,6 +274,8 @@ class ConnectionPool:
             recovery_timeout=self._recovery_timeout,
             batch_size=self._batch_size,
             max_fail_ratio=self._max_fail_ratio,
+            dry_run=self._dry_run,
+            auto_diagnostics=self._auto_diagnostics,
         )
         sub_pool._semaphore = self._semaphore
         sub_pool._circuit_breakers = self._circuit_breakers
@@ -277,8 +303,12 @@ class ConnectionPool:
         return cls._target_key(target)
 
     def _attach_resilience(self, target: PoolTarget, conn: Connection) -> Connection:
-        """Привязать пуловый ``RateLimiter``, ``CircuitBreaker`` и инициализаторы к соединению."""
+        """Привязать пуловый ``RateLimiter``, ``CircuitBreaker``, ``dry_run`` и инициализаторы к соединению."""
         key = self._target_key(target)
+        if self._dry_run and hasattr(conn, "_dry_run"):
+            conn._dry_run = True
+        if self._auto_diagnostics is not None and hasattr(conn, "auto_diagnostics"):
+            conn.auto_diagnostics = self._auto_diagnostics
         if self._rate_limiter is not None and not isinstance(
             getattr(conn, "rate_limiter", None), RateLimiter
         ):
@@ -632,7 +662,7 @@ class ConnectionPool:
             async with self._semaphore:
                 try:
                     async with self._use_conn(
-                        idx, target, with_defaults=False
+                        idx, target, with_defaults=True
                     ) as conn:
                         result = await conn.run(command, timeout=timeout, **kwargs)
                         callback(key, result)
@@ -667,7 +697,7 @@ class ConnectionPool:
             async with self._semaphore:
                 try:
                     async with self._use_conn(
-                        idx, target, with_defaults=False
+                        idx, target, with_defaults=True
                     ) as conn:
                         results[key] = await conn.run(
                             command, timeout=timeout, **kwargs
@@ -703,6 +733,7 @@ class ConnectionPool:
     wait_for_path = pool_fan_out_dict(Connection.wait_for_path)
     run_script = pool_fan_out_dict(Connection.run_script)
     run_python = pool_fan_out_dict(Connection.run_python)
+    expect = pool_fan_out_dict(Connection.expect)
 
     async def diff_facts(
         self,

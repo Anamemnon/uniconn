@@ -9,7 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 project = "uniconn"
 copyright = "2026, uniconn contributors"
 author = "uniconn contributors"
-release = "0.19.0"
+release = "0.20.0"
 
 extensions = [
     "sphinx.ext.autodoc",

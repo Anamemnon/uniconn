@@ -148,7 +148,7 @@ class TestCLIRunMulti:
             )
         )
 
-        from uniconn._pool import ConnectionPool
+        from uniconn.pool.connection_pool import ConnectionPool
 
         pool = ConnectionPool(["ssh://host1", "ssh://host2"])
         results = await pool.map("uptime")

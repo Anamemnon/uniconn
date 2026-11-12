@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
-from uniconn._connection import Connection
+from uniconn.core.connection import Connection
 from uniconn.result import Result
 
 

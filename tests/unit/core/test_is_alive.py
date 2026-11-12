@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from uniconn._config import ConnectionConfig
-from uniconn._connection import Connection
+from uniconn.config.models import ConnectionConfig
+from uniconn.core.connection import Connection
 from uniconn.result import Result
 
 
@@ -88,7 +88,7 @@ class TestSyncIsAlive:
         mock_async_conn._transport.connect = mocker.AsyncMock()
         mock_async_conn._transport.disconnect = mocker.AsyncMock()
 
-        from uniconn._sync import SyncConnection
+        from uniconn.sync.connection import SyncConnection
         sync_conn = SyncConnection(mock_async_conn)
 
         result = sync_conn.is_alive()
@@ -131,7 +131,7 @@ class TestBasePing:
     @pytest.mark.asyncio
     async def test_base_ping_not_connected(self, mocker):
         """ping возвращает False если не подключён"""
-        from uniconn.transports._base import BaseTransport
+        from uniconn.transports.base import BaseTransport
 
         class MockTransport(BaseTransport):
             @property

@@ -6,7 +6,6 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
-import warnings
 from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
@@ -146,15 +145,6 @@ class Connection:
     @auto_diagnostics.setter
     def auto_diagnostics(self, value: bool) -> None:
         self._auto_diagnostics = bool(value)
-
-    @property
-    def is_dry_run(self) -> bool:
-        warnings.warn(
-            "Connection.is_dry_run is deprecated, use Connection.dry_run instead",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self._dry_run
 
     def get_hooks(self, event: HookEvent) -> list[HookCallback]:
         return self._hooks.get(event, [])

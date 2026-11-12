@@ -414,17 +414,16 @@ async def test_core_decomposition_pipeline_bytes_observers_and_dry_run_deprecati
     # Повторный вызов remove_operation_observer безопасен
     conn.remove_operation_observer(obs)
 
-    # 3. SyncConnection: using_observer, remove_operation_observer, with_overrides и DeprecationWarning для is_dry_run
+    # 3. SyncConnection: using_observer, remove_operation_observer, with_overrides и отсутствие удалённого is_dry_run
     sync_conn = conn.to_sync().with_overrides(dry_run=True)
     with sync_conn.using_observer(obs):
         assert obs in sync_conn.operation_observers
     assert obs not in sync_conn.operation_observers
 
-    with pytest.deprecated_call(match="is_dry_run is deprecated"):
-        assert conn.is_dry_run is False
-
-    with pytest.deprecated_call(match="is_dry_run is deprecated"):
-        assert sync_conn.is_dry_run is True
+    assert conn.dry_run is False
+    assert sync_conn.dry_run is True
+    assert not hasattr(conn, "is_dry_run")
+    assert not hasattr(sync_conn, "is_dry_run")
 
     sync_conn.close()
     await conn.close()

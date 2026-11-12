@@ -12,11 +12,11 @@ try:
 except ImportError:
     pytest = None  # type: ignore[assignment]
 
-from uniconn._config import ConnectionConfig
-from uniconn._connection import Connection
-from uniconn._shell import ShellSession
+from uniconn.config.models import ConnectionConfig
+from uniconn.core.connection import Connection
 from uniconn.exceptions import ConnectionError, TimeoutError
 from uniconn.result import Result
+from uniconn.shell.session import ShellSession
 from uniconn.transports._local import LocalTransport
 from uniconn.transports._serial import SerialTransport
 from uniconn.transports._ssh import SSHTransport

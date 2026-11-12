@@ -63,9 +63,9 @@ conn = Connection.from_uri(
     auto_diagnostics: bool | None = None,
 )
 conn = Connection.from_config(config: ConnectionConfig, ...)
-conn = Connection.from_dict(data: dict, ...)
-conns = Connection.from_file(path: str | Path, *, host: str | None = None, group: str | None = None)
-conn = Connection.from_inventory(path: str | Path, host: str)
+conn = Connection.from_dict(data: dict, ..., *, auto_diagnostics: bool | None = None)
+conns = Connection.from_file(path: str | Path, retry_attempts: int = 3, logger=None, *, host: str | None = None, group: str | None = None, dry_run: bool = False, auto_diagnostics: bool | None = None)
+conn = Connection.from_inventory(path: str | Path, host: str, retry_attempts: int = 3, logger=None, *, dry_run: bool = False, auto_diagnostics: bool | None = None)
 conn = Connection.local(timeout: float = 30.0, retry_attempts: int = 3, dry_run: bool = False, auto_diagnostics: bool | None = None, **options)
 sync_conn = SyncConnection.from_uri(uri: str, ...)
 sync_conn = SyncConnection.local(timeout: float = 30.0, retry_attempts: int = 3, dry_run: bool = False, **options)
@@ -413,15 +413,19 @@ pool = ConnectionPool(
     recovery_timeout=30.0,
     batch_size=None,           # wave/batch rollout size (int | None)
     max_fail_ratio=0.0,        # max allowed failure ratio per batch (0.0..1.0); raises BatchAbortedError
+    dry_run=False,
+    auto_diagnostics=None,
 )
 pool = ConnectionPool.from_file(
     "inventory.yaml",
     group="web",
     max_concurrent=10,
+    dry_run=False,
     rate_limit=20.0,
     circuit_breaker=True,
     batch_size=2,
     max_fail_ratio=0.25,
+    auto_diagnostics=True,
 )
 
 async with pool:  # Keeps connections open across multiple pool operations
@@ -437,8 +441,9 @@ async with pool:  # Keeps connections open across multiple pool operations
     path_map: dict[str, float] = await pool.wait_for_path("/tmp/ready", content_regex="OK")
     script_map: dict[str, Result | Exception] = await pool.run_script("./check.sh", args=["--fast"])
     py_map: dict[str, Any] = await pool.run_python(lambda: os.uname().release)
+    expect_map: dict[str, Result] = await pool.expect("passwd", patterns={"New password:": "secret\n"})
     facts_map: dict[str, HostFacts] = await pool.gather_facts()
-    diff_rep: FactsDiffReport = await pool.diff_facts(baseline=None)
+    diff_rep: FactsDiffReport = await pool.diff_facts(baseline_host=None)
     line_map: dict[str, EnsureResult] = await pool.state.ensure_line("/etc/hosts", "10.0.0.5 db.internal")
     file_map: dict[str, EnsureResult] = await pool.state.ensure_file("/etc/app.conf", content="port=8080\n", mode=0o644, atomic=True)
     dir_map: dict[str, EnsureResult] = await pool.state.ensure_directory("/var/lib/app", mode=0o755)

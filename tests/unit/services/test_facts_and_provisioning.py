@@ -25,7 +25,7 @@ from uniconn import (
     SyncConnectionPool,
     cli,
 )
-from uniconn._facts import parse_facts_output
+from uniconn.services.facts_models import parse_facts_output
 
 SAMPLE_UBUNTU_FACTS_RAW = """\
 ===UNICONN_SECTION:UNAME===

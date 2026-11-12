@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from uniconn._session_pool import SSHSessionPool
+from uniconn.pool.session_pool import SSHSessionPool
 from uniconn.result import Result
 
 
@@ -50,7 +50,7 @@ def patch_connection_factory(mocker):
             return conn
 
         patcher = patch(
-            "uniconn._session_pool.Connection.from_uri",
+            "uniconn.pool.session_pool.Connection.from_uri",
             side_effect=side_effect,
         )
         return patcher, created
@@ -186,7 +186,7 @@ async def test_session_pool_passes_timeout_and_raise_on_error():
         return conn
 
     with patch(
-        "uniconn._session_pool.Connection.from_uri",
+        "uniconn.pool.session_pool.Connection.from_uri",
         side_effect=side_effect,
     ):
         pool = SSHSessionPool("ssh://user@host")
@@ -247,7 +247,7 @@ async def test_session_pool_adaptive_channel_limit_scale_down():
         return conn
 
     with patch(
-        "uniconn._session_pool.Connection.from_uri",
+        "uniconn.pool.session_pool.Connection.from_uri",
         side_effect=make_limited_conn,
     ):
         async with SSHSessionPool(
@@ -284,7 +284,7 @@ async def test_session_pool_adaptive_max_connections_scale_down():
         return conn
 
     with patch(
-        "uniconn._session_pool.Connection.from_uri",
+        "uniconn.pool.session_pool.Connection.from_uri",
         side_effect=make_conn_with_startup_limit,
     ):
         async with SSHSessionPool(
@@ -336,7 +336,7 @@ async def test_session_pool_adaptive_disabled_propagates_error():
         return conn
 
     with patch(
-        "uniconn._session_pool.Connection.from_uri",
+        "uniconn.pool.session_pool.Connection.from_uri",
         side_effect=make_failing_second_channel,
     ):
         pool = SSHSessionPool(
@@ -384,7 +384,7 @@ async def test_session_pool_resize_graceful_drain():
         return conn
 
     with patch(
-        "uniconn._session_pool.Connection.from_uri",
+        "uniconn.pool.session_pool.Connection.from_uri",
         side_effect=make_gated_conn,
     ):
         pool = SSHSessionPool(
