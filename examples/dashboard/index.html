@@ -408,6 +408,9 @@
         <button type="button" class="nav-link" data-tab="policy" onclick="switchTab('policy')">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>Policy &amp; AST Guardrails
         </button>
+        <button type="button" class="nav-link" data-tab="recipes" onclick="switchTab('recipes')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>Quickstart &amp; Recipes
+        </button>
       </nav>
       <div class="sidebar-note">
         <strong>Среда выполнения</strong>
@@ -1129,6 +1132,183 @@
         </div>
       </div>
     </section>
+
+    <!-- ===================================================================== -->
+    <!-- TAB 7: QUICKSTART, TASK CHEAT SHEET & INTERACTIVE RECIPE WIZARD       -->
+    <!-- ===================================================================== -->
+    <section id="tab-recipes" class="tab-panel" hidden>
+      <div class="kpi-strip">
+        <div class="kpi-box">
+          <div class="kpi-label">Selected Onboarding Recipe</div>
+          <div class="kpi-value" id="rec-kpi-title">Semantic Auto-Parsing</div>
+          <div class="kpi-sub" id="rec-kpi-domain">Domain: Execution &amp; Diagnostics</div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label">Primary uniconn Primitive</div>
+          <div class="kpi-value" id="rec-kpi-api">conn.run(parse="auto")</div>
+          <div class="kpi-sub" id="rec-kpi-parity">100% Async · Sync · CLI Parity</div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label">Legacy Alternative Replaced</div>
+          <div class="kpi-value" id="rec-kpi-legacy">Paramiko + Regex</div>
+          <div class="kpi-sub" id="rec-kpi-lines">Boilerplate reduced by ~85%</div>
+        </div>
+        <div class="kpi-box">
+          <div class="kpi-label">Sandbox Execution Status</div>
+          <div class="kpi-value" id="rec-kpi-status">READY</div>
+          <div class="kpi-sub" id="rec-kpi-duration">Zero-setup in-process runner</div>
+        </div>
+      </div>
+
+      <div class="split-grid-asym">
+        <!-- Left: Step-by-Step Task Selector & Customizer -->
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2 class="panel-title">1. Interactive Use-Case &amp; Recipe Wizard</h2>
+              <p class="panel-subtitle">Select your engineering goal to generate Async, Sync, CLI, and Migration code</p>
+            </div>
+            <span id="rec-status-badge" class="status-text status-ok">6 RECIPES</span>
+          </div>
+
+          <div class="preset-bar">
+            <span class="preset-caption">Quick Pick:</span>
+            <button type="button" class="btn ghost active-preset" data-recipe-btn="parse_auto" onclick="selectRecipe('parse_auto')">Auto-Parse &amp; Facts</button>
+            <button type="button" class="btn ghost" data-recipe-btn="run_python_rpc" onclick="selectRecipe('run_python_rpc')">Zero-Fork RPC</button>
+            <button type="button" class="btn ghost" data-recipe-btn="idempotent_state" onclick="selectRecipe('idempotent_state')">State &amp; Notify</button>
+            <button type="button" class="btn ghost" data-recipe-btn="remote_path_sync" onclick="selectRecipe('remote_path_sync')">RemotePath &amp; Sync</button>
+            <button type="button" class="btn ghost" data-recipe-btn="dag_flow" onclick="selectRecipe('dag_flow')">Fleet DAG Flow</button>
+            <button type="button" class="btn ghost" data-recipe-btn="cassette_contract" onclick="selectRecipe('cassette_contract')">Cassette Tests</button>
+            <button type="button" class="btn ghost" data-recipe-btn="mcp_policy_guard" onclick="selectRecipe('mcp_policy_guard')">MCP &amp; AST Policy</button>
+          </div>
+
+          <div class="field-group" style="margin-bottom: 0.85rem;">
+            <label for="rec-select">Engineering Task (Job-to-be-Done)</label>
+            <select id="rec-select" onchange="selectRecipe(this.value)">
+              <option value="parse_auto" selected>1. Run Command with Semantic Auto-Parsing &amp; Host Facts</option>
+              <option value="run_python_rpc">2. Zero-Fork Remote Python RPC (conn.run_python in &lt; 2 ms)</option>
+              <option value="idempotent_state">3. Idempotent Config File + Deduplicated Service Reload</option>
+              <option value="remote_path_sync">4. Object-Oriented RemotePath (pathlib) &amp; Delta Directory Sync</option>
+              <option value="dag_flow">5. Multi-Host Task DAG Orchestration (@task + Flow Barrier Wave)</option>
+              <option value="cassette_contract">6. Deterministic Offline Contract Testing (YAML Cassettes)</option>
+              <option value="mcp_policy_guard">7. AI Agent MCP Guardrails &amp; AST Command Verification</option>
+            </select>
+          </div>
+
+          <div class="form-row">
+            <div class="field-group">
+              <label for="rec-uri">Target Connection URI (Supports 16+ Transport Schemes)</label>
+              <input type="text" id="rec-uri" value="ssh://admin:env://SSH_PASS@prod-web-01:22" oninput="renderRecipeCode()" />
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="field-group">
+              <label for="rec-cmd">Command / Target Expression</label>
+              <input type="text" id="rec-cmd" value="df -h" oninput="renderRecipeCode()" />
+            </div>
+          </div>
+
+          <div style="padding: 12px 14px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-alt); margin-bottom: 14px;">
+            <div style="font-size: 11px; font-weight: 650; color: var(--text); margin-bottom: 4px;" id="rec-problem-title">Problem &amp; Why uniconn</div>
+            <div style="font-size: 11px; color: var(--text-secondary); line-height: 1.55;" id="rec-problem-desc">
+              Instead of writing brittle regexes to parse terminal output, pass parse="auto" to convert CLI tables or JSON directly into structured Python dictionaries or Pydantic models.
+            </div>
+          </div>
+
+          <div class="form-row">
+            <button type="button" class="btn" id="btn-run-recipe" onclick="runRecipeSandbox()">Run Recipe in Live Sandbox</button>
+            <button type="button" class="btn secondary" onclick="copyRecipeCode()">Copy Generated Code</button>
+          </div>
+        </div>
+
+        <!-- Right: Multi-Paradigm Code Generator & Live Sandbox Output -->
+        <div class="panel">
+          <div class="panel-header" style="flex-direction: column; align-items: stretch; gap: 0.85rem;">
+            <div>
+              <h2 class="panel-title">2. Generated Code &amp; Live Sandbox Output</h2>
+              <p class="panel-subtitle">Switch between Async Python, Sync Python, CLI, and Legacy Migration comparison</p>
+            </div>
+            <div class="segmented" style="align-self: flex-start;">
+              <button type="button" class="active" id="rec-tab-async" onclick="setRecipeCodeTab('async')">Async Python</button>
+              <button type="button" id="rec-tab-sync" onclick="setRecipeCodeTab('sync')">Sync Python</button>
+              <button type="button" id="rec-tab-cli" onclick="setRecipeCodeTab('cli')">CLI Command</button>
+              <button type="button" id="rec-tab-migration" onclick="setRecipeCodeTab('migration')">Before / After Migration</button>
+            </div>
+          </div>
+
+          <pre class="code-view" id="rec-code-box" style="min-height: 210px; max-height: 280px; margin-bottom: 14px;"></pre>
+
+          <h3 style="font-size: 0.82rem; color: var(--muted); margin-bottom: 0.45rem;">Live In-Process Sandbox Execution Result (Zero External Setup Required)</h3>
+          <pre class="code-view" id="rec-output-box" style="min-height: 175px;">Click "Run Recipe in Live Sandbox" to execute this pattern against the built-in local/replay sandbox.</pre>
+        </div>
+      </div>
+
+      <!-- Task-to-Solution Cheat Sheet & Migration Reference Matrix -->
+      <div class="panel" style="margin-top: 1.25rem;">
+        <div class="panel-header">
+          <div>
+            <h2 class="panel-title">3. Task-to-Solution Cheat Sheet (10-Second API Lookup)</h2>
+            <p class="panel-subtitle">Click any row to load its interactive recipe in the wizard above</p>
+          </div>
+        </div>
+
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Engineering Goal (Job-to-be-Done)</th>
+              <th>uniconn Primitive</th>
+              <th>Replaces Legacy Tool</th>
+              <th class="num">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Parse CLI output (df, ip, show int) into structured JSON / Pydantic</td>
+              <td class="mono">conn.run(cmd, parse="auto")</td>
+              <td>Paramiko + manual regex / awk</td>
+              <td class="num"><button type="button" class="btn ghost" onclick="selectRecipe('parse_auto')">Load Recipe</button></td>
+            </tr>
+            <tr>
+              <td>Execute Python functions remotely in &lt; 2 ms without uploading scripts</td>
+              <td class="mono">await conn.run_python(callable, *args)</td>
+              <td>Ansible Mitogen / manual scp + ssh</td>
+              <td class="num"><button type="button" class="btn ghost" onclick="selectRecipe('run_python_rpc')">Load Recipe</button></td>
+            </tr>
+            <tr>
+              <td>Enforce idempotent files/packages/services with unified diff &amp; single reload</td>
+              <td class="mono">conn.state.ensure_* + batch_notifications()</td>
+              <td>Ansible Playbooks / Pyinfra</td>
+              <td class="num"><button type="button" class="btn ghost" onclick="selectRecipe('idempotent_state')">Load Recipe</button></td>
+            </tr>
+            <tr>
+              <td>Navigate remote files like pathlib.Path and rsync directories</td>
+              <td class="mono">conn.path("/var/log") &amp; conn.files.sync_dir()</td>
+              <td>SFTPClient + subprocess rsync</td>
+              <td class="num"><button type="button" class="btn ghost" onclick="selectRecipe('remote_path_sync')">Load Recipe</button></td>
+            </tr>
+            <tr>
+              <td>Orchestrate multi-step task DAGs across a fleet in waves</td>
+              <td class="mono">@task + Flow(mode="barrier", batch_size=2)</td>
+              <td>Fabric SerialGroup / Nornir</td>
+              <td class="num"><button type="button" class="btn ghost" onclick="selectRecipe('dag_flow')">Load Recipe</button></td>
+            </tr>
+            <tr>
+              <td>Record real sessions to YAML cassettes and run CI tests offline</td>
+              <td class="mono">@pytest.mark.uniconn_cassette / MockSSHServer</td>
+              <td>Fragile unittest.mock patches</td>
+              <td class="num"><button type="button" class="btn ghost" onclick="selectRecipe('cassette_contract')">Load Recipe</button></td>
+            </tr>
+            <tr>
+              <td>Expose inventory to AI agents with AST anti-obfuscation &amp; HITL approvals</td>
+              <td class="mono">uniconn mcp + CommandASTParser + PolicyEngine</td>
+              <td>Unprotected shell MCP wrappers</td>
+              <td class="num"><button type="button" class="btn ghost" onclick="selectRecipe('mcp_policy_guard')">Load Recipe</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
     </main>
   </div>
   <div class="toast-region" id="toast-region" role="status" aria-live="polite"></div>
@@ -1160,7 +1340,8 @@
       pool: ['Оркестрация', 'Хосты и инвентарь', 'Настройте YAML-инвентарь и выполните операцию на группе хостов параллельно.'],
       uri: ['Конструктор', 'URI и готовый код', 'Соберите подключение и получите проверенный фрагмент для Async Python, Sync Python или CLI.'],
       tests: ['Качество', 'Тесты и фоновые задачи', 'Запускайте пакеты unit-тестов и проверяйте обработку логов BackgroundPool.'],
-      policy: ['Guardrails 4.4', 'Policy-as-Code и AST-верификация', 'Декомпозиция команд в AST, защита от обфускации и проверка ABAC-политик для ИИ-агентов.']
+      policy: ['Guardrails 4.4', 'Policy-as-Code и AST-верификация', 'Декомпозиция команд в AST, защита от обфускации и проверка ABAC-политик для ИИ-агентов.'],
+      recipes: ['Onboarding & Docs', 'Quickstart & Interactive Recipe Wizard', 'Pick your engineering use case, generate Async / Sync / CLI code, and run it live in the sandbox.']
     };
 
     function switchTab(tabId) {
@@ -1182,6 +1363,10 @@
       history.replaceState(null, '', '#' + tabId);
       if (tabId === 'uri' && !lastUriData) buildUriLive();
       if (tabId === 'policy' && !lastPolicyData) runPolicySandbox();
+      if (tabId === 'recipes') {
+        renderRecipeCode();
+        if (!lastRecipeResult) runRecipeSandbox();
+      }
     }
 
     function showToast(message, isError = false) {
@@ -2027,6 +2212,209 @@
       }
     }
 
+    // ─── Tab 7: Quickstart & Interactive Recipe Wizard ──────────────
+    let currentRecipeId = 'parse_auto';
+    let currentRecipeCodeTab = 'async';
+    let lastRecipeResult = null;
+
+    const RECIPE_CATALOG = {
+      parse_auto: {
+        title: 'Semantic Auto-Parsing & Facts',
+        domain: 'Execution & Diagnostics',
+        api: 'conn.run(parse="auto")',
+        legacy: 'Paramiko + Regex',
+        defaultCmd: 'df -h',
+        problem: 'Instead of writing brittle regexes to parse terminal output, pass parse="auto" to convert CLI tables or JSON directly into structured Python dictionaries or Pydantic models.',
+        buildCode(uri, cmd) {
+          return {
+            async: `import asyncio\nfrom uniconn import Connection\n\nasync def main():\n    async with Connection.from_uri("${uri}") as conn:\n        res = await conn.run("${cmd}", parse="auto", diagnose=True)\n        print("Structured output:", res.parsed)\n        facts = await conn.gather_facts()\n        print(f"OS: {facts.os_family}, CPUs: {facts.cpu_count}")\n\nasyncio.run(main())`,
+            sync: `from uniconn import SyncConnection\n\nwith SyncConnection.from_uri("${uri}") as conn:\n    res = conn.run("${cmd}", parse="auto", diagnose=True)\n    print("Structured output:", res.parsed)\n    facts = conn.gather_facts()\n    print(f"OS: {facts.os_family}, CPUs: {facts.cpu_count}")`,
+            cli: `# Run command with automatic semantic parsing and JSON formatting\nuniconn run "${uri}" "${cmd}" --format json`,
+            migration: `# BEFORE (Paramiko + manual string splitting):\nclient = paramiko.SSHClient()\nclient.connect("prod-web-01", username="admin", password=os.environ["SSH_PASS"])\n_, stdout, _ = client.exec_command("${cmd}")\nrows = [line.split() for line in stdout.read().decode().splitlines()[1:]]\n\n# AFTER (uniconn — 3 lines with retries, secret resolution & semantic parser):\nasync with Connection.from_uri("${uri}") as conn:\n    rows = (await conn.run("${cmd}", parse="auto")).parsed`
+          };
+        }
+      },
+      run_python_rpc: {
+        title: 'Zero-Fork Remote Python RPC',
+        domain: 'High-Speed RPC (< 2 ms)',
+        api: 'conn.run_python(fn)',
+        legacy: 'Mitogen / Manual SCP',
+        defaultCmd: 'os.uname().release',
+        problem: 'Execute arbitrary Python functions or lambdas directly inside a persistent remote Python worker over stdio pipes — zero SSH shell overhead and zero script uploads.',
+        buildCode(uri) {
+          return {
+            async: `import os\nfrom uniconn import Connection\n\ndef inspect_node(multiplier: int) -> dict:\n    return {"pid": os.getpid(), "workers": (os.cpu_count() or 1) * multiplier}\n\nasync with Connection.from_uri("${uri}") as conn:\n    kernel = await conn.run_python(lambda: os.uname().release)\n    stats = await conn.run_python(inspect_node, 2)\n    print(kernel, stats)`,
+            sync: `import os\nfrom uniconn import SyncConnection\n\nwith SyncConnection.from_uri("${uri}") as conn:\n    kernel = conn.run_python(lambda: os.uname().release)\n    print("Remote kernel:", kernel)`,
+            cli: `# Execute a local script on the remote host with automatic temp cleanup\nuniconn run-script "${uri}" ./inspect_node.py --args "--multiplier 2"`,
+            migration: `# BEFORE (Uploading temporary Python scripts over SFTP + ssh exec):\nsftp.put("inspect_node.py", "/tmp/inspect_node.py")\n_, stdout, _ = client.exec_command("python3 /tmp/inspect_node.py")\nsftp.remove("/tmp/inspect_node.py")\n\n# AFTER (uniconn Zero-Fork persistent Python worker in < 2 ms):\nstats = await conn.run_python(inspect_node, 2)`
+          };
+        }
+      },
+      idempotent_state: {
+        title: 'Idempotent State & Notify',
+        domain: 'Provisioning (conn.state)',
+        api: 'conn.state.ensure_file()',
+        legacy: 'Ansible Playbooks',
+        defaultCmd: '/etc/nginx/nginx.conf',
+        problem: 'Enforce packages, files, users, systemd units, and Windows registry keys with unified diffs and deduplicated service reload notifications.',
+        buildCode(uri) {
+          return {
+            async: `from uniconn import Connection\n\nasync with Connection.from_uri("${uri}") as conn:\n    reload_nginx = ("reload_nginx", lambda: conn.state.ensure_service("nginx", state="reloaded", sudo=True))\n\n    async with conn.state.batch_notifications() as batch:\n        res = await conn.state.ensure_file(\n            "/etc/nginx/nginx.conf",\n            content="worker_processes auto;\\n",\n            atomic=True,\n            sudo=True,\n            notify=reload_nginx,\n        )\n    print("Changed:", res.changed, "Diff:", res.diff)`,
+            sync: `from uniconn import SyncConnection\n\nwith SyncConnection.from_uri("${uri}") as conn:\n    res = conn.state.ensure_file(\n        "/etc/nginx/nginx.conf",\n        content="worker_processes auto;\\n",\n        atomic=True,\n        sudo=True,\n    )\n    print("Changed:", res.changed)`,
+            cli: `# Preview unified diff in dry-run mode or enforce systemd unit state\nuniconn ensure-unit nginx.service "${uri}" --state started --enabled --sudo --dry-run`,
+            migration: `# BEFORE (Ansible YAML playbook with slow startup overhead):\n# - name: Update nginx.conf\n#   ansible.builtin.copy:\n#     dest: /etc/nginx/nginx.conf\n#     content: "worker_processes auto;"\n#   notify: Reload nginx\n\n# AFTER (Type-checked Python with deduplicated batch_notifications):\nasync with conn.state.batch_notifications():\n    await conn.state.ensure_file("/etc/nginx/nginx.conf", content=cfg, notify=reload_nginx)`
+          };
+        }
+      },
+      remote_path_sync: {
+        title: 'RemotePath & Delta Sync',
+        domain: 'Object-Oriented FS',
+        api: 'conn.path() & sync_dir()',
+        legacy: 'SFTP + rsync subprocess',
+        defaultCmd: '/var/log/nginx',
+        problem: 'Work with remote files using pathlib.Path ergonomics (with zero extra RTTs on glob/stat) and synchronize directories using SHA-256 delta comparison.',
+        buildCode(uri, cmd) {
+          return {
+            async: `from uniconn import Connection\n\nasync with Connection.from_uri("${uri}") as conn:\n    # 1. Rsync-style delta synchronization\n    sync_res = await conn.files.sync_dir("./build", "/var/www/app", delete=True, checksum_check=True)\n\n    # 2. pathlib.Path navigation with preloaded stat() metadata\n    log_dir = conn.path("${cmd}")\n    if await log_dir.exists():\n        async for f in log_dir.glob("*.log"):\n            st = await f.stat()  # 0 extra network round-trips!\n            print(f.name, st.st_size)`,
+            sync: `from uniconn import SyncConnection\n\nwith SyncConnection.from_uri("${uri}") as conn:\n    sync_res = conn.files.sync_dir("./build", "/var/www/app", delete=True)\n    for f in conn.path("${cmd}").glob("*.log"):\n        print(f.name, f.stat().st_size)`,
+            cli: `# Delta-synchronize directory across an inventory group with SHA-256 verification\nuniconn sync ./build /var/www/app --inventory fleet.yaml --group web --delete --checksum`,
+            migration: `# BEFORE (Manual SFTP listdir_attr loop + separate stat calls):\nfor entry in sftp.listdir_attr("${cmd}"):\n    if entry.filename.endswith(".log"):\n        print(entry.filename, entry.st_size)\n\n# AFTER (uniconn RemotePath with preloaded glob metadata):\nasync for f in conn.path("${cmd}").glob("*.log"):\n    print(f.name, (await f.stat()).st_size)`
+          };
+        }
+      },
+      dag_flow: {
+        title: 'Fleet Task DAG Orchestration',
+        domain: 'Orchestration (Flow)',
+        api: '@task + Flow(mode="barrier")',
+        legacy: 'Fabric / Nornir Runners',
+        defaultCmd: 'version=2.4.0',
+        problem: 'Build declarative dependency graphs (@task) with preflight checks, guaranteed post cleanup, and wave-synchronized barrier rollouts across a ConnectionPool.',
+        buildCode(uri) {
+          return {
+            async: `from uniconn import Connection, ConnectionPool, Flow, FlowContext, task\n\n@task(name="preflight")\nasync def preflight(conn: Connection, ctx: FlowContext):\n    facts = await conn.gather_facts()\n    ctx.host_set(conn, "os_family", facts.os_family)\n\n@task(name="deploy", depends_on=[preflight], retries=2)\nasync def deploy(conn: Connection, version: str = "2.4.0"):\n    return await conn.run(f"echo Deploying {version}")\n\nflow = Flow(name="release", tasks=[deploy], mode="barrier", batch_size=2, max_fail_ratio=0.0)\nasync with ConnectionPool(["${uri}"], batch_size=2) as pool:\n    report = await pool.run_flow(flow, vars={"version": "2.4.0"})\n    report.raise_for_status()`,
+            sync: `from uniconn import SyncConnectionPool, SyncFlow\n\nwith SyncConnectionPool(["${uri}"]) as pool:\n    report = pool.run_flow(SyncFlow(flow), vars={"version": "2.4.0"})\n    report.raise_for_status()`,
+            cli: `# Inspect DAG tree and execute barrier rollout from CLI\nuniconn flow inspect deploy.py:flow --format tree\nuniconn flow run deploy.py:flow "${uri}" --mode barrier --batch-size 2 --var version=2.4.0`,
+            migration: `# BEFORE (Linear Fabric tasks without wave barriers or automatic rollback):\n# SerialGroup(*hosts).run("deploy.sh")\n\n# AFTER (uniconn declarative DAG with barrier waves, retries & max_fail_ratio):\nflow = Flow(name="release", tasks=[deploy], mode="barrier", batch_size=2, max_fail_ratio=0.0)`
+          };
+        }
+      },
+      cassette_contract: {
+        title: 'Offline Cassette Contract Tests',
+        domain: 'Testing & CI (Replay)',
+        api: '@pytest.mark.uniconn_cassette',
+        legacy: 'Fragile unittest.mock',
+        defaultCmd: 'nginx -v && uptime',
+        problem: 'Record real SSH/NETCONF/BMC sessions once into sanitized YAML cassettes and replay them deterministically in CI without network access.',
+        buildCode(uri) {
+          return {
+            async: `import pytest\nfrom uniconn import Connection\n\n@pytest.mark.uniconn_cassette("cassettes/web_node.yaml", mode="once")\nasync def test_web_node_contract():\n    async with Connection.from_uri("${uri}") as conn:\n        res = await conn.run("nginx -v")\n        assert res.ok`,
+            sync: `from uniconn import SyncConnection\n\nwith SyncConnection.from_uri("${uri}") as conn:\n    with conn.use_cassette("cassettes/web_node.yaml", mode="once") as cassette:\n        assert conn.run("uptime").ok`,
+            cli: `# Record live session with IP sanitization and diff against baseline cassette\nuniconn record "${uri}" -c ./cassettes/v2.yaml --sanitize-ip -- uptime\nuniconn cassette diff ./cassettes/v1.yaml ./cassettes/v2.yaml --fail-on-diff`,
+            migration: `# BEFORE (Brittle mock patches that drift from real server output):\n# @patch("paramiko.SSHClient.exec_command", return_value=(..., FakeStdout("..."), ...))\n\n# AFTER (Zero-mock contract test recorded from real host & verified via cassette.diff()):\n@pytest.mark.uniconn_cassette(mode="once")\nasync def test_real_contract(): ...`
+          };
+        }
+      },
+      mcp_policy_guard: {
+        title: 'MCP Server & AST Policy Guard',
+        domain: 'AI Security (uniconn.security)',
+        api: 'CommandASTParser + PolicyEngine',
+        legacy: 'Unsafe Regex Blocklists',
+        defaultCmd: 'echo cm0gLXJmIC8= | base64 -d | sh',
+        problem: 'Decompose complex shell pipelines into atomic AST nodes, detect base64/eval obfuscation, and enforce ABAC Policy-as-Code + HITL approvals for AI agents.',
+        buildCode(uri, cmd) {
+          return {
+            async: `from uniconn import CommandASTParser, PolicyGuardrailConfig, build_auth_context, create_policy_engine\n\nast = CommandASTParser.parse("${cmd}")\nengine = create_policy_engine(PolicyGuardrailConfig(enabled=True, preset="prod-guard"))\nctx = build_auth_context(\n    agent_id="ops-agent", role="operator", host_name="prod-db-01",\n    environment="prod", is_production=True, tool_name="uniconn_run",\n    command="${cmd}", ast=ast, sudo=True,\n)\ndecision = await engine.evaluate(ctx)\nprint(decision.decision.value, ast.verbs, "obfuscated:", ast.is_obfuscated)`,
+            sync: `from uniconn import CommandASTParser\n\nast = CommandASTParser.parse("${cmd}")\nprint("Extracted atomic verbs:", ast.verbs)\nprint("Obfuscated pipeline:", ast.is_obfuscated)`,
+            cli: `# Evaluate command against ABAC policy or launch safe MCP server for Claude/Cursor\nuniconn policy eval "${cmd}" --host prod-db-01 --env prod --preset prod-guard\nuniconn mcp --inventory hosts.yaml --policy-preset prod-guard --hitl`,
+            migration: `# BEFORE (Naive substring check easily bypassed by base64 or find -exec):\n# if "rm -rf" in cmd: raise PermissionError()\n\n# AFTER (Deep recursive AST wrapper unwrapping & obfuscation detection):\nast = CommandASTParser.parse("${cmd}")\nassert ast.is_obfuscated is True and "rm" in ast.verbs`
+          };
+        }
+      }
+    };
+
+    function selectRecipe(recipeId) {
+      if (!RECIPE_CATALOG[recipeId]) return;
+      currentRecipeId = recipeId;
+      const spec = RECIPE_CATALOG[recipeId];
+      const sel = document.getElementById('rec-select');
+      if (sel && sel.value !== recipeId) sel.value = recipeId;
+
+      document.querySelectorAll('[data-recipe-btn]').forEach(btn => {
+        btn.classList.toggle('active-preset', btn.getAttribute('data-recipe-btn') === recipeId);
+      });
+
+      const cmdInput = document.getElementById('rec-cmd');
+      if (cmdInput) cmdInput.value = spec.defaultCmd;
+
+      document.getElementById('rec-kpi-title').textContent = spec.title;
+      document.getElementById('rec-kpi-domain').textContent = 'Domain: ' + spec.domain;
+      document.getElementById('rec-kpi-api').textContent = spec.api;
+      document.getElementById('rec-kpi-legacy').textContent = spec.legacy;
+      document.getElementById('rec-problem-desc').textContent = spec.problem;
+
+      renderRecipeCode();
+      runRecipeSandbox();
+    }
+
+    function setRecipeCodeTab(tab) {
+      currentRecipeCodeTab = tab;
+      ['async', 'sync', 'cli', 'migration'].forEach(t => {
+        const btn = document.getElementById('rec-tab-' + t);
+        if (btn) btn.classList.toggle('active', t === tab);
+      });
+      renderRecipeCode();
+    }
+
+    function renderRecipeCode() {
+      const spec = RECIPE_CATALOG[currentRecipeId] || RECIPE_CATALOG.parse_auto;
+      const uri = (document.getElementById('rec-uri')?.value || 'ssh://admin:env://SSH_PASS@prod-web-01').trim();
+      const cmd = (document.getElementById('rec-cmd')?.value || spec.defaultCmd).trim();
+      const snippets = spec.buildCode(uri, cmd);
+      const box = document.getElementById('rec-code-box');
+      if (box) {
+        box.textContent = snippets[currentRecipeCodeTab] || snippets.async;
+      }
+    }
+
+    async function copyRecipeCode() {
+      const box = document.getElementById('rec-code-box');
+      await copyText(box.textContent, null);
+    }
+
+    async function runRecipeSandbox() {
+      const box = document.getElementById('rec-output-box');
+      const statusKpi = document.getElementById('rec-kpi-status');
+      const durKpi = document.getElementById('rec-kpi-duration');
+      if (!box) return;
+      setBusy(box, true, `Executing recipe "${currentRecipeId}" in live sandbox...`);
+
+      const payload = {
+        recipe_id: currentRecipeId,
+        uri: document.getElementById('rec-uri')?.value || 'ssh://admin@prod-web-01',
+        command: document.getElementById('rec-cmd')?.value || ''
+      };
+
+      try {
+        const res = await apiFetch('/api/recipes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        lastRecipeResult = data;
+        if (statusKpi) statusKpi.textContent = data.status === 'ok' ? 'OK (LIVE)' : 'ERROR';
+        if (durKpi && data.duration_ms !== undefined) {
+          durKpi.textContent = `Executed in ${data.duration_ms} ms`;
+        }
+        box.textContent = JSON.stringify(data, null, 2);
+      } catch (_) {
+        if (statusKpi) statusKpi.textContent = 'ERROR';
+        box.textContent = 'Error executing recipe sandbox.';
+      } finally {
+        setBusy(box, false);
+      }
+    }
+
     function escapeHtml(str) {
       return String(str)
         .replace(/&/g, '&amp;')
@@ -2036,6 +2424,7 @@
     }
 
     // Initialize on load
+    renderRecipeCode();
     const initialTab = (location.hash || '').replace('#', '');
     switchTab(WORKSPACES[initialTab] ? initialTab : 'shell');
     loadStatus();

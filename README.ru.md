@@ -13,6 +13,8 @@
 
 ### Язык: **[ English ](README.md)** &nbsp;|&nbsp; **[ Русский ]**
 
+**📚 Документация (`docs/`):** **[Обзор и шпаргалка](docs/index.rst)** · **[Быстрый старт за 5 мин](docs/quickstart.rst)** · **[Кулинарная книга (Cookbook)](docs/cookbook.rst)** · **[Гайд по миграции](docs/migration.rst)** · **[16+ Транспортов](docs/transports.rst)** · **[CLI, MCP и Policy](docs/cli_and_mcp.rst)** · **[API Reference](docs/api.rst)**
+
 ---
 
 `uniconn` устраняет необходимость в разрозненном инфраструктурном коде, предоставляя единый отказоустойчивый фасад `Connection` и встроенный **MCP-сервер (`uniconn mcp`)** для выполнения команд, дельта-синхронизации файлов, идемпотентного управления состоянием, DAG-оркестрации задач и аппаратной диагностики поверх **SSH, WinRM, Docker, Podman, Kubernetes, Serial/UART, IPMI, Redfish BMC и Local** — со **100% паритетом Async + Sync** и нулевым оверхедом.
@@ -496,11 +498,29 @@ python main.py --serve
 ```
 
 После запуска перейдите по адресу **http://localhost:3000**:
-1. **Shell & Local Runner**: Интерактивные stateful PTY-сессии с сохранением состояния `cd`, переменных `export` и размеров терминала.
-2. **Hooks & Telemetry Sandbox**: Тестирование `CircuitBreaker`, `RateLimiter` и маскирования секретов.
-3. **Pool & Fleet Orchestrator**: Визуальное управление YAML-инвентарём и волновым роллаутом.
-4. **Visual URI Builder**: Конструктор и валидатор URI с автогенерацией кода на Python.
-5. **Interactive Test Runner**: Запуск unit-тестов отдельных пакетов из интерфейса.
+1. **Quickstart & Interactive Recipe Wizard (`#recipes`)**: Мастер выбора инженерной задачи с генерацией кода (**Async / Sync / CLI / Migration**) и живым запуском в песочнице.
+2. **Shell & Local Runner (`#shell`)**: Интерактивные stateful PTY-сессии с сохранением состояния `cd`, переменных `export` и размеров терминала.
+3. **Hooks & Telemetry Sandbox (`#hooks`)**: Тестирование `CircuitBreaker`, `RateLimiter` и маскирования секретов.
+4. **Pool & Fleet Orchestrator (`#pool`)**: Визуальное управление YAML-инвентарём и волновым роллаутом.
+5. **Visual URI Builder (`#uri`)**: Конструктор и валидатор URI с автогенерацией кода на Python.
+6. **Interactive Test Runner (`#tests`)**: Запуск unit-тестов отдельных пакетов из интерфейса.
+7. **Policy & AST Guardrails (`#policy`)**: Декомпозиция команд в AST и проверка политик безопасности для ИИ-агентов.
+
+---
+
+## 📖 Полная документация (`docs/`)
+
+Все руководства пользователя, шпаргалки и справочники находятся в директории [`docs/`](docs/) (GitHub отображает `.rst`-файлы напрямую с кликабельными таблицами и подсветкой кода):
+
+| Раздел документации | Описание содержимого |
+| :--- | :--- |
+| **[Overview & Cheat Sheet (`docs/index.rst`)](docs/index.rst)** | Таблица «Задача $\rightarrow$ Решение» за 10 секунд и навигация по инженерным ролям |
+| **[5-Minute Quickstart (`docs/quickstart.rst`)](docs/quickstart.rst)** | Установка `extras` (`uniconn[all]`, `[winrm]`, `[bmc]`), запуск без внешних серверов, выбор Async / Sync / CLI |
+| **[Step-by-Step Cookbook (`docs/cookbook.rst`)](docs/cookbook.rst)** | Рецепты: автопарсинг, Zero-Fork RPC (`run_python`), `RemotePath`, `ensure_*`, `Flow`, NETCONF/YANG, BMC/UART и кассеты |
+| **[Migration Guides (`docs/migration.rst`)](docs/migration.rst)** | Таблицы перехода «Было $\rightarrow$ Стало» с **Ansible**, **Paramiko**, **Fabric** и **Netmiko / Scrapli** |
+| **[Transports & Secrets (`docs/transports.rst`)](docs/transports.rst)** | Полный справочник по всем 16+ схемам URI и динамическим секретам `env://` / `file://` |
+| **[CLI, MCP & Security (`docs/cli_and_mcp.rst`)](docs/cli_and_mcp.rst)** | Команды CLI, MCP-сервер для ИИ-агентов, HITL-подтверждения и AST Policy-as-Code |
+| **[API Reference (`docs/api.rst`)](docs/api.rst)** | Полный справочник классов, методов и исключений библиотеки |
 
 ---
 

@@ -12,6 +12,7 @@ from examples.dashboard.sandboxes.hooks import (
     _execute_screen_sandbox,
 )
 from examples.dashboard.sandboxes.pool import _execute_pool_sandbox
+from examples.dashboard.sandboxes.recipes import _execute_recipe_sandbox
 from examples.dashboard.sandboxes.shell import (
     _build_and_validate_uri,
     _execute_local_command,
@@ -25,6 +26,7 @@ __all__ = [
     "_execute_hooks_sandbox",
     "_execute_local_command",
     "_execute_pool_sandbox",
+    "_execute_recipe_sandbox",
     "_execute_screen_sandbox",
     "_execute_shell_command",
     "_execute_v070_sandbox",

@@ -12,6 +12,7 @@ from examples.dashboard.server import (
     _execute_hooks_sandbox,
     _execute_local_command,
     _execute_pool_sandbox,
+    _execute_recipe_sandbox,
     _execute_screen_sandbox,
     _execute_shell_command,
     _run_demo_status,
@@ -197,17 +198,62 @@ class TestDashboardUriPoolAndScreen:
         assert len(res["sessions"]) == 1
 
     def test_html_template_contains_all_workspaces(self) -> None:
-        """Проверить наличие всех 5 рабочих вкладок, отсутствие дубликатов и корректный Health Probe."""
+        """Проверить наличие всех рабочих вкладок (включая Quickstart & Recipes), отсутствие дубликатов и корректный Health Probe."""
         html = HTML_TEMPLATE_PATH.read_text(encoding="utf-8")
-        for tab_id in ("tab-shell", "tab-hooks", "tab-pool", "tab-uri", "tab-tests"):
+        for tab_id in ("tab-shell", "tab-hooks", "tab-pool", "tab-uri", "tab-tests", "tab-policy", "tab-recipes"):
             assert f'id="{tab_id}"' in html
         for dup_id in ("quick-tab-shell", "quick-tab-hooks", "quick-tab-pool"):
             assert dup_id not in html
         assert "setPoolPreset('health')" in html
+        assert "selectRecipe('parse_auto')" in html
         assert "color: #030712" not in html
         assert "transport-badge" in html
         assert 'data-suite="architecture"' in html
         assert 'data-suite="benchmarks"' in html
+
+    def test_recipe_wizard_sandbox_executes_all_recipes(self) -> None:
+        """Проверить живое выполнение всех сценариев мастера рецептов (_execute_recipe_sandbox) и документацию."""
+        from pathlib import Path
+
+        from examples.dashboard import state
+
+        r_parse = _execute_recipe_sandbox({"recipe_id": "parse_auto"})
+        assert r_parse["status"] == "ok"
+        assert isinstance(r_parse["parsed"], list)
+        assert r_parse["parsed"][0]["mounted_on"] == "/"
+
+        r_rpc = _execute_recipe_sandbox({"recipe_id": "run_python_rpc"})
+        assert r_rpc["status"] == "ok"
+        assert r_rpc["worker_stats"]["computed_workers"] >= 2
+
+        r_state = _execute_recipe_sandbox({"recipe_id": "idempotent_state"})
+        assert r_state["status"] == "ok"
+        assert r_state["first_pass_changed"] is True
+        assert r_state["second_pass_changed"] is False
+        assert r_state["notifications_executed"] == 1
+
+        r_path = _execute_recipe_sandbox({"recipe_id": "remote_path_sync"})
+        assert r_path["status"] == "ok"
+        assert len(r_path["remote_path_glob"]) == 2
+
+        r_flow = _execute_recipe_sandbox({"recipe_id": "dag_flow"})
+        assert r_flow["status"] == "ok"
+        assert r_flow["flow_ok"] is True
+
+        r_cass = _execute_recipe_sandbox({"recipe_id": "cassette_contract"})
+        assert r_cass["status"] == "ok"
+        assert r_cass["cassette_diff"]["is_identical"] is True
+
+        r_pol = _execute_recipe_sandbox({"recipe_id": "mcp_policy_guard"})
+        assert r_pol["status"] == "ok"
+        assert r_pol["ast_is_obfuscated"] is True
+        assert "rm" in r_pol["extracted_verbs"]
+
+        docs_dir = Path(state.ROOT_DIR) / "docs"
+        for doc_name in ("index.rst", "quickstart.rst", "cookbook.rst", "migration.rst", "transports.rst", "cli_and_mcp.rst", "api.rst"):
+            doc_path = docs_dir / doc_name
+            assert doc_path.is_file(), f"Missing documentation file: {doc_name}"
+            assert len(doc_path.read_text(encoding="utf-8")) > 400
 
     @pytest.mark.slow
     def test_execute_pytest_benchmarks_and_architecture(self) -> None:
@@ -228,7 +274,7 @@ class TestDashboardUriPoolAndScreen:
 
         from examples.dashboard import handlers, sandboxes, state
         from examples.dashboard.handlers import api as api_mod
-        from examples.dashboard.sandboxes import features, hooks, pool, shell
+        from examples.dashboard.sandboxes import features, hooks, pool, recipes, shell
 
         assert callable(state.create_default_dashboard_states)
         assert callable(api_mod._dispatch_endpoint)
@@ -236,6 +282,7 @@ class TestDashboardUriPoolAndScreen:
         assert callable(shell._execute_shell_command)
         assert callable(hooks._execute_hooks_sandbox)
         assert callable(pool._execute_pool_sandbox)
+        assert callable(recipes._execute_recipe_sandbox)
         assert callable(features._execute_v090_sandbox)
         assert callable(sandboxes._build_and_validate_uri)
 
@@ -246,3 +293,4 @@ class TestDashboardUriPoolAndScreen:
         assert "windows-latest" in ci_content
         assert "macos-latest" in ci_content
         assert "not integration and not slow" in ci_content
+

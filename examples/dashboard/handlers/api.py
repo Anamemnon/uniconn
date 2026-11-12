@@ -16,6 +16,7 @@ from examples.dashboard.sandboxes import (
     _execute_hooks_sandbox,
     _execute_local_command,
     _execute_pool_sandbox,
+    _execute_recipe_sandbox,
     _execute_screen_sandbox,
     _execute_shell_command,
     _execute_v070_sandbox,
@@ -232,6 +233,8 @@ def _execute_endpoint_direct(
         return _execute_hitl_sandbox(payload)
     if endpoint == "policy":
         return _execute_policy_sandbox(payload)
+    if endpoint == "recipes":
+        return _execute_recipe_sandbox(payload)
     return {"error": f"Unknown endpoint: {endpoint}"}
 
 

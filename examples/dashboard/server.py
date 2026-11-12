@@ -22,6 +22,7 @@ from examples.dashboard.sandboxes import (
     _execute_hooks_sandbox,
     _execute_local_command,
     _execute_pool_sandbox,
+    _execute_recipe_sandbox,
     _execute_screen_sandbox,
     _execute_shell_command,
     _execute_v070_sandbox,
@@ -236,6 +237,9 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                 if parsed.path == "/api/policy":
                     self._send_json(_dispatch_endpoint("policy", payload))
                     return
+                if parsed.path == "/api/recipes":
+                    self._send_json(_dispatch_endpoint("recipes", payload))
+                    return
 
                 self._send_json({"error": "Not found"}, status=404)
             except Exception as exc:
@@ -267,6 +271,7 @@ __all__ = [
     "_execute_local_command",
     "_execute_pool_sandbox",
     "_execute_pytest",
+    "_execute_recipe_sandbox",
     "_execute_screen_sandbox",
     "_execute_shell_command",
     "_execute_v070_sandbox",

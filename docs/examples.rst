@@ -1,7 +1,7 @@
-Examples
-========
+Runnable Example Scripts
+========================
 
-Ниже приведены самодостаточные примеры использования библиотеки ``uniconn`` для различных сценариев.
+Below are self-contained runnable example scripts located in the ``examples/`` directory of the repository. For problem-oriented recipes and explanations, see :doc:`cookbook`.
 
 .. toctree::
    :maxdepth: 1

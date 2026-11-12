@@ -13,6 +13,8 @@
 
 ### Language: **[ English ]** &nbsp;|&nbsp; **[ Русский ](README.ru.md)**
 
+**📚 Documentation:** **[Overview & Cheat Sheet](docs/index.rst)** · **[5-Min Quickstart](docs/quickstart.rst)** · **[Cookbook Recipes](docs/cookbook.rst)** · **[Migration Guides](docs/migration.rst)** · **[16+ Transports](docs/transports.rst)** · **[CLI, MCP & Policy](docs/cli_and_mcp.rst)** · **[API Reference](docs/api.rst)**
+
 ---
 
 `uniconn` eliminates infrastructure glue code by providing a single, resilient `Connection` facade and a built-in **MCP Server (`uniconn mcp`)** for command execution, file synchronization, idempotent state enforcement, DAG task orchestration, and hardware diagnostics across **SSH, WinRM, Docker, Podman, Kubernetes, Serial/UART, IPMI, Redfish BMC, and Local systems** — with **100% Async + Sync parity** and zero boilerplate.
@@ -499,11 +501,29 @@ python main.py --serve
 ```
 
 Open **http://localhost:3000** in your browser to access:
-1. **Shell & Local Runner**: Interactive stateful PTY sessions with full `cd` and `export` persistence.
-2. **Hooks & Telemetry Sandbox**: Live testing of `CircuitBreaker`, `RateLimiter`, and secret masking.
-3. **Pool & Fleet Orchestrator**: Multi-host YAML inventory manager with wave rollout simulation.
-4. **Visual URI Builder**: Real-time URI constructor and validator with Python code generation.
-5. **Interactive Test Runner**: In-browser execution of unit tests across all domain packages.
+1. **Quickstart & Interactive Recipe Wizard (`#recipes`)**: Pick your engineering goal, generate **Async / Sync / CLI / Migration** code, and run it live in-process.
+2. **Shell & Local Runner (`#shell`)**: Interactive stateful PTY sessions with full `cd` and `export` persistence.
+3. **Hooks & Telemetry Sandbox (`#hooks`)**: Live testing of `CircuitBreaker`, `RateLimiter`, and secret masking.
+4. **Pool & Fleet Orchestrator (`#pool`)**: Multi-host YAML inventory manager with wave rollout simulation.
+5. **Visual URI Builder (`#uri`)**: Real-time URI constructor and validator with Python code generation.
+6. **Interactive Test Runner (`#tests`)**: In-browser execution of unit tests across all domain packages.
+7. **Policy & AST Guardrails (`#policy`)**: Live decomposition of shell commands into AST atoms and ABAC policy evaluation.
+
+---
+
+## 📖 Documentation Suite (`docs/`)
+
+Full user guides, task-to-solution matrices, and references are located in the [`docs/`](docs/) directory (GitHub renders `.rst` files natively, or you can build HTML docs via Sphinx):
+
+| Guide | What You Will Find |
+| :--- | :--- |
+| **[Overview & Cheat Sheet (`docs/index.rst`)](docs/index.rst)** | 10-second Task-to-Solution matrix and role-based entry paths |
+| **[5-Minute Quickstart (`docs/quickstart.rst`)](docs/quickstart.rst)** | Installation extras (`uniconn[all]`, `[winrm]`, `[bmc]`), zero-setup sandbox, Async vs. Sync vs. CLI |
+| **[Step-by-Step Cookbook (`docs/cookbook.rst`)](docs/cookbook.rst)** | Production recipes for auto-parsing, Zero-Fork RPC (`run_python`), `RemotePath`, `ensure_*`, `Flow`, NETCONF/YANG, BMC/UART, and cassettes |
+| **[Migration Guides (`docs/migration.rst`)](docs/migration.rst)** | Side-by-side translation tables from **Ansible**, **Paramiko**, **Fabric**, and **Netmiko / Scrapli** |
+| **[Transports & Secrets (`docs/transports.rst`)](docs/transports.rst)** | All 16+ transport URI schemes (`ssh://`, `winrm://`, `netconf://`, `gnmi://`, `pve://`, `qga://`, etc.) and `env://` / `file://` secrets |
+| **[CLI, MCP & Security (`docs/cli_and_mcp.rst`)](docs/cli_and_mcp.rst)** | Modular CLI commands, `uniconn mcp` AI server, HITL approvals, and `CommandASTParser` Policy-as-Code |
+| **[API Reference (`docs/api.rst`)](docs/api.rst)** | Complete class and function reference synchronized with `llms.txt` |
 
 ---
 
