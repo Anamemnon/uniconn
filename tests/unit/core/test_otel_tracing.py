@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+from test_shell import FakeShellProcess
 
 from uniconn import (
     Connection,
@@ -128,8 +129,7 @@ class TestOtelTracingHook:
         assert lines == ["a", "b"]
 
 
-        if sys.platform == 'win32':
-            from tests.unit.core.test_shell import FakeShellProcess
+        if sys.platform == "win32":
             fake_proc = FakeShellProcess()
             conn._transport.open_shell = AsyncMock(return_value=fake_proc)  # type: ignore[method-assign]
 
