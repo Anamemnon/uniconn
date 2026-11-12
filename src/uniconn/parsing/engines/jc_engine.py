@@ -8,7 +8,7 @@ from typing import Any
 from ...exceptions import OptionalDependencyError, ParserNotFoundError, ParsingError
 
 try:
-    import jc as _jc_mod
+    import jc as _jc_mod  # type: ignore[import-not-found,import-untyped]
 except ImportError:
     _jc_mod = None  # type: ignore[assignment]
 

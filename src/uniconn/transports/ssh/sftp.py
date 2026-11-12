@@ -190,14 +190,16 @@ class SFTPClientAdapter:
         exist_ok: bool = True,
         mode: int | None = None,
     ) -> None:
-        """Создать директорию через SFTP."""
+        """Создать директорию через SFTP с поддержкой ``parents`` и ``exist_ok``."""
         conn = self._require_conn(asyncssh_mod)
         try:
             async with conn.start_sftp_client() as sftp:
                 if parents and hasattr(sftp, "makedirs"):
                     await sftp.makedirs(remote_path, exist_ok=exist_ok)
+                elif parents:
+                    await self._mkdir_parents_fallback(asyncssh_mod, sftp, remote_path, exist_ok=exist_ok)
                 else:
-                    await sftp.mkdir(remote_path)
+                    await self._mkdir_single(asyncssh_mod, sftp, remote_path, exist_ok=exist_ok)
                 if mode is not None:
                     await sftp.chmod(remote_path, mode)
         except asyncssh_mod.Error as e:
@@ -205,6 +207,55 @@ class SFTPClientAdapter:
                 f"SFTP mkdir failed: {remote_path}: {e}",
                 host=self._transport.config.host,
             ) from e
+
+    async def _mkdir_single(
+        self,
+        asyncssh_mod: Any,
+        sftp: Any,
+        target: str,
+        *,
+        exist_ok: bool,
+    ) -> None:
+        """Создать одиночную директорию в SFTP с учётом ``exist_ok``."""
+        try:
+            await sftp.mkdir(target)
+        except asyncssh_mod.Error:
+            if not exist_ok:
+                raise
+            if hasattr(sftp, "isdir"):
+                if await sftp.isdir(target):
+                    return
+            elif hasattr(sftp, "stat"):
+                st = await sftp.stat(target)
+                perms = getattr(st, "permissions", None)
+                if perms is None or stat_module.S_ISDIR(int(perms)):
+                    return
+            raise
+
+    async def _mkdir_parents_fallback(
+        self,
+        asyncssh_mod: Any,
+        sftp: Any,
+        remote_path: str,
+        *,
+        exist_ok: bool,
+    ) -> None:
+        """Пошагово создать цепочку родительских директорий, если ``sftp.makedirs`` недоступен."""
+        norm = remote_path.rstrip("/") or "/"
+        if norm == "/":
+            return
+        is_abs = norm.startswith("/")
+        parts = [p for p in norm.split("/") if p]
+        current = ""
+        for idx, part in enumerate(parts):
+            current = f"{current}/{part}" if (current or is_abs) else part
+            is_last = idx == len(parts) - 1
+            await self._mkdir_single(
+                asyncssh_mod,
+                sftp,
+                current,
+                exist_ok=exist_ok if is_last else True,
+            )
 
     async def remove_file(self, asyncssh_mod: Any, remote_path: str) -> None:
         """Удалить файл через SFTP."""

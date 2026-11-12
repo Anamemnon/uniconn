@@ -25,7 +25,7 @@ from ..exceptions import (
     PolicyEngineUnavailableError,
     PolicyViolationError,
 )
-from .ast_parser import CommandASTParser
+from .ast_parser import CommandASTParser, normalize_target_path
 from .models import (
     AuthContext,
     PolicyDecision,
@@ -169,7 +169,7 @@ def rule_least_privilege_system_paths(ctx: AuthContext) -> PolicyRuleResult | No
         targets.append(ctx.resource.target_path)
 
     for target in targets:
-        norm = target.rstrip("/") or "/"
+        norm = normalize_target_path(target).rstrip("/") or "/"
         for prefix in _SYSTEM_PROTECTED_PREFIXES:
             if norm == prefix or norm.startswith(prefix + "/"):
                 return PolicyRuleResult(
@@ -417,12 +417,15 @@ class DeclarativePolicyRule:
             pattern = str(expected)
             return bool(re.search(pattern, ctx.action.raw_command))
         if key in ("target_prefixes", "targets", "ast.targets"):
-            prefixes = [str(x) for x in (expected if isinstance(expected, list | tuple) else [expected])]
-            targets = [str(x) for x in (ast_data.get("targets") or ())]
+            prefixes = [
+                normalize_target_path(str(x)).rstrip("/") or "/"
+                for x in (expected if isinstance(expected, list | tuple) else [expected])
+            ]
+            targets = [normalize_target_path(str(x)) for x in (ast_data.get("targets") or ())]
             if ctx.resource.target_path:
-                targets.append(ctx.resource.target_path)
+                targets.append(normalize_target_path(ctx.resource.target_path))
             return any(
-                t == pref.rstrip("/") or t.startswith(pref.rstrip("/") + "/")
+                t == pref or t.startswith(pref + "/")
                 for t in targets
                 for pref in prefixes
             )

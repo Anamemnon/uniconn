@@ -32,6 +32,7 @@ from .exceptions import (
     ModemCancelledError,
     ModemHandshakeTimeoutError,
     ModemMaxRetriesError,
+    ModemProtocolError,
 )
 
 
@@ -421,8 +422,25 @@ class AsyncYmodemReceiver:
                     await write_and_drain(self._writer, ACK)
                     break
 
-                safe_name = Path(filename).name
-                target_path = dest_root / safe_name
+                normalized_name = filename.replace("\\", "/").strip()
+                leaf_name = normalized_name.rsplit("/", 1)[-1].strip()
+                if (
+                    not leaf_name
+                    or leaf_name in (".", "..")
+                    or any(ord(ch) < 32 for ch in leaf_name)
+                ):
+                    await send_cancel_sequence(self._writer)
+                    raise ModemProtocolError(
+                        f"YMODEM rejected unsafe filename in Packet 0: {filename!r}"
+                    )
+                safe_name = leaf_name
+                resolved_root = dest_root.resolve()
+                target_path = (resolved_root / safe_name).resolve()
+                if not target_path.is_relative_to(resolved_root) or target_path == resolved_root:
+                    await send_cancel_sequence(self._writer)
+                    raise ModemProtocolError(
+                        f"YMODEM filename escapes destination directory: {filename!r}"
+                    )
                 await write_and_drain(self._writer, ACK + CRC_CHR)
 
                 expected_seq = 1

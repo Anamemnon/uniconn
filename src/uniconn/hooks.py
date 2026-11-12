@@ -44,7 +44,7 @@ from .telemetry import (
 )
 
 DEFAULT_BLOCKED_PATTERNS: tuple[str, ...] = (
-    r"\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+/($|\s)",
+    r"\brm\s+(?:-[a-zA-Z]*(?:r[a-zA-Z]*f|f[a-zA-Z]*r)[a-zA-Z]*|-[rR]\s+-[fF]|-[fF]\s+-[rR])\s+/(?:\*|$|\s)",
     r"\bmkfs(\.[a-z0-9]+)?\b",
     r"\bdd\s+if=/dev/(zero|random|urandom)\b",
     r":\(\)\s*\{\s*:\|:&\s*\}\s*;:",
@@ -115,7 +115,7 @@ def audit_log_hook(
     return _on_after_run
 
 
-_SHELL_OPERATOR_RE = re.compile(r"[;|&`><\n\r]|\$\(")
+_SHELL_OPERATOR_RE = re.compile(r"[;|&`><\n\r\x00]|\$\(")
 
 
 def allowlist_hook(
@@ -148,6 +148,10 @@ def allowlist_hook(
         host: str | None,
         _kwargs: dict[str, Any],
     ) -> None:
+        if "\x00" in command:
+            raise PermissionError(
+                f"Command {command!r} on host {host!r} contains disallowed null byte"
+            )
         cmd_stripped = command.strip()
         if not cmd_stripped:
             raise PermissionError(f"Empty command is not allowed on host {host!r}")

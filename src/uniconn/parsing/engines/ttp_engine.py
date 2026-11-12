@@ -9,7 +9,7 @@ from typing import Any
 from ...exceptions import OptionalDependencyError, ParserNotFoundError, ParsingError
 
 try:
-    from ttp import ttp as _ttp_cls
+    from ttp import ttp as _ttp_cls  # type: ignore[import-not-found,import-untyped]
 except ImportError:
     _ttp_cls = None  # type: ignore[assignment]
 

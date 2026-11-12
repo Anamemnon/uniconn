@@ -204,13 +204,18 @@ class ConnectionPool:
 
         selected_uris: list[PoolTarget] = []
         selected_active: dict[int, Connection] = {}
+        selected_cassette: dict[int, Connection] = {}
 
         for old_idx, target in enumerate(self._uris):
             key = self._target_key(target)
             conn_obj = (
                 self._active_conns[old_idx]
                 if (self._is_entered and old_idx in self._active_conns)
-                else self._build_conn(target, with_defaults=True)
+                else (
+                    self._cassette_conns[old_idx]
+                    if old_idx in self._cassette_conns
+                    else self._build_conn(target, with_defaults=True)
+                )
             )
             short_host = conn_obj.config.host or key.split("://", 1)[-1]
 
@@ -231,6 +236,8 @@ class ConnectionPool:
                 selected_uris.append(target)
                 if self._is_entered and old_idx in self._active_conns:
                     selected_active[new_idx] = self._active_conns[old_idx]
+                if old_idx in self._cassette_conns:
+                    selected_cassette[new_idx] = self._cassette_conns[old_idx]
 
         sub_pool = ConnectionPool(
             selected_uris,
@@ -247,6 +254,8 @@ class ConnectionPool:
         sub_pool._semaphore = self._semaphore
         sub_pool._circuit_breakers = self._circuit_breakers
         sub_pool._conn_initializers = list(self._conn_initializers)
+        if selected_cassette:
+            sub_pool._cassette_conns = selected_cassette
         if self._is_entered:
             sub_pool._active_conns = selected_active
             sub_pool._is_entered = True
@@ -718,37 +727,42 @@ class ConnectionPool:
             fields=fields,
         )
 
-    async def ping(
+    async def _fan_out_unconnected_dict(
         self,
-        timeout: float | None = None,
-    ) -> dict[str, PingResult]:
-        """Параллельно проверить доступность всех хостов пула с измерением задержки."""
-        results: dict[str, PingResult] = {}
+        op: Callable[[Connection], Awaitable[T]],
+    ) -> dict[str, T]:
+        """Параллельно выполнить операцию, не требующую предварительного ``async with conn`` (ping/wait)."""
+        results: dict[str, T] = {}
 
-        async def _ping_one(idx: int, target: PoolTarget) -> None:
+        async def _run_one(idx: int, target: PoolTarget) -> None:
             key = self._target_key(target)
             async with self._semaphore:
                 if self._is_entered and idx in self._active_conns:
-                    res = await self._active_conns[idx].ping(timeout=timeout)
-                    results[key] = res
+                    results[key] = await op(self._active_conns[idx])
                     return
                 if idx in self._cassette_conns:
-                    res = await self._cassette_conns[idx].ping(timeout=timeout)
-                    results[key] = res
+                    results[key] = await op(self._cassette_conns[idx])
                     return
 
                 conn = self._build_conn(target, with_defaults=True)
                 try:
-                    results[key] = await conn.ping(timeout=timeout)
+                    results[key] = await op(conn)
                 finally:
                     with contextlib.suppress(Exception):
                         await conn.close()
 
         async with asyncio.TaskGroup() as tg:
             for idx, target in enumerate(self._uris):
-                tg.create_task(_ping_one(idx, target))
+                tg.create_task(_run_one(idx, target))
 
         return results
+
+    async def ping(
+        self,
+        timeout: float | None = None,
+    ) -> dict[str, PingResult]:
+        """Параллельно проверить доступность всех хостов пула с измерением задержки."""
+        return await self._fan_out_unconnected_dict(lambda conn: conn.ping(timeout=timeout))
 
     async def wait_for_connection(
         self,
@@ -757,36 +771,9 @@ class ConnectionPool:
         delay: float = 0.0,
     ) -> dict[str, PingResult]:
         """Параллельно ожидать восстановления доступности всех хостов пула."""
-        results: dict[str, PingResult] = {}
-
-        async def _wait_one(idx: int, target: PoolTarget) -> None:
-            key = self._target_key(target)
-            async with self._semaphore:
-                if self._is_entered and idx in self._active_conns:
-                    results[key] = await self._active_conns[idx].wait_for_connection(
-                        timeout=timeout, interval=interval, delay=delay
-                    )
-                    return
-                if idx in self._cassette_conns:
-                    results[key] = await self._cassette_conns[idx].wait_for_connection(
-                        timeout=timeout, interval=interval, delay=delay
-                    )
-                    return
-
-                conn = self._build_conn(target, with_defaults=True)
-                try:
-                    results[key] = await conn.wait_for_connection(
-                        timeout=timeout, interval=interval, delay=delay
-                    )
-                finally:
-                    with contextlib.suppress(Exception):
-                        await conn.close()
-
-        async with asyncio.TaskGroup() as tg:
-            for idx, target in enumerate(self._uris):
-                tg.create_task(_wait_one(idx, target))
-
-        return results
+        return await self._fan_out_unconnected_dict(
+            lambda conn: conn.wait_for_connection(timeout=timeout, interval=interval, delay=delay)
+        )
 
     def use_cassette(
         self,

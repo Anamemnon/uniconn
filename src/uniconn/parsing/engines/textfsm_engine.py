@@ -10,12 +10,14 @@ from typing import Any
 from ...exceptions import OptionalDependencyError, ParserNotFoundError, ParsingError
 
 try:
-    import textfsm as _textfsm_mod
+    import textfsm as _textfsm_mod  # type: ignore[import-not-found,import-untyped]
 except ImportError:
     _textfsm_mod = None  # type: ignore[assignment]
 
 try:
-    from ntc_templates.parse import parse_output as _ntc_parse_output
+    from ntc_templates.parse import (  # type: ignore[import-not-found,import-untyped]
+        parse_output as _ntc_parse_output,
+    )
 except ImportError:
     _ntc_parse_output = None  # type: ignore[assignment]
 

@@ -43,6 +43,42 @@ _SCALAR_USER_SPECS: tuple[UserAttributeSpec, ...] = (
 )
 
 
+_VALID_USERNAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.-]*\$?$")
+_VALID_SYSCTL_KEY_RE = re.compile(r"^[a-zA-Z0-9_]+(?:[./-][a-zA-Z0-9_]+)*$")
+
+
+def _validate_username(username: str) -> str:
+    """Проверить корректность и безопасность имени системного пользователя."""
+    cleaned = username.strip()
+    if not cleaned or not _VALID_USERNAME_RE.match(cleaned):
+        raise ValueError(f"Invalid system username: {username!r}")
+    return cleaned
+
+
+def _validate_unit_name(name: str) -> str:
+    """Проверить имя unit-файла systemd на отсутствие path traversal и управляющих символов."""
+    cleaned = name.strip()
+    if (
+        not cleaned
+        or cleaned in (".", "..")
+        or "/" in cleaned
+        or "\\" in cleaned
+        or "\x00" in cleaned
+        or ".." in cleaned
+        or cleaned.startswith("-")
+    ):
+        raise ValueError(f"Invalid systemd unit name: {name!r}")
+    return cleaned if "." in cleaned else f"{cleaned}.service"
+
+
+def _validate_sysctl_key(name: str) -> str:
+    """Проверить имя параметра ядра sysctl на отсутствие инъекций и переводов строк."""
+    cleaned = name.strip()
+    if not cleaned or ".." in cleaned or not _VALID_SYSCTL_KEY_RE.match(cleaned):
+        raise ValueError(f"Invalid sysctl parameter name: {name!r}")
+    return cleaned
+
+
 def build_useradd_command(
     username: str,
     *,
@@ -216,6 +252,7 @@ async def ensure_user(
     dry_run: bool | None = None,
 ) -> EnsureResult:
     """Идемпотентно управлять системным пользователем и его группами."""
+    username = _validate_username(username)
     is_dry_run = svc._conn.dry_run if dry_run is None else dry_run
 
     if not svc._can_inspect_in_dry_run():
@@ -303,20 +340,20 @@ async def ensure_user(
             old_tokens.append(f"{spec.name}={current_val}")
             new_tokens.append(f"{spec.name}={desired_val}")
 
-        if spec.name == "group" and groups is not None:
-            all_g_res = await svc._conn.run(
-                f"id -Gn {shlex.quote(username)}",
-                sudo=sudo,
-                raise_on_error=False,
-                dry_run=False,
-            )
-            cur_all_groups = set(all_g_res.stdout.strip().split()) if all_g_res.ok else set()
-            if not set(groups).issubset(cur_all_groups):
-                joined_groups = ",".join(groups)
-                mod_flags.extend(["-G", shlex.quote(joined_groups)])
-                changes_desc.append(f"groups -> {joined_groups}")
-                old_tokens.append(f"groups={','.join(sorted(cur_all_groups))}")
-                new_tokens.append(f"groups={joined_groups}")
+    if groups is not None:
+        all_g_res = await svc._conn.run(
+            f"id -Gn {shlex.quote(username)}",
+            sudo=sudo,
+            raise_on_error=False,
+            dry_run=False,
+        )
+        cur_all_groups = set(all_g_res.stdout.strip().split()) if all_g_res.ok else set()
+        if not set(groups).issubset(cur_all_groups):
+            joined_groups = ",".join(groups)
+            mod_flags.extend(["-G", shlex.quote(joined_groups)])
+            changes_desc.append(f"groups -> {joined_groups}")
+            old_tokens.append(f"groups={','.join(sorted(cur_all_groups))}")
+            new_tokens.append(f"groups={joined_groups}")
 
     if not mod_flags:
         return EnsureResult(
@@ -582,8 +619,8 @@ async def ensure_systemd_unit(
     dry_run: bool | None = None,
 ) -> EnsureResult:
     """Идемпотентно управлять unit-файлом systemd с вызовом ``daemon-reload`` при изменениях."""
+    unit_name = _validate_unit_name(name)
     is_dry_run = svc._conn.dry_run if dry_run is None else dry_run
-    unit_name = name if "." in name else f"{name}.service"
     unit_path = f"{unit_dir.rstrip('/')}/{unit_name}"
 
     changed = False
@@ -722,8 +759,11 @@ async def ensure_sysctl(
     dry_run: bool | None = None,
 ) -> EnsureResult:
     """Идемпотентно управлять параметром ядра ``sysctl`` и применять его на лету."""
+    name = _validate_sysctl_key(name)
     is_dry_run = svc._conn.dry_run if dry_run is None else dry_run
     val_str = str(value).strip()
+    if "\n" in val_str or "\r" in val_str or "\x00" in val_str:
+        raise ValueError(f"Invalid sysctl parameter value: {value!r}")
     line_str = f"{name} = {val_str}"
     regex_pat = rf"^\s*{re.escape(name)}\s*="
 

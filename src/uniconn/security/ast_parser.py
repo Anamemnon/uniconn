@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import binascii
 import os
+import posixpath
 import re
 import shlex
 from dataclasses import dataclass, field
@@ -21,6 +22,15 @@ from typing import Any
 _WRAPPER_BINARIES: frozenset[str] = frozenset(
     {
         "sudo",
+        "doas",
+        "pkexec",
+        "su",
+        "runuser",
+        "chroot",
+        "nsenter",
+        "watch",
+        "strace",
+        "ltrace",
         "env",
         "nohup",
         "nice",
@@ -47,8 +57,18 @@ _INLINE_SCRIPT_BINS: dict[str, tuple[str, ...]] = {
 }
 
 _SUDO_OPTS_WITH_ARG: frozenset[str] = frozenset(
-    {"-u", "-g", "-C", "-D", "-R", "-T", "-U", "-h", "-p", "-r", "-t"}
+    {"-u", "-g", "-C", "-D", "-R", "-T", "-U", "-h", "-p", "-r", "-t", "-L", "--user"}
 )
+_WRAPPER_OPTS_WITH_ARG: dict[str, frozenset[str]] = {
+    "watch": frozenset({"-n", "--interval", "-d", "--differences"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "ionice": frozenset({"-c", "--class", "-n", "--classdata", "-p", "--pid", "-P", "-u"}),
+    "taskset": frozenset({"-c", "--cpu-list"}),
+    "stdbuf": frozenset({"-i", "--input", "-o", "--output", "-e", "--error"}),
+    "strace": frozenset({"-e", "-o", "-p", "-s", "-u", "-E"}),
+    "ltrace": frozenset({"-e", "-o", "-p", "-s", "-u", "-l"}),
+    "nsenter": frozenset({"-t", "--target", "-F"}),
+}
 _XARGS_OPTS_WITH_ARG: frozenset[str] = frozenset(
     {"-a", "--arg-file", "-d", "--delimiter", "-E", "-e", "-I", "-i", "-L", "-l", "-n", "-P", "-s"}
 )
@@ -65,6 +85,42 @@ _OPTS_WITH_ARG_BY_BIN: dict[str, frozenset[str]] = {
     "ip": frozenset({"-n", "-netns", "-V", "-rc", "-b", "-batch"}),
     "service": frozenset(),
 }
+
+_TRAVERSAL_SYSTEM_ROOTS: tuple[str, ...] = (
+    "etc/",
+    "boot/",
+    "root/",
+    "proc/",
+    "sys/",
+    "dev/",
+    "usr/",
+    "lib/",
+    "lib64/",
+    "sbin/",
+    "bin/",
+    "var/",
+)
+
+
+def normalize_target_path(raw_path: str) -> str:
+    """Нормализовать POSIX-путь (схлопнуть ``//``, ``/./`` и ``/../``) для защиты от path traversal."""
+    cleaned = raw_path.strip().replace("\\", "/")
+    if not cleaned or cleaned.startswith("~"):
+        return cleaned
+    if cleaned.startswith(("../", "./")):
+        rel_tail = cleaned
+        while rel_tail.startswith(("../", "./")):
+            rel_tail = rel_tail[3:] if rel_tail.startswith("../") else rel_tail[2:]
+        rel_tail = rel_tail.lstrip("/")
+        if any(
+            rel_tail == root.rstrip("/") or rel_tail.startswith(root)
+            for root in _TRAVERSAL_SYSTEM_ROOTS
+        ):
+            cleaned = "/" + rel_tail
+    norm = posixpath.normpath(cleaned)
+    if cleaned.startswith("/") and norm.startswith("//"):
+        norm = "/" + norm.lstrip("/")
+    return norm
 
 _DESTRUCTIVE_EXECUTABLES: frozenset[str] = frozenset(
     {
@@ -595,9 +651,14 @@ class CommandASTParser:
                     i += 1
                     continue
                 if not in_single:
-                    # Подстановка $(...) с балансом вложенных скобок и кавычек
-                    if ch == "$" and i + 1 < n and text[i + 1] == "(":
-                        if i + 2 < n and text[i + 2] == "(":
+                    # Подстановка $(...) и process substitution <(...), >(...) с балансом скобок
+                    if (
+                        ch in ("$", "<", ">")
+                        and i + 1 < n
+                        and text[i + 1] == "("
+                        and (ch == "$" or i == 0 or text[i - 1] not in ("<", ">"))
+                    ):
+                        if ch == "$" and i + 2 < n and text[i + 2] == "(":
                             i += 3
                             continue
                         p_depth = 1
@@ -732,7 +793,7 @@ class CommandASTParser:
         idx = 0
         n = len(tokens)
 
-        # 1. Снимаем ведущие присваивания переменных окружения и обёртки (sudo, env, timeout, nice...)
+        # 1. Снимаем ведущие присваивания переменных окружения и обёртки (sudo, doas, pkexec, su, env, timeout...)
         while idx < n:
             tok = tokens[idx]
             if "=" in tok and not tok.startswith("-") and tok.split("=", 1)[0].isidentifier():
@@ -750,15 +811,60 @@ class CommandASTParser:
                 continue
 
             base_tok = os.path.basename(tok).lower()
-            if base_tok == "sudo":
+            if base_tok in ("sudo", "doas", "pkexec"):
                 effective_sudo = True
-                wrappers.append("sudo")
+                wrappers.append(base_tok)
                 idx += 1
                 while idx < n and tokens[idx].startswith("-"):
                     opt = tokens[idx]
                     idx += 1
+                    if opt == "--":
+                        break
                     if opt in _SUDO_OPTS_WITH_ARG and idx < n:
                         idx += 1
+                continue
+
+            if base_tok in ("su", "runuser"):
+                effective_sudo = True
+                wrappers.append(base_tok)
+                idx += 1
+                while idx < n:
+                    cur = tokens[idx]
+                    if cur in ("-c", "--command") and idx + 1 < n:
+                        return (
+                            [],
+                            [(tokens[idx + 1], (*wrappers, f"{base_tok} -c"), True)],
+                            False,
+                        )
+                    if cur.startswith("--command="):
+                        return (
+                            [],
+                            [(cur.split("=", 1)[1], (*wrappers, f"{base_tok} -c"), True)],
+                            False,
+                        )
+                    if cur == "--":
+                        idx += 1
+                        break
+                    if cur.startswith("-"):
+                        idx += 2 if cur in ("-s", "--shell", "-u", "-g", "-G") and idx + 1 < n else 1
+                        continue
+                    # Имя целевого пользователя (например, `su root -c "..."`)
+                    if idx + 1 < n and tokens[idx + 1].startswith("-"):
+                        idx += 1
+                        continue
+                    break
+                continue
+
+            if base_tok == "chroot" and idx + 1 < n:
+                wrappers.append("chroot")
+                idx += 1
+                while idx < n and tokens[idx].startswith("-"):
+                    opt = tokens[idx]
+                    idx += 1
+                    if opt in ("--userspec", "--groups") and idx < n:
+                        idx += 1
+                if idx + 1 < n:
+                    idx += 1  # Пропускаем NEWROOT перед исполняемой командой
                 continue
 
             if base_tok == "env":
@@ -798,9 +904,15 @@ class CommandASTParser:
 
             if base_tok in _WRAPPER_BINARIES:
                 wrappers.append(base_tok)
+                w_opts = _WRAPPER_OPTS_WITH_ARG.get(base_tok, frozenset())
                 idx += 1
                 while idx < n and tokens[idx].startswith("-"):
+                    opt = tokens[idx]
                     idx += 1
+                    if opt == "--":
+                        break
+                    if opt in w_opts and idx < n:
+                        idx += 1
                 continue
 
             break
@@ -1104,16 +1216,39 @@ class CommandASTParser:
     def _extract_paths_from_atomic(atom: AtomicCommand) -> list[str]:
         """Извлечь целевые пути файловой системы и блочных устройств из аргументов и редиректов."""
         paths: list[str] = []
+
+        def _add_candidate(raw_val: str) -> None:
+            cleaned = raw_val.strip()
+            if not cleaned:
+                return
+            if cleaned.startswith(("/", "./", "../", "~")):
+                if cleaned not in paths:
+                    paths.append(cleaned)
+                norm = normalize_target_path(cleaned)
+                if norm and norm not in paths:
+                    paths.append(norm)
+            if "../" in cleaned or cleaned.startswith(".."):
+                rel_tail = cleaned.replace("\\", "/")
+                while rel_tail.startswith(("../", "./")):
+                    rel_tail = rel_tail[3:] if rel_tail.startswith("../") else rel_tail[2:]
+                rel_tail = rel_tail.lstrip("/")
+                if any(
+                    rel_tail == root.rstrip("/") or rel_tail.startswith(root)
+                    for root in _TRAVERSAL_SYSTEM_ROOTS
+                ):
+                    abs_target = normalize_target_path("/" + rel_tail)
+                    if abs_target not in paths:
+                        paths.append(abs_target)
+
         for arg in atom.arguments:
             cleaned = arg.strip()
             if cleaned.startswith("of="):
                 cleaned = cleaned[3:]
-            if cleaned.startswith(("/", "./", "../", "~")):
-                paths.append(cleaned)
+            _add_candidate(cleaned)
         for redir in atom.redirects:
-            m = re.search(r"(/[^\s>;|&]+)", redir)
+            m = re.search(r"((?:/|\.\.?/)[^\s>;|&]+)", redir)
             if m:
-                paths.append(m.group(1))
+                _add_candidate(m.group(1))
         return paths
 
 
@@ -1121,4 +1256,5 @@ __all__ = [
     "AtomicCommand",
     "CommandASTParser",
     "ParsedCommandAST",
+    "normalize_target_path",
 ]

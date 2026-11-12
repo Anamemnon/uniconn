@@ -12,23 +12,19 @@
 from __future__ import annotations
 
 import asyncio
-import builtins
 import contextlib
 import os
 import re
 import shlex
 import shutil
-import time
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any
 
 from ..config.models import ConnectionConfig
-from ..exceptions import ConfigurationError, ConnectionError, ExecutionError, TimeoutError
-from ..result import Result
-from ._docker import _build_stat_fallback_command, _parse_stat_output
+from ..exceptions import ConfigurationError, ConnectionError
+from ._container_base import ContainerExecTransportBase
 from ._local import _LocalShellProcess
-from .base import BaseTransport, FileStat
 
 _PORT_FORWARD_RE = re.compile(
     r"(?:Forwarding from\s+.+:|127\.0\.0\.1:|\[::1\]:)(\d+)\s*->\s*\d+",
@@ -63,12 +59,14 @@ async def _wait_for_local_port_ready(
             await asyncio.sleep(0.01)
 
 
-class KubectlTransport(BaseTransport):
+class KubectlTransport(ContainerExecTransportBase):
     """Транспорт выполнения команд, работы с файлами, PTY и port-forward для подов Kubernetes."""
+
+    _cli_label: str = "Kubernetes CLI"
+    _target_noun: str = "pod"
 
     def __init__(self, config: ConnectionConfig) -> None:
         super().__init__(config)
-        self._shell_procs: list[_LocalShellProcess] = []
         self._port_forward_procs: list[asyncio.subprocess.Process] = []
 
     @property
@@ -87,6 +85,10 @@ class KubectlTransport(BaseTransport):
         if not self.config.host:
             raise ConfigurationError("kubectl:// URI requires a pod name")
         return self.config.host
+
+    @property
+    def _target_host(self) -> str:
+        return self.pod
 
     @property
     def namespace(self) -> str | None:
@@ -155,59 +157,6 @@ class KubectlTransport(BaseTransport):
         args.extend([self.pod, "--", shell, "-c", wrapped_cmd])
         return args
 
-    async def _run_host_cli(
-        self,
-        args: list[str],
-        *,
-        stdin_bytes: bytes | None = None,
-        timeout: float | None = None,
-    ) -> tuple[int, bytes, bytes, float]:
-        """Запустить процесс ``kubectl`` и вернуть ``(exit_code, stdout, stderr, duration)``."""
-        start_time = time.monotonic()
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *args,
-                stdin=asyncio.subprocess.PIPE if stdin_bytes is not None else None,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except FileNotFoundError as exc:
-            raise ConnectionError(
-                f"Kubernetes CLI {args[0]!r} not found in PATH",
-                host=self.config.host,
-            ) from exc
-        except OSError as exc:
-            raise ConnectionError(
-                f"Failed to invoke {args[0]!r}: {exc}",
-                host=self.config.host,
-            ) from exc
-
-        try:
-            comm_coro = (
-                proc.communicate(stdin_bytes)
-                if stdin_bytes is not None
-                else proc.communicate()
-            )
-            stdout, stderr = await asyncio.wait_for(comm_coro, timeout=timeout)
-        except builtins.TimeoutError as exc:
-            with contextlib.suppress(ProcessLookupError, OSError):
-                proc.kill()
-            with contextlib.suppress(Exception):
-                await proc.wait()
-            raise TimeoutError(
-                f"kubectl command timed out after {timeout}s",
-                command=" ".join(args),
-                host=self.config.host,
-            ) from exc
-        finally:
-            transport = getattr(proc, "_transport", None)
-            if transport is not None:
-                with contextlib.suppress(Exception):
-                    transport.close()
-
-        duration = time.monotonic() - start_time
-        return (proc.returncode or 0, stdout or b"", stderr or b"", duration)
-
     async def connect(self) -> None:
         """Проверить наличие ``kubectl`` и статус ``Running`` у целевого пода."""
         pod = self.pod
@@ -240,12 +189,7 @@ class KubectlTransport(BaseTransport):
 
     async def disconnect(self) -> None:
         """Закрыть активные shell-сессии и процессы ``kubectl port-forward``."""
-        while self._shell_procs:
-            proc = self._shell_procs.pop()
-            with contextlib.suppress(Exception):
-                proc.terminate()
-            with contextlib.suppress(Exception):
-                await proc.wait_closed()
+        await self._close_shell_procs()
         while self._port_forward_procs:
             pf_proc = self._port_forward_procs.pop()
             if pf_proc.returncode is None:
@@ -254,164 +198,6 @@ class KubectlTransport(BaseTransport):
                 with contextlib.suppress(Exception):
                     await asyncio.wait_for(pf_proc.wait(), timeout=1.0)
         self._connected = False
-
-    async def _exec_raw(
-        self,
-        command: str,
-        timeout: float | None = None,
-        **kwargs: Any,
-    ) -> tuple[int, bytes, bytes, float]:
-        """Выполнить команду внутри пода и вернуть сырые байты."""
-        input_data = kwargs.get("input")
-        stdin_bytes: bytes | None = None
-        if isinstance(input_data, str):
-            stdin_bytes = input_data.encode("utf-8")
-        elif isinstance(input_data, bytes):
-            stdin_bytes = input_data
-
-        exec_args = self._build_exec_args(
-            command,
-            cwd=kwargs.get("cwd"),
-            env=kwargs.get("env"),
-            interactive=stdin_bytes is not None,
-        )
-        eff_timeout = timeout if timeout is not None else self.config.timeout
-        try:
-            return await self._run_host_cli(
-                exec_args,
-                stdin_bytes=stdin_bytes,
-                timeout=eff_timeout,
-            )
-        except TimeoutError as exc:
-            raise TimeoutError(
-                f"kubectl command timed out after {eff_timeout}s",
-                command=command,
-                host=self.pod,
-            ) from exc
-
-    async def run(
-        self,
-        command: str,
-        timeout: float | None = None,
-        **kwargs: Any,
-    ) -> Result:
-        """Выполнить команду в поде и вернуть ``Result``."""
-        raise_on_error = bool(kwargs.pop("raise_on_error", False))
-        exit_code, stdout_b, stderr_b, duration = await self._exec_raw(
-            command,
-            timeout=timeout,
-            **kwargs,
-        )
-        stdout_str = stdout_b.decode("utf-8", errors="replace") if stdout_b else ""
-        stderr_str = stderr_b.decode("utf-8", errors="replace") if stderr_b else ""
-        if raise_on_error and exit_code != 0:
-            raise ExecutionError(
-                f"Command failed in pod {self.pod!r} with exit code {exit_code}",
-                command=command,
-                exit_code=exit_code,
-                stdout=stdout_str,
-                stderr=stderr_str,
-                host=self.pod,
-            )
-        return Result(
-            exit_code=exit_code,
-            stdout=stdout_str,
-            stderr=stderr_str,
-            duration=duration,
-            command=command,
-            host=self.pod,
-        )
-
-    async def run_bytes(
-        self,
-        command: str,
-        timeout: float | None = None,
-        **kwargs: Any,
-    ) -> bytes:
-        """Выполнить команду в поде и вернуть сырой байтовый ``stdout``."""
-        raise_on_error = bool(kwargs.pop("raise_on_error", False))
-        exit_code, stdout_b, stderr_b, _ = await self._exec_raw(
-            command,
-            timeout=timeout,
-            **kwargs,
-        )
-        if raise_on_error and exit_code != 0:
-            raise ExecutionError(
-                f"Command failed in pod {self.pod!r} with exit code {exit_code}",
-                command=command,
-                exit_code=exit_code,
-                stdout=stdout_b.decode("utf-8", errors="replace"),
-                stderr=stderr_b.decode("utf-8", errors="replace"),
-                host=self.pod,
-            )
-        return stdout_b
-
-    async def stream(
-        self,
-        command: str,
-        timeout: float | None = None,
-        **kwargs: Any,
-    ) -> AsyncIterator[str]:
-        """Построчное потоковое чтение вывода команды из пода."""
-        _ = timeout
-        exec_args = self._build_exec_args(
-            command,
-            cwd=kwargs.get("cwd"),
-            env=kwargs.get("env"),
-            interactive=False,
-        )
-        proc = await asyncio.create_subprocess_exec(
-            *exec_args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        try:
-            if proc.stdout is not None:
-                async for line in proc.stdout:
-                    yield line.decode("utf-8", errors="replace").rstrip("\r\n")
-            await proc.wait()
-        finally:
-            if proc.returncode is None:
-                with contextlib.suppress(ProcessLookupError, OSError):
-                    proc.terminate()
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(proc.wait(), timeout=1.0)
-            transport = getattr(proc, "_transport", None)
-            if transport is not None:
-                with contextlib.suppress(Exception):
-                    transport.close()
-
-    async def read_file(self, remote_path: str) -> bytes:
-        """Прочитать файл из пода в память (``bytes``)."""
-        q_path = shlex.quote(remote_path)
-        exit_code, stdout_b, stderr_b, _ = await self._exec_raw(f"cat -- {q_path}")
-        if exit_code != 0:
-            err = stderr_b.decode("utf-8", errors="replace").strip()
-            raise ConnectionError(
-                f"kubectl read_file failed for {remote_path}: {err}",
-                host=self.pod,
-            )
-        return stdout_b
-
-    async def write_file(
-        self,
-        remote_path: str,
-        data: bytes,
-        mode: int | None = None,
-    ) -> None:
-        """Записать байты в файл внутри пода и опционально применить ``chmod``."""
-        q_path = shlex.quote(remote_path)
-        parent = str(Path(remote_path).parent)
-        mkdir_part = f"mkdir -p -- {shlex.quote(parent)} && " if parent and parent != "." else ""
-        chmod_part = f" && chmod {oct(mode)[2:]} -- {q_path}" if mode is not None else ""
-        cmd = f"{mkdir_part}cat > {q_path}{chmod_part}"
-        exit_code, _, stderr_b, _ = await self._exec_raw(cmd, input=data)
-        if exit_code != 0:
-            err = stderr_b.decode("utf-8", errors="replace").strip()
-            raise ConnectionError(
-                f"kubectl write_file failed for {remote_path}: {err}",
-                host=self.pod,
-            )
 
     def _cp_pod_target(self, remote_path: str) -> str:
         """Сформировать спецификатор ``[namespace/]pod:path`` для ``kubectl cp``."""
@@ -428,13 +214,8 @@ class KubectlTransport(BaseTransport):
     ) -> None:
         """Скопировать локальный файл или директорию в под через ``kubectl cp``."""
         progress_cb = kwargs.get("progress_callback")
-        total_bytes = 0
+        total_bytes = self._compute_local_size(local_path) if callable(progress_cb) else 0
         if callable(progress_cb):
-            p = Path(local_path)
-            if p.is_file():
-                total_bytes = p.stat().st_size
-            elif p.is_dir():
-                total_bytes = sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
             progress_cb(0, total_bytes)
         parent = str(Path(remote_path).parent)
         if parent and parent not in (".", "/"):
@@ -480,74 +261,8 @@ class KubectlTransport(BaseTransport):
                 host=self.pod,
             )
         if callable(progress_cb):
-            p = Path(local_path)
-            total_bytes = (
-                p.stat().st_size
-                if p.is_file()
-                else (sum(f.stat().st_size for f in p.rglob("*") if f.is_file()) if p.is_dir() else 0)
-            )
+            total_bytes = self._compute_local_size(local_path)
             progress_cb(total_bytes, total_bytes)
-
-    async def chmod(self, remote_path: str, mode: int) -> None:
-        """Изменить права доступа к файлу внутри пода."""
-        res = await self.run(f"chmod {oct(mode)[2:]} -- {shlex.quote(remote_path)}")
-        if not res.ok:
-            raise ConnectionError(
-                f"kubectl chmod failed for {remote_path}: {res.stderr.strip()}",
-                host=self.pod,
-            )
-
-    async def stat(self, remote_path: str) -> FileStat:
-        """Получить метаданные файла или директории внутри пода (с fallback на Python и ls -ldn)."""
-        q_path = shlex.quote(remote_path)
-        res = await self.run(f"stat -c '%s|%u|%g|%f|%X|%Y' -- {q_path}")
-        if res.ok and res.stdout.strip():
-            try:
-                return _parse_stat_output(res.stdout)
-            except ValueError:
-                pass
-
-        fb_res = await self.run(_build_stat_fallback_command(remote_path))
-        if fb_res.ok and fb_res.stdout.strip():
-            try:
-                return _parse_stat_output(fb_res.stdout)
-            except ValueError as exc:
-                raise ConnectionError(
-                    f"kubectl stat parse failed for {remote_path}: {exc}",
-                    host=self.pod,
-                ) from exc
-
-        err_msg = (res.stderr or fb_res.stderr).strip()
-        if res.ok and res.stdout.strip():
-            raise ConnectionError(
-                f"kubectl stat parse failed for {remote_path}: Unexpected stat output format: {res.stdout!r}",
-                host=self.pod,
-            )
-        raise ConnectionError(
-            f"kubectl stat failed for {remote_path}: {err_msg}",
-            host=self.pod,
-        )
-
-    async def listdir(self, remote_path: str = ".") -> list[str]:
-        """Список имён файлов в директории внутри пода."""
-        q_path = shlex.quote(remote_path)
-        res = await self.run(f"ls -1A -- {q_path}")
-        if not res.ok:
-            raise ConnectionError(
-                f"kubectl listdir failed for {remote_path}: {res.stderr.strip()}",
-                host=self.pod,
-            )
-        return [line for line in res.stdout.splitlines() if line]
-
-    async def remove_file(self, remote_path: str) -> None:
-        """Удалить файл внутри пода."""
-        q_path = shlex.quote(remote_path)
-        res = await self.run(f"rm -f -- {q_path}")
-        if not res.ok:
-            raise ConnectionError(
-                f"kubectl remove_file failed for {remote_path}: {res.stderr.strip()}",
-                host=self.pod,
-            )
 
     async def open_shell(
         self,
