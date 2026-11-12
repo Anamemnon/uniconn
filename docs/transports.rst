@@ -1,7 +1,9 @@
 Transports & Secret Resolution (16+ Schemes)
 ============================================
 
-Every connection in ``uniconn`` is described by a standardized URI scheme or a ``ConnectionConfig`` object. All schemes support dynamic secret resolution via ``SecretResolver``.
+**Language:** **[ English ]** | `Русский <ru/inventory_and_uris.rst>`_
+
+Every connection in ``uniconn`` is described by a standardized URI scheme or a ``ConnectionConfig`` object. All schemes support dynamic secret resolution via ``SecretResolver``. For complete YAML/TOML/JSON inventory schemas and exhaustive query parameter tables, see :doc:`inventory_and_uris`.
 
 Dynamic Secret Resolution (``env://`` & ``file://``)
 ----------------------------------------------------

@@ -1,6 +1,8 @@
 5-Minute Quickstart Guide
 =========================
 
+**Language:** **[ English ]** | `Русский <ru/quickstart.rst>`_
+
 This guide walks you through installing ``uniconn``, choosing between the **Async** and **Sync** APIs, running your first commands (even without a remote server), and using the built-in interactive web console.
 
 1. Installation

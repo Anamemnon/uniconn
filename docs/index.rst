@@ -1,6 +1,8 @@
 uniconn Documentation
 =====================
 
+**Language:** **[ English ]** | `Русский <ru/index.rst>`_
+
 **uniconn** is a universal async-first Python library (Python 3.11+) and CLI for executing commands, inspecting host facts, enforcing idempotent states, orchestrating multi-host task DAGs, and synchronizing files across **16+ transport schemes** with **100% Async + Sync API parity** and sub-millisecond core overhead.
 
 .. image:: https://img.shields.io/badge/python-3.11+-blue.svg
@@ -79,10 +81,11 @@ Task-to-Solution Cheat Sheet (Find Your Tool in 10 Seconds)
 Choose Your Starting Path by Role
 ---------------------------------
 
-- **Linux / Windows SysAdmin & DevOps**: Start with :doc:`quickstart`, explore ``conn.files`` and ``conn.state.ensure_*`` in :doc:`cookbook`, or compare patterns in :doc:`migration`.
-- **Network Engineer (NETCONF / RESTCONF / gNMI)**: Check structured YANG operations (``conn.net.get``, ``conn.state.ensure_yang``) and ``textfsm`` / ``ttp`` parsing in :doc:`transports` and :doc:`cookbook`.
+- **Linux / Windows SysAdmin & DevOps**: Start with :doc:`quickstart`, explore ``conn.files`` and ``conn.state.ensure_*`` in :doc:`cookbook`, check YAML/TOML/JSON schemas in :doc:`inventory_and_uris`, or compare patterns in :doc:`migration`.
+- **Python Developer & Software Architect**: Dive into ``CommandPipeline``, middleware execution order, ``EventLoopPortal``, and custom extensions in :doc:`architecture`.
+- **Network Engineer (NETCONF / RESTCONF / gNMI)**: Check structured YANG operations (``conn.net.get``, ``conn.state.ensure_yang``) and ``textfsm`` / ``ttp`` parsing in :doc:`transports`, :doc:`inventory_and_uris`, and :doc:`cookbook`.
 - **Bare-Metal & Embedded Hardware Engineer**: See Redfish HTTP/2, IPMI, Serial/UART DTR/RTS pulsing, X/Y/ZMODEM flashing, and reactive ``diagnostic_session`` watchdogs in :doc:`cookbook`.
-- **QA / SDET Engineer**: Learn how to record YAML cassettes, assert zero config drift, and run in-process ``MockSSHServer`` fixtures in :doc:`cookbook`.
+- **QA / SDET & Troubleshooting Engineer**: Learn how to inspect the ``UniconnError`` hierarchy, enable ``diagnose=True``, record YAML cassettes, and resolve common errors in :doc:`troubleshooting` and :doc:`cookbook`.
 - **AI / Platform Engineer**: Configure ``uniconn mcp``, Human-in-the-Loop (HITL) approvals, and AST Policy-as-Code guardrails in :doc:`cli_and_mcp`.
 
 Documentation Contents
@@ -90,13 +93,22 @@ Documentation Contents
 
 .. toctree::
    :maxdepth: 2
-   :caption: User Guides & Tutorials:
+   :caption: User Guides & Deep Dives (EN):
 
    quickstart
+   architecture
+   inventory_and_uris
    cookbook
+   troubleshooting
    migration
    transports
    cli_and_mcp
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Документация на русском (RU):
+
+   ru/index
 
 .. toctree::
    :maxdepth: 2

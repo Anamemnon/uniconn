@@ -11,9 +11,9 @@
 
 ---
 
-### Language: **[ English ]** &nbsp;|&nbsp; **[ Русский ](README.ru.md)**
+### Language: **[ English ]** &nbsp;|&nbsp; **[ Русский ](README.ru.md)** &nbsp;|&nbsp; **[ 🇷🇺 Документация в docs/ru/ ](docs/ru/index.rst)**
 
-**📚 Documentation:** **[Overview & Cheat Sheet](docs/index.rst)** · **[5-Min Quickstart](docs/quickstart.rst)** · **[Cookbook Recipes](docs/cookbook.rst)** · **[Migration Guides](docs/migration.rst)** · **[16+ Transports](docs/transports.rst)** · **[CLI, MCP & Policy](docs/cli_and_mcp.rst)** · **[API Reference](docs/api.rst)**
+**📚 Documentation:** **[Overview & Cheat Sheet](docs/index.rst)** · **[5-Min Quickstart](docs/quickstart.rst)** · **[Core Architecture & Pipeline](docs/architecture.rst)** · **[Inventory & URI Reference](docs/inventory_and_uris.rst)** · **[Cookbook Recipes](docs/cookbook.rst)** · **[Debugging & Troubleshooting](docs/troubleshooting.rst)** · **[Migration Guides](docs/migration.rst)** · **[CLI, MCP & Policy](docs/cli_and_mcp.rst)** · **[API Reference](docs/api.rst)**
 
 ---
 
@@ -511,19 +511,22 @@ Open **http://localhost:3000** in your browser to access:
 
 ---
 
-## 📖 Documentation Suite (`docs/`)
+## 📖 Documentation Suite (`docs/` & `docs/ru/`)
 
-Full user guides, task-to-solution matrices, and references are located in the [`docs/`](docs/) directory (GitHub renders `.rst` files natively, or you can build HTML docs via Sphinx):
+Full user guides, task-to-solution matrices, architectural deep dives, and references are located in [`docs/`](docs/) (English) and [`docs/ru/`](docs/ru/) (Russian):
 
-| Guide | What You Will Find |
-| :--- | :--- |
-| **[Overview & Cheat Sheet (`docs/index.rst`)](docs/index.rst)** | 10-second Task-to-Solution matrix and role-based entry paths |
-| **[5-Minute Quickstart (`docs/quickstart.rst`)](docs/quickstart.rst)** | Installation extras (`uniconn[all]`, `[winrm]`, `[bmc]`), zero-setup sandbox, Async vs. Sync vs. CLI |
-| **[Step-by-Step Cookbook (`docs/cookbook.rst`)](docs/cookbook.rst)** | Production recipes for auto-parsing, Zero-Fork RPC (`run_python`), `RemotePath`, `ensure_*`, `Flow`, NETCONF/YANG, BMC/UART, and cassettes |
-| **[Migration Guides (`docs/migration.rst`)](docs/migration.rst)** | Side-by-side translation tables from **Ansible**, **Paramiko**, **Fabric**, and **Netmiko / Scrapli** |
-| **[Transports & Secrets (`docs/transports.rst`)](docs/transports.rst)** | All 16+ transport URI schemes (`ssh://`, `winrm://`, `netconf://`, `gnmi://`, `pve://`, `qga://`, etc.) and `env://` / `file://` secrets |
-| **[CLI, MCP & Security (`docs/cli_and_mcp.rst`)](docs/cli_and_mcp.rst)** | Modular CLI commands, `uniconn mcp` AI server, HITL approvals, and `CommandASTParser` Policy-as-Code |
-| **[API Reference (`docs/api.rst`)](docs/api.rst)** | Complete class and function reference synchronized with `llms.txt` |
+| Guide (English) | Руководство (На русском) | What You Will Find |
+| :--- | :--- | :--- |
+| **[Overview & Cheat Sheet](docs/index.rst)** | **[Обзор и шпаргалка](docs/ru/index.rst)** | 10-second Task-to-Solution matrix and role-based entry paths |
+| **[5-Minute Quickstart](docs/quickstart.rst)** | **[Быстрый старт за 5 мин](docs/ru/quickstart.rst)** | Installation extras (`uniconn[all]`, `[winrm]`, `[bmc]`), zero-setup sandbox, Async vs. Sync vs. CLI |
+| **[Core Architecture & Pipeline](docs/architecture.rst)** | **[Архитектура ядра и пайплайн](docs/ru/architecture.rst)** | `CommandPipeline`, exact 11-step middleware execution order, `EventLoopPortal`, `RemotePythonWorker`, ISP protocols |
+| **[Inventory & URI Reference](docs/inventory_and_uris.rst)** | **[Схемы инвентаря и URI](docs/ru/inventory_and_uris.rst)** | Full YAML/TOML/JSON schemas, `defaults`/`groups` merge rules, `env://` & `file://` secrets, all 16+ transport options |
+| **[Step-by-Step Cookbook](docs/cookbook.rst)** | **[Кулинарная книга (Cookbook)](docs/ru/cookbook.rst)** | Production recipes for auto-parsing, Zero-Fork RPC (`run_python`), `RemotePath`, `ensure_*`, `Flow`, NETCONF/YANG, BMC/UART, and cassettes |
+| **[Debugging & Troubleshooting](docs/troubleshooting.rst)** | **[Отладка и исключения](docs/ru/troubleshooting.rst)** | Full `UniconnError` inheritance tree, `diagnose=True` root-cause strategies, debug logging, and Symptom → Fix matrix |
+| **[Migration Guides](docs/migration.rst)** | **[Гайд по миграции](docs/migration.rst)** | Side-by-side translation tables from **Ansible**, **Paramiko**, **Fabric**, and **Netmiko / Scrapli** |
+| **[Transports Overview](docs/transports.rst)** | **[Обзор 16+ транспортов](docs/transports.rst)** | Quick summary of all 16+ transport URI schemes |
+| **[CLI, MCP & Security](docs/cli_and_mcp.rst)** | **[CLI, MCP и Policy](docs/cli_and_mcp.rst)** | Modular CLI commands, `uniconn mcp` AI server, HITL approvals, and `CommandASTParser` Policy-as-Code |
+| **[API Reference](docs/api.rst)** | **[Справочник API](docs/api.rst)** | Complete class and function reference synchronized with `llms.txt` |
 
 ---
 

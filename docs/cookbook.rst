@@ -1,6 +1,8 @@
 Step-by-Step Cookbook (Recipes by Use Case)
 ===========================================
 
+**Language:** **[ English ]** | `Русский <ru/cookbook.rst>`_
+
 This cookbook provides copy-pasteable, production-ready recipes organized by engineering task. Every recipe works with both ``Connection`` (async) and ``SyncConnection`` (sync).
 
 1. Command Execution, Auto-Parsing & Failure Diagnostics

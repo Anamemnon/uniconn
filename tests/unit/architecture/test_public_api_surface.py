@@ -87,12 +87,13 @@ def test_public_version_matches_pyproject() -> None:
 
 
 def test_readme_and_docs_contain_no_outdated_api_patterns() -> None:
-    """Убедиться, что README.md и docs/*.rst используют актуальные доменные сервисы и CLI."""
+    """Убедиться, что README.md, README.ru.md и docs/**/*.rst используют актуальные доменные сервисы и CLI."""
     from pathlib import Path
 
     root_dir = Path(__file__).resolve().parents[3]
     doc_files = [
         root_dir / "README.md",
+        root_dir / "README.ru.md",
         *(root_dir / "docs").rglob("*.rst"),
     ]
     forbidden_patterns = (
@@ -118,6 +119,47 @@ def test_readme_and_docs_contain_no_outdated_api_patterns() -> None:
         text = doc_path.read_text(encoding="utf-8")
         for pattern in forbidden_patterns:
             assert pattern not in text, f"Outdated pattern {pattern!r} found in {doc_path.name}"
+
+
+def test_bilingual_documentation_structure_and_coverage() -> None:
+    """Проверить наличие и полноту двуязычных руководств (EN + RU) по архитектуре, инвентарю и отладке."""
+    from pathlib import Path
+
+    root_dir = Path(__file__).resolve().parents[3]
+    docs_dir = root_dir / "docs"
+    ru_dir = docs_dir / "ru"
+
+    expected_guides = (
+        "index.rst",
+        "quickstart.rst",
+        "architecture.rst",
+        "inventory_and_uris.rst",
+        "cookbook.rst",
+        "troubleshooting.rst",
+    )
+    for name in expected_guides:
+        en_file = docs_dir / name
+        ru_file = ru_dir / name
+        assert en_file.is_file(), f"Missing English guide: {en_file}"
+        assert ru_file.is_file(), f"Missing Russian guide: {ru_file}"
+        assert len(en_file.read_text(encoding="utf-8")) > 1500
+        assert len(ru_file.read_text(encoding="utf-8")) > 1500
+
+    # Verify core architectural concepts and middleware pipeline are documented in both languages
+    for arch_path in (docs_dir / "architecture.rst", ru_dir / "architecture.rst"):
+        arch_text = arch_path.read_text(encoding="utf-8")
+        for symbol in (
+            "CommandPipeline",
+            "ContextMiddleware",
+            "SudoMiddleware",
+            "DryRunMiddleware",
+            "AutoDiagnosticMiddleware",
+            "CircuitBreakerMiddleware",
+            "RetryMiddleware",
+            "EventLoopPortal",
+            "RemotePythonWorker",
+        ):
+            assert symbol in arch_text, f"{symbol} missing in {arch_path}"
 
 
 def test_examples_use_only_public_uniconn_imports() -> None:

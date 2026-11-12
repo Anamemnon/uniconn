@@ -11,9 +11,9 @@
 
 ---
 
-### Язык: **[ English ](README.md)** &nbsp;|&nbsp; **[ Русский ]**
+### Язык: **[ English ](README.md)** &nbsp;|&nbsp; **[ Русский ]** &nbsp;|&nbsp; **[ 🇬🇧 English Docs ](docs/index.rst)**
 
-**📚 Документация (`docs/`):** **[Обзор и шпаргалка](docs/index.rst)** · **[Быстрый старт за 5 мин](docs/quickstart.rst)** · **[Кулинарная книга (Cookbook)](docs/cookbook.rst)** · **[Гайд по миграции](docs/migration.rst)** · **[16+ Транспортов](docs/transports.rst)** · **[CLI, MCP и Policy](docs/cli_and_mcp.rst)** · **[API Reference](docs/api.rst)**
+**📚 Документация (`docs/ru/`):** **[Обзор и шпаргалка](docs/ru/index.rst)** · **[Быстрый старт за 5 мин](docs/ru/quickstart.rst)** · **[Архитектура и пайплайн](docs/ru/architecture.rst)** · **[Инвентарь YAML/TOML и URI](docs/ru/inventory_and_uris.rst)** · **[Кулинарная книга](docs/ru/cookbook.rst)** · **[Отладка и исключения](docs/ru/troubleshooting.rst)** · **[Гайд по миграции](docs/migration.rst)** · **[CLI, MCP и Policy](docs/cli_and_mcp.rst)** · **[API Reference](docs/api.rst)**
 
 ---
 
@@ -508,19 +508,22 @@ python main.py --serve
 
 ---
 
-## 📖 Полная документация (`docs/`)
+## 📖 Полная двуязычная документация (`docs/ru/` и `docs/`)
 
-Все руководства пользователя, шпаргалки и справочники находятся в директории [`docs/`](docs/) (GitHub отображает `.rst`-файлы напрямую с кликабельными таблицами и подсветкой кода):
+Все руководства пользователя, архитектурные схемы, справочники инвентаря и матрицы отладки доступны на русском ([`docs/ru/`](docs/ru/)) и английском ([`docs/`](docs/)) языках:
 
-| Раздел документации | Описание содержимого |
-| :--- | :--- |
-| **[Overview & Cheat Sheet (`docs/index.rst`)](docs/index.rst)** | Таблица «Задача $\rightarrow$ Решение» за 10 секунд и навигация по инженерным ролям |
-| **[5-Minute Quickstart (`docs/quickstart.rst`)](docs/quickstart.rst)** | Установка `extras` (`uniconn[all]`, `[winrm]`, `[bmc]`), запуск без внешних серверов, выбор Async / Sync / CLI |
-| **[Step-by-Step Cookbook (`docs/cookbook.rst`)](docs/cookbook.rst)** | Рецепты: автопарсинг, Zero-Fork RPC (`run_python`), `RemotePath`, `ensure_*`, `Flow`, NETCONF/YANG, BMC/UART и кассеты |
-| **[Migration Guides (`docs/migration.rst`)](docs/migration.rst)** | Таблицы перехода «Было $\rightarrow$ Стало» с **Ansible**, **Paramiko**, **Fabric** и **Netmiko / Scrapli** |
-| **[Transports & Secrets (`docs/transports.rst`)](docs/transports.rst)** | Полный справочник по всем 16+ схемам URI и динамическим секретам `env://` / `file://` |
-| **[CLI, MCP & Security (`docs/cli_and_mcp.rst`)](docs/cli_and_mcp.rst)** | Команды CLI, MCP-сервер для ИИ-агентов, HITL-подтверждения и AST Policy-as-Code |
-| **[API Reference (`docs/api.rst`)](docs/api.rst)** | Полный справочник классов, методов и исключений библиотеки |
+| Руководство (На русском) | Guide (English) | Описание содержимого |
+| :--- | :--- | :--- |
+| **[Обзор и шпаргалка (`docs/ru/index.rst`)](docs/ru/index.rst)** | **[Overview & Cheat Sheet](docs/index.rst)** | Таблица «Задача $\rightarrow$ Решение» за 10 секунд и навигация по инженерным ролям |
+| **[Быстрый старт за 5 мин (`docs/ru/quickstart.rst`)](docs/ru/quickstart.rst)** | **[5-Minute Quickstart](docs/quickstart.rst)** | Установка `extras` (`uniconn[all]`, `[winrm]`, `[bmc]`), запуск без внешних серверов, выбор Async / Sync / CLI |
+| **[Архитектура ядра и пайплайн (`docs/ru/architecture.rst`)](docs/ru/architecture.rst)** | **[Core Architecture & Pipeline](docs/architecture.rst)** | Конвейер `CommandPipeline`, строгий порядок 11 мидлварей, `EventLoopPortal`, `RemotePythonWorker` и протоколы ISP |
+| **[Схемы инвентаря и URI (`docs/ru/inventory_and_uris.rst`)](docs/ru/inventory_and_uris.rst)** | **[Inventory & URI Reference](docs/inventory_and_uris.rst)** | Полный справочник YAML/TOML/JSON инвентарей, правила слияния `defaults`/`groups`, секреты `env://` / `file://` и опции 16+ схем |
+| **[Кулинарная книга (`docs/ru/cookbook.rst`)](docs/ru/cookbook.rst)** | **[Step-by-Step Cookbook](docs/cookbook.rst)** | Рецепты: автопарсинг, Zero-Fork RPC (`run_python`), `RemotePath`, `ensure_*`, `Flow`, NETCONF/YANG, BMC/UART и кассеты |
+| **[Отладка и исключения (`docs/ru/troubleshooting.rst`)](docs/ru/troubleshooting.rst)** | **[Debugging & Troubleshooting](docs/troubleshooting.rst)** | Полное дерево `UniconnError`, автодиагностика `diagnose=True`, отладочные логи и матрица «Симптом $\rightarrow$ Решение» |
+| **[Гайд по миграции (`docs/migration.rst`)](docs/migration.rst)** | **[Migration Guides](docs/migration.rst)** | Таблицы перехода «Было $\rightarrow$ Стало» с **Ansible**, **Paramiko**, **Fabric** и **Netmiko / Scrapli** |
+| **[Обзор 16+ транспортов (`docs/transports.rst`)](docs/transports.rst)** | **[Transports Overview](docs/transports.rst)** | Краткая сводка по всем 16+ схемам URI и динамическим секретам |
+| **[CLI, MCP и Безопасность (`docs/cli_and_mcp.rst`)](docs/cli_and_mcp.rst)** | **[CLI, MCP & Security](docs/cli_and_mcp.rst)** | Команды CLI, MCP-сервер для ИИ-агентов, HITL-подтверждения и AST Policy-as-Code |
+| **[API Reference (`docs/api.rst`)](docs/api.rst)** | **[API Reference](docs/api.rst)** | Полный справочник классов, методов и исключений библиотеки |
 
 ---
 
