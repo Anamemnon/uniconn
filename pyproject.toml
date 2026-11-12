@@ -35,10 +35,10 @@ classifiers = [
 
 # Core lightweight dependencies (SSH, Local execution, resilient pipeline, logging, and config)
 dependencies = [
-    "pydantic>=2.14",          # Config validation, SecretStr
-    "tenacity>=9.2",           # Retry logic (async support)
-    "asyncssh>=2.24",          # SSH transport & SFTP
-    "structlog>=26.1",         # Structured logging (JSON / Console / ContextVars)
+    "pydantic>=2.7",           # Config validation, SecretStr
+    "tenacity>=8.2",           # Retry logic (async support)
+    "asyncssh>=2.14",          # SSH transport & SFTP
+    "structlog>=24.1",         # Structured logging (JSON / Console / ContextVars)
     "pyyaml>=6.0",             # YAML support for from_file(), inventory, and Cassettes
 ]
 
@@ -51,18 +51,18 @@ Changelog = "https://github.com/ChekirDmitry/uniconn/blob/main/FEATURES.md"
 
 # Optional dependencies (extras)
 [project.optional-dependencies]
-ssh = ["asyncssh>=2.24"]
-bmc = ["pyghmi>=1.6", "niquests>=3.10"]
-pve = ["niquests>=3.10"]
-restconf = ["niquests>=3.10"]
-netconf = ["asyncssh>=2.24"]
-gnmi = ["niquests>=3.10"]
+ssh = ["asyncssh>=2.14"]
+bmc = ["pyghmi>=1.5", "niquests>=3.5"]
+pve = ["niquests>=3.5"]
+restconf = ["niquests>=3.5"]
+netconf = ["asyncssh>=2.14"]
+gnmi = ["niquests>=3.5"]
 serial = ["pyserial-asyncio>=0.6"]
 uart = ["pyserial-asyncio>=0.6"]
-telnet = ["telnetlib3>=5.0"]
-winrm = ["pywinrm>=0.5"]
-wsman = ["pywinrm>=0.5"]
-cli = ["cyclopts>=5.0", "rich>=15.0"]
+telnet = ["telnetlib3>=2.0"]
+winrm = ["pywinrm>=0.4"]
+wsman = ["pywinrm>=0.4"]
+cli = ["cyclopts>=3.0", "rich>=13.7"]
 templates = ["jinja2>=3.1"]
 parsing = [
     "jc>=1.25.0",
@@ -78,16 +78,16 @@ dev = [
     "uniconn[all]",
     "poethepoet>=0.30",
     "pytest>=8.0",
-    "pytest-asyncio>=1.0",
+    "pytest-asyncio>=0.24",
     "pytest-mock>=3.14",
-    "pytest-cov>=6.0",
-    "pyright>=1.1.400",
-    "ruff>=0.15",
-    "sphinx>=8.0",
-    "sphinx-rtd-theme>=3.0",
+    "pytest-cov>=5.0",
+    "pyright>=1.1.380",
+    "ruff>=0.8",
+    "sphinx>=7.0",
+    "sphinx-rtd-theme>=2.0",
     "mkdocs>=1.6",
-    "mkdocstrings[python]>=1.0",
-    "testcontainers>=4.10",    # Docker containers for integration tests
+    "mkdocstrings[python]>=0.26",
+    "testcontainers>=4.8",     # Docker containers for integration tests
 ]
 
 # Entry points for plugin architecture
@@ -153,7 +153,7 @@ include = ["src/uniconn"]
 exclude = [".venv", "tests"]
 reportMissingTypeStubs = false
 reportMissingImports = "warning"
-reportOptionalMemberAccess = "warning"
+reportOptionalMemberAccess = "error"
 
 [tool.ruff]
 line-length = 120
@@ -183,6 +183,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+"src/uniconn/__init__.py" = ["F401"]
 "tests/**" = ["E501", "D", "B007", "B017", "N806", "SIM105", "SIM117"]
 "examples/**" = ["E501", "D"]
 

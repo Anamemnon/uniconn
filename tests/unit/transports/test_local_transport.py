@@ -221,3 +221,33 @@ def test_local_prepare_cmd_for_posix(monkeypatch: pytest.MonkeyPatch):
     prepared_seq = LocalTransport._prepare_cmd_for_platform(seq_cmd)
     assert "'hello world'" in prepared_seq
 
+
+@pytest.mark.asyncio
+async def test_local_stream_timeout_and_env(local_transport):
+    """LocalTransport.stream() соблюдает timeout и объединяет env с os.environ."""
+    from uniconn.exceptions import TimeoutError as UniconnTimeoutError
+
+    await local_transport.connect()
+    try:
+        env_lines = [
+            line
+            async for line in local_transport.stream(
+                [
+                    sys.executable,
+                    "-c",
+                    "import os; print(os.environ['X_STREAM'], 'PATH' in os.environ)",
+                ],
+                env={"X_STREAM": "ok"},
+            )
+        ]
+        assert env_lines == ["ok True"]
+
+        with pytest.raises(UniconnTimeoutError, match="timed out"):
+            async for _ in local_transport.stream(
+                [sys.executable, "-c", "import time; time.sleep(2)"],
+                timeout=0.05,
+            ):
+                pass
+    finally:
+        await local_transport.disconnect()
+

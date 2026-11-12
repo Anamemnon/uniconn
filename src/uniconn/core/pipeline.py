@@ -16,7 +16,7 @@ import logging
 import shlex
 import sys
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol
@@ -90,7 +90,7 @@ def prepare_sudo_command(
     quoted_cmd = shlex.quote(cmd_str)
 
     if pwd_str:
-        sudo_cmd = f"sudo -S -p '' {user_flag}-- sh -c {quoted_cmd}"
+        sudo_cmd = f"sudo -S -k -p '' {user_flag}-- sh -c {quoted_cmd}"
         if input_data is None:
             new_input: str | bytes | None = f"{pwd_str}\n"
         elif isinstance(input_data, bytes):
@@ -351,7 +351,8 @@ class HookMiddleware:
             request.transport_kwargs,
         )
         result = await call_next(request)
-        await self.invoke("after_run", result)
+        if not request.metadata.get("is_stream"):
+            await self.invoke("after_run", result)
         return result
 
 
@@ -550,11 +551,21 @@ class AutoDiagnosticMiddleware:
         if not secrets:
             return summary
 
+        import re as _re
+
         def _scrub(text: str) -> str:
             res = text
             for secret in secrets:
-                if secret in res:
+                if not secret or secret not in res:
+                    continue
+                if len(secret) >= 4:
                     res = res.replace(secret, "***REDACTED***")
+                else:
+                    res = _re.sub(
+                        rf"(?<=[=:\s'\"]){_re.escape(secret)}(?=$|[\s'\"&;])",
+                        "***REDACTED***",
+                        res,
+                    )
             return res
 
         return dataclasses.replace(
@@ -911,3 +922,197 @@ class CommandPipeline:
             if request.eager_parse and not request.dry_run:
                 _ = result.parsed
         return result
+
+    async def _invoke_on_error(self, exc: BaseException, command: str) -> None:
+        """Вызвать зарегистрированные хуки ``on_error`` для потокового/пайплайн-сбоя."""
+        if self._conn is None:
+            return
+        for cb in self._conn.get_hooks("on_error"):
+            res = cb(exc, command, self._conn.config.host)
+            if inspect.isawaitable(res):
+                await res
+
+    async def prepare_stream_request(self, request: CommandRequest) -> bool:
+        """Прогнать ``CommandRequest`` для ``stream()`` через охранные и контекстные Middleware.
+
+        Возвращает ``True``, если поток должен быть запущен на транспорте,
+        или ``False``, если выполнение пропущено в режиме ``dry_run=True``.
+        """
+        request.metadata["is_stream"] = True
+        reached_terminal = False
+
+        async def _stream_gate(req: CommandRequest) -> Result:
+            nonlocal reached_terminal
+            reached_terminal = True
+            return Result(
+                exit_code=0,
+                stdout="",
+                stderr="",
+                duration=0.0,
+                command=req.command,
+                host=self._conn.config.host if self._conn is not None else None,
+                sensitive=req.sensitive,
+            )
+
+        skip_types = (
+            ObservabilityMiddleware,
+            AutoDiagnosticMiddleware,
+            RetryMiddleware,
+        )
+        handler: NextHandler = _stream_gate
+        for mw in reversed(self._middlewares):
+            if isinstance(mw, skip_types) or type(mw).__name__ == "TracingMiddleware":
+                continue
+            prev_handler = handler
+            if isinstance(mw, CircuitBreakerMiddleware):
+
+                async def _cb_check_step(
+                    req: CommandRequest,
+                    current_mw: CircuitBreakerMiddleware = mw,
+                    nxt: NextHandler = prev_handler,
+                ) -> Result:
+                    cb_inst = current_mw._conn.circuit_breaker
+                    if isinstance(cb_inst, CircuitBreaker):
+                        cb_inst.check_or_raise(
+                            host=current_mw._conn.config.host,
+                            command="***REDACTED***" if req.sensitive else req.command,
+                        )
+                    return await nxt(req)
+
+                handler = _cb_check_step
+            else:
+
+                async def _step(
+                    req: CommandRequest,
+                    current_mw: CommandMiddleware = mw,
+                    nxt: NextHandler = prev_handler,
+                ) -> Result:
+                    return await current_mw(req, nxt)
+
+                handler = _step
+
+        try:
+            await handler(request)
+        except CircuitOpenError as exc:
+            await self._invoke_on_error(exc, request.command)
+            raise
+        return reached_terminal and not request.dry_run
+
+    async def _stream_from_transport(
+        self,
+        stream_cmd: Any,
+        *,
+        timeout: float | None,
+        sensitive: bool,
+        cmd_label: str,
+        transport_kwargs: dict[str, Any],
+    ) -> AsyncIterator[str]:
+        """Открыть поток транспорта, маскируя секреты и корректно фиксируя успех/сбой в CircuitBreaker."""
+        assert self._conn is not None
+        from .._logging import SecretMaskingFilter
+
+        raw_cb = self._conn.circuit_breaker
+        cb = raw_cb if isinstance(raw_cb, CircuitBreaker) else None
+        completed_normally = False
+        try:
+            if not self._conn.transport.is_connected:
+                await self._conn.transport.connect()
+            async for line in self._conn.transport.stream(
+                stream_cmd,
+                timeout=timeout,
+                **transport_kwargs,
+            ):
+                if sensitive:
+                    yield "***REDACTED***"
+                else:
+                    yield SecretMaskingFilter._mask_string(line)
+            completed_normally = True
+        except Exception as exc:
+            if (
+                cb is not None
+                and isinstance(exc, (ConnectionError, TimeoutError, builtins.TimeoutError))
+                and not isinstance(exc, CircuitOpenError)
+            ):
+                cb.record_failure()
+            await self._invoke_on_error(exc, cmd_label)
+            raise
+        finally:
+            if completed_normally and cb is not None:
+                cb.record_success()
+
+    async def execute_stream(
+        self,
+        command: str | Sequence[str] | None = None,
+        timeout: float | None = None,
+        *,
+        sudo: bool = False,
+        sudo_user: str | None = None,
+        sudo_password: str | SecretStr | None = None,
+        sensitive: bool = False,
+        dry_run: bool | None = None,
+        approval_id: str | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        """Подготовить и запустить потоковое чтение ``stream()`` через ``CommandPipeline``."""
+        assert self._conn is not None
+        effective_dry = self._conn.dry_run if dry_run is None else dry_run
+        if command is None:
+            if effective_dry:
+                return
+            self._conn.context.apply_to_kwargs(kwargs)
+            raw_cb = self._conn.circuit_breaker
+            if isinstance(raw_cb, CircuitBreaker):
+                try:
+                    raw_cb.check_or_raise(
+                        host=self._conn.config.host,
+                        command="<stream>",
+                    )
+                except CircuitOpenError as exc:
+                    await self._invoke_on_error(exc, "<stream>")
+                    raise
+            raw_rl = self._conn.rate_limiter
+            if isinstance(raw_rl, RateLimiter):
+                await raw_rl.acquire()
+            async for line in self._stream_from_transport(
+                None,
+                timeout=timeout or self._conn.config.timeout,
+                sensitive=sensitive,
+                cmd_label="<stream>",
+                transport_kwargs=kwargs,
+            ):
+                yield line
+            return
+
+        cmd_str = format_command(command)
+        req = CommandRequest(
+            raw_command=command,
+            command=cmd_str,
+            exec_command=cmd_str,
+            timeout=timeout,
+            sudo=sudo,
+            sudo_user=sudo_user,
+            sudo_password=sudo_password,
+            sensitive=sensitive,
+            dry_run=effective_dry,
+            approval_id=approval_id,
+            transport_kwargs=dict(kwargs),
+        )
+        should_stream = await self.prepare_stream_request(req)
+        if not should_stream:
+            return
+
+        stream_cmd: Any = (
+            command
+            if (not req.sudo and req.exec_command == req.command)
+            else req.exec_command
+        )
+        async for line in self._stream_from_transport(
+            stream_cmd,
+            timeout=req.timeout or self._conn.config.timeout,
+            sensitive=req.sensitive,
+            cmd_label=req.command,
+            transport_kwargs=req.transport_kwargs,
+        ):
+            yield line
+
+

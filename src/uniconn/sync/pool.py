@@ -91,10 +91,9 @@ class SyncConnectionPool(SyncProxyMixin):
         """Словарь предохранителей ``CircuitBreaker`` по ключам хостов пула."""
         return self._async_pool.circuit_breakers
 
-    @classmethod
-    def target_key(cls, target: Any) -> str:
+    def target_key(self, target: Any) -> str:
         """Публичный метод получения строкового ключа хоста для элемента пула."""
-        return ConnectionPool.target_key(target)
+        return self._async_pool.target_key(target)
 
     def add_connection_initializer(
         self, initializer: Callable[[Connection], None]
@@ -225,6 +224,7 @@ class SyncConnectionPool(SyncProxyMixin):
 
     # ─── Fan-out операции ядра пула (ParamSpec-дескрипторы к ConnectionPool) ─
 
+    run = sync_method(ConnectionPool.run)
     map = sync_method(ConnectionPool.map)
     map_safe = sync_method(ConnectionPool.map_safe)
     map_with_callback = sync_method(ConnectionPool.map_with_callback)

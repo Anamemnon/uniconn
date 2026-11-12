@@ -255,3 +255,27 @@ class TestRepeatedQueryParams:
         """Повторяющийся параметр с разными значениями"""
         config = URIParser.parse("ssh://host?timeout=10&timeout=60")
         assert config.options["timeout"] == 60
+
+
+class TestUriSafeProperties:
+    """Тесты безопасного представления URI в ConnectionConfig.uri_safe."""
+
+    def test_uri_safe_includes_username_and_omits_none_port(self):
+        """uri_safe сохраняет username даже без пароля и не выводит :None."""
+        from uniconn.config.models import ConnectionConfig
+
+        cfg_alice = ConnectionConfig(transport="ssh", host="host1", username="alice")
+        cfg_bob = ConnectionConfig(transport="ssh", host="host1", username="bob")
+        cfg_pwd = ConnectionConfig(
+            transport="ssh",
+            host="host1",
+            port=2222,
+            username="alice",
+            password="secret",
+        )
+        assert cfg_alice.uri_safe == "ssh://alice@host1"
+        assert cfg_bob.uri_safe == "ssh://bob@host1"
+        assert cfg_alice.uri_safe != cfg_bob.uri_safe
+        assert cfg_pwd.uri_safe == "ssh://alice@host1:2222"
+        assert "secret" not in cfg_pwd.uri_safe
+

@@ -89,6 +89,14 @@ class ConnectionPool:
         self._recovery_timeout = recovery_timeout
         self._circuit_breakers: dict[str, CircuitBreaker] = {}
         self._conn_initializers: list[Callable[[Connection], None]] = []
+        host_counts: dict[str, int] = {}
+        for target in self._uris:
+            h = self._raw_target_host(target)
+            if h:
+                host_counts[h] = host_counts.get(h, 0) + 1
+        self._colliding_hosts: frozenset[str] = frozenset(
+            h for h, count in host_counts.items() if count > 1
+        )
         for target in self._uris:
             key = self._target_key(target)
             if isinstance(target, Connection):
@@ -277,6 +285,7 @@ class ConnectionPool:
             dry_run=self._dry_run,
             auto_diagnostics=self._auto_diagnostics,
         )
+        sub_pool._colliding_hosts = self._colliding_hosts
         sub_pool._semaphore = self._semaphore
         sub_pool._circuit_breakers = self._circuit_breakers
         sub_pool._conn_initializers = list(self._conn_initializers)
@@ -289,18 +298,32 @@ class ConnectionPool:
         return sub_pool
 
     @staticmethod
-    def _target_key(target: PoolTarget) -> str:
-        """Вернуть строковый ключ хоста для словаря результатов."""
+    def _raw_target_host(target: PoolTarget) -> str | None:
+        """Извлечь имя хоста из элемента пула для обнаружения коллизий."""
+        if isinstance(target, str):
+            with contextlib.suppress(Exception):
+                return ConnectionConfig.from_uri(target).host
+            return None
+        if isinstance(target, ConnectionConfig):
+            return target.host
+        return target.config.host
+
+    def _resolve_target_key(self, target: PoolTarget) -> str:
+        """Вернуть строковый ключ хоста с учётом коллизий одноимённых хостов на разных портах/схемах."""
         if isinstance(target, str):
             return target
-        if isinstance(target, ConnectionConfig):
-            return target.host or target.uri_safe
-        return target.config.host or target.config.uri_safe
+        cfg = target if isinstance(target, ConnectionConfig) else target.config
+        if cfg.host and cfg.host in getattr(self, "_colliding_hosts", ()):
+            return cfg.uri_safe
+        return cfg.host or cfg.uri_safe
 
-    @classmethod
-    def target_key(cls, target: PoolTarget) -> str:
+    def _target_key(self, target: PoolTarget) -> str:
+        """Вернуть строковый ключ хоста для словаря результатов."""
+        return self._resolve_target_key(target)
+
+    def target_key(self, target: PoolTarget) -> str:
         """Публичный метод получения строкового ключа хоста для элемента пула."""
-        return cls._target_key(target)
+        return self._resolve_target_key(target)
 
     def _attach_resilience(self, target: PoolTarget, conn: Connection) -> Connection:
         """Привязать пуловый ``RateLimiter``, ``CircuitBreaker``, ``dry_run`` и инициализаторы к соединению."""
@@ -381,6 +404,9 @@ class ConnectionPool:
                 else self._target_key(target)
             )
             cb.check_or_raise(host=host, command="<connect>")
+        if isinstance(target, Connection) and target.transport.is_connected:
+            yield conn
+            return
         try:
             async with conn as active:
                 yield active
@@ -616,6 +642,35 @@ class ConnectionPool:
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         await self.close()
+
+    async def run(
+        self,
+        command: str | Sequence[str],
+        timeout: float | None = None,
+        raise_on_error: bool = False,
+        *,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
+        parse: Any = None,
+        eager_parse: bool = False,
+        diagnose: bool | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Result]:
+        """Выполнить команду на всех хостах пула и вернуть словарь ``{host_key: Result}``."""
+        return await self._fan_out_dict(
+            lambda _key, conn: conn.run(
+                command,
+                timeout=timeout,
+                raise_on_error=raise_on_error,
+                parse=parse,
+                eager_parse=eager_parse,
+                diagnose=diagnose,
+                **kwargs,
+            ),
+            with_defaults=True,
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
+        )
 
     async def map(
         self,

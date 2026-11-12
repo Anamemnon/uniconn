@@ -99,6 +99,25 @@ def _local_file_digest(path: str | Path, algorithm: ChecksumAlgorithm = "sha256"
     return hasher.hexdigest().lower()
 
 
+def _is_permission_error(exc: BaseException) -> bool:
+    """Определить, вызвана ли ошибка отсутствием прав доступа (включая вложенную цепочку)."""
+    cur: BaseException | None = exc
+    seen: set[int] = set()
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, PermissionError):
+            return True
+        if "PermissionDenied" in type(cur).__name__:
+            return True
+        msg = str(cur).lower()
+        stderr = str(getattr(cur, "stderr", "") or "").lower()
+        combined = f"{msg}\n{stderr}"
+        if "permission denied" in combined or "operation not permitted" in combined:
+            return True
+        cur = cur.__cause__ if cur.__cause__ is not None else cur.__context__
+    return False
+
+
 def _compile_exclude_regex(patterns: Sequence[str]) -> re.Pattern[str] | None:
     """Скомпилировать список glob-паттернов в единое регулярное выражение (O(1) поиск)."""
     if not patterns:
@@ -139,6 +158,89 @@ class DirectorySynchronizer:
         if regex.match(name) or regex.match(rel_posix):
             return True
         return any(regex.match(part) for part in rel_posix.split("/"))
+
+    async def _try_batch_inspect_remote(
+        self,
+        effective_remote: str,
+        rel_dirs: Sequence[str],
+        *,
+        is_dry: bool,
+        checksum_check: bool,
+        exclude: Sequence[str] = (),
+    ) -> dict[str, Any] | None:
+        """Попытаться выполнить пакетное создание директорий и сканирование дерева за 1 RPC-запрос."""
+        worker = getattr(self._conn, "_python_worker", None)
+        if worker is None:
+            return None
+        use_worker = worker.is_active or (
+            self._conn.transport_name != "local" and worker.can_auto_accelerate()
+        )
+        if not use_worker:
+            return None
+        with contextlib.suppress(Exception):
+            res = await worker.request(
+                "sync_scan",
+                allow_oneshot_fallback=(self._conn.transport_name != "local"),
+                path=effective_remote,
+                mkdirs=[] if is_dry else list(rel_dirs),
+                checksum=checksum_check,
+                exclude=list(exclude),
+                scan=True,
+            )
+            if isinstance(res, dict) and "entries" in res:
+                return res
+        return None
+
+    async def _needs_file_upload(
+        self,
+        full_local: Path,
+        l_size: int,
+        l_mtime: float,
+        rel_path: str,
+        target_file: str,
+        *,
+        checksum_check: bool,
+        mtime_tolerance: float,
+        batch_entries: dict[str, dict[str, Any]] | None,
+        can_inspect_remote: bool,
+    ) -> tuple[bool, FileStat | dict[str, Any]]:
+        """Определить необходимость загрузки файла и вернуть метаданные удалённого файла."""
+        r_stat: FileStat | dict[str, Any] = {}
+        r_hash: str | None = None
+
+        if batch_entries is not None:
+            entry_info = batch_entries.get(rel_path)
+            if not isinstance(entry_info, dict) or entry_info.get("is_dir"):
+                return True, r_stat
+            r_stat = entry_info
+            raw_hash = r_stat.get("sha256")
+            if isinstance(raw_hash, str) and raw_hash:
+                r_hash = raw_hash
+        elif can_inspect_remote:
+            transport = self._conn.transport
+            try:
+                if not await transport.exists(target_file):
+                    return True, r_stat
+                r_stat = await transport.stat(target_file)
+            except (OSError, ExecutionError):
+                return True, r_stat
+        else:
+            return True, r_stat
+
+        r_size = int(r_stat.get("size", -1))
+        if r_size != l_size:
+            return True, r_stat
+
+        if checksum_check:
+            l_hash = _local_file_digest(full_local, "sha256")
+            if r_hash is None:
+                r_hash = await self._conn.files.checksum(target_file, "sha256")
+            return (l_hash != r_hash), r_stat
+
+        r_mtime = float(r_stat.get("mtime") or 0.0)
+        if r_mtime > 0 and (r_mtime + mtime_tolerance) >= l_mtime:
+            return False, r_stat
+        return True, r_stat
 
     async def sync(
         self,
@@ -205,31 +307,40 @@ class DirectorySynchronizer:
                 return f"{clean_b}\\{clean_r}"
             return f"{base.rstrip('/')}/{rel.lstrip('/')}"
 
-        if not is_dry:
-            for rel_d in sorted(local_rel_dirs):
+        sorted_rel_dirs = sorted(local_rel_dirs)
+        can_inspect_remote = not is_dry or transport.is_connected
+        batch_manifest: dict[str, Any] | None = None
+        if can_inspect_remote:
+            batch_manifest = await self._try_batch_inspect_remote(
+                effective_remote,
+                sorted_rel_dirs,
+                is_dry=is_dry,
+                checksum_check=checksum_check,
+                exclude=patterns,
+            )
+
+        if not is_dry and batch_manifest is None:
+            for rel_d in sorted_rel_dirs:
                 target_d = _join_sync_path(effective_remote, rel_d)
                 await transport.mkdir(target_d, parents=True, exist_ok=True)
 
+        batch_entries: dict[str, dict[str, Any]] | None = (
+            batch_manifest.get("entries") if isinstance(batch_manifest, dict) else None
+        )
+
         for rel_path, (full_local, l_size, l_mtime) in sorted(local_files.items()):
             target_file = _join_sync_path(effective_remote, rel_path)
-            needs_upload = True
-            r_stat: FileStat | dict[str, Any] = {}
-            if not is_dry or transport.is_connected:
-                with contextlib.suppress(OSError, ExecutionError):
-                    if await transport.exists(target_file):
-                        r_stat = await transport.stat(target_file)
-                        r_size = int(r_stat.get("size", -1))
-                        r_mtime = float(r_stat.get("mtime") or 0.0)
-                        if r_size == l_size:
-                            if checksum_check:
-                                l_hash = _local_file_digest(full_local, "sha256")
-                                r_hash = await self._conn.files.checksum(
-                                    target_file, "sha256"
-                                )
-                                if l_hash == r_hash:
-                                    needs_upload = False
-                            elif r_mtime > 0 and (r_mtime + mtime_tolerance) >= l_mtime:
-                                needs_upload = False
+            needs_upload, r_stat = await self._needs_file_upload(
+                full_local,
+                l_size,
+                l_mtime,
+                rel_path,
+                target_file,
+                checksum_check=checksum_check,
+                mtime_tolerance=mtime_tolerance,
+                batch_entries=batch_entries,
+                can_inspect_remote=can_inspect_remote,
+            )
 
             mode = full_local.stat().st_mode & 0o777
             if needs_upload:
@@ -262,34 +373,65 @@ class DirectorySynchronizer:
                 skipped.append(rel_path)
 
         if delete and (not is_dry or transport.is_connected):
-
-            async def _walk_remote(rel_prefix: str) -> None:
-                cur_remote = _join_sync_path(effective_remote, rel_prefix)
-                try:
-                    entries = await transport.listdir(cur_remote)
-                except (OSError, ExecutionError):
-                    return
-
-                for entry in entries:
-                    if entry in (".", ".."):
-                        continue
-                    entry_rel = f"{rel_prefix}/{entry}" if rel_prefix else entry
-                    if self.is_excluded(entry_rel, entry, patterns, compiled_exclude):
-                        continue
-                    entry_full = _join_sync_path(effective_remote, entry_rel)
-                    try:
-                        info = await transport.stat(entry_full)
-                    except (OSError, ExecutionError):
-                        continue
+            if batch_entries is not None:
+                stale_rels: list[str] = []
+                for entry_rel, info in sorted(batch_entries.items()):
                     if info.get("is_dir"):
-                        await _walk_remote(entry_rel)
-                    elif entry_rel not in local_files:
-                        if not is_dry:
-                            await transport.remove_file(entry_full)
-                        deleted.append(entry_rel)
+                        continue
+                    entry_name = entry_rel.rsplit("/", 1)[-1]
+                    if self.is_excluded(entry_rel, entry_name, patterns, compiled_exclude):
+                        continue
+                    if entry_rel not in local_files:
+                        stale_rels.append(entry_rel)
+                if stale_rels:
+                    if not is_dry:
+                        worker = getattr(self._conn, "_python_worker", None)
+                        batch_del_ok = False
+                        if worker is not None:
+                            with contextlib.suppress(Exception):
+                                await worker.request(
+                                    "sync_scan",
+                                    allow_oneshot_fallback=(self._conn.transport_name != "local"),
+                                    path=effective_remote,
+                                    delete_paths=stale_rels,
+                                    scan=False,
+                                )
+                                batch_del_ok = True
+                        if not batch_del_ok:
+                            for rel_del in stale_rels:
+                                await transport.remove_file(
+                                    _join_sync_path(effective_remote, rel_del)
+                                )
+                    deleted.extend(stale_rels)
+            else:
 
-            if await transport.exists(effective_remote):
-                await _walk_remote("")
+                async def _walk_remote(rel_prefix: str) -> None:
+                    cur_remote = _join_sync_path(effective_remote, rel_prefix)
+                    try:
+                        entries = await transport.listdir(cur_remote)
+                    except (OSError, ExecutionError):
+                        return
+
+                    for entry in entries:
+                        if entry in (".", ".."):
+                            continue
+                        entry_rel = f"{rel_prefix}/{entry}" if rel_prefix else entry
+                        if self.is_excluded(entry_rel, entry, patterns, compiled_exclude):
+                            continue
+                        entry_full = _join_sync_path(effective_remote, entry_rel)
+                        try:
+                            info = await transport.stat(entry_full)
+                        except (OSError, ExecutionError):
+                            continue
+                        if info.get("is_dir"):
+                            await _walk_remote(entry_rel)
+                        elif entry_rel not in local_files:
+                            if not is_dry:
+                                await transport.remove_file(entry_full)
+                            deleted.append(entry_rel)
+
+                if await transport.exists(effective_remote):
+                    await _walk_remote("")
 
         duration = time.monotonic() - start_time
         return SyncResult(
@@ -318,7 +460,13 @@ class FileOperationsService:
         """Создать объектно-ориентированный путь ``RemotePath`` (аналог ``pathlib.Path``) на хосте."""
         return RemotePath(self._conn, *pathsegments)
 
-    async def _ensure_connected(self) -> None:
+    async def _ensure_connected(self, op_label: str = "<file_op>") -> None:
+        cb = getattr(self._conn, "circuit_breaker", None)
+        if cb is not None and hasattr(cb, "check_or_raise"):
+            cb.check_or_raise(host=self._conn.config.host, command=op_label)
+        rl = getattr(self._conn, "rate_limiter", None)
+        if rl is not None and hasattr(rl, "acquire"):
+            await rl.acquire()
         if not self._conn.transport.is_connected:
             await self._conn.transport.connect()
 
@@ -633,6 +781,31 @@ class FileOperationsService:
         handler = self._build_observed_handler("observe_read_file", self._raw_read_file)
         return await handler(remote_path, encoding=encoding)
 
+    async def _stage_and_sudo_move(
+        self,
+        effective_path: str,
+        data: bytes,
+        mode: int | None,
+        *,
+        sudo: bool = True,
+    ) -> None:
+        """Записать файл через временную директорию хоста и переместить с ``sudo mv -f``."""
+        async with self._conn.temp_dir() as tmp_dir:
+            tmp_name = f".uniconn_tmp_{uuid.uuid4().hex[:12]}"
+            staged_tmp = f"{str(tmp_dir).rstrip('/')}/{tmp_name}"
+            await self._conn.transport.write_file(staged_tmp, data, mode=mode)
+            chmod_cmd = (
+                f"chmod {oct(mode)[2:]} {shlex.quote(staged_tmp)} && "
+                if mode is not None
+                else ""
+            )
+            await self._conn.run(
+                f"{chmod_cmd}mv -f {shlex.quote(staged_tmp)} {shlex.quote(effective_path)}",
+                sudo=sudo,
+                raise_on_error=True,
+                dry_run=False,
+            )
+
     async def _raw_write_file(
         self,
         remote_path: str | Path,
@@ -641,6 +814,7 @@ class FileOperationsService:
         encoding: str = "utf-8",
         *,
         atomic: bool = False,
+        sudo: bool = False,
     ) -> None:
         if self._conn.dry_run:
             self._conn.logger.info(
@@ -648,9 +822,13 @@ class FileOperationsService:
             )
             return
 
-        await self._ensure_connected()
+        await self._ensure_connected("write_file")
         effective_path = self._conn.context.resolve_path(remote_path)
         data = content.encode(encoding) if isinstance(content, str) else bytes(content)
+
+        if sudo and self._conn.transport_name not in ("winrm", "wsman"):
+            await self._stage_and_sudo_move(effective_path, data, mode, sudo=True)
+            return
 
         if not atomic:
             await self._conn.transport.write_file(effective_path, data, mode=mode)
@@ -697,12 +875,22 @@ class FileOperationsService:
             await self._conn.transport.write_file(staged_remote, data, mode=mode)
             await self._conn.run(
                 f"mv -f {shlex.quote(staged_remote)} {shlex.quote(effective_path)}",
+                sudo=sudo,
                 raise_on_error=True,
                 dry_run=False,
             )
-        except Exception:
+        except Exception as exc:
             with contextlib.suppress(Exception):
                 await self._conn.transport.remove_file(staged_remote)
+            if _is_permission_error(exc):
+                has_sudo_cfg = bool(
+                    sudo
+                    or self._conn.config.password is not None
+                    or self._conn.config.options.get("sudo_password") is not None
+                )
+                if has_sudo_cfg:
+                    await self._stage_and_sudo_move(effective_path, data, mode, sudo=True)
+                    return
             raise
 
     async def write_file(
@@ -713,8 +901,9 @@ class FileOperationsService:
         encoding: str = "utf-8",
         *,
         atomic: bool = False,
+        sudo: bool = False,
     ) -> None:
-        """Записать строку или байты из памяти в файл на хосте (опционально атомарно)."""
+        """Записать строку или байты из памяти в файл на хосте (опционально атомарно и с ``sudo``)."""
 
         async def _base_write(
             r_path: str | Path,
@@ -724,7 +913,12 @@ class FileOperationsService:
             encoding: str = "utf-8",
         ) -> None:
             await self._raw_write_file(
-                r_path, c_data, mode=mode, encoding=encoding, atomic=atomic
+                r_path,
+                c_data,
+                mode=mode,
+                encoding=encoding,
+                atomic=atomic,
+                sudo=sudo,
             )
 
         handler = self._build_observed_handler("observe_write_file", _base_write)
@@ -867,6 +1061,7 @@ class FileOperationsService:
         engine: Literal["auto", "string", "jinja2"] = "auto",
         *,
         atomic: bool = False,
+        sudo: bool = False,
     ) -> str:
         """Отрендерить шаблон конфигурации и записать его на хост."""
         rendered = TemplateEngine.render(
@@ -880,6 +1075,7 @@ class FileOperationsService:
             mode=mode,
             encoding=encoding,
             atomic=atomic,
+            sudo=sudo,
         )
         return rendered
 

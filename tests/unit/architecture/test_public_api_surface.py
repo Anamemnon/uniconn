@@ -256,3 +256,20 @@ async def test_from_dict_hooks_and_clone_isolates_options_and_hitl() -> None:
     await cloned.close()
 
 
+def test_root_all_is_clean_and_lazy_aliases_remain_accessible() -> None:
+    """Корневой __all__ содержит только публичное ядро, но внутренние классы доступны лениво через PEP 562."""
+    assert len(uniconn.__all__) <= 130
+    internal_symbols = (
+        "compute_crc16",
+        "CallableSerializer",
+        "PosixMarkerProtocol",
+        "EventLoopPortal",
+        "AptStrategy",
+    )
+    for sym in internal_symbols:
+        assert sym not in uniconn.__all__, f"Internal symbol {sym} should not be in root __all__"
+        assert sym in dir(uniconn)
+        assert getattr(uniconn, sym) is not None
+
+
+

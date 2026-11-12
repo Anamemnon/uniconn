@@ -225,3 +225,24 @@ def test_cli_wait_for_and_batch_flags(tmp_path: Path) -> None:
     )
     assert res_exec.exit_code == 0
     assert "batch-ok" in res_exec.output
+
+
+def test_pool_select_preserves_colliding_hosts_and_circuit_breakers() -> None:
+    """pool.select() сохраняет _colliding_hosts и общие ключи CircuitBreaker при коллизии host."""
+    c1 = Connection.from_uri("ssh://alice@localhost:2201")
+    c2 = Connection.from_uri("ssh://bob@localhost:2202")
+    assert c1.config.uri_safe == "ssh://alice@localhost:2201"
+    assert c2.config.uri_safe == "ssh://bob@localhost:2202"
+
+    pool = ConnectionPool([c1, c2], circuit_breaker=True)
+    expected_key = pool.target_key(c1)
+    assert expected_key == "ssh://alice@localhost:2201"
+    pool._build_conn(c1)
+
+    sub_pool = pool.select(["ssh://alice@localhost:2201"])
+    assert len(sub_pool.targets) == 1
+    assert sub_pool.target_key(c1) == expected_key
+    assert sub_pool.circuit_breakers is pool.circuit_breakers
+    assert expected_key in sub_pool.circuit_breakers
+
+

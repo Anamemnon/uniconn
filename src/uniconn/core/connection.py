@@ -295,22 +295,33 @@ class Connection:
         return results
 
     async def _raw_stream(
-        self, command: str | Sequence[str] | None = None, timeout: float | None = None, **kwargs: Any
+        self, command: str | Sequence[str] | None = None, timeout: float | None = None,
+        *, sudo: bool = False, sudo_user: str | None = None,
+        sudo_password: str | SecretStr | None = None, sensitive: bool = False,
+        dry_run: bool | None = None, approval_id: str | None = None, **kwargs: Any,
     ) -> AsyncIterator[str]:
-        cmd_str = format_command(command) if command is not None else None
-        self._context.apply_to_kwargs(kwargs)
-        if not self._transport.is_connected:
-            await self._transport.connect()
-        async for line in self._transport.stream(cmd_str, timeout=timeout or self._config.timeout, **kwargs):  # type: ignore[arg-type]
+        async for line in self._pipeline.execute_stream(
+            command, timeout=timeout, sudo=sudo, sudo_user=sudo_user,
+            sudo_password=sudo_password, sensitive=sensitive, dry_run=dry_run,
+            approval_id=approval_id, **kwargs,
+        ):
             yield line
 
     async def stream(
-        self, command: str | Sequence[str] | None = None, timeout: float | None = None, **kwargs: Any
+        self, command: str | Sequence[str] | None = None, timeout: float | None = None,
+        *, sudo: bool = False, sudo_user: str | None = None,
+        sudo_password: str | SecretStr | None = None, sensitive: bool = False,
+        dry_run: bool | None = None, approval_id: str | None = None, **kwargs: Any,
     ) -> AsyncIterator[str]:
-        """Потоковое получение вывода команды (или пассивный мониторинг, если command=None)."""
-        gen = self._raw_stream(command, timeout=timeout, **kwargs)
+        """Потоковое получение вывода команды через конвейер ``CommandPipeline``."""
+        gen = self._raw_stream(
+            command, timeout=timeout, sudo=sudo, sudo_user=sudo_user,
+            sudo_password=sudo_password, sensitive=sensitive, dry_run=dry_run,
+            approval_id=approval_id, **kwargs,
+        )
+        obs_cmd: Any = "***REDACTED***" if sensitive else (command or "")
         for obs in self._operation_observers:
-            gen = obs.observe_stream(self, command or "", gen)
+            gen = obs.observe_stream(self, obs_cmd, gen)
         async for line in gen:
             yield line
 

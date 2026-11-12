@@ -337,3 +337,37 @@ async def test_pool_map_safe_and_callback_propagate_retry_and_dry_run(patch_conn
     assert mock_from_uri.call_args.kwargs["logger"] is custom_logger
 
 
+@pytest.mark.asyncio
+async def test_pool_disambiguates_same_host_different_ports_and_supports_run() -> None:
+    """ConnectionPool.run() и SyncConnectionPool.run() не перезаписывают одинаковые host на разных портах."""
+    from uniconn.core.connection import Connection
+
+    c1 = Connection.from_uri("ssh://localhost:2201")
+    c2 = Connection.from_uri("ssh://localhost:2202")
+    c1._transport._connected = True
+    c2._transport._connected = True
+
+    c1.run = AsyncMock(  # type: ignore[method-assign]
+        return_value=Result(exit_code=0, stdout="from-2201", stderr="", duration=0.01, command="id", host="localhost")
+    )
+    c2.run = AsyncMock(  # type: ignore[method-assign]
+        return_value=Result(exit_code=0, stdout="from-2202", stderr="", duration=0.01, command="id", host="localhost")
+    )
+
+    pool = ConnectionPool([c1, c2])
+    out = await pool.run("id")
+    assert len(out) == 2
+    assert out["ssh://localhost:2201"].stdout == "from-2201"
+    assert out["ssh://localhost:2202"].stdout == "from-2202"
+
+    sync_pool = pool.to_sync()
+    try:
+        sync_out = sync_pool.run("id")
+        assert len(sync_out) == 2
+        assert sync_out["ssh://localhost:2201"].stdout == "from-2201"
+        assert sync_out["ssh://localhost:2202"].stdout == "from-2202"
+    finally:
+        sync_pool.close()
+
+
+

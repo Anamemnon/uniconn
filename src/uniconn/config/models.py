@@ -56,9 +56,9 @@ class ConnectionConfig(BaseModel):
             port_part = f":{self.port}" if self.port else ""
             vmid_part = f"/{self.options['vmid']}" if self.options.get("vmid") is not None else ""
             return f"pve://{user_prefix}{self.host}:{self.port or 8006}{vmid_part}"
-        if self.password:
-            return f"{self.transport}://{self.username}@{self.host}:{self.port}"
-        return f"{self.transport}://{self.host}:{self.port}"
+        user_prefix = f"{self.username}@" if self.username else ""
+        port_suffix = f":{self.port}" if self.port is not None else ""
+        return f"{self.transport}://{user_prefix}{self.host}{port_suffix}"
 
     @classmethod
     def from_uri(cls, uri: str) -> Self:

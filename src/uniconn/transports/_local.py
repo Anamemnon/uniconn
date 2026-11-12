@@ -418,21 +418,21 @@ class LocalTransport(BaseTransport):
 
         return command
 
-    async def _exec_raw(
+    def _prepare_subprocess_call(
         self,
         command: str | Sequence[str],
-        timeout: float | None = None,
+        *,
+        merge_stderr_to_stdout: bool = False,
         **kwargs: Any,
-    ) -> tuple[int, bytes, bytes, float]:
-        """Запустить процесс и вернуть сырые байты (exit_code, stdout, stderr, duration)."""
-        start_time = time.monotonic()
-        raw_cmd_str = command if isinstance(command, str) else " ".join(str(c) for c in command)
+    ) -> tuple[list[str] | None, str, dict[str, Any], str, bytes | None]:
+        """Подготовить аргументы и параметры для ``asyncio.create_subprocess_{exec,shell}``."""
+        raw_cmd_str = (
+            command if isinstance(command, str) else " ".join(str(c) for c in command)
+        )
         cmd_to_exec = self._prepare_cmd_for_platform(command)
 
         env = kwargs.get("env")
-        final_env: dict[str, str] | None = None
-        if env:
-            final_env = {**os.environ, **env}
+        final_env: dict[str, str] | None = {**os.environ, **env} if env else None
 
         input_data = kwargs.get("input")
         stdin_bytes: bytes | None = None
@@ -441,16 +441,17 @@ class LocalTransport(BaseTransport):
         elif isinstance(input_data, bytes):
             stdin_bytes = input_data
 
-        creation_flags = 0
-        if sys.platform == "win32":
-            creation_flags = subprocess.CREATE_NO_WINDOW
-
+        creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         proc_kwargs: dict[str, Any] = {
             "stdout": asyncio.subprocess.PIPE,
-            "stderr": asyncio.subprocess.PIPE,
+            "stderr": (
+                asyncio.subprocess.STDOUT
+                if merge_stderr_to_stdout
+                else asyncio.subprocess.PIPE
+            ),
             "env": final_env,
             "cwd": kwargs.get("cwd"),
-            "creationflags": creation_flags if sys.platform == "win32" else 0,
+            "creationflags": creation_flags,
         }
         if stdin_bytes is not None:
             proc_kwargs["stdin"] = asyncio.subprocess.PIPE
@@ -470,18 +471,52 @@ class LocalTransport(BaseTransport):
             if "'" in command or cmd_first in _POLYFILL_CMDS:
                 with contextlib.suppress(ValueError):
                     sh_parts = shlex.split(command, posix=True)
-                    has_ops = any(t in ("&&", "||", "|", ";", "&") or t.startswith((">", "<")) for t in sh_parts)
+                    has_ops = any(
+                        t in ("&&", "||", "|", ";", "&") or t.startswith((">", "<"))
+                        for t in sh_parts
+                    )
                     if not has_ops:
                         exec_parts = _apply_windows_polyfills(sh_parts)
 
-        if exec_parts is not None and exec_parts:
-            proc = await asyncio.create_subprocess_exec(
+        return exec_parts, cmd_to_exec, proc_kwargs, raw_cmd_str, stdin_bytes
+
+    @staticmethod
+    async def _spawn_process(
+        exec_parts: list[str] | None,
+        cmd_to_exec: str,
+        proc_kwargs: dict[str, Any],
+    ) -> asyncio.subprocess.Process:
+        """Создать локальный дочерний процесс (exec или shell)."""
+        if exec_parts:
+            return await asyncio.create_subprocess_exec(
                 exec_parts[0],
                 *exec_parts[1:],
                 **proc_kwargs,
             )
-        else:
-            proc = await asyncio.create_subprocess_shell(cmd_to_exec, **proc_kwargs)
+        return await asyncio.create_subprocess_shell(cmd_to_exec, **proc_kwargs)
+
+    @staticmethod
+    async def _close_process_transport(proc: asyncio.subprocess.Process) -> None:
+        """Закрыть транспорт завершённого процесса во избежание ResourceWarning/RuntimeWarning."""
+        transport = getattr(proc, "_transport", None)
+        if transport is not None:
+            with contextlib.suppress(Exception):
+                transport.close()
+            with contextlib.suppress(Exception):
+                await asyncio.sleep(0)
+
+    async def _exec_raw(
+        self,
+        command: str | Sequence[str],
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> tuple[int, bytes, bytes, float]:
+        """Запустить процесс и вернуть сырые байты (exit_code, stdout, stderr, duration)."""
+        start_time = time.monotonic()
+        exec_parts, cmd_to_exec, proc_kwargs, raw_cmd_str, stdin_bytes = (
+            self._prepare_subprocess_call(command, **kwargs)
+        )
+        proc = await self._spawn_process(exec_parts, cmd_to_exec, proc_kwargs)
 
         try:
             comm_coro = (
@@ -502,12 +537,7 @@ class LocalTransport(BaseTransport):
                 host="localhost",
             ) from exc
         finally:
-            transport = getattr(proc, "_transport", None)
-            if transport is not None:
-                with contextlib.suppress(Exception):
-                    transport.close()
-                with contextlib.suppress(Exception):
-                    await asyncio.sleep(0)
+            await self._close_process_transport(proc)
 
         duration = time.monotonic() - start_time
         return (proc.returncode or 0, stdout or b"", stderr or b"", duration)
@@ -741,55 +771,64 @@ class LocalTransport(BaseTransport):
         timeout: float | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[str]:
-        cmd_to_exec = self._prepare_cmd_for_platform(command)
-        exec_parts: list[str] | None = None
-        if isinstance(command, (list, tuple)):
-            parts = [str(c) for c in command]
-            if sys.platform == "win32":
-                polyfilled = _apply_windows_polyfills(parts)
-                exec_parts = polyfilled if polyfilled is not None else parts
-            else:
-                exec_parts = parts
-        elif isinstance(command, str) and sys.platform == "win32":
-            cmd_stripped = command.strip()
-            cmd_first = cmd_stripped.split(None, 1)[0].lower() if cmd_stripped else ""
-            if "'" in command or cmd_first in _POLYFILL_CMDS:
-                with contextlib.suppress(ValueError):
-                    sh_parts = shlex.split(command, posix=True)
-                    has_ops = any(t in ("&&", "||", "|", ";", "&") or t.startswith((">", "<")) for t in sh_parts)
-                    if not has_ops:
-                        exec_parts = _apply_windows_polyfills(sh_parts)
-
-        if exec_parts is not None and exec_parts:
-            proc = await asyncio.create_subprocess_exec(
-                exec_parts[0],
-                *exec_parts[1:],
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
+        exec_parts, cmd_to_exec, proc_kwargs, raw_cmd_str, stdin_bytes = (
+            self._prepare_subprocess_call(
+                command,
+                merge_stderr_to_stdout=True,
                 **kwargs,
             )
-        else:
-            proc = await asyncio.create_subprocess_shell(
-                cmd_to_exec,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                **kwargs,
-            )
+        )
+        proc = await self._spawn_process(exec_parts, cmd_to_exec, proc_kwargs)
+        deadline = (time.monotonic() + timeout) if timeout is not None else None
         try:
+            if stdin_bytes is not None and proc.stdin is not None:
+                proc.stdin.write(stdin_bytes)
+                with contextlib.suppress(Exception):
+                    await proc.stdin.drain()
+                proc.stdin.close()
             if proc.stdout is not None:
-                async for line in proc.stdout:
+                while True:
+                    if deadline is not None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise builtins.TimeoutError
+                        line = await asyncio.wait_for(
+                            proc.stdout.readline(),
+                            timeout=remaining,
+                        )
+                    else:
+                        line = await proc.stdout.readline()
+                    if not line:
+                        break
                     yield line.decode("utf-8", errors="replace").rstrip()
-            await proc.wait()
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise builtins.TimeoutError
+                await asyncio.wait_for(proc.wait(), timeout=remaining)
+            else:
+                await proc.wait()
+        except builtins.TimeoutError as exc:
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    await proc.wait()
+            raise TimeoutError(
+                f"Local stream timed out after {timeout}s",
+                command=raw_cmd_str,
+                host="localhost",
+            ) from exc
         finally:
             if proc.returncode is None:
                 with contextlib.suppress(ProcessLookupError, OSError):
                     proc.terminate()
-                with contextlib.suppress(Exception):
+                try:
                     await asyncio.wait_for(proc.wait(), timeout=1.0)
-            transport = getattr(proc, "_transport", None)
-            if transport is not None:
-                with contextlib.suppress(Exception):
-                    transport.close()
-                with contextlib.suppress(Exception):
-                    await asyncio.sleep(0)
+                except builtins.TimeoutError:
+                    with contextlib.suppress(ProcessLookupError, OSError):
+                        proc.kill()
+                    with contextlib.suppress(Exception):
+                        await proc.wait()
+            await self._close_process_transport(proc)
 

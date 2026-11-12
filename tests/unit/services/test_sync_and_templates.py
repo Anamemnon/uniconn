@@ -789,4 +789,181 @@ class TestV100AuditStabilization:
         called_cmd = conn.run.call_args[0][0]
         assert "-f '%Su:%Sg'" in called_cmd
 
+    @pytest.mark.asyncio
+    async def test_write_file_atomic_sudo_and_permission_fallback(self, tmp_path: Path) -> None:
+        """write_file(..., atomic=True, sudo=True) использует временный стейджинг и sudo mv -f."""
+        from uniconn.result import Result
+
+        conn = Connection.from_uri("ssh://app-node")
+        conn._transport._connected = True
+        staged_writes: list[tuple[str, str | bytes]] = []
+        moved_cmds: list[tuple[str, bool]] = []
+
+        async def fake_write(path: str, content: str | bytes, mode=None, encoding="utf-8"):
+            if path.startswith("/etc/"):
+                raise PermissionError("Permission denied: /etc")
+            staged_writes.append((path, content))
+
+        async def fake_run(cmd: str, **kwargs):
+            moved_cmds.append((cmd, bool(kwargs.get("sudo"))))
+            return Result(exit_code=0, stdout="", stderr="", duration=0.01, command=cmd, host="app-node")
+
+        conn._transport.write_file = AsyncMock(side_effect=fake_write)  # type: ignore[method-assign]
+        conn._create_temp_dir = AsyncMock(return_value="/tmp/uniconn-stage-1")  # type: ignore[method-assign]
+        conn._remove_temp_dir = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        conn.run = AsyncMock(side_effect=fake_run)  # type: ignore[method-assign]
+
+        await conn.files.write_file("/etc/nginx/nginx.conf", "worker_processes auto;\n", atomic=True, sudo=True, mode=0o640)
+        assert len(staged_writes) == 1
+        assert staged_writes[0][0].startswith("/tmp/uniconn-stage-1/")
+        assert any("mv -f" in cmd and is_sudo for cmd, is_sudo in moved_cmds)
+        assert any("chmod 640" in cmd and is_sudo for cmd, is_sudo in moved_cmds)
+
+    @pytest.mark.asyncio
+    async def test_sync_dir_uses_batch_python_worker_scan_and_delete(self, tmp_path: Path) -> None:
+        """sync_dir на Local/SSH использует пакетный _op_sync_scan воркера для хешей, mkdir и удаления лишних файлов."""
+        local_dir = tmp_path / "src_bundle"
+        local_dir.mkdir()
+        (local_dir / "sub" / "nested").mkdir(parents=True)
+        (local_dir / "root.txt").write_text("root-v1", encoding="utf-8")
+        (local_dir / "sub" / "nested" / "app.py").write_text("print('hi')\n", encoding="utf-8")
+
+        remote_dir = tmp_path / "dst_bundle"
+        remote_dir.mkdir()
+        (remote_dir / "stale.old").write_text("obsolete", encoding="utf-8")
+
+        async with Connection.from_uri("local://") as conn:
+            res1 = await conn.files.sync_dir(
+                local_dir,
+                remote_dir,
+                delete=True,
+                checksum_check=True,
+            )
+            assert res1.ok
+            assert len(res1.uploaded) == 2
+            assert len(res1.deleted) == 1
+            assert not (remote_dir / "stale.old").exists()
+            assert (remote_dir / "sub" / "nested" / "app.py").read_text(encoding="utf-8") == "print('hi')\n"
+
+            # Повторная синхронизация с checksum_check=True должна пропустить оба файла за 1 RPC-запрос
+            res2 = await conn.files.sync_dir(
+                local_dir,
+                remote_dir,
+                delete=True,
+                checksum_check=True,
+            )
+            assert res2.ok
+            assert len(res2.uploaded) == 0
+            assert len(res2.unchanged) == 2
+
+    @pytest.mark.asyncio
+    async def test_sync_dir_worker_respects_exclude_patterns(self, tmp_path: Path) -> None:
+        """sync_dir передаёт exclude в _op_sync_scan и не удаляет исключённые файлы/директории."""
+        local_dir = tmp_path / "src_excl"
+        local_dir.mkdir()
+        (local_dir / ".git").mkdir()
+        (local_dir / ".git" / "HEAD").write_text("ref: main", encoding="utf-8")
+        (local_dir / "keep.txt").write_text("v2", encoding="utf-8")
+
+        remote_dir = tmp_path / "dst_excl"
+        remote_dir.mkdir()
+        (remote_dir / ".git" / "objects").mkdir(parents=True)
+        (remote_dir / ".git" / "objects" / "abc").write_text("obj", encoding="utf-8")
+        (remote_dir / "debug.log").write_text("remote-log", encoding="utf-8")
+        (remote_dir / "keep.txt").write_text("v1", encoding="utf-8")
+
+        async with Connection.from_uri("local://") as conn:
+            res = await conn.files.sync_dir(
+                local_dir,
+                remote_dir,
+                exclude=[".git", "*.log"],
+                delete=True,
+                checksum_check=True,
+            )
+            assert res.ok
+            assert res.uploaded == ["keep.txt"]
+            assert res.deleted == []
+            assert (remote_dir / ".git" / "objects" / "abc").exists()
+            assert (remote_dir / "debug.log").exists()
+            assert (remote_dir / "keep.txt").read_text(encoding="utf-8") == "v2"
+
+    @pytest.mark.asyncio
+    async def test_write_file_atomic_cleans_staging_and_filters_non_permission_errors(self) -> None:
+        """atomic=True удаляет staging-файл при сбое и не делает sudo-fallback для не-permission ошибок."""
+        from uniconn.exceptions import ConnectionError as UniconnConnectionError
+        from uniconn.exceptions import ExecutionError
+        from uniconn.result import Result
+
+        conn = Connection.from_dict(
+            {
+                "transport": "ssh",
+                "host": "app-node",
+                "options": {"sudo_password": "secret"},
+            }
+        )
+        conn._transport._connected = True
+        removed_paths: list[str] = []
+        moved_cmds: list[tuple[str, bool]] = []
+
+        async def track_remove(path: str) -> None:
+            removed_paths.append(path)
+
+        conn._transport.remove_file = AsyncMock(side_effect=track_remove)  # type: ignore[method-assign]
+        conn._create_temp_dir = AsyncMock(return_value="/tmp/stage-dir")  # type: ignore[method-assign]
+        conn._remove_temp_dir = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        # 1. Nested PermissionError inside ConnectionError -> cleans staging & falls back to sudo move
+        async def fail_mv_perm(cmd: str, **kwargs):
+            moved_cmds.append((cmd, bool(kwargs.get("sudo"))))
+            if not kwargs.get("sudo") and cmd.startswith("mv -f"):
+                raise ExecutionError(
+                    "mv failed",
+                    command=cmd,
+                    exit_code=1,
+                    stderr="mv: cannot move: Permission denied",
+                )
+            return Result(exit_code=0, stdout="", stderr="", duration=0.01, command=cmd, host="app-node")
+
+        conn._transport.write_file = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        conn.run = AsyncMock(side_effect=fail_mv_perm)  # type: ignore[method-assign]
+
+        await conn.files.write_file("/etc/test.conf", "hello", atomic=True)
+        assert len(removed_paths) == 1
+        assert any(is_sudo for _, is_sudo in moved_cmds)
+
+        # 2. Non-permission ExecutionError ("No space left on device") -> cleans staging, NO sudo fallback
+        removed_paths.clear()
+        moved_cmds.clear()
+
+        async def fail_mv_disk(cmd: str, **kwargs):
+            moved_cmds.append((cmd, bool(kwargs.get("sudo"))))
+            raise ExecutionError(
+                "mv failed",
+                command=cmd,
+                exit_code=1,
+                stderr="mv: No space left on device",
+            )
+
+        conn.run = AsyncMock(side_effect=fail_mv_disk)  # type: ignore[method-assign]
+        with pytest.raises(ExecutionError, match="mv failed"):
+            await conn.files.write_file("/etc/test.conf", "hello", atomic=True)
+        assert len(removed_paths) == 1
+        assert not any(is_sudo for _, is_sudo in moved_cmds)
+
+        # 3. Direct chained PermissionError inside transport ConnectionError triggers sudo fallback
+        removed_paths.clear()
+        moved_cmds.clear()
+
+        async def write_with_chained_perm(path: str, content: bytes, mode=None):
+            if path.startswith("/etc/"):
+                raise UniconnConnectionError("SFTP write failed") from PermissionError("Permission denied")
+
+        async def ok_run(cmd: str, **kwargs):
+            moved_cmds.append((cmd, bool(kwargs.get("sudo"))))
+            return Result(exit_code=0, stdout="", stderr="", duration=0.01, command=cmd, host="app-node")
+
+        conn._transport.write_file = AsyncMock(side_effect=write_with_chained_perm)  # type: ignore[method-assign]
+        conn.run = AsyncMock(side_effect=ok_run)  # type: ignore[method-assign]
+        await conn.files.write_file("/etc/test.conf", "hello", atomic=True)
+        assert any(is_sudo and "mv -f" in cmd for cmd, is_sudo in moved_cmds)
 

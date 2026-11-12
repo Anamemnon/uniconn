@@ -1,12 +1,14 @@
 # tests/unit/test_ssh_transport.py
 """Unit-тесты SSH транспорта с моком asyncssh (без реальных соединений)."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from uniconn.config.models import ConnectionConfig
 from uniconn.exceptions import AuthenticationError, ConnectionError
+from uniconn.exceptions import TimeoutError as UniconnTimeoutError
 from uniconn.transports._ssh import SSHTransport
 
 
@@ -282,6 +284,32 @@ class TestSSHRunStream:
 
         lines = [line async for line in transport.stream("cat file")]
         assert lines == ["line1", "line2"]
+
+    @pytest.mark.asyncio
+    async def test_stream_timeout_terminates(self, asyncssh_mock, ssh_config):
+        """Таймаут чтения stream() — процесс терминируется, пробрасывается TimeoutError."""
+
+        class _SlowAsyncLines:
+            def __aiter__(self):
+                async def _gen():
+                    await asyncio.sleep(1.0)
+                    yield "never\n"
+
+                return _gen()
+
+        conn = _make_conn()
+        cm, proc = _make_proc()
+        proc.stdout = _SlowAsyncLines()
+        conn.create_process = MagicMock(return_value=cm)
+        asyncssh_mock.connect = AsyncMock(return_value=conn)
+
+        transport = SSHTransport(ssh_config)
+        await transport.connect()
+        with pytest.raises(UniconnTimeoutError, match="timed out"):
+            async for _ in transport.stream("tail -f app.log", timeout=0.05):
+                pass
+        proc.terminate.assert_called_once()
+
 
 
 class TestSSHPing:

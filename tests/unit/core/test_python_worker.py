@@ -217,3 +217,21 @@ async def test_run_python_passes_through_command_pipeline_and_escapes_interprete
         assert dry_conn.python_worker.is_running is False
 
 
+def _kwonly_calc(x: int, *, scale: int = 1, offset: int = 0) -> int:
+    return x * scale + offset
+
+
+async def test_run_python_partial_kwonly_override_and_closure() -> None:
+    """functools.partial корректно работает с kwonly-аргументами, переопределением kwargs и замыканиями."""
+    import functools
+
+    factor = 10
+    p_kwonly = functools.partial(_kwonly_calc, scale=3)
+    p_override = functools.partial(_kwonly_calc, 5, scale=3)
+    p_closure = functools.partial(lambda a, b: (a + b) * factor, 3)
+
+    async with Connection.from_uri("local://") as conn:
+        assert await conn.run_python(p_kwonly, 5) == 15
+        assert await conn.run_python(p_override, scale=4, offset=2) == 22
+        assert await conn.run_python(p_closure, 4) == 70
+

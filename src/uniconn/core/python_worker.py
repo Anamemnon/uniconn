@@ -393,6 +393,86 @@ def _op_checksum(req):
             h.update(chunk)
     return h.hexdigest().lower()
 
+def _op_sync_scan(req):
+    base = req.get("path", ".")
+    mkdirs = req.get("mkdirs") or []
+    want_checksum = bool(req.get("checksum", False))
+    delete_paths = req.get("delete_paths") or []
+    exclude_patterns = [p for p in (req.get("exclude") or []) if p]
+    do_scan = bool(req.get("scan", True))
+    exclude_re = None
+    if exclude_patterns:
+        exclude_re = re.compile("|".join(f"(?:{fnmatch.translate(p)})" for p in exclude_patterns))
+
+    def _is_excl(rel_p, item_name):
+        if exclude_re is None:
+            return False
+        if exclude_re.match(item_name) or exclude_re.match(rel_p):
+            return True
+        return any(exclude_re.match(part) for part in rel_p.split("/"))
+
+    base_path = pathlib.Path(base)
+    for rel_d in mkdirs:
+        target_d = base_path / rel_d if rel_d else base_path
+        target_d.mkdir(parents=True, exist_ok=True)
+    deleted = []
+    for rel_del in delete_paths:
+        target_f = base_path / rel_del
+        try:
+            target_f.unlink()
+            deleted.append(rel_del)
+        except OSError:
+            pass
+    if not do_scan:
+        return {"exists": base_path.exists(), "entries": {}, "deleted": deleted}
+    if not base_path.exists():
+        return {"exists": False, "entries": {}, "deleted": deleted}
+    entries = {}
+    for root, dirs, files in os.walk(base_path):
+        rel_root_p = pathlib.Path(root).relative_to(base_path)
+        rel_root = "" if str(rel_root_p) == "." else rel_root_p.as_posix()
+        kept_dirs = []
+        for d in dirs:
+            d_rel = f"{rel_root}/{d}" if rel_root else d
+            if _is_excl(d_rel, d):
+                continue
+            kept_dirs.append(d)
+            full_d = pathlib.Path(root) / d
+            try:
+                st = full_d.stat()
+                entries[d_rel] = {
+                    "is_dir": True,
+                    "size": 0,
+                    "mtime": float(st.st_mtime),
+                    "mode": int(stat.S_IMODE(st.st_mode)),
+                }
+            except OSError:
+                continue
+        dirs[:] = kept_dirs
+        for fn in files:
+            f_rel = f"{rel_root}/{fn}" if rel_root else fn
+            if _is_excl(f_rel, fn):
+                continue
+            full_f = pathlib.Path(root) / fn
+            try:
+                st = full_f.stat()
+                item = {
+                    "is_dir": False,
+                    "size": int(st.st_size),
+                    "mtime": float(st.st_mtime),
+                    "mode": int(stat.S_IMODE(st.st_mode)),
+                }
+                if want_checksum:
+                    h = hashlib.sha256()
+                    with open(full_f, "rb") as fp:
+                        while chunk := fp.read(65536):
+                            h.update(chunk)
+                    item["sha256"] = h.hexdigest().lower()
+                entries[f_rel] = item
+            except OSError:
+                continue
+    return {"exists": True, "entries": entries, "deleted": deleted}
+
 def _handle_request(req):
     op = req.get("op", "call")
     if op == "ping":
@@ -403,6 +483,8 @@ def _handle_request(req):
         return _op_glob(req)
     if op == "checksum":
         return _op_checksum(req)
+    if op == "sync_scan":
+        return _op_sync_scan(req)
     if op == "call":
         source = req.get("source", "")
         func_name = req.get("func_name", "")
@@ -412,13 +494,12 @@ def _handle_request(req):
         cwd = req.get("cwd")
         env = req.get("env")
         prev_cwd = os.getcwd()
-        old_env = {}
+        orig_env = os.environ.copy()
         try:
             if cwd:
                 os.chdir(cwd)
             if env:
                 for k, v in env.items():
-                    old_env[k] = os.environ.get(k)
                     os.environ[str(k)] = str(v)
             ns = dict(_BASE_NS)
             if is_expr:
@@ -442,12 +523,9 @@ def _handle_request(req):
             if cwd:
                 with contextlib.suppress(OSError):
                     os.chdir(prev_cwd)
-            if env:
-                for k, prev_v in old_env.items():
-                    if prev_v is None:
-                        os.environ.pop(k, None)
-                    else:
-                        os.environ[k] = prev_v
+            if os.environ != orig_env:
+                os.environ.clear()
+                os.environ.update(orig_env)
     raise ValueError(f"Unsupported worker op: {op!r}")
 
 _REAL_STDOUT.write(_READY + "\n")
@@ -493,11 +571,54 @@ class _LambdaFinder(ast.NodeVisitor):
 
 
 class CallableSerializer:
-    """Сериализатор Python-функций, лямбда-выражений и строковых сниппетов."""
+    """Сериализатор Python-функций, лямбда-выражений, замыканий и строковых сниппетов."""
+
+    @classmethod
+    def _is_simple_value(cls, val: Any) -> bool:
+        if val is None or isinstance(val, bool | int | float | str | bytes):
+            return True
+        if isinstance(val, list | tuple | set | frozenset):
+            return all(cls._is_simple_value(x) for x in val)
+        if isinstance(val, dict):
+            return all(cls._is_simple_value(k) and cls._is_simple_value(v) for k, v in val.items())
+        return False
+
+    @classmethod
+    def _extract_closure_bindings(cls, fn: Any) -> dict[str, Any]:
+        """Извлечь сериализуемые переменные замыкания (``__closure__``) и простые глобальные константы."""
+        bindings: dict[str, Any] = {}
+        code_obj = getattr(fn, "__code__", None)
+        if code_obj is None:
+            return bindings
+
+        freevars = getattr(code_obj, "co_freevars", ())
+        closure_cells = getattr(fn, "__closure__", None)
+        if freevars and closure_cells:
+            for name, cell in zip(freevars, closure_cells, strict=False):
+                with contextlib.suppress(ValueError):
+                    val = cell.cell_contents
+                    if cls._is_simple_value(val):
+                        bindings[name] = val
+
+        fn_globals = getattr(fn, "__globals__", None)
+        if isinstance(fn_globals, dict):
+            for name in getattr(code_obj, "co_names", ()):
+                if (
+                    name not in bindings
+                    and name in fn_globals
+                    and not hasattr(builtins, name)
+                    and name != getattr(fn, "__name__", "")
+                ):
+                    val = fn_globals[name]
+                    if cls._is_simple_value(val):
+                        bindings[name] = val
+        return bindings
 
     @staticmethod
     def serialize(fn: Callable[..., Any] | str) -> tuple[str, str, bool]:
-        """Преобразовать функцию, lambda или строку кода в кортеж ``(source, func_name, is_expr)``."""
+        """Преобразовать функцию, lambda, partial или строку кода в ``(source, func_name, is_expr)``."""
+        import functools
+
         if isinstance(fn, str):
             cleaned = textwrap.dedent(fn).strip()
             if not cleaned:
@@ -514,11 +635,27 @@ class CallableSerializer:
                     return cleaned, node.name, False
             return cleaned, "<snippet>", True
 
+        if isinstance(fn, functools.partial):
+            inner_src, inner_name, inner_is_expr = CallableSerializer.serialize(fn.func)
+            if not fn.args and not fn.keywords:
+                return inner_src, inner_name, inner_is_expr
+            pos_args = [repr(a) for a in fn.args]
+            pos_args.append("*_a")
+            pos_str = ", ".join(pos_args)
+            kw_str = f"**{{**{dict(fn.keywords)!r}, **_kw}}" if fn.keywords else "**_kw"
+            call_args = f"{pos_str}, {kw_str}"
+            if inner_is_expr:
+                return f"(lambda *_a, **_kw: ({inner_src})({call_args}))", inner_name, True
+            wrapper_name = f"_partial_{inner_name}"
+            partial_src = f"{inner_src}\n\ndef {wrapper_name}(*_a, **_kw):\n    return {inner_name}({call_args})"
+            return partial_src, wrapper_name, False
+
         if not callable(fn):
             raise TypeError(f"Expected a callable or source string for run_python(), got {type(fn).__name__}")
 
+        closure_bindings = CallableSerializer._extract_closure_bindings(fn)
         code_obj = getattr(fn, "__code__", None)
-        if code_obj is not None and code_obj in _SERIALIZED_CODE_CACHE:
+        if not closure_bindings and code_obj is not None and code_obj in _SERIALIZED_CODE_CACHE:
             return _SERIALIZED_CODE_CACHE[code_obj]
 
         func_name = getattr(fn, "__name__", "<callable>")
@@ -534,28 +671,29 @@ class CallableSerializer:
 
         if func_name == "<lambda>":
             extracted_lambda = CallableSerializer._extract_lambda_source(dedented, code_obj)
+            if closure_bindings:
+                params_str = ", ".join(f"{k}={v!r}" for k, v in closure_bindings.items())
+                extracted_lambda = f"(lambda {params_str}: ({extracted_lambda}))()"
             res = (extracted_lambda, "<lambda>", True)
-            if code_obj is not None:
+            if not closure_bindings and code_obj is not None:
                 _SERIALIZED_CODE_CACHE[code_obj] = res
             return res
 
-        # Обычная функция def name(...):
-        try:
+        # Обычная функция def name(...): очищаем декораторы и подставляем замыкания
+        final_def = dedented
+        with contextlib.suppress(SyntaxError):
             tree = ast.parse(dedented)
             for node in tree.body:
-                if isinstance(node, ast.FunctionDef) and node.name == func_name:
-                    # Очищаем декораторы, которых может не быть на удалённом хосте
+                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == func_name:
                     node.decorator_list = []
-                    clean_def = ast.unparse(node)
-                    res = (clean_def, func_name, False)
-                    if code_obj is not None:
-                        _SERIALIZED_CODE_CACHE[code_obj] = res
-                    return res
-        except SyntaxError:
-            pass
+                    final_def = ast.unparse(node)
+                    break
 
-        res = (dedented, func_name, False)
-        if code_obj is not None:
+        if closure_bindings:
+            preamble = "\n".join(f"{k} = {v!r}" for k, v in closure_bindings.items())
+            final_def = f"{preamble}\n\n{final_def}"
+        res = (final_def, func_name, False)
+        if not closure_bindings and code_obj is not None:
             _SERIALIZED_CODE_CACHE[code_obj] = res
         return res
 
@@ -751,12 +889,12 @@ class RemotePythonWorker:
         if getattr(tr_run, "__func__", None) is not tr_type_run:
             return True
 
-        # Если используется Cassette/Replay без записанных системных py_rpc эпизодов (facts/glob)
+        # Если используется Cassette/Replay без записанных системных py_rpc эпизодов
         cassette = getattr(tr, "cassette", None)
         if cassette is not None:
             has_sys_py_rpc = any(
                 getattr(it, "kind", "") == "py_rpc"
-                and getattr(it, "op", "") in ("facts", "glob", "checksum")
+                and getattr(it, "op", "") in ("facts", "glob", "checksum", "sync_scan")
                 for it in getattr(cassette, "interactions", [])
             )
             if not has_sys_py_rpc:

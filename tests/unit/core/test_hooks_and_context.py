@@ -42,7 +42,7 @@ async def test_sudo_with_password_via_stdin():
             stdout="root\n",
             stderr="",
             duration=0.01,
-            command="sudo -S -p '' -- sh -c whoami",
+            command="sudo -S -k -p '' -- sh -c whoami",
             ok=True,
         )
     )
@@ -56,7 +56,7 @@ async def test_sudo_with_password_via_stdin():
     passed_input = call_args.kwargs["input"]
 
     assert "my_sudo_secret" not in executed_cmd
-    assert executed_cmd == "sudo -S -p '' -- sh -c whoami"
+    assert executed_cmd == "sudo -S -k -p '' -- sh -c whoami"
     assert passed_input == "my_sudo_secret\n"
 
 
@@ -86,7 +86,7 @@ async def test_sudo_with_custom_user_and_combined_stdin():
     )
 
     call_args = mock_run.call_args
-    assert call_args.args[0] == "sudo -S -p '' -u postgres -- sh -c cat"
+    assert call_args.args[0] == "sudo -S -k -p '' -u postgres -- sh -c cat"
     assert call_args.kwargs["input"] == "pg_secret\nSELECT 1;\n"
 
 
@@ -404,4 +404,132 @@ def test_blocklist_hook_normalizes_whitespace_against_bypass():
         hook("rm   -rf\t  /", "localhost", {})
     with pytest.raises(PermissionError, match="blocked by pattern"):
         hook("sudo   rm   -rf   /var", "localhost", {})
+
+
+@pytest.mark.asyncio
+async def test_stream_executes_through_command_pipeline_hooks_dry_run_and_sensitive():
+    """conn.stream() проходит через CommandPipeline (before_run, blocklist, dry_run, sensitive)."""
+    import functools
+
+    from uniconn.hooks import blocklist_hook
+
+    events: list[str] = []
+    async with Connection.from_uri("local://") as conn:
+        conn.add_hook("before_run", lambda cmd, host, kw: events.append(f"before:{cmd}"))
+        conn.add_hook("after_run", lambda res: events.append(f"after:{res.command}"))
+        conn.add_hook("before_run", blocklist_hook(["rm -rf /"]))
+
+        with pytest.raises(PermissionError, match="blocked by pattern"):
+            async for _ in conn.stream("rm -rf /"):
+                pass
+
+        dry_lines = [line async for line in conn.stream("echo should_skip", dry_run=True)]
+        assert dry_lines == []
+        assert "before:echo should_skip" in events
+        assert not any(e.startswith("after:") for e in events)
+
+        redacted = [line async for line in conn.stream("echo secret_line", sensitive=True)]
+        assert redacted == ["***REDACTED***"]
+
+        # Проверка замыканий и functools.partial в conn.run_python()
+        multiplier = 7
+        offset = 5
+
+        def closure_calc(x: int) -> int:
+            return x * multiplier + offset
+
+        res_closure = await conn.run_python(closure_calc, 6)
+        assert res_closure == 47
+
+        def base_add(a: int, b: int, c: int = 1) -> int:
+            return (a + b) * c
+
+        partial_fn = functools.partial(base_add, 10, c=3)
+        res_partial = await conn.run_python(partial_fn, 4)
+        assert res_partial == 42
+
+
+def test_uri_parser_round_trip_preserves_key_file_and_ssh_config():
+    """URIParser.build и URIParser.from_config сохраняют key_file и ssh_config."""
+    from uniconn.config.uri import URIParser
+
+    parsed = URIParser.parse(
+        "ssh://deploy@10.0.0.5:2222?key_file=/home/deploy/.ssh/id_ed25519&ssh_config=true"
+    )
+    assert parsed.key_file == "/home/deploy/.ssh/id_ed25519"
+    assert parsed.ssh_config is True
+
+    rebuilt = URIParser.from_config(parsed)
+    reparsed = URIParser.parse(rebuilt)
+    assert reparsed.host == "10.0.0.5"
+    assert reparsed.port == 2222
+    assert reparsed.username == "deploy"
+    assert reparsed.key_file == "/home/deploy/.ssh/id_ed25519"
+    assert reparsed.ssh_config is True
+
+
+@pytest.mark.asyncio
+async def test_stream_circuit_breaker_on_error_early_break_and_env():
+    """conn.stream(): корректный CircuitBreaker, on_error, ранний break и сохранение PATH в env."""
+    import sys
+
+    from uniconn.core.resilience import CircuitBreaker, CircuitState
+    from uniconn.exceptions import CircuitOpenError
+    from uniconn.exceptions import ConnectionError as UniconnConnectionError
+
+    errors: list[tuple[str, str]] = []
+
+    # 1. Ошибка во время стриминга записывается как failure (не success!) и вызывает on_error
+    cb = CircuitBreaker(failure_threshold=2, recovery_timeout=60.0)
+    conn = Connection.from_uri("local://", circuit_breaker=cb)
+    conn._transport._connected = True
+    conn.add_hook("on_error", lambda exc, cmd, host: errors.append((type(exc).__name__, cmd)))
+
+    async def failing_stream(*_args, **_kwargs):
+        yield "partial"
+        raise UniconnConnectionError("stream dropped")
+
+    conn._transport.stream = failing_stream  # type: ignore[method-assign]
+
+    with pytest.raises(UniconnConnectionError, match="stream dropped"):
+        async for _ in conn.stream("tail -f /var/log/syslog"):
+            pass
+    assert cb.failure_count == 1
+    assert cb.state == CircuitState.CLOSED
+    assert errors == [("ConnectionError", "tail -f /var/log/syslog")]
+
+    # Второй сбой открывает цепь
+    with pytest.raises(UniconnConnectionError, match="stream dropped"):
+        async for _ in conn.stream("tail -f /var/log/syslog"):
+            pass
+    assert cb.state == CircuitState.OPEN
+
+    with pytest.raises(CircuitOpenError):
+        async for _ in conn.stream("echo blocked"):
+            pass
+
+    # 2. Ранний break не вызывает on_error и не портит счётчик сбоев, а conn.env сохраняет PATH
+    errors_local: list[str] = []
+    cb_local = CircuitBreaker(failure_threshold=2)
+    async with Connection.from_uri("local://", circuit_breaker=cb_local) as local_conn:
+        local_conn.add_hook("on_error", lambda exc, cmd, host: errors_local.append(cmd))
+        async for _ in local_conn.stream(
+            [sys.executable, "-c", "print('one'); print('two')"]
+        ):
+            break
+        assert errors_local == []
+        assert cb_local.failure_count == 0
+
+        async with local_conn.env(UNICONN_STREAM_VAR="preserved"):
+            env_lines = [
+                line
+                async for line in local_conn.stream(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import os; print(bool(os.environ.get('PATH'))); print(os.environ['UNICONN_STREAM_VAR'])",
+                    ]
+                )
+            ]
+        assert env_lines == ["True", "preserved"]
 

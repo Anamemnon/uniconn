@@ -379,6 +379,16 @@ class SyncResult:
     dry_run: bool = False
 
     @property
+    def ok(self) -> bool:
+        """Признак успешного завершения синхронизации директории."""
+        return True
+
+    @property
+    def unchanged(self) -> list[str]:
+        """Алиас для ``skipped`` (список неизменённых файлов)."""
+        return self.skipped
+
+    @property
     def total_checked(self) -> int:
         """Общее число проверенных локальных файлов (uploaded + skipped)."""
         return len(self.uploaded) + len(self.skipped)

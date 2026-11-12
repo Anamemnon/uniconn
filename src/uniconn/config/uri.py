@@ -498,6 +498,15 @@ class URIParser:
         return value
 
     @classmethod
+    def _build_query_string(cls, opts: dict[str, Any]) -> str:
+        """Собрать query-строку из словаря опций с безопасным экранированием значений."""
+        safe_chars = "/:\\.,~-@"
+        return "&".join(
+            f"{quote(str(k), safe='')}={quote(str(v), safe=safe_chars)}"
+            for k, v in opts.items()
+        )
+
+    @classmethod
     def build(
         cls,
         transport: str,
@@ -506,42 +515,47 @@ class URIParser:
         username: str | None = None,
         password: str | None = None,
         options: dict[str, Any] | None = None,
+        *,
+        key_file: str | None = None,
+        ssh_config: str | bool | None = None,
     ) -> str:
         """Собрать URI строку из компонентов."""
+        merged_opts = dict(options) if options else {}
+        if key_file is not None and "key_file" not in merged_opts:
+            merged_opts["key_file"] = key_file
+        if ssh_config is not None and "ssh_config" not in merged_opts:
+            merged_opts["ssh_config"] = ssh_config
+
         if transport == "local":
-            if options:
-                query = "&".join(f"{k}={v}" for k, v in options.items())
-                return f"local://?{query}"
+            if merged_opts:
+                return f"local://?{cls._build_query_string(merged_opts)}"
             return "local://"
 
         if transport in ("serial", "uart"):
-            device = host or (options.get("device") if options else "") or ""
-            opts = dict(options) if options else {}
+            device = host or (merged_opts.get("device") if merged_opts else "") or ""
+            opts = dict(merged_opts)
             opts.pop("device", None)
             if opts:
-                query = "&".join(f"{k}={v}" for k, v in opts.items())
-                return f"{transport}://{device}?{query}"
+                return f"{transport}://{device}?{cls._build_query_string(opts)}"
             return f"{transport}://{device}"
 
         if transport == "kubectl":
-            opts = dict(options) if options else {}
+            opts = dict(merged_opts)
             ns = opts.pop("namespace", None)
             target = f"{ns}/{host or ''}" if ns else (host or "")
             if opts:
-                query = "&".join(f"{k}={v}" for k, v in opts.items())
-                return f"kubectl://{target}?{query}"
+                return f"kubectl://{target}?{cls._build_query_string(opts)}"
             return f"kubectl://{target}"
 
         if transport in ("qga", "qemu-ga"):
-            opts = dict(options) if options else {}
+            opts = dict(merged_opts)
             if (host and host.startswith("/")) or (not host and "socket" in opts):
                 sock_path = host if (host and host.startswith("/")) else str(opts.pop("socket", ""))
                 opts.pop("socket", None)
                 if opts.get("backend") == "socket":
                     opts.pop("backend", None)
                 if opts:
-                    query = "&".join(f"{k}={v}" for k, v in opts.items())
-                    return f"{transport}://{sock_path}?{query}"
+                    return f"{transport}://{sock_path}?{cls._build_query_string(opts)}"
                 return f"{transport}://{sock_path}"
             vm_name = opts.pop("vm", None) or opts.pop("domain", None)
             opts.pop("domain", None)
@@ -554,12 +568,11 @@ class URIParser:
             vm_suffix = f"/{vm_name}" if vm_name else ""
             uri = f"{transport}://{auth}{host or ''}{port_str}{vm_suffix}"
             if opts:
-                query = "&".join(f"{k}={v}" for k, v in opts.items())
-                uri = f"{uri}?{query}"
+                uri = f"{uri}?{cls._build_query_string(opts)}"
             return uri
 
         if transport == "pve":
-            opts = dict(options) if options else {}
+            opts = dict(merged_opts)
             vmid = opts.pop("vmid", None)
             auth = ""
             if username and password:
@@ -570,11 +583,10 @@ class URIParser:
             vmid_suffix = f"/{vmid}" if vmid is not None else ""
             uri = f"pve://{auth}{host or ''}{port_str}{vmid_suffix}"
             if opts:
-                query = "&".join(f"{k}={v}" for k, v in opts.items())
-                uri = f"{uri}?{query}"
+                uri = f"{uri}?{cls._build_query_string(opts)}"
             return uri
 
-        opts = dict(options) if options else {}
+        opts = dict(merged_opts)
         path_suffix = ""
         if transport == "restconf" and "root" in opts:
             root_val = str(opts.pop("root")).strip()
@@ -594,10 +606,27 @@ class URIParser:
         uri = f"{transport}://{auth}{host or ''}{port_str}{path_suffix}"
 
         if opts:
-            query = "&".join(f"{k}={v}" for k, v in opts.items())
-            uri = f"{uri}?{query}"
+            uri = f"{uri}?{cls._build_query_string(opts)}"
 
         return uri
 
+    @classmethod
+    def from_config(cls, config: ConnectionConfig, *, include_secrets: bool = False) -> str:
+        """Собрать URI строку напрямую из объекта ``ConnectionConfig`` с сохранением всех полей."""
+        pwd: str | None = None
+        if include_secrets and config.password is not None:
+            pwd = config.password.get_secret_value()
+        return cls.build(
+            transport=config.transport,
+            host=config.host,
+            port=config.port,
+            username=config.username,
+            password=pwd,
+            options=config.options,
+            key_file=config.key_file,
+            ssh_config=config.ssh_config,
+        )
+
 
 __all__ = ["URIParser"]
+
