@@ -11,7 +11,7 @@
 
 ---
 
-### Language: **[ English ]** &nbsp;|&nbsp; **[ Русский ](README.ru.md)** &nbsp;|&nbsp; **[ 🇷🇺 Документация в docs/ru/ ](docs/ru/index.rst)**
+### Language: **[ English ]** &nbsp;|&nbsp; **[Русский](README.ru.md)** &nbsp;|&nbsp;
 
 **📚 Documentation:** **[Overview & Cheat Sheet](docs/index.rst)** · **[5-Min Quickstart](docs/quickstart.rst)** · **[Core Architecture & Pipeline](docs/architecture.rst)** · **[Inventory & URI Reference](docs/inventory_and_uris.rst)** · **[Cookbook Recipes](docs/cookbook.rst)** · **[Debugging & Troubleshooting](docs/troubleshooting.rst)** · **[Migration Guides](docs/migration.rst)** · **[CLI, MCP & Policy](docs/cli_and_mcp.rst)** · **[API Reference](docs/api.rst)**
 
@@ -28,6 +28,7 @@
 ## ⚡ 5-Line Quick Start
 
 ### 🚀 Asynchronous (`Connection`)
+
 Execute commands, parse structured output, write configs atomically, and enforce service states with `sudo`:
 
 ```python
@@ -40,6 +41,7 @@ async with Connection.from_uri("ssh://admin:env://SSH_PASS@node-01") as conn:
 ```
 
 ### ⏱️ Synchronous (`SyncConnection`)
+
 Zero `asyncio.run()` boilerplate for scripts, CLI utilities, and sync frameworks:
 
 ```python
@@ -99,7 +101,7 @@ Traditionally, teams maintain a fragmented stack: `AsyncSSH` or `Paramiko` for S
 | **10+ Transports** | **✅ Unified** | ⚠️ Plugins | ❌ SSH only | ⚠️ Linux/SSH | ❌ Network CLI |
 | **Idempotent State (`ensure_*`)** | **✅ Built-in** | ✅ YAML | ❌ None | ✅ Python ops | ❌ None |
 | **DAG Orchestration (`@task`)** | **✅ Built-in** | ✅ Playbooks | ❌ None | ⚠️ Linear | ⚠️ Runners |
-| **Zero-Fork RPC (`run_python`)** | **✅ &lt; 2 ms** | ⚠️ Mitogen plugin| ❌ None | ⚠️ Connector | ❌ None |
+| **Zero-Fork RPC (`run_python`)** | **✅ &lt; 2 ms** | ⚠️ Mitogen plugin | ❌ None | ⚠️ Connector | ❌ None |
 | **Structured Output Parsing** | **✅ `auto`** | ⚠️ Filters | ❌ None | ❌ None | ✅ TextFSM |
 | **Hardware BMC &amp; UART** | **✅ Out-of-box** | ⚠️ Roles | ❌ None | ❌ None | ⚠️ Serial only |
 | **Offline Testing (Cassettes)** | **✅ Built-in** | ❌ None | ❌ None | ❌ None | ❌ None |
@@ -142,7 +144,7 @@ Or pick only what you need:
 | **Telnet** | `uv add "uniconn[telnet]"` | Telnet transport (`telnetlib3`) |
 | **Templates** | `uv add "uniconn[templates]"` | Jinja2 templating engine for `write_template()` |
 | **Parsing** | `uv add "uniconn[parsing]"` | Semantic parsers (`jc`, `ttp`, `textfsm`, `ntc-templates`) |
-| **Telemetry**| `uv add "uniconn[otel]"` | OpenTelemetry distributed tracing hooks |
+| **Telemetry** | `uv add "uniconn[otel]"` | OpenTelemetry distributed tracing hooks |
 
 ---
 
@@ -156,7 +158,7 @@ Every transport is represented via a standardized, human-readable URI with autom
 | **NETCONF** | `netconf://` | `netconf://admin:env://NET_PASS@router-01:830?vendor=junos&version=1.1` |
 | **RESTCONF** | `restconf://` | `restconf://admin:env://NET_PASS@router-01/restconf?verify_tls=false&format=json` |
 | **gNMI** | `gnmi://` | `gnmi://admin:env://NET_PASS@spine-01:9339?encoding=json_ietf&origin=openconfig` |
-| **Windows Remote**| `winrm://` | `winrm://Administrator:env://WIN_PASS@win-server:5986?ssl=true&shell=ps&transport=ntlm` |
+| **Windows Remote** | `winrm://` | `winrm://Administrator:env://WIN_PASS@win-server:5986?ssl=true&shell=ps&transport=ntlm` |
 | **Docker** | `docker://` | `docker://root@app-container?workdir=/app&shell=/bin/sh` |
 | **Podman** | `podman://` | `podman://web-container?workdir=/srv` |
 | **Kubernetes** | `kubectl://` | `kubectl://production/backend-pod-0?container=api&context=eu-cluster` |
@@ -164,7 +166,7 @@ Every transport is represented via a standardized, human-readable URI with autom
 | **IPMI BMC** | `ipmi://` | `ipmi://admin:password@bmc.local:623` (`power status`, `sensors`, `boot device`) |
 | **Serial / UART** | `serial://`, `uart://` | `uart:///dev/ttyUSB0:115200?parity=N&stopbits=1` or `uart://COM3?vid=10c4&pid=ea60` |
 | **Telnet** | `telnet://` | `telnet://admin:pass@switch.local:23?term_type=vt100` |
-| **Replay (Cassette)**| `replay://` | `replay://node-01?cassette=tests/cassettes/node.yaml&mode=none` |
+| **Replay (Cassette)** | `replay://` | `replay://node-01?cassette=tests/cassettes/node.yaml&mode=none` |
 | **Local** | `local://` | `local://?timeout=30&rate_limit=50` (or `Connection.local()`) |
 
 > 🔒 **Dynamic Secret Resolution**: Passwords, sudo tokens, and key paths support `env://VAR_NAME[?default=fallback]` and `file:///path/to/secret[?default=fallback]`. Missing secrets without defaults raise `ConfigurationError` before any network connection is attempted.
@@ -174,6 +176,7 @@ Every transport is represented via a standardized, human-readable URI with autom
 ## 🛠️ Production Recipes & Advanced Examples
 
 ### 1. Declarative DAG Task Orchestration (`uniconn.orchestration`)
+
 Build dependency graphs with prerequisites (`depends_on`), cleanup post-actions (`post`), condition guards (`when`), and wave-synchronized execution (`mode="barrier"`) across a fleet:
 
 ```python
@@ -224,6 +227,7 @@ async with ConnectionPool.from_file("fleet.yaml", group="prod") as pool:
 ---
 
 ### 2. Persistent Zero-Fork Remote Python RPC (`conn.run_python`)
+
 Execute arbitrary Python callables directly inside a persistent background Python worker over a bidirectional pipe (Mitogen-style). Eliminates SSH shell overhead, file upload latency, and process fork penalties:
 
 ```python
@@ -252,6 +256,7 @@ async with Connection.from_uri("ssh://admin@remote-node") as conn:
 ---
 
 ### 3. Bare-Metal Redfish BMC & Hardware Telemetry
+
 Manage rack servers directly out-of-band using DMTF Redfish HTTP/2 (powered by `niquests`) and IPMI protocols:
 
 ```python
@@ -279,6 +284,7 @@ async with Connection.from_uri("ipmi://admin:env://IPMI_PASS@192.168.1.100:623")
 ---
 
 ### 4. Serial / UART Controls & Bootloader Flashing (X/Y/ZMODEM)
+
 Direct hardware communication for embedded boards, network switches, and IoT microcontrollers:
 
 ```python
@@ -309,6 +315,7 @@ async with Connection.from_uri("uart:///dev/ttyUSB0:115200?parity=N&stopbits=1")
 ---
 
 ### 5. Stateful PTY Shell Sessions & Automated Expect Dialogs
+
 Maintain state across multiple commands in a real pseudoterminal (preserving `cd` and `export`) and automate interactive terminal prompts:
 
 ```python
@@ -337,6 +344,7 @@ async with Connection.from_uri("ssh://admin@node-01") as conn:
 ---
 
 ### 6. Fleet Orchestration & Canary Rollouts (`ConnectionPool`)
+
 Deploy across hundreds of nodes with built-in concurrency limits, circuit breakers, and automatic rollout abortion on failure:
 
 ```python
@@ -369,6 +377,7 @@ asyncio.run(deploy_fleet())
 ---
 
 ### 7. Object-Oriented Remote Filesystem (`conn.path` & `conn.files`)
+
 Work with remote files using a `pathlib.Path`-compatible API with zero round-trip overhead:
 
 ```python
@@ -392,6 +401,7 @@ sync_res = await conn.files.sync_dir(
 ---
 
 ### 8. Deterministic Offline Testing (`use_cassette` & Pytest Plugin)
+
 Record real infrastructure interactions (commands, SFTP, streams, PTY shells) into clean YAML cassettes with automatic secret redaction, and replay them in CI without network access:
 
 ```python
@@ -411,9 +421,11 @@ async def test_server_provisioning():
 ---
 
 ### 9. Official MCP Server for AI Agents (`uniconn mcp`)
+
 Expose your infrastructure inventory safely to AI agents and IDEs (**Claude Desktop, Cursor, Windsurf, Cline**) over the **Model Context Protocol (MCP, JSON-RPC 2.0 over `stdio`)** with zero external SDK dependencies.
 
 By default, `uniconn mcp` runs in **Safe Mode**:
+
 - File modification (`uniconn_write_file`) and privileged execution (`sudo=True`) are disabled by default.
 - Destructive commands (`rm -rf /`, `mkfs`, `shutdown`, etc.) are blocked via `blocklist_hook`.
 - Credentials, tokens, and `SecretResolver` references (`env://`, `file://`) are automatically redacted in URIs (`mask_uri_secrets`) and outputs (`SecretMaskingFilter`).
@@ -469,6 +481,7 @@ Example `mcp.json` / `claude_desktop_config.json` configuration:
 | `uniconn://hosts/{host}/facts` | Resource Template returning live `HostFacts` JSON for any registered host. | Read-only |
 
 #### Programmatic `MCPServer` Usage in Python
+
 You can also embed `MCPServer` directly inside custom agent runners (including JSON-RPC 2.0 batch requests):
 
 ```python
@@ -500,7 +513,8 @@ response = await server.handle_message({
 python main.py --serve
 ```
 
-Open **http://localhost:3000** in your browser to access:
+Open **<http://localhost:3000>** in your browser to access:
+
 1. **Quickstart & Interactive Recipe Wizard (`#recipes`)**: Pick your engineering goal, generate **Async / Sync / CLI / Migration** code, and run it live in-process.
 2. **Shell & Local Runner (`#shell`)**: Interactive stateful PTY sessions with full `cd` and `export` persistence.
 3. **Hooks & Telemetry Sandbox (`#hooks`)**: Live testing of `CircuitBreaker`, `RateLimiter`, and secret masking.

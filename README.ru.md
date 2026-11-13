@@ -11,7 +11,7 @@
 
 ---
 
-### Язык: **[ English ](README.md)** &nbsp;|&nbsp; **[ Русский ]** &nbsp;|&nbsp; **[ 🇬🇧 English Docs ](docs/index.rst)**
+### Язык: **[English](README.md)** &nbsp;|&nbsp; **[ Русский ]** &nbsp;
 
 **📚 Документация (`docs/ru/`):** **[Обзор и шпаргалка](docs/ru/index.rst)** · **[Быстрый старт за 5 мин](docs/ru/quickstart.rst)** · **[Архитектура и пайплайн](docs/ru/architecture.rst)** · **[Инвентарь YAML/TOML и URI](docs/ru/inventory_and_uris.rst)** · **[Кулинарная книга](docs/ru/cookbook.rst)** · **[Отладка и исключения](docs/ru/troubleshooting.rst)** · **[Гайд по миграции](docs/migration.rst)** · **[CLI, MCP и Policy](docs/cli_and_mcp.rst)** · **[API Reference](docs/api.rst)**
 
@@ -28,6 +28,7 @@
 ## ⚡ Быстрый старт за 5 строк
 
 ### 🚀 Асинхронное использование (`Connection`)
+
 Выполнение команд, автопарсинг вывода, атомарная запись файлов и запуск системных служб через `sudo`:
 
 ```python
@@ -40,6 +41,7 @@ async with Connection.from_uri("ssh://admin:env://SSH_PASS@node-01") as conn:
 ```
 
 ### ⏱️ Синхронное использование (`SyncConnection`)
+
 Без ручного управления `asyncio.run()` для скриптов, утилит и синхронных тестовых сценариев:
 
 ```python
@@ -142,7 +144,7 @@ uv add "uniconn[all]"
 | **Telnet** | `uv add "uniconn[telnet]"` | Telnet транспорт (`telnetlib3`) |
 | **Templates** | `uv add "uniconn[templates]"` | Шаблонизатор Jinja2 для `write_template()` |
 | **Parsing** | `uv add "uniconn[parsing]"` | Семантические парсеры (`jc`, `ttp`, `textfsm`, `ntc-templates`) |
-| **Telemetry**| `uv add "uniconn[otel]"` | Трассировка OpenTelemetry |
+| **Telemetry** | `uv add "uniconn[otel]"` | Трассировка OpenTelemetry |
 
 ---
 
@@ -153,7 +155,7 @@ uv add "uniconn[all]"
 | Транспорт | Схема URI | Пример использования |
 | :--- | :--- | :--- |
 | **SSH** | `ssh://` | `ssh://admin:env://SSH_PASS@node-01:22?key_file=/path/id_ed25519&proxy=bastion&keepalive=30` |
-| **Windows Remote**| `winrm://` | `winrm://Administrator:env://WIN_PASS@win-server:5986?ssl=true&shell=ps&transport=ntlm` |
+| **Windows Remote** | `winrm://` | `winrm://Administrator:env://WIN_PASS@win-server:5986?ssl=true&shell=ps&transport=ntlm` |
 | **Docker** | `docker://` | `docker://root@app-container?workdir=/app&shell=/bin/sh` |
 | **Podman** | `podman://` | `podman://web-container?workdir=/srv` |
 | **Kubernetes** | `kubectl://` | `kubectl://production/backend-pod-0?container=api&context=eu-cluster` |
@@ -161,7 +163,7 @@ uv add "uniconn[all]"
 | **IPMI BMC** | `ipmi://` | `ipmi://admin:password@bmc.local:623` (`power status`, `sensors`, `boot device`) |
 | **Serial / UART** | `serial://`, `uart://` | `uart:///dev/ttyUSB0:115200?parity=N&stopbits=1` или `uart://COM3?vid=10c4&pid=ea60` |
 | **Telnet** | `telnet://` | `telnet://admin:pass@switch.local:23?term_type=vt100` |
-| **Replay (Кассеты)**| `replay://` | `replay://node-01?cassette=tests/cassettes/node.yaml&mode=none` |
+| **Replay (Кассеты)** | `replay://` | `replay://node-01?cassette=tests/cassettes/node.yaml&mode=none` |
 | **Local** | `local://` | `local://?timeout=30&rate_limit=50` (или `Connection.local()`) |
 
 > 🔒 **Динамические ссылки на секреты**: Пароли, токены sudo и пути к ключам поддерживают синтаксис `env://VAR_NAME[?default=fallback]` и `file:///path/to/secret[?default=fallback]`. Отсутствие обязательного секрета вызывает `ConfigurationError` до попытки сетевого подключения.
@@ -171,6 +173,7 @@ uv add "uniconn[all]"
 ## 🛠️ Практические сценарии и боевые примеры
 
 ### 1. Декларативная DAG-оркестрация задач (`uniconn.orchestration`)
+
 Построение графов зависимостей задач с предусловиями (`depends_on`), гарантированной очисткой (`post`), предикатами выполнения (`when`) и барьерной волновой раскаткой по кластеру (`mode="barrier"`):
 
 ```python
@@ -221,6 +224,7 @@ async with ConnectionPool.from_file("fleet.yaml", group="prod") as pool:
 ---
 
 ### 2. Удалённый Python RPC без форков (`conn.run_python`)
+
 Выполнение произвольных Python-функций напрямую внутри постоянного фонового Python-воркера через двунаправленный pipe (в стиле Mitogen). Устраняет оверхед шелла SSH, задержки заливки скриптов и потери времени на fork процессов:
 
 ```python
@@ -249,6 +253,7 @@ async with Connection.from_uri("ssh://admin@remote-node") as conn:
 ---
 
 ### 3. Аппаратное управление bare-metal серверами (Redfish HTTP/2 и IPMI)
+
 Управление серверными стойками через контроллеры BMC по протоколам DMTF Redfish HTTP/2 (на базе `niquests`) и IPMI:
 
 ```python
@@ -276,6 +281,7 @@ async with Connection.from_uri("ipmi://admin:env://IPMI_PASS@192.168.1.100:623")
 ---
 
 ### 4. Управление Serial/UART и перепрошивка микроконтроллеров (X/Y/ZMODEM)
+
 Прямая работа с COM-портами и адаптерами `/dev/ttyUSB0` для сетевого оборудования, встраиваемых систем и IoT:
 
 ```python
@@ -306,6 +312,7 @@ async with Connection.from_uri("uart:///dev/ttyUSB0:115200?parity=N&stopbits=1")
 ---
 
 ### 5. Сессии Stateful PTY Shell и автоматизация диалогов `expect`
+
 Сохранение состояния сессии (директория `cd`, переменные `export`, размер терминала) и декларативный автомат ответов на интерактивные запросы:
 
 ```python
@@ -334,6 +341,7 @@ async with Connection.from_uri("ssh://admin@node-01") as conn:
 ---
 
 ### 6. Оркестрация кластера и волновой роллаут (`ConnectionPool`)
+
 Выкатка изменений на сотни серверов с ограничением параллелизма, предохранителями `CircuitBreaker` и автоматической остановкой при превышении порога ошибок:
 
 ```python
@@ -366,6 +374,7 @@ asyncio.run(deploy_fleet())
 ---
 
 ### 7. Объектно-ориентированная файловая система (`conn.path` и `conn.files`)
+
 Работа с удалёнными файлами в стиле `pathlib.Path` без лишних сетевых запросов:
 
 ```python
@@ -389,6 +398,7 @@ sync_res = await conn.files.sync_dir(
 ---
 
 ### 8. Детерминированное контрактное тестирование (`use_cassette` и плагин Pytest)
+
 Запись реальных сессий инфраструктуры (команды, SFTP, потоки, PTY-сессии) в YAML-кассеты с автоматическим маскированием секретов и воспроизведение в тестах CI без сетевого доступа:
 
 ```python
@@ -408,9 +418,11 @@ async def test_server_provisioning():
 ---
 
 ### 9. Официальный MCP-сервер для AI-агентов (`uniconn mcp`)
+
 Безопасно подключайте ваш инфраструктурный инвентарь к ИИ-агентам и IDE (**Claude Desktop, Cursor, Windsurf, Cline**) по протоколу **Model Context Protocol (MCP, JSON-RPC 2.0 поверх `stdio`)** без внешних SDK-зависимостей.
 
 По умолчанию `uniconn mcp` запускается в **безопасном режиме (Safe Mode by Default)**:
+
 - Модификация файлов (`uniconn_write_file`) и привилегированное выполнение (`sudo=True`) отключены по умолчанию.
 - Деструктивные команды (`rm -rf /`, `mkfs`, `shutdown` и др.) блокируются на уровне конвейера через `blocklist_hook`.
 - Пароли, токены и секреты из `SecretResolver` (`env://`, `file://`) скрываются как в URI (`mask_uri_secrets`), так и в потоках вывода (`SecretMaskingFilter`).
@@ -466,6 +478,7 @@ uniconn mcp --inventory hosts.yaml --group web --max-read-bytes 131072 --print-c
 | `uniconn://hosts/{host}/facts` | Шаблон ресурса (Resource Template) для чтения актуальных `HostFacts` хоста в JSON. | Read-only |
 
 #### Программное использование `MCPServer` в Python
+
 Вы также можете встраивать `MCPServer` напрямую в собственные агентные пайплайны (включая пакетные JSON-RPC 2.0 запросы):
 
 ```python
@@ -497,7 +510,8 @@ response = await server.handle_message({
 python main.py --serve
 ```
 
-После запуска перейдите по адресу **http://localhost:3000**:
+После запуска перейдите по адресу **<http://localhost:3000>**:
+
 1. **Quickstart & Interactive Recipe Wizard (`#recipes`)**: Мастер выбора инженерной задачи с генерацией кода (**Async / Sync / CLI / Migration**) и живым запуском в песочнице.
 2. **Shell & Local Runner (`#shell`)**: Интерактивные stateful PTY-сессии с сохранением состояния `cd`, переменных `export` и размеров терминала.
 3. **Hooks & Telemetry Sandbox (`#hooks`)**: Тестирование `CircuitBreaker`, `RateLimiter` и маскирования секретов.
