@@ -636,9 +636,9 @@ async def test_mcp_read_file_enforces_sensitive_path_blocklist_and_policy_guardr
     from uniconn.security.models import PolicyGuardrailConfig
 
     safe_file = tmp_path / "app.conf"
-    safe_file.write_text("port = 8080\n", encoding="utf-8")
+    safe_file.write_text("port = 8080\n", encoding="utf-8", newline="\n")
     blocked_custom = tmp_path / "secret.key"
-    blocked_custom.write_text("PRIVATE\n", encoding="utf-8")
+    blocked_custom.write_text("PRIVATE\n", encoding="utf-8", newline="\n")
 
     policy_file = tmp_path / "rules.yaml"
     policy_file.write_text(
@@ -649,6 +649,7 @@ async def test_mcp_read_file_enforces_sensitive_path_blocklist_and_policy_guardr
         "    path_regex: 'secret\\.key'\n"
         "    message: 'Reading .key files is forbidden'\n",
         encoding="utf-8",
+        newline="\n",
     )
 
     policy = MCPSecurityPolicy(
@@ -752,7 +753,7 @@ async def test_mcp_evaluate_policy_denies_forbidden_when_guardrails_disabled_and
     from uniconn.security.models import PolicyGuardrailConfig
 
     safe_file = tmp_path / "readme.txt"
-    safe_file.write_text("ok\n", encoding="utf-8")
+    safe_file.write_text("ok\n", encoding="utf-8", newline="\n")
 
     policy = MCPSecurityPolicy(
         guardrails=PolicyGuardrailConfig(enabled=False),
