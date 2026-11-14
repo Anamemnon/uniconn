@@ -416,7 +416,6 @@
         <strong>Среда выполнения</strong>
         <span id="meta-version">uniconn v0.11.1</span>
         <span id="meta-python">Python 3.12</span>
-        <span id="meta-transports">ssh · local · telnet · serial · ipmi</span>
       </div>
     </aside>
 
@@ -1422,9 +1421,7 @@
       if (!data) return;
       document.getElementById('meta-version').textContent = 'uniconn v' + (data.version || '0.20.0');
       document.getElementById('meta-python').textContent = data.python_version || 'Python 3.12';
-      document.getElementById('meta-uname').textContent = data.local_uname || 'Linux x86_64';
       const transports = Array.isArray(data.transports) ? data.transports : [];
-      document.getElementById('meta-transports').textContent = transports.join(' / ');
 
       document.getElementById('kpi-transports-count').textContent = String(transports.length);
       const transportsBox = document.getElementById('kpi-transports-names');

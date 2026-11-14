@@ -30,6 +30,7 @@ _PORT_FORWARD_RE = re.compile(
     r"(?:Forwarding from\s+.+:|127\.0\.0\.1:|\[::1\]:)(\d+)\s*->\s*\d+",
     re.IGNORECASE,
 )
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 async def _wait_for_local_port_ready(
@@ -128,7 +129,13 @@ class KubectlTransport(ContainerExecTransportBase):
         if workdir:
             prefixes.append(f"cd {shlex.quote(str(workdir))}")
         if env:
-            exports = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in env.items())
+            export_parts: list[str] = []
+            for k, v in env.items():
+                key_str = str(k)
+                if not _ENV_KEY_RE.fullmatch(key_str):
+                    raise ValueError(f"Invalid environment variable name: {key_str!r}")
+                export_parts.append(f"{key_str}={shlex.quote(str(v))}")
+            exports = " ".join(export_parts)
             prefixes.append(f"export {exports}")
         if not prefixes:
             return command

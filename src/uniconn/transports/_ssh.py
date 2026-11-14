@@ -282,7 +282,9 @@ class SSHTransport(BaseTransport):
             ) from e
 
     async def disconnect(self) -> None:
-        """Закрыть SSH подключение, активные shell-процессы и proxy-подключения."""
+        """Закрыть SSH подключение, SFTP-сессию, активные shell-процессы и proxy-подключения."""
+        if self.__dict__.get("_sftp_inst") is not None:
+            await self._sftp.close()
         while self._shell_procs:
             proc = self._shell_procs.pop()
             with contextlib.suppress(Exception):

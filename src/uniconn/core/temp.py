@@ -24,11 +24,6 @@ def temp_dir(
     return TempDirContext(conn, prefix=prefix, suffix=suffix, dir=dir)
 
 
-def _ps_quote(value: str) -> str:
-    """Экранировать строку для одинарных кавычек PowerShell."""
-    return "'" + value.replace("'", "''") + "'"
-
-
 async def create_temp_dir(
     conn: Connection,
     prefix: str = "uniconn_",
@@ -36,17 +31,22 @@ async def create_temp_dir(
     dir: str | None = None,
 ) -> str:
     """Создать временную директорию на хосте и вернуть путь к ней."""
-    base_dir = dir or "/tmp"
+    from ..services.provisioning.windows import is_windows_connection, ps_quote
+
+    is_win = is_windows_connection(conn)
+    base_dir = dir or ("C:\\Windows\\Temp" if is_win else "/tmp")
     if conn.dry_run:
-        return f"{base_dir.rstrip('/')}/{prefix}dryrun{suffix}"
+        sep = "\\" if is_win else "/"
+        trimmed = base_dir.rstrip("\\" if is_win else "/")
+        return f"{trimmed}{sep}{prefix}dryrun{suffix}"
 
     if conn.transport_name == "local":
         return tempfile.mkdtemp(suffix=suffix, prefix=prefix, dir=dir)
 
-    if conn.transport_name in ("winrm", "wsman"):
-        q_dir = _ps_quote(dir or "")
-        q_prefix = _ps_quote(prefix)
-        q_suffix = _ps_quote(suffix)
+    if is_win:
+        q_dir = ps_quote(dir or "")
+        q_prefix = ps_quote(prefix)
+        q_suffix = ps_quote(suffix)
         ps_cmd = (
             f"$base = if ({q_dir} -ne '') {{ {q_dir} }} else {{ $env:TEMP }}; "
             f"$name = {q_prefix} + [guid]::NewGuid().ToString('N').Substring(0, 8) + {q_suffix}; "
@@ -64,13 +64,15 @@ async def create_temp_dir(
 
 async def remove_temp_dir(conn: Connection, path: str) -> None:
     """Удалить временную директорию на хосте."""
+    from ..services.provisioning.windows import is_windows_connection, ps_quote
+
     if conn.dry_run or not path:
         return
     if conn.transport_name == "local":
         shutil.rmtree(path, ignore_errors=True)
         return
-    if conn.transport_name in ("winrm", "wsman"):
-        q_path = _ps_quote(path)
+    if is_windows_connection(conn):
+        q_path = ps_quote(path)
         await conn.run(
             f"Remove-Item -LiteralPath {q_path} -Recurse -Force -ErrorAction SilentlyContinue"
         )

@@ -522,7 +522,7 @@ class RemotePath(os.PathLike[str]):
         if self._is_windows:
             ps_q = "'" + eff.replace("'", "''") + "'"
             await self._conn.run(
-                f"Remove-Item -LiteralPath {ps_q} -Force -ErrorAction Stop",
+                f"[System.IO.Directory]::Delete({ps_q}, $false)",
                 raise_on_error=True,
             )
             return

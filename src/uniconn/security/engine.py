@@ -294,6 +294,7 @@ _TOP_LEVEL_CONDITION_KEYS: frozenset[str] = frozenset(
         "target_prefixes",
         "targets",
         "command_regex",
+        "path_regex",
         "tool_name",
         "tool_names",
         "flow_name",
@@ -416,6 +417,10 @@ class DeclarativePolicyRule:
         if key == "command_regex":
             pattern = str(expected)
             return bool(re.search(pattern, ctx.action.raw_command))
+        if key == "path_regex":
+            pattern = str(expected)
+            target = ctx.resource.target_path or ""
+            return bool(target and re.search(pattern, target))
         if key in ("target_prefixes", "targets", "ast.targets"):
             prefixes = [
                 normalize_target_path(str(x)).rstrip("/") or "/"

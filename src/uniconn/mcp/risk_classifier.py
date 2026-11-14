@@ -20,7 +20,6 @@ from ..security.ast_parser import (
     _OPTS_WITH_ARG_BY_BIN,
     _SHELL_BINARIES,
     _SUDO_OPTS_WITH_ARG,
-    _TRAVERSAL_SYSTEM_ROOTS,
     _WRAPPER_BINARIES,
     _WRAPPER_OPTS_WITH_ARG,
     CommandASTParser,
@@ -306,6 +305,39 @@ _FORBIDDEN_FILE_PREFIXES: tuple[str, ...] = (
     "/proc/kcore",
 )
 
+_FORBIDDEN_READ_EXACT: frozenset[str] = frozenset(
+    {
+        "/etc/shadow",
+        "/etc/gshadow",
+        "/etc/sudoers",
+        "/etc/master.passwd",
+        "/etc/security/opasswd",
+        "/dev/mem",
+        "/dev/kmem",
+        "/dev/port",
+        "/proc/kcore",
+        "/proc/kmem",
+    }
+)
+
+_FORBIDDEN_READ_PREFIXES: tuple[str, ...] = (
+    *_FORBIDDEN_FILE_PREFIXES,
+    "/etc/sudoers.d/",
+    "/var/run/secrets/",
+    "/run/secrets/",
+)
+
+_FORBIDDEN_READ_REGEXES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^/proc/(?:\d+|self|thread-self)/(?:environ|mem)$"),
+    re.compile(r"/\.ssh/id_[^/]+(?<!\.pub)$", re.IGNORECASE),
+    re.compile(r"^/etc/ssh/ssh_host_[^/]+_key$"),
+    re.compile(r"/\.(?:aws/credentials|kube/config)$", re.IGNORECASE),
+    re.compile(
+        r"(?:^|/|[a-z]:/?)windows/(?:system32/config|repair)/(?:sam|security|system|default)$",
+        re.IGNORECASE,
+    ),
+)
+
 
 def _extract_first_subcommand(args: list[str], opts_with_arg: frozenset[str]) -> str | None:
     """Извлечь первую позиционную подкоманду, пропуская флаги и их аргументы."""
@@ -372,19 +404,8 @@ def _split_shell_segments(command: str) -> list[str]:
 
 
 def _resolve_normalized_write_path(raw_path: str) -> str:
-    """Нормализовать путь записи файла и раскрыть попытки относительного path traversal к системным корням."""
-    cleaned = raw_path.strip().replace("\\", "/") or "/"
-    if "../" in cleaned or cleaned.startswith(".."):
-        rel_tail = cleaned
-        while rel_tail.startswith(("../", "./")):
-            rel_tail = rel_tail[3:] if rel_tail.startswith("../") else rel_tail[2:]
-        rel_tail = rel_tail.lstrip("/")
-        if any(
-            rel_tail == root.rstrip("/") or rel_tail.startswith(root)
-            for root in _TRAVERSAL_SYSTEM_ROOTS
-        ):
-            return normalize_target_path("/" + rel_tail)
-    return normalize_target_path(cleaned)
+    """Нормализовать целевой путь и раскрыть попытки path traversal."""
+    return normalize_target_path(raw_path) or "/"
 
 
 class ActionRiskClassifier:
@@ -762,6 +783,37 @@ class ActionRiskClassifier:
         )
 
     @classmethod
+    def classify_file_read(
+        cls,
+        path: str,
+        *,
+        is_production: bool = False,
+        policy: HITLPolicy | None = None,
+    ) -> RiskAssessment:
+        """Оценить уровень риска чтения файла (uniconn_read_file)."""
+        del policy
+        norm_path = _resolve_normalized_write_path(path)
+        norm_lower = norm_path.lower()
+        is_forbidden = (
+            norm_path in _FORBIDDEN_READ_EXACT
+            or norm_path.startswith(_FORBIDDEN_READ_PREFIXES)
+            or any(pat.search(norm_lower) for pat in _FORBIDDEN_READ_REGEXES)
+        )
+        if is_forbidden:
+            return RiskAssessment(
+                risk_tier=ActionRiskTier.TIER_3_FORBIDDEN,
+                reasons=(f"Reading sensitive credential, key, or device path {norm_path!r} is forbidden",),
+                is_production=is_production,
+                requires_approval=False,
+            )
+        return RiskAssessment(
+            risk_tier=ActionRiskTier.TIER_0_SAFE,
+            reasons=(f"Read-only file access ({norm_path!r})",),
+            is_production=is_production,
+            requires_approval=False,
+        )
+
+    @classmethod
     def classify_tool_call(
         cls,
         tool_name: str,
@@ -786,6 +838,13 @@ class ActionRiskClassifier:
             return cls.classify_file_write(
                 path,
                 file_exists=file_exists,
+                is_production=is_production,
+                policy=policy,
+            )
+        if tool_name == "uniconn_read_file":
+            path = str(arguments.get("path") or "")
+            return cls.classify_file_read(
+                path,
                 is_production=is_production,
                 policy=policy,
             )

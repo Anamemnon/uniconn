@@ -100,26 +100,60 @@ _TRAVERSAL_SYSTEM_ROOTS: tuple[str, ...] = (
     "bin/",
     "var/",
 )
+_WIN_DRIVE_PATH_RE = re.compile(r"^([A-Za-z]:)(.*)$")
+
+
+def _resolve_relative_system_traversal(norm_rel: str) -> str | None:
+    """Распознать относительный путь вида ``../../etc/shadow`` или ``../Windows/...``."""
+    rel_tail = norm_rel
+    while rel_tail.startswith(("../", "./")):
+        rel_tail = rel_tail[3:] if rel_tail.startswith("../") else rel_tail[2:]
+    rel_tail = rel_tail.lstrip("/")
+    if not rel_tail:
+        return None
+    if any(rel_tail == root.rstrip("/") or rel_tail.startswith(root) for root in _TRAVERSAL_SYSTEM_ROOTS):
+        return "/" + rel_tail
+    rel_lower = rel_tail.lower()
+    if rel_lower == "windows" or rel_lower.startswith("windows/"):
+        return "/" + rel_tail
+    return None
 
 
 def normalize_target_path(raw_path: str) -> str:
-    """Нормализовать POSIX-путь (схлопнуть ``//``, ``/./`` и ``/../``) для защиты от path traversal."""
+    """Нормализовать целевой путь (POSIX/Windows/``~``) для защиты от path traversal."""
     cleaned = raw_path.strip().replace("\\", "/")
-    if not cleaned or cleaned.startswith("~"):
-        return cleaned
-    if cleaned.startswith(("../", "./")):
-        rel_tail = cleaned
-        while rel_tail.startswith(("../", "./")):
-            rel_tail = rel_tail[3:] if rel_tail.startswith("../") else rel_tail[2:]
-        rel_tail = rel_tail.lstrip("/")
-        if any(
-            rel_tail == root.rstrip("/") or rel_tail.startswith(root)
-            for root in _TRAVERSAL_SYSTEM_ROOTS
-        ):
-            cleaned = "/" + rel_tail
+    if not cleaned:
+        return ""
+
+    if cleaned.startswith(("//?/", "//./", "/??/")):
+        tail = cleaned[4:]
+        cleaned = "//" + tail[4:] if tail[:4].lower() == "unc/" else tail
+
+    if cleaned.startswith("~"):
+        norm_tilde = posixpath.normpath(cleaned)
+        if norm_tilde.startswith("~"):
+            return norm_tilde
+        cleaned = norm_tilde
+
+    drive_match = _WIN_DRIVE_PATH_RE.match(cleaned)
+    if drive_match is not None:
+        drive, rest = drive_match.groups()
+        if not rest:
+            return f"{drive}/"
+        if rest.startswith("/") or ".." in rest.split("/"):
+            norm_rest = posixpath.normpath("/" + rest.lstrip("/"))
+            return f"{drive}{norm_rest}"
+        return f"{drive}{posixpath.normpath(rest)}"
+
     norm = posixpath.normpath(cleaned)
-    if cleaned.startswith("/") and norm.startswith("//"):
-        norm = "/" + norm.lstrip("/")
+    if cleaned.startswith("/"):
+        if norm.startswith("//"):
+            return "/" + norm.lstrip("/")
+        return norm
+
+    resolved_traversal = _resolve_relative_system_traversal(norm)
+    if resolved_traversal is not None:
+        return posixpath.normpath(resolved_traversal)
     return norm
 
 _DESTRUCTIVE_EXECUTABLES: frozenset[str] = frozenset(
@@ -231,6 +265,81 @@ def _is_quote_spliced_token(raw_token: str) -> bool:
         if not any(c in inner for c in ("'", '"', "\\")):
             return False
     return any(c in tok for c in ("'", '"', "\\"))
+
+
+_IFS_EXPAND_RE = re.compile(r"^\$(?:\{IFS(?:[^A-Za-z0-9_}]|\})|IFS(?![A-Za-z0-9_]))")
+
+
+def _contains_unquoted_ifs(raw: str) -> bool:
+    """Проверить наличие раскрытия ``$IFS`` или ``${IFS}`` вне одинарных и двойных кавычек."""
+    in_single = False
+    in_double = False
+    escape = False
+    i = 0
+    n = len(raw)
+    while i < n:
+        ch = raw[i]
+        if escape:
+            escape = False
+            i += 1
+            continue
+        if ch == "\\" and not in_single:
+            escape = True
+            i += 1
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            i += 1
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            i += 1
+            continue
+        if not in_single and not in_double and ch == "$" and _IFS_EXPAND_RE.match(raw[i:]):
+            return True
+        i += 1
+    return False
+
+
+def _has_brace_expansion(raw_word: str) -> bool:
+    """Проверить наличие bash-раскрытия фигурных скобок ``{a,b}`` вне кавычек и ``${...}``."""
+    if "{" not in raw_word or "}" not in raw_word:
+        return False
+    in_single = False
+    in_double = False
+    escape = False
+    brace_has_comma: list[bool] = []
+    i = 0
+    n = len(raw_word)
+    while i < n:
+        ch = raw_word[i]
+        if escape:
+            escape = False
+            i += 1
+            continue
+        if ch == "\\" and not in_single:
+            escape = True
+            i += 1
+            continue
+        if ch == "'" and not in_double:
+            in_single = not in_single
+            i += 1
+            continue
+        if ch == '"' and not in_single:
+            in_double = not in_double
+            i += 1
+            continue
+        if not in_single and not in_double:
+            if ch == "{":
+                prev_unescaped = i > 0 and raw_word[i - 1] == "$" and not (i > 1 and raw_word[i - 2] == "\\")
+                if not prev_unescaped:
+                    brace_has_comma.append(False)
+            elif ch == "," and brace_has_comma:
+                brace_has_comma[-1] = True
+            elif ch == "}" and brace_has_comma and brace_has_comma.pop():
+                return True
+        i += 1
+    return False
 
 
 def _split_raw_shell_words(segment: str) -> list[str]:
@@ -753,6 +862,10 @@ class CommandASTParser:
             if "\\x" in inner or re.search(r"\\[0-7]{2,3}", inner):
                 reasons.append("ANSI-C quoting ($'...') with encoded characters detected")
                 break
+        if _contains_unquoted_ifs(raw):
+            msg = "Shell $IFS variable delimiter obfuscation detected"
+            if msg not in reasons:
+                reasons.append(msg)
 
     @classmethod
     def _parse_single_segment(
@@ -779,6 +892,12 @@ class CommandASTParser:
 
         segment_obf = False
         raw_words = _split_raw_shell_words(seg_clean)
+        for rw in raw_words:
+            if _has_brace_expansion(rw):
+                segment_obf = True
+                msg = f"Shell brace expansion obfuscation detected ({rw!r})"
+                if msg not in obfuscation_reasons:
+                    obfuscation_reasons.append(msg)
         try:
             tokens = shlex.split(seg_clean, posix=True)
         except ValueError:
@@ -1221,24 +1340,19 @@ class CommandASTParser:
             cleaned = raw_val.strip()
             if not cleaned:
                 return
-            if cleaned.startswith(("/", "./", "../", "~")):
-                if cleaned not in paths:
-                    paths.append(cleaned)
-                norm = normalize_target_path(cleaned)
-                if norm and norm not in paths:
-                    paths.append(norm)
-            if "../" in cleaned or cleaned.startswith(".."):
-                rel_tail = cleaned.replace("\\", "/")
-                while rel_tail.startswith(("../", "./")):
-                    rel_tail = rel_tail[3:] if rel_tail.startswith("../") else rel_tail[2:]
-                rel_tail = rel_tail.lstrip("/")
-                if any(
-                    rel_tail == root.rstrip("/") or rel_tail.startswith(root)
-                    for root in _TRAVERSAL_SYSTEM_ROOTS
-                ):
-                    abs_target = normalize_target_path("/" + rel_tail)
-                    if abs_target not in paths:
-                        paths.append(abs_target)
+            is_path_like = (
+                cleaned.startswith(("/", "./", "../", "~", "\\\\"))
+                or bool(_WIN_DRIVE_PATH_RE.match(cleaned))
+                or "../" in cleaned
+                or "..\\" in cleaned
+            )
+            if not is_path_like:
+                return
+            if cleaned.startswith(("/", "./", "../", "~")) and cleaned not in paths:
+                paths.append(cleaned)
+            norm = normalize_target_path(cleaned)
+            if norm and norm not in paths:
+                paths.append(norm)
 
         for arg in atom.arguments:
             cleaned = arg.strip()

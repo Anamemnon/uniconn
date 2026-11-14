@@ -47,10 +47,15 @@ def _collect_windows_local_facts(default_host: str) -> HostFacts:
 
 
 def _is_windows_remote_connection(conn: Connection) -> bool:
-    """Проверить, является ли подключение удалённым Windows-хостом (winrm/wsman/qga/pve, включая Cassette)."""
+    """Проверить, является ли подключение удалённым Windows-хостом (winrm/wsman/qga/pve/SSH, включая Cassette)."""
     cfg = getattr(conn, "config", None)
     if getattr(cfg, "transport", "") in ("winrm", "wsman"):
         return True
+    opts = getattr(cfg, "options", None)
+    if isinstance(opts, Mapping):
+        os_opt = str(opts.get("os_family") or opts.get("os") or opts.get("platform") or "").strip().lower()
+        if os_opt in ("windows", "win", "win32"):
+            return True
     tr = getattr(conn, "transport", None)
     if getattr(tr, "name", "") in ("winrm", "wsman") or bool(getattr(tr, "_is_windows", False)):
         return True

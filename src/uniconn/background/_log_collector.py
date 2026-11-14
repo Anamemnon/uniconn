@@ -3,6 +3,7 @@ import logging
 import shlex
 
 from ..core.connection import Connection
+from ._backends import WindowsJobBackend, is_windows_background_conn
 from ._session import BackgroundSession
 
 logger = logging.getLogger(__name__)
@@ -34,16 +35,11 @@ class BackgroundLogCollector:
         self._offsets.pop(session_id, None)
 
     def _is_windows_session(self, session: BackgroundSession) -> bool:
-        """Проверить, относится ли сессия к WindowsJobBackend или WinRM/WSMan."""
+        """Проверить, относится ли сессия к WindowsJobBackend или Windows-хосту."""
         b_name = getattr(session, "backend_name", None)
         if isinstance(b_name, str) and b_name == "windows_job":
             return True
-        t_name = getattr(self._connection, "transport_name", None)
-        if isinstance(t_name, str) and t_name in ("winrm", "wsman"):
-            return True
-        cfg = getattr(self._connection, "config", None)
-        cfg_t = getattr(cfg, "transport", None)
-        return isinstance(cfg_t, str) and cfg_t in ("winrm", "wsman")
+        return is_windows_background_conn(self._connection)
 
     async def read_chunk(self, session: BackgroundSession) -> tuple[list[str], int]:
         """Прочитать новую порцию лога сессии с последнего смещения.
@@ -65,9 +61,9 @@ class BackgroundLogCollector:
         offset = self.get_offset(session.session_id)
 
         if self._is_windows_session(session):
-            ps_path = "'" + session.remote_log_path.replace("'", "''") + "'"
+            ps_path = WindowsJobBackend._ps_quote(session.remote_log_path)
             stat_cmd = f"if (Test-Path {ps_path}) {{ (Get-Item {ps_path}).Length }} else {{ exit 1 }}"
-            stat_result = await self._connection.run(stat_cmd)
+            stat_result = await self._connection.run(WindowsJobBackend._wrap_ps(stat_cmd))
             if not stat_result.ok:
                 return [], offset
             try:
@@ -87,7 +83,7 @@ class BackgroundLogCollector:
                 "$sr = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8); "
                 "[Console]::Out.Write($sr.ReadToEnd()) } finally { $fs.Dispose() }"
             )
-            tail_result = await self._connection.run(read_cmd)
+            tail_result = await self._connection.run(WindowsJobBackend._wrap_ps(read_cmd))
             if not tail_result.ok:
                 return [], offset
             data = tail_result.stdout
@@ -126,9 +122,11 @@ class BackgroundLogCollector:
     async def read_all(self, session: BackgroundSession) -> str:
         """Прочитать лог-файл сессии целиком (независимо от смещения)."""
         if self._is_windows_session(session):
-            ps_path = "'" + session.remote_log_path.replace("'", "''") + "'"
+            ps_path = WindowsJobBackend._ps_quote(session.remote_log_path)
             result = await self._connection.run(
-                f"if (Test-Path {ps_path}) {{ Get-Content -Path {ps_path} -Raw }} else {{ exit 1 }}"
+                WindowsJobBackend._wrap_ps(
+                    f"if (Test-Path {ps_path}) {{ Get-Content -Path {ps_path} -Raw }} else {{ exit 1 }}"
+                )
             )
         else:
             result = await self._connection.run(

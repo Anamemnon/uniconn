@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+import weakref
 from enum import StrEnum
 from typing import Any
 
@@ -178,16 +179,24 @@ class RateLimiter:
         self._updated_at = time.monotonic()
         self._async_lock: asyncio.Lock | None = None
         self._async_lock_loop: asyncio.AbstractEventLoop | None = None
+        self._loop_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
+            weakref.WeakKeyDictionary()
+        )
+        self._thread_lock = threading.Lock()
         self._total_acquired = 0
         self._total_wait_seconds = 0.0
 
     def _get_lock(self) -> asyncio.Lock:
         """Получить asyncio.Lock, привязанный к текущему активному циклу событий."""
         loop = asyncio.get_running_loop()
-        if self._async_lock is None or self._async_lock_loop is not loop:
-            self._async_lock = asyncio.Lock()
+        with self._thread_lock:
+            lock = self._loop_locks.get(loop)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._loop_locks[loop] = lock
+            self._async_lock = lock
             self._async_lock_loop = loop
-        return self._async_lock
+            return lock
 
     @property
     def rate(self) -> float:
@@ -202,14 +211,16 @@ class RateLimiter:
     @property
     def total_acquired(self) -> int:
         """Общее число выданных разрешений."""
-        return self._total_acquired
+        with self._thread_lock:
+            return self._total_acquired
 
     @property
     def total_wait_seconds(self) -> float:
         """Суммарное время ожидания троттлинга в секундах."""
-        return round(self._total_wait_seconds, 6)
+        with self._thread_lock:
+            return round(self._total_wait_seconds, 6)
 
-    def _refill(self) -> None:
+    def _refill_locked(self) -> None:
         now = time.monotonic()
         elapsed = max(0.0, now - self._updated_at)
         self._updated_at = now
@@ -223,33 +234,37 @@ class RateLimiter:
 
         """
         async with self._get_lock():
-            self._refill()
-            wait_time = 0.0
-            if self._tokens < 1.0:
-                deficit = 1.0 - self._tokens
-                wait_time = deficit / self._rate
+            total_waited = 0.0
+            while True:
+                with self._thread_lock:
+                    self._refill_locked()
+                    if self._tokens >= 1.0:
+                        self._tokens = max(0.0, self._tokens - 1.0)
+                        self._total_acquired += 1
+                        self._total_wait_seconds += total_waited
+                        return round(total_waited, 6)
+                    deficit = 1.0 - self._tokens
+                    wait_time = deficit / self._rate
                 await asyncio.sleep(wait_time)
-                self._refill()
-            self._tokens = max(0.0, self._tokens - 1.0)
-            self._total_acquired += 1
-            self._total_wait_seconds += wait_time
-            return round(wait_time, 6)
+                total_waited += wait_time
 
     def reset(self) -> None:
         """Сбросить корзину токенов и статистику ожидания."""
-        self._tokens = float(self._burst)
-        self._updated_at = time.monotonic()
-        self._total_acquired = 0
-        self._total_wait_seconds = 0.0
+        with self._thread_lock:
+            self._tokens = float(self._burst)
+            self._updated_at = time.monotonic()
+            self._total_acquired = 0
+            self._total_wait_seconds = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         """Сериализовать параметры и метрики RateLimiter в словарь."""
-        return {
-            "rate": self._rate,
-            "burst": self._burst,
-            "total_acquired": self._total_acquired,
-            "total_wait_seconds": self.total_wait_seconds,
-        }
+        with self._thread_lock:
+            return {
+                "rate": self._rate,
+                "burst": self._burst,
+                "total_acquired": self._total_acquired,
+                "total_wait_seconds": round(self._total_wait_seconds, 6),
+            }
 
 
 __all__ = [

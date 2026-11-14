@@ -99,15 +99,32 @@ class _SharedLoopManager:
 
         with self._lock:
             if not self.is_running():
-                loop = asyncio.new_event_loop()
                 ready_event = threading.Event()
                 self._ready_event = ready_event
+                created_loop: list[asyncio.AbstractEventLoop] = []
+                creation_errors: list[BaseException] = []
+
+                def _create_loop_safe() -> asyncio.AbstractEventLoop:
+                    try:
+                        return asyncio.new_event_loop()
+                    except OSError:
+                        if os.name == "nt":
+                            selector_policy = getattr(asyncio, "WindowsSelectorEventLoopPolicy", None)
+                            if selector_policy is not None:
+                                return selector_policy().new_event_loop()
+                        raise
 
                 def _run_loop_worker() -> None:
-                    asyncio.set_event_loop(loop)
-                    loop.call_soon(ready_event.set)
+                    loop: asyncio.AbstractEventLoop | None = None
                     try:
+                        loop = _create_loop_safe()
+                        created_loop.append(loop)
+                        asyncio.set_event_loop(loop)
+                        loop.call_soon(ready_event.set)
                         loop.run_forever()
+                    except BaseException as exc:
+                        creation_errors.append(exc)
+                        ready_event.set()
                     finally:
                         asyncio.set_event_loop(None)
 
@@ -118,12 +135,30 @@ class _SharedLoopManager:
                 )
                 thread.start()
 
-                if not ready_event.wait(timeout=5.0):
+                raw_timeout = os.environ.get("UNICONN_PORTAL_START_TIMEOUT", "5.0")
+                try:
+                    start_timeout = max(0.1, float(raw_timeout))
+                except ValueError:
+                    start_timeout = 5.0
+
+                if not ready_event.wait(timeout=start_timeout):
+                    if created_loop:
+                        with contextlib.suppress(Exception):
+                            created_loop[0].call_soon_threadsafe(created_loop[0].stop)
                     raise RuntimeError(
-                        "EventLoopPortal failed to start background event loop within 5.0s"
+                        f"EventLoopPortal failed to start background event loop within {start_timeout:.1f}s "
+                        "(check Windows loopback socket isolation or firewall policy)"
                     )
 
-                self._loop = loop
+                if creation_errors:
+                    if created_loop and not created_loop[0].is_closed():
+                        with contextlib.suppress(Exception):
+                            created_loop[0].close()
+                    raise RuntimeError(
+                        f"EventLoopPortal failed to initialize background event loop: {creation_errors[0]}"
+                    ) from creation_errors[0]
+
+                self._loop = created_loop[0]
                 self._thread = thread
                 self._pid = os.getpid()
 

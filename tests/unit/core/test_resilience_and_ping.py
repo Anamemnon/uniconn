@@ -199,6 +199,26 @@ class TestCircuitBreakerAndRateLimiter:
             assert res.ok
         assert limiter.total_acquired == 5
 
+    def test_rate_limiter_concurrent_threads_and_loops(self) -> None:
+        """Конкурентный доступ из нескольких потоков и event loop не теряет токены и счётчик."""
+        import concurrent.futures
+
+        limiter = RateLimiter(rate=50.0, burst=2)
+
+        def _worker() -> float:
+            return asyncio.run(limiter.acquire())
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(_worker) for _ in range(6)]
+            waits = [f.result(timeout=5.0) for f in futures]
+
+        assert len(waits) == 6
+        assert limiter.total_acquired == 6
+        assert all(w >= 0.0 for w in waits)
+        snap = limiter.to_dict()
+        assert snap["total_acquired"] == 6
+        assert snap["total_wait_seconds"] == limiter.total_wait_seconds
+
 
 class TestPipelineAndPoolResilience:
     """Тесты интеграции CircuitBreaker и RateLimiter в CommandPipeline и пулы."""
@@ -493,3 +513,30 @@ class TestCLIV090AndDashboard:
             pool_res = _execute_pool_sandbox({"group": "web", "operation": pool_op})
             assert pool_res["status"] == "ok", f"Pool op {pool_op} failed: {pool_res}"
             assert pool_res["total_hosts"] == 2
+
+    def test_rate_limiter_thread_safe_lock_creation_and_reset(self) -> None:
+        """RateLimiter._get_lock() и reset() потокобезопасны при конкурентном доступе из разных потоков."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        limiter = RateLimiter(rate=100.0, burst=10)
+        assert hasattr(limiter, "_thread_lock")
+
+        def _worker(idx: int) -> None:
+            loop = asyncio.new_event_loop()
+            try:
+                async def _exercise() -> None:
+                    lock1 = limiter._get_lock()
+                    lock2 = limiter._get_lock()
+                    assert lock1 is lock2
+                    if idx % 3 == 0:
+                        limiter.reset()
+
+                loop.run_until_complete(_exercise())
+            finally:
+                loop.close()
+
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            futures = [pool.submit(_worker, i) for i in range(24)]
+            for fut in futures:
+                fut.result()
+

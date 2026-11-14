@@ -368,3 +368,36 @@ class TestEventLoopPortalStabilityAndResilience:
         assert loop2.is_running()
         assert loop2 is not loop1
         assert portal2.call(asyncio.sleep(0.01, result="fresh_ok")) == "fresh_ok"
+
+    def test_shared_loop_manager_timeout_recovers_cleanly_without_deadlock(self, monkeypatch):
+        """При таймауте/сбое создания цикла _SharedLoopManager освобождает _lock и восстанавливается."""
+        import threading as _threading
+
+        from uniconn.core.bridge import _SHARED_LOOP_MANAGER
+
+        EventLoopPortal.shutdown_all(timeout=2.0)
+        monkeypatch.setenv("UNICONN_PORTAL_START_TIMEOUT", "0.05")
+
+        orig_new_event_loop = asyncio.new_event_loop
+        call_count = 0
+
+        def _flaky_new_loop():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                time.sleep(0.15)
+                raise OSError("Simulated loopback socketpair exhaustion")
+            return orig_new_event_loop()
+
+        monkeypatch.setattr(asyncio, "new_event_loop", _flaky_new_loop)
+
+        with pytest.raises(RuntimeError, match="EventLoopPortal failed to start"):
+            _SHARED_LOOP_MANAGER.get_or_create_loop()
+
+        # Блокировка не зависла: повторный вызов с рабочим new_event_loop успешно поднимает цикл
+        assert _SHARED_LOOP_MANAGER._lock.acquire(timeout=0.5)
+        _SHARED_LOOP_MANAGER._lock.release()
+        loop, thread = _SHARED_LOOP_MANAGER.get_or_create_loop()
+        assert loop.is_running()
+        assert isinstance(thread, _threading.Thread)
+

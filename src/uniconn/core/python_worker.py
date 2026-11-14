@@ -455,14 +455,15 @@ def _op_sync_scan(req):
                 continue
             full_f = pathlib.Path(root) / fn
             try:
-                st = full_f.stat()
+                is_link = full_f.is_symlink()
+                st = full_f.lstat() if is_link else full_f.stat()
                 item = {
                     "is_dir": False,
                     "size": int(st.st_size),
                     "mtime": float(st.st_mtime),
                     "mode": int(stat.S_IMODE(st.st_mode)),
                 }
-                if want_checksum:
+                if want_checksum and not is_link:
                     h = hashlib.sha256()
                     with open(full_f, "rb") as fp:
                         while chunk := fp.read(65536):

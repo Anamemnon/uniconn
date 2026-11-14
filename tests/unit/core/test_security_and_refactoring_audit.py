@@ -326,3 +326,77 @@ class TestPoolSelectWithCassette:
             assert replay_list[0].stdout.strip() == "hello_from_a"
             ping_map = await sub_replay.ping()
             assert ping_map["local://node-a"].alive is True
+
+
+class TestPathTraversalAndSyncScanFixes:
+    """Регрессионные тесты для Windows/tilde нормализации путей и broken symlink в _op_sync_scan."""
+
+    def test_normalize_target_path_windows_tilde_and_mid_traversal(self) -> None:
+        assert (
+            normalize_target_path("C:/temp/../../Windows/System32/config/SAM")
+            == "C:/Windows/System32/config/SAM"
+        )
+        assert (
+            normalize_target_path("C:\\..\\..\\Windows\\System32\\config\\SYSTEM")
+            == "C:/Windows/System32/config/SYSTEM"
+        )
+        assert (
+            normalize_target_path(r"\\?\C:\Windows\System32\config\SAM")
+            == "C:/Windows/System32/config/SAM"
+        )
+        assert (
+            normalize_target_path("../../Windows/System32/config/SAM")
+            == "/Windows/System32/config/SAM"
+        )
+        assert normalize_target_path("app/config/../../../etc/shadow") == "/etc/shadow"
+        assert normalize_target_path("~/.ssh/sub/../id_rsa") == "~/.ssh/id_rsa"
+        assert normalize_target_path("~/.ssh/sub/../../safe") == "~/safe"
+        assert normalize_target_path("~/../../etc/shadow") == "/etc/shadow"
+
+    @pytest.mark.parametrize(
+        "unsafe_read",
+        [
+            "C:/temp/../../Windows/System32/config/SAM",
+            "C:\\..\\..\\Windows\\System32\\config\\SYSTEM",
+            r"\\?\C:\Windows\System32\config\DEFAULT",
+            "../../Windows/System32/config/SAM",
+            "~/.ssh/sub/../id_rsa",
+            "app/config/../../../etc/shadow",
+        ],
+    )
+    def test_classify_file_read_blocks_windows_and_tilde_traversals(
+        self, unsafe_read: str
+    ) -> None:
+        res = ActionRiskClassifier.classify_file_read(unsafe_read)
+        assert res.risk_tier == ActionRiskTier.TIER_3_FORBIDDEN
+
+    def test_classify_file_write_tilde_traversal_no_false_positive(self) -> None:
+        res_safe = ActionRiskClassifier.classify_file_write("~/.ssh/sub/../../notes.txt")
+        assert res_safe.risk_tier == ActionRiskTier.TIER_1_MUTATING
+
+        res_ssh = ActionRiskClassifier.classify_file_write("~/.ssh/sub/../authorized_keys")
+        assert res_ssh.risk_tier == ActionRiskTier.TIER_2_DESTRUCTIVE
+
+    def test_op_sync_scan_handles_broken_symlinks(self, tmp_path: Path) -> None:
+        import os
+
+        from uniconn.core.python_worker import WORKER_BOOTSTRAP_SCRIPT
+
+        ns: dict[str, Any] = {}
+        exec(WORKER_BOOTSTRAP_SCRIPT.split("def _handle_request", 1)[0], ns)
+        _op_sync_scan = ns["_op_sync_scan"]
+
+        (tmp_path / "good.txt").write_text("hello", encoding="utf-8")
+        broken_link = tmp_path / "stale_link"
+        os.symlink("/nonexistent/uniconn_missing_target", broken_link)
+
+        scan = _op_sync_scan(
+            {"path": str(tmp_path), "checksum": True, "scan": True}
+        )
+        assert scan["exists"] is True
+        assert "good.txt" in scan["entries"]
+        assert "sha256" in scan["entries"]["good.txt"]
+        assert "stale_link" in scan["entries"]
+        assert scan["entries"]["stale_link"]["is_dir"] is False
+        assert "sha256" not in scan["entries"]["stale_link"]
+

@@ -1,6 +1,8 @@
 # src/uniconn/background/_session.py
 import asyncio
 import logging
+import ntpath
+import posixpath
 import shlex
 
 from ..core.connection import Connection
@@ -8,6 +10,8 @@ from ..exceptions import BackgroundBackendError, BackgroundSessionExistsError
 from ._backends import (
     BackgroundBackendStrategy,
     BackgroundBackendType,
+    WindowsJobBackend,
+    is_windows_background_conn,
     resolve_backend,
 )
 
@@ -52,34 +56,48 @@ class BackgroundSession:
         """Путь к лог-файлу сессии на удалённом хосте."""
         return self._remote_log_path
 
+    def _artifact_dir(self) -> str:
+        """Определить директорию для служебных файлов сессии (.pid, .exit, wrapper)."""
+        if self._is_windows_backend():
+            raw = self._remote_log_path.strip()
+            if "\\" in raw or (len(raw) >= 2 and raw[1] == ":"):
+                parent = ntpath.dirname(raw)
+                if parent:
+                    return parent
+            parent = posixpath.dirname(raw)
+            if parent:
+                return parent
+        return "/tmp"
+
+    def _join_artifact(self, filename: str) -> str:
+        base = self._artifact_dir()
+        if "\\" in base or (len(base) >= 2 and base[1] == ":"):
+            return ntpath.join(base, filename)
+        return posixpath.join(base, filename)
+
     @property
     def exit_file_path(self) -> str:
         """Путь к файлу с exit code команды на удалённом хосте."""
-        return f"/tmp/uniconn_{self._session_id}.exit"
+        return self._join_artifact(f"uniconn_{self._session_id}.exit")
 
     @property
     def pid_file_path(self) -> str:
         """Путь к PID-файлу фонового процесса на удалённом хосте."""
-        return f"/tmp/uniconn_{self._session_id}.pid"
+        return self._join_artifact(f"uniconn_{self._session_id}.pid")
 
     def _is_windows_backend(self) -> bool:
-        """Проверить, используется ли WindowsJobBackend или WinRM/WSMan-подключение."""
+        """Проверить, используется ли WindowsJobBackend или Windows-подключение."""
         if self._backend is not None and self._backend.name == "windows_job":
             return True
         if self._backend_spec == "windows_job":
             return True
-        t_name = getattr(self._connection, "transport_name", None)
-        if isinstance(t_name, str) and t_name in ("winrm", "wsman"):
-            return True
-        cfg = getattr(self._connection, "config", None)
-        cfg_t = getattr(cfg, "transport", None)
-        return isinstance(cfg_t, str) and cfg_t in ("winrm", "wsman")
+        return is_windows_background_conn(self._connection)
 
     @property
     def script_path(self) -> str:
         """Путь к wrapper-скрипту на удалённом хосте."""
         ext = "ps1" if self._is_windows_backend() else "sh"
-        return f"/tmp/uniconn_{self._session_id}.{ext}"
+        return self._join_artifact(f"uniconn_{self._session_id}.{ext}")
 
     @property
     def connection(self) -> Connection:
@@ -124,16 +142,18 @@ class BackgroundSession:
             )
 
         if self._is_windows_backend():
-            ps_exit = "'" + self.exit_file_path.replace("'", "''") + "'"
-            ps_pid = "'" + self.pid_file_path.replace("'", "''") + "'"
-            ps_script_path = "'" + self.script_path.replace("'", "''") + "'"
-            ps_cmd_escaped = "'" + command.replace("'", "''") + "'"
+            ps_exit = WindowsJobBackend._ps_quote(self.exit_file_path)
+            ps_pid = WindowsJobBackend._ps_quote(self.pid_file_path)
+            ps_script_path = WindowsJobBackend._ps_quote(self.script_path)
+            ps_cmd_escaped = WindowsJobBackend._ps_quote(command)
             write_cmd = (
-                "if (-not (Test-Path '/tmp')) { New-Item -ItemType Directory -Path '/tmp' -Force | Out-Null }; "
+                f"$sDir = Split-Path -Parent {ps_script_path}; "
+                "if ($sDir -and -not (Test-Path $sDir)) { "
+                "New-Item -ItemType Directory -Path $sDir -Force | Out-Null }; "
                 f"Remove-Item -Path {ps_exit}, {ps_pid} -Force -ErrorAction SilentlyContinue; "
                 f"Set-Content -Path {ps_script_path} -Value {ps_cmd_escaped} -Encoding UTF8"
             )
-            write_result = await self._connection.run(write_cmd)
+            write_result = await self._connection.run(WindowsJobBackend._wrap_ps(write_cmd))
         else:
             # Wrapper-скрипт решает проблему экранирования кавычек, фиксирует PID
             # оболочки и гарантированно записывает код возврата (включая SIGINT/SIGTERM) в exit-файл.
@@ -201,9 +221,9 @@ class BackgroundSession:
 
         """
         if self._is_windows_backend():
-            ps_exit = "'" + self.exit_file_path.replace("'", "''") + "'"
+            ps_exit = WindowsJobBackend._ps_quote(self.exit_file_path)
             cmd = f"if (Test-Path {ps_exit}) {{ (Get-Content -Path {ps_exit} -Raw).Trim() }} else {{ exit 1 }}"
-            result = await self._connection.run(cmd)
+            result = await self._connection.run(WindowsJobBackend._wrap_ps(cmd))
         else:
             result = await self._connection.run(f"cat {shlex.quote(self.exit_file_path)}")
         if not result.ok:
@@ -228,7 +248,11 @@ class BackgroundSession:
         pid = await self.get_pid()
         if pid is not None:
             if self._is_windows_backend():
-                await self._connection.run(f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue")
+                await self._connection.run(
+                    WindowsJobBackend._wrap_ps(
+                        f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue"
+                    )
+                )
             else:
                 await self._connection.run(f"kill -{sig} {pid}")
         else:
@@ -266,7 +290,7 @@ class BackgroundSession:
         """Удалить артефакты сессии: лог-файл, exit-файл, PID-файл, wrapper-скрипт."""
         if self._is_windows_backend():
             ps_paths = ", ".join(
-                "'" + p.replace("'", "''") + "'"
+                WindowsJobBackend._ps_quote(p)
                 for p in (
                     self._remote_log_path,
                     self.exit_file_path,
@@ -274,7 +298,11 @@ class BackgroundSession:
                     self.script_path,
                 )
             )
-            await self._connection.run(f"Remove-Item -Path {ps_paths} -Force -ErrorAction SilentlyContinue")
+            await self._connection.run(
+                WindowsJobBackend._wrap_ps(
+                    f"Remove-Item -Path {ps_paths} -Force -ErrorAction SilentlyContinue"
+                )
+            )
         else:
             paths = " ".join(
                 shlex.quote(p)

@@ -165,7 +165,7 @@ async def test_ssh_exists_and_mkdir_via_sftp():
     attrs.permissions = 0o100644
     attrs.atime = 0
     attrs.mtime = 0
-    sftp.stat = AsyncMock(return_value=attrs)
+    sftp.lstat = AsyncMock(return_value=attrs)
     sftp.makedirs = AsyncMock()
     sftp.chmod = AsyncMock()
 

@@ -402,6 +402,7 @@ class MCPServer:
         entries: Sequence[MCPHostEntry] = (),
         target_host: str | None = None,
         tool_name: str,
+        action_type: str | None = None,
         risk_tier: ActionRiskTier,
         risk_reasons: Sequence[str],
         command: str | None = None,
@@ -477,6 +478,7 @@ class MCPServer:
             environment=env_name,
             is_production=is_prod,
             tool_name=tool_name,
+            action_type=action_type,
             command=command,
             ast=parsed_ast,
             sudo=sudo,
@@ -698,11 +700,7 @@ class MCPServer:
         raw_agent_id = arguments.get("agent_id")
         raw_role = arguments.get("role")
 
-        if assessment.risk_tier == ActionRiskTier.TIER_3_FORBIDDEN and not parsed_ast.is_obfuscated:
-            raise PermissionError(
-                f"Command {command!r} on host {entry.name!r} is forbidden by security policy: "
-                f"{'; '.join(assessment.reasons)}"
-            )
+        self._assert_not_forbidden(assessment, f"Command {command!r} on host {entry.name!r}")
 
         _, policy_eval = await self._evaluate_policy_gate(
             entry=entry,
@@ -735,10 +733,7 @@ class MCPServer:
             self.policy.hitl.enabled
             and (assessment.requires_approval or (sudo and not self.policy.allow_sudo))
         )
-        merged_reasons = list(assessment.reasons)
-        for r in policy_eval.reasons:
-            if r not in merged_reasons:
-                merged_reasons.append(r)
+        merged_reasons = self._merge_reasons(assessment.reasons, policy_eval.reasons)
         hmac_params = {"command": command, "sudo": sudo, "cwd": cwd_str or ""}
 
         consumed_req, pending_payload = await self._resolve_hitl_gate(
@@ -795,13 +790,7 @@ class MCPServer:
             if res.diagnostic is not None:
                 payload["diagnostic"] = _sanitize_json_value(res.diagnostic.to_dict())
             if consumed_req is not None:
-                payload["approval"] = {
-                    "approval_id": consumed_req.approval_id,
-                    "status": consumed_req.status.value,
-                    "approved_by": consumed_req.decided_by,
-                    "approved_at": consumed_req.decided_at.isoformat() if consumed_req.decided_at else None,
-                    "decision_reason": consumed_req.decision_reason,
-                }
+                payload["approval"] = self._serialize_approval(consumed_req)
             return payload
 
     async def _tool_gather_facts(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -851,11 +840,56 @@ class MCPServer:
         if not isinstance(path, str) or not path.strip():
             raise ValueError("Parameter 'path' is required")
 
+        entry = self.registry.get_entry(target)
+        is_prod = entry.is_production(self.policy.hitl.prod_groups)
+        assessment = ActionRiskClassifier.classify_file_read(
+            path,
+            is_production=is_prod,
+            policy=self.policy.hitl,
+        )
+        self._assert_not_forbidden(assessment, f"Reading {path!r} on host {entry.name!r}")
+
+        raw_agent_id = arguments.get("agent_id")
+        raw_role = arguments.get("role")
+        _, policy_eval = await self._evaluate_policy_gate(
+            entry=entry,
+            tool_name="uniconn_read_file",
+            action_type="file_read",
+            risk_tier=assessment.risk_tier,
+            risk_reasons=assessment.reasons,
+            path=path,
+            agent_id=str(raw_agent_id) if raw_agent_id else None,
+            role=str(raw_role) if raw_role else None,
+            enforce_deny=True,
+        )
+
+        approval_id = arguments.get("approval_id")
+        wait_for_appr = bool(arguments.get("wait_for_approval", self.policy.hitl.wait_for_approval))
+        policy_requires_appr = policy_eval.decision == PolicyDecision.REQUIRE_APPROVAL
+        needs_approval = policy_requires_appr or (
+            self.policy.hitl.enabled and assessment.requires_approval
+        )
+        if needs_approval:
+            merged_reasons = self._merge_reasons(assessment.reasons, policy_eval.reasons)
+            _, pending_payload = await self._resolve_hitl_gate(
+                entry=entry,
+                tool_name="uniconn_read_file",
+                risk_tier=assessment.risk_tier,
+                risk_reasons=tuple(merged_reasons),
+                requires_approval=True,
+                approval_id=str(approval_id) if approval_id is not None else None,
+                wait_for_approval=wait_for_appr,
+                parameters={"path": path},
+                agent_id=str(raw_agent_id) if raw_agent_id else None,
+            )
+            if pending_payload is not None:
+                return pending_payload
+
         raw_max = arguments.get("max_bytes")
         req_max = self.policy.max_read_bytes if raw_max is None else int(raw_max)
         limit = max(1, min(req_max, self.policy.max_read_bytes))
 
-        async with self.registry.create_connection(target) as conn:
+        async with self.registry.create_connection(entry) as conn:
             raw_content = await conn.files.read_file(path, encoding=None)
             encoded = (
                 raw_content
@@ -867,7 +901,7 @@ class MCPServer:
             text = sliced.decode("utf-8", errors="replace")
 
             return {
-                "target": target,
+                "target": entry.name,
                 "path": path,
                 "content": SecretMaskingFilter._mask_string(text),
                 "total_bytes": len(encoded),
@@ -980,11 +1014,7 @@ class MCPServer:
             is_production=is_prod,
             policy=self.policy.hitl,
         )
-        if assessment.risk_tier == ActionRiskTier.TIER_3_FORBIDDEN:
-            raise PermissionError(
-                f"Writing to {path!r} on host {entry.name!r} is forbidden by security policy: "
-                f"{'; '.join(assessment.reasons)}"
-            )
+        self._assert_not_forbidden(assessment, f"Writing to {path!r} on host {entry.name!r}")
         raw_agent_id = arguments.get("agent_id")
         raw_role = arguments.get("role")
         _, policy_eval = await self._evaluate_policy_gate(
@@ -1007,10 +1037,7 @@ class MCPServer:
             self.policy.hitl.enabled
             and (assessment.requires_approval or not self.policy.allow_write)
         )
-        merged_reasons = list(assessment.reasons)
-        for r in policy_eval.reasons:
-            if r not in merged_reasons:
-                merged_reasons.append(r)
+        merged_reasons = self._merge_reasons(assessment.reasons, policy_eval.reasons)
         hmac_params = {"path": path, "content": content, "atomic": atomic}
 
         consumed_req, pending_payload = await self._resolve_hitl_gate(
@@ -1040,13 +1067,7 @@ class MCPServer:
                 "dry_run": self.policy.dry_run,
             }
             if consumed_req is not None:
-                result_payload["approval"] = {
-                    "approval_id": consumed_req.approval_id,
-                    "status": consumed_req.status.value,
-                    "approved_by": consumed_req.decided_by,
-                    "approved_at": consumed_req.decided_at.isoformat() if consumed_req.decided_at else None,
-                    "decision_reason": consumed_req.decision_reason,
-                }
+                result_payload["approval"] = self._serialize_approval(consumed_req)
             return result_payload
 
     async def _tool_propose_action(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -1086,10 +1107,7 @@ class MCPServer:
                 dry_run=False,
                 policy=self.policy.hitl,
             )
-            if assessment.risk_tier == ActionRiskTier.TIER_3_FORBIDDEN:
-                raise PermissionError(
-                    f"Proposed flow {flow_obj.name!r} is forbidden: {'; '.join(assessment.reasons)}"
-                )
+            self._assert_not_forbidden(assessment, f"Proposed flow {flow_obj.name!r}")
             _, policy_eval = await self._evaluate_policy_gate(
                 entries=entries,
                 tool_name=eff_tool,
@@ -1111,10 +1129,7 @@ class MCPServer:
                 "tags": list(tags_list or ()),
                 "mode": eff_mode,
             }
-            merged_reasons = list(assessment.reasons)
-            for r in policy_eval.reasons:
-                if r not in merged_reasons:
-                    merged_reasons.append(r)
+            merged_reasons = self._merge_reasons(assessment.reasons, policy_eval.reasons)
             req = await self.approval_manager.create_request(
                 target_host=host_label,
                 tool_name=eff_tool,
@@ -1138,6 +1153,42 @@ class MCPServer:
         entry = self.registry.get_entry(target)
         is_prod = entry.is_production(self.policy.hitl.prod_groups)
 
+        if tool_name == "uniconn_read_file":
+            path = str(arguments.get("path") or "").strip()
+            if not path:
+                raise ValueError("Parameter 'path' is required when proposing 'uniconn_read_file'")
+            assessment = ActionRiskClassifier.classify_file_read(
+                path,
+                is_production=is_prod,
+                policy=self.policy.hitl,
+            )
+            self._assert_not_forbidden(assessment, f"Proposed file read of {path!r}")
+            _, policy_eval = await self._evaluate_policy_gate(
+                entry=entry,
+                tool_name="uniconn_read_file",
+                action_type="file_read",
+                risk_tier=assessment.risk_tier,
+                risk_reasons=assessment.reasons,
+                path=path,
+                agent_id=str(agent_id) if agent_id else None,
+                role=str(raw_role) if raw_role else None,
+                enforce_deny=True,
+            )
+            merged_reasons = self._merge_reasons(assessment.reasons, policy_eval.reasons)
+            req = await self.approval_manager.create_request(
+                target_host=entry.name,
+                tool_name="uniconn_read_file",
+                risk_tier=assessment.risk_tier,
+                risk_reasons=tuple(merged_reasons),
+                parameters={"path": path},
+                agent_id=str(agent_id) if agent_id else None,
+            )
+            return {
+                "assessment": assessment.to_dict(),
+                "policy": policy_eval.to_dict(),
+                "approval": req.to_public_dict(),
+            }
+
         if tool_name == "uniconn_write_file":
             path = str(arguments.get("path") or "").strip()
             content = arguments.get("content")
@@ -1151,10 +1202,7 @@ class MCPServer:
                 is_production=is_prod,
                 policy=self.policy.hitl,
             )
-            if assessment.risk_tier == ActionRiskTier.TIER_3_FORBIDDEN:
-                raise PermissionError(
-                    f"Proposed file write to {path!r} is forbidden: {'; '.join(assessment.reasons)}"
-                )
+            self._assert_not_forbidden(assessment, f"Proposed file write to {path!r}")
             _, policy_eval = await self._evaluate_policy_gate(
                 entry=entry,
                 tool_name="uniconn_write_file",
@@ -1165,10 +1213,7 @@ class MCPServer:
                 role=str(raw_role) if raw_role else None,
                 enforce_deny=True,
             )
-            merged_reasons = list(assessment.reasons)
-            for r in policy_eval.reasons:
-                if r not in merged_reasons:
-                    merged_reasons.append(r)
+            merged_reasons = self._merge_reasons(assessment.reasons, policy_eval.reasons)
             req = await self.approval_manager.create_request(
                 target_host=entry.name,
                 tool_name="uniconn_write_file",
@@ -1202,10 +1247,7 @@ class MCPServer:
             policy=self.policy.hitl,
             ast=parsed_ast,
         )
-        if assessment.risk_tier == ActionRiskTier.TIER_3_FORBIDDEN and not parsed_ast.is_obfuscated:
-            raise PermissionError(
-                f"Proposed command {command!r} is forbidden: {'; '.join(assessment.reasons)}"
-            )
+        self._assert_not_forbidden(assessment, f"Proposed command {command!r}")
         _, policy_eval = await self._evaluate_policy_gate(
             entry=entry,
             tool_name="uniconn_run",
@@ -1219,10 +1261,7 @@ class MCPServer:
             role=str(raw_role) if raw_role else None,
             enforce_deny=True,
         )
-        merged_reasons = list(assessment.reasons)
-        for r in policy_eval.reasons:
-            if r not in merged_reasons:
-                merged_reasons.append(r)
+        merged_reasons = self._merge_reasons(assessment.reasons, policy_eval.reasons)
         req = await self.approval_manager.create_request(
             target_host=entry.name,
             tool_name="uniconn_run",
@@ -1258,6 +1297,29 @@ class MCPServer:
         raw_agent_id = arguments.get("agent_id")
         raw_role = arguments.get("role")
 
+        if tool_name == "uniconn_read_file":
+            path = str(arguments.get("path") or "").strip()
+            if not path:
+                raise ValueError("Parameter 'path' is required when evaluating 'uniconn_read_file'")
+            assessment = ActionRiskClassifier.classify_file_read(
+                path,
+                is_production=is_prod,
+                policy=self.policy.hitl,
+            )
+            auth_ctx, policy_eval = await self._evaluate_policy_gate(
+                entry=entry,
+                target_host=target_str,
+                tool_name="uniconn_read_file",
+                action_type="file_read",
+                risk_tier=assessment.risk_tier,
+                risk_reasons=assessment.reasons,
+                path=path,
+                agent_id=str(raw_agent_id) if raw_agent_id else None,
+                role=str(raw_role) if raw_role else None,
+                enforce_deny=False,
+            )
+            return self._build_policy_eval_response(assessment, policy_eval, auth_ctx)
+
         if tool_name == "uniconn_write_file":
             path = str(arguments.get("path") or "").strip()
             if not path:
@@ -1279,14 +1341,7 @@ class MCPServer:
                 role=str(raw_role) if raw_role else None,
                 enforce_deny=False,
             )
-            return {
-                "decision": policy_eval.decision.value,
-                "allowed": policy_eval.allowed,
-                "requires_approval": policy_eval.requires_approval or assessment.requires_approval,
-                "risk_assessment": assessment.to_dict(),
-                "policy": policy_eval.to_dict(),
-                "auth_context": auth_ctx.to_dict(),
-            }
+            return self._build_policy_eval_response(assessment, policy_eval, auth_ctx)
 
         if tool_name == "uniconn_run_flow" or tool_name.startswith("flow_"):
             flow_key = str(arguments.get("flow_name") or tool_name).strip()
@@ -1310,15 +1365,9 @@ class MCPServer:
                 role=str(raw_role) if raw_role else None,
                 enforce_deny=False,
             )
-            return {
-                "decision": policy_eval.decision.value,
-                "allowed": policy_eval.allowed,
-                "requires_approval": policy_eval.requires_approval or assessment.requires_approval,
-                "risk_assessment": assessment.to_dict(),
-                "policy": policy_eval.to_dict(),
-                "plan_preview": plan_preview,
-                "auth_context": auth_ctx.to_dict(),
-            }
+            return self._build_policy_eval_response(
+                assessment, policy_eval, auth_ctx, plan_preview=plan_preview
+            )
 
         command = str(arguments.get("command") or "").strip()
         if not command:
@@ -1352,15 +1401,9 @@ class MCPServer:
             role=str(raw_role) if raw_role else None,
             enforce_deny=False,
         )
-        return {
-            "decision": policy_eval.decision.value,
-            "allowed": policy_eval.allowed,
-            "requires_approval": policy_eval.requires_approval or assessment.requires_approval,
-            "risk_assessment": assessment.to_dict(),
-            "policy": policy_eval.to_dict(),
-            "ast": parsed_ast.to_dict(),
-            "auth_context": auth_ctx.to_dict(),
-        }
+        return self._build_policy_eval_response(
+            assessment, policy_eval, auth_ctx, ast=parsed_ast.to_dict()
+        )
 
     async def _tool_check_approval(self, arguments: dict[str, Any]) -> dict[str, Any]:
         approval_id = arguments.get("approval_id")
@@ -1568,11 +1611,7 @@ class MCPServer:
             dry_run=eff_dry_run,
             policy=self.policy.hitl,
         )
-        if assessment.risk_tier == ActionRiskTier.TIER_3_FORBIDDEN:
-            raise PermissionError(
-                f"Flow {flow_obj.name!r} is forbidden by security policy: "
-                f"{'; '.join(assessment.reasons)}"
-            )
+        self._assert_not_forbidden(assessment, f"Flow {flow_obj.name!r}")
         raw_agent_id = arguments.get("agent_id")
         raw_role = arguments.get("role")
         _, policy_eval = await self._evaluate_policy_gate(
@@ -1598,10 +1637,7 @@ class MCPServer:
         needs_approval = policy_requires_appr or (
             self.policy.hitl.enabled and assessment.requires_approval
         )
-        merged_reasons = list(assessment.reasons)
-        for r in policy_eval.reasons:
-            if r not in merged_reasons:
-                merged_reasons.append(r)
+        merged_reasons = self._merge_reasons(assessment.reasons, policy_eval.reasons)
         target_names = [e.name for e in entries]
         host_label = ",".join(target_names)
         hmac_params = {
@@ -1713,17 +1749,59 @@ class MCPServer:
             "results": report_dict["results"],
         }
         if consumed_req is not None:
-            payload["approval"] = {
-                "approval_id": consumed_req.approval_id,
-                "status": consumed_req.status.value,
-                "approved_by": consumed_req.decided_by,
-                "approved_at": (
-                    consumed_req.decided_at.isoformat()
-                    if consumed_req.decided_at
-                    else None
-                ),
-                "decision_reason": consumed_req.decision_reason,
-            }
+            payload["approval"] = self._serialize_approval(consumed_req)
+        return payload
+
+    @staticmethod
+    def _merge_reasons(primary: Sequence[str], secondary: Sequence[str]) -> list[str]:
+        """Объединить списки причин без дубликатов с сохранением порядка."""
+        merged = list(primary)
+        for reason in secondary:
+            if reason not in merged:
+                merged.append(reason)
+        return merged
+
+    @staticmethod
+    def _serialize_approval(req: ApprovalRequest) -> dict[str, Any]:
+        """Сериализовать использованный approval-токен для ответа MCP-инструмента."""
+        return {
+            "approval_id": req.approval_id,
+            "status": req.status.value,
+            "approved_by": req.decided_by,
+            "approved_at": req.decided_at.isoformat() if req.decided_at else None,
+            "decision_reason": req.decision_reason,
+        }
+
+    @staticmethod
+    def _assert_not_forbidden(assessment: Any, subject: str) -> None:
+        """Выбросить PermissionError, если классификатор присвоил TIER_3_FORBIDDEN."""
+        if assessment.risk_tier == ActionRiskTier.TIER_3_FORBIDDEN:
+            raise PermissionError(
+                f"{subject} is forbidden by security policy: {'; '.join(assessment.reasons)}"
+            )
+
+    @staticmethod
+    def _build_policy_eval_response(
+        assessment: Any,
+        policy_eval: PolicyEvaluationResult,
+        auth_ctx: Any,
+        **extra: Any,
+    ) -> dict[str, Any]:
+        """Сформировать унифицированный ответ dry-run оценки политики безопасности."""
+        is_forbidden = assessment.risk_tier == ActionRiskTier.TIER_3_FORBIDDEN
+        payload: dict[str, Any] = {
+            "decision": PolicyDecision.DENY.value if is_forbidden else policy_eval.decision.value,
+            "allowed": False if is_forbidden else policy_eval.allowed,
+            "requires_approval": (
+                False
+                if is_forbidden
+                else (policy_eval.requires_approval or assessment.requires_approval)
+            ),
+            "risk_assessment": assessment.to_dict(),
+            "policy": policy_eval.to_dict(),
+            "auth_context": auth_ctx.to_dict(),
+        }
+        payload.update(extra)
         return payload
 
     async def _read_resource(self, uri: str) -> dict[str, Any]:

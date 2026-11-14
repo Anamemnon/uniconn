@@ -13,6 +13,7 @@ from types import FrameType
 from typing import Any
 
 from ..core.connection import Connection
+from ._backends import WindowsJobBackend, is_windows_background_conn
 from ._session import BackgroundSession
 
 logger = logging.getLogger(__name__)
@@ -232,17 +233,14 @@ rm -f "$0"
         if self._stale_ttl_seconds is not None:
             payload["stale_ttl_seconds"] = self._stale_ttl_seconds
         sentinel = json.dumps(payload)
-        t_name = getattr(connection, "transport_name", None)
-        cfg_t = getattr(getattr(connection, "config", None), "transport", None)
-        if (isinstance(t_name, str) and t_name in ("winrm", "wsman")) or (
-            isinstance(cfg_t, str) and cfg_t in ("winrm", "wsman")
-        ):
-            ps_sentinel_path = "'" + self.sentinel_path.replace("'", "''") + "'"
-            ps_sentinel_val = "'" + sentinel.replace("'", "''") + "'"
-            await connection.run(
+        if is_windows_background_conn(connection):
+            ps_sentinel_path = WindowsJobBackend._ps_quote(self.sentinel_path)
+            ps_sentinel_val = WindowsJobBackend._ps_quote(sentinel)
+            ps_cmd = (
                 "if (-not (Test-Path '/tmp')) { New-Item -ItemType Directory -Path '/tmp' -Force | Out-Null }; "
                 f"Set-Content -Path {ps_sentinel_path} -Value {ps_sentinel_val} -Encoding UTF8 -NoNewline"
             )
+            await connection.run(WindowsJobBackend._wrap_ps(ps_cmd))
             return
         q_sentinel_path = shlex.quote(self.sentinel_path)
         q_cleanup_path = shlex.quote(self.cleanup_script_path)
@@ -276,6 +274,8 @@ rm -f "$0"
             else self._stale_ttl_seconds
         )
         if default_ttl is not None and default_ttl <= 0:
+            return []
+        if is_windows_background_conn(connection):
             return []
 
         res = await connection.run(

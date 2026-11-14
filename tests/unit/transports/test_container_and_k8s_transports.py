@@ -498,3 +498,20 @@ class TestEnsureFileDirectoryAndUnifiedDiff:
         m_v6 = _PORT_FORWARD_RE.search("Forwarding from [::1]:54321 -> 8080")
         assert m_v6 is not None and int(m_v6.group(1)) == 54321
 
+    def test_kubectl_transport_rejects_malicious_env_keys(self) -> None:
+        """KubectlTransport._wrap_command_with_context отвергает невалидные имена env-переменных."""
+        from uniconn.transports._kubectl import KubectlTransport
+
+        k_conn = Connection.from_uri("kubectl://default/web-pod")
+        k_tr = k_conn._transport
+        assert isinstance(k_tr, KubectlTransport)
+
+        wrapped = k_tr._wrap_command_with_context("env", env={"APP_ENV": "prod", "_FLAG_1": "yes"})
+        assert "APP_ENV=" in wrapped
+        assert "_FLAG_1=" in wrapped
+
+        for bad_key in ("FOO=1; rm -rf / #", "1INVALID", "BAD-KEY", "$(whoami)", "A B"):
+            with pytest.raises(ValueError, match="Invalid environment variable name"):
+                k_tr._wrap_command_with_context("id", env={bad_key: "val"})
+
+

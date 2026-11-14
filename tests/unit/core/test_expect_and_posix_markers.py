@@ -360,22 +360,32 @@ class TestSmartSyncDirAndTemplating:
         tpl_file.write_text("workers = ${workers}\n", encoding="utf-8")
         assert render_template(tpl_file, {"workers": 8}) == "workers = 8\n"
 
-        # Проверка Jinja2 (через мок, если jinja2 не установлен в окружении)
+        # Проверка Jinja2 (через мок SandboxedEnvironment, если jinja2 не установлен в окружении)
         fake_jinja = MagicMock()
+        fake_sandbox = MagicMock()
         fake_env = MagicMock()
         fake_tpl = MagicMock()
         fake_tpl.render.return_value = "server web-01:8080;"
         fake_env.from_string.return_value = fake_tpl
-        fake_jinja.Environment.return_value = fake_env
+        fake_sandbox.SandboxedEnvironment.return_value = fake_env
         fake_jinja.StrictUndefined = object
+        fake_jinja.sandbox = fake_sandbox
 
-        with patch.dict("sys.modules", {"jinja2": fake_jinja}):
+        with patch.dict("sys.modules", {"jinja2": fake_jinja, "jinja2.sandbox": fake_sandbox}):
             rendered_j2 = render_template(
                 "server {{ host }}:{{ port }};",
                 context={"host": "web-01", "port": 8080},
                 engine="auto",
             )
             assert rendered_j2 == "server web-01:8080;"
+            fake_sandbox.SandboxedEnvironment.assert_called_once()
+
+        # Проверка реального SandboxedEnvironment: SSTI-доступ к __class__.__mro__ блокируется SecurityError
+        import jinja2.exceptions
+
+        assert render_template("host={{ host }}", {"host": "node-1"}, engine="jinja2") == "host=node-1"
+        with pytest.raises(jinja2.exceptions.SecurityError):
+            render_template("{{ ''.__class__.__mro__[1].__subclasses__() }}", {}, engine="jinja2")
 
     @pytest.mark.posix_only
     @pytest.mark.asyncio

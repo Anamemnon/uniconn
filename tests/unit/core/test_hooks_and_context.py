@@ -533,3 +533,52 @@ async def test_stream_circuit_breaker_on_error_early_break_and_env():
             ]
         assert env_lines == ["True", "preserved"]
 
+
+@pytest.mark.asyncio
+async def test_host_temp_manager_uses_windows_detection_for_ssh_hosts() -> None:
+    """HostTempManager использует PowerShell TEMP для SSH-хостов с Windows HostFacts или ?os_family=windows."""
+    from uniconn.result import Result
+    from uniconn.services.facts_models import HostFacts
+
+    # 1. SSH connection with cached Windows HostFacts
+    ssh_facts_conn = Connection.from_uri("ssh://admin@win-ssh")
+    ssh_facts_conn._transport._connected = True
+    ssh_facts_conn._cached_facts = HostFacts(os_family="Windows", distro="Windows Server 2022")
+    ran_cmds: list[str] = []
+
+    async def fake_run(cmd: str, **kwargs: object) -> Result:
+        ran_cmds.append(cmd)
+        if "$env:TEMP" in cmd:
+            return Result(
+                exit_code=0,
+                stdout="C:\\Users\\admin\\AppData\\Local\\Temp\\uniconn_abc\n",
+                stderr="",
+                duration=0.01,
+                command=cmd,
+                host="win-ssh",
+            )
+        return Result(exit_code=0, stdout="", stderr="", duration=0.01, command=cmd, host="win-ssh")
+
+    ssh_facts_conn.run = AsyncMock(side_effect=fake_run)  # type: ignore[method-assign]
+    async with ssh_facts_conn.temp_dir() as tmp_dir:
+        assert tmp_dir == "C:\\Users\\admin\\AppData\\Local\\Temp\\uniconn_abc"
+    assert any("$env:TEMP" in c for c in ran_cmds)
+    assert any("Remove-Item" in c for c in ran_cmds)
+
+    # 2. SSH connection configured with ?os_family=windows
+    ssh_opt_conn = Connection.from_uri("ssh://admin@win-opt?os_family=windows")
+    ssh_opt_conn._transport._connected = True
+    opt_cmds: list[str] = []
+
+    async def fake_opt_run(cmd: str, **kwargs: object) -> Result:
+        opt_cmds.append(cmd)
+        return Result(exit_code=0, stdout="C:\\Temp\\u1\n", stderr="", duration=0.01, command=cmd, host="win-opt")
+
+    ssh_opt_conn.run = AsyncMock(side_effect=fake_opt_run)  # type: ignore[method-assign]
+    created = await ssh_opt_conn._create_temp_dir(prefix="u_")
+    assert created == "C:\\Temp\\u1"
+    await ssh_opt_conn._remove_temp_dir(created)
+    assert any("$env:TEMP" in c for c in opt_cmds)
+    assert any("Remove-Item" in c for c in opt_cmds)
+
+

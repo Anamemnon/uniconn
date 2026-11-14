@@ -222,3 +222,26 @@ def test_sync_remote_path_end_to_end(tmp_path: Path) -> None:
         base.rmdir()
         assert not base.exists()
 
+
+async def test_remote_path_windows_rmdir_is_non_recursive() -> None:
+    """На Windows/WinRM RemotePath.rmdir() использует [System.IO.Directory]::Delete(..., $false) без -Force."""
+    from uniconn.result import Result
+
+    win_conn = Connection.from_uri("winrm://admin:pass@win-node")
+    win_conn._transport._connected = True
+    executed_cmds: list[str] = []
+
+    async def fake_run(cmd: str, **kwargs: object) -> Result:
+        executed_cmds.append(cmd)
+        return Result(exit_code=0, stdout="", stderr="", duration=0.01, command=cmd, host="win-node")
+
+    win_conn.run = AsyncMock(side_effect=fake_run)  # type: ignore[method-assign]
+    rpath = win_conn.path("C:\\App\\empty_dir")
+    await rpath.rmdir()
+
+    assert len(executed_cmds) == 1
+    assert "[System.IO.Directory]::Delete('C:\\App\\empty_dir', $false)" in executed_cmds[0]
+    assert "Remove-Item" not in executed_cmds[0]
+    assert "-Recurse" not in executed_cmds[0]
+
+

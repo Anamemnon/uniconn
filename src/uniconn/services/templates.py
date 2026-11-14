@@ -66,6 +66,7 @@ class TemplateEngine:
         if chosen_engine == "jinja2":
             try:
                 import jinja2  # type: ignore[import-not-found]
+                from jinja2.sandbox import SandboxedEnvironment  # type: ignore[import-not-found]
             except ImportError as exc:
                 if engine == "auto":
                     return string.Template(raw_template).safe_substitute(ctx)
@@ -73,7 +74,7 @@ class TemplateEngine:
                     "Jinja2 template engine requested, but 'jinja2' is not installed. "
                     "Install it via 'pip install uniconn[templates]' or use engine='string'."
                 ) from exc
-            env = jinja2.Environment(
+            env = SandboxedEnvironment(
                 autoescape=False,
                 keep_trailing_newline=True,
                 undefined=jinja2.StrictUndefined,

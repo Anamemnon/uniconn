@@ -543,6 +543,9 @@ class TestWinRMFileOperationsAndDomainServices:
 
         def _bg_handler(command: str, args: list[str]) -> tuple[bytes, bytes, int]:
             ps_script = _decode_ps_script_from_args(args)
+            while "-EncodedCommand " in ps_script:
+                b64 = ps_script.split("-EncodedCommand ", 1)[1].strip().split()[0]
+                ps_script = base64.b64decode(b64).decode("utf-16-le")
             if "Start-Process -FilePath 'powershell'" in ps_script:
                 alive_state["alive"] = True
                 return b"", b"", 0

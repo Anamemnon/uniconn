@@ -967,3 +967,45 @@ class TestV100AuditStabilization:
         await conn.files.write_file("/etc/test.conf", "hello", atomic=True)
         assert any(is_sudo and "mv -f" in cmd for cmd, is_sudo in moved_cmds)
 
+    @pytest.mark.asyncio
+    async def test_sync_dir_walk_remote_skips_symlink_directory_recursion(self, tmp_path: Path) -> None:
+        """DirectorySynchronizer._walk_remote не переходит вглубь симлинков на директории при delete=True."""
+        local_dir = tmp_path / "src_sym"
+        local_dir.mkdir()
+        (local_dir / "keep.txt").write_text("v1", encoding="utf-8")
+
+        conn = Connection.from_uri("ssh://user@app-node")
+        conn._transport._connected = True
+        conn._python_worker = None  # Принудительно идём в transport.listdir/stat (_walk_remote)
+        removed_paths: list[str] = []
+
+        async def fake_exists(path: str) -> bool:
+            return path == "/remote"
+
+        async def fake_listdir(path: str) -> list[str]:
+            if path == "/remote":
+                return ["sym_dir", "keep.txt"]
+            raise AssertionError(f"Should not recurse into symlink dir: {path}")
+
+        async def fake_stat(path: str) -> dict[str, Any]:
+            if path == "/remote/sym_dir":
+                # Имитация симлинка на директорию: при is_symlink=True не должен рекурсивно обходить содержимое
+                return {"size": 0, "is_dir": True, "is_file": False, "is_symlink": True, "mtime": 1.0}
+            return {"size": 2, "is_dir": False, "is_file": True, "is_symlink": False, "mtime": 1.0}
+
+        async def fake_remove(path: str) -> None:
+            removed_paths.append(path)
+
+        conn._transport.exists = AsyncMock(side_effect=fake_exists)  # type: ignore[method-assign]
+        conn._transport.mkdir = AsyncMock()  # type: ignore[method-assign]
+        conn._transport.upload = AsyncMock()  # type: ignore[method-assign]
+        conn._transport.write_file = AsyncMock()  # type: ignore[method-assign]
+        conn._transport.listdir = AsyncMock(side_effect=fake_listdir)  # type: ignore[method-assign]
+        conn._transport.stat = AsyncMock(side_effect=fake_stat)  # type: ignore[method-assign]
+        conn._transport.remove_file = AsyncMock(side_effect=fake_remove)  # type: ignore[method-assign]
+
+        res = await conn.files.sync_dir(local_dir, "/remote", delete=True, checksum_check=False)
+        assert res.deleted == ["sym_dir"]
+        assert removed_paths == ["/remote/sym_dir"]
+
+

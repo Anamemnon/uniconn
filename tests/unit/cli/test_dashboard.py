@@ -208,6 +208,9 @@ class TestDashboardUriPoolAndScreen:
         assert "selectRecipe('parse_auto')" in html
         assert "color: #030712" not in html
         assert "transport-badge" in html
+        assert 'id="meta-version"' in html
+        assert 'id="meta-python"' in html
+        assert "meta-transports" not in html
         assert 'data-suite="architecture"' in html
         assert 'data-suite="benchmarks"' in html
 

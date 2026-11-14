@@ -631,3 +631,31 @@ class TestCLIPolicyAndDashboardSandbox:
                 await conn.run("rm -rf /tmp/nonexistent_policy_test")
             assert len(exc_info.value.serialized_violations()) >= 1
 
+    def test_ast_detects_ifs_and_brace_expansion_obfuscation_without_false_positives(self) -> None:
+        """CommandASTParser детектирует unquoted $IFS/${IFS} и brace expansion {a,b}, не ломая JSON/find."""
+        ifs_obf = CommandASTParser.parse("rm$IFS-rf$IFS/")
+        assert ifs_obf.is_obfuscated is True
+
+        ifs_braced_obf = CommandASTParser.parse("cat${IFS}/etc/passwd")
+        assert ifs_braced_obf.is_obfuscated is True
+
+        brace_obf = CommandASTParser.parse("{rm,-rf,/}")
+        assert brace_obf.is_obfuscated is True
+
+        brace_path_obf = CommandASTParser.parse("/{bin,sbin}/rm -rf /tmp/x")
+        assert brace_path_obf.is_obfuscated is True
+
+        # Safe constructs must NOT trigger obfuscation false positives
+        json_arg = CommandASTParser.parse("""curl -s -d '{"status": "healthy", "ok": true}' http://localhost""")
+        assert json_arg.is_obfuscated is False
+
+        find_exec = CommandASTParser.parse(r"find /var/log -name '*.tmp' -exec rm {} \;")
+        assert find_exec.is_obfuscated is False
+
+        param_default = CommandASTParser.parse("echo ${UNICONN_MODE:-fast,safe}")
+        assert param_default.is_obfuscated is False
+
+        quoted_ifs = CommandASTParser.parse('echo "$IFS" \'${IFS}\'')
+        assert quoted_ifs.is_obfuscated is False
+
+

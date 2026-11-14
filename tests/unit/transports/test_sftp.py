@@ -279,7 +279,7 @@ class TestSSHTransportStat:
         mock_attrs.mtime = 1700000001
 
         mock_sftp = AsyncMock()
-        mock_sftp.stat = AsyncMock(return_value=mock_attrs)
+        mock_sftp.lstat = AsyncMock(return_value=mock_attrs)
 
         mock_context = AsyncMock()
         mock_context.__aenter__ = AsyncMock(return_value=mock_sftp)
@@ -588,7 +588,7 @@ class TestSFTPClientAdapterExtended:
         mock_sftp.chmod = AsyncMock()
         mock_sftp.makedirs = AsyncMock()
         mock_sftp.remove = AsyncMock()
-        mock_sftp.stat = AsyncMock(return_value=mock_attrs)
+        mock_sftp.lstat = AsyncMock(return_value=mock_attrs)
 
         async def _fake_put(src, dst, **kw):
             if "progress_handler" in kw:
@@ -615,7 +615,7 @@ class TestSFTPClientAdapterExtended:
 
         # exists (True and False on error)
         assert await transport.exists("/etc/conf") is True
-        mock_sftp.stat.side_effect = asyncssh_mock.Error("No such file")
+        mock_sftp.lstat.side_effect = asyncssh_mock.Error("No such file")
         assert await transport.exists("/etc/missing") is False
 
         # mkdir & remove_file
@@ -633,4 +633,54 @@ class TestSFTPClientAdapterExtended:
                 progress_callback=lambda c, t: progress_events.append((c, t)),
             )
         assert progress_events == [(50, 100)]
+
+    @pytest.mark.asyncio
+    async def test_sftp_stat_uses_lstat_for_symlinks_and_reuses_cached_session(
+        self, ssh_transport_with_mock
+    ):
+        """stat() использует lstat (не разыменовывая симлинки), а SFTPClientAdapter переиспользует сессию до disconnect()."""
+        SSHTransport, _ = ssh_transport_with_mock
+
+        symlink_attrs = MagicMock()
+        symlink_attrs.size = 12
+        symlink_attrs.uid = 0
+        symlink_attrs.gid = 0
+        symlink_attrs.permissions = 0o120777  # S_IFLNK | 0o777
+        symlink_attrs.atime = 10
+        symlink_attrs.mtime = 20
+
+        mock_sftp = AsyncMock()
+        mock_sftp.lstat = AsyncMock(return_value=symlink_attrs)
+        mock_sftp.readdir = AsyncMock(return_value=[])
+
+        mock_context = AsyncMock()
+        mock_context.__aenter__ = AsyncMock(return_value=mock_sftp)
+        mock_context.__aexit__ = AsyncMock(return_value=None)
+
+        mock_conn = AsyncMock()
+        mock_conn.is_closed = MagicMock(return_value=False)
+        mock_conn.start_sftp_client = MagicMock(return_value=mock_context)
+        mock_conn.close = MagicMock()
+        mock_conn.wait_closed = AsyncMock()
+
+        transport = SSHTransport(ConnectionConfig(transport="ssh", host="testhost"))
+        transport._conn = mock_conn
+        transport._connected = True
+
+        st = await transport.stat("/var/www/link_dir")
+        assert st["is_symlink"] is True
+        assert st["is_dir"] is False
+        assert st["is_file"] is False
+
+        await transport.listdir("/var/www")
+        await transport.stat("/var/www/link_dir")
+
+        # SFTP сессия открыта ровно 1 раз для 3 операций
+        mock_conn.start_sftp_client.assert_called_once()
+        mock_context.__aexit__.assert_not_awaited()
+
+        # При disconnect() закэшированная SFTP-сессия корректно закрывается
+        await transport.disconnect()
+        mock_context.__aexit__.assert_awaited_once()
+
 

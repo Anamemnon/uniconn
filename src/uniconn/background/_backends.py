@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import re
 import shlex
 from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
@@ -485,18 +486,28 @@ class WindowsJobBackend:
         """Имя бэкенда."""
         return "windows_job"
 
-    async def is_available(self, conn: Connection) -> bool:
-        """Проверить наличие PowerShell на целевом Windows-хосте."""
-        res = await conn.run(
-            'powershell -NoProfile -NonInteractive -Command "$PSVersionTable.PSVersion.Major"',
-            raise_on_error=False,
-        )
-        return res.ok and bool(res.stdout.strip())
-
     @staticmethod
     def _ps_quote(value: str) -> str:
         """Экранировать строку для одинарных кавычек PowerShell."""
         return "'" + value.replace("'", "''") + "'"
+
+    @staticmethod
+    def _encode_ps_script(script: str) -> str:
+        """Закодировать PowerShell-скрипт в UTF-16LE Base64 для ``-EncodedCommand``."""
+        return base64.b64encode(script.encode("utf-16le")).decode("ascii")
+
+    @classmethod
+    def _wrap_ps(cls, script: str) -> str:
+        """Обернуть PowerShell-скрипт в вызов ``powershell -NoProfile -NonInteractive -EncodedCommand``."""
+        return f"powershell -NoProfile -NonInteractive -EncodedCommand {cls._encode_ps_script(script)}"
+
+    async def is_available(self, conn: Connection) -> bool:
+        """Проверить наличие PowerShell на целевом Windows-хосте."""
+        res = await conn.run(
+            self._wrap_ps("$PSVersionTable.PSVersion.Major"),
+            raise_on_error=False,
+        )
+        return res.ok and bool(res.stdout.strip())
 
     async def start_session(
         self,
@@ -517,15 +528,17 @@ class WindowsJobBackend:
             f"$rc = if ($null -ne $LASTEXITCODE) {{ $LASTEXITCODE }} else {{ 0 }}; "
             f"Set-Content -Path {ps_exit} -Value $rc -NoNewline"
         )
-        encoded_inner = self._ps_quote(inner_cmd)
-        cmd = (
-            'powershell -NoProfile -NonInteractive -Command "'
-            "if (-not (Test-Path '/tmp')) { New-Item -ItemType Directory -Path '/tmp' -Force | Out-Null }; "
-            f"$p = Start-Process -FilePath 'powershell' "
-            f"-ArgumentList @('-NoProfile', '-NonInteractive', '-Command', {encoded_inner}) "
+        encoded_inner = self._ps_quote(self._encode_ps_script(inner_cmd))
+        outer_ps = (
+            f"foreach ($pDir in @((Split-Path -Parent {ps_pid}), (Split-Path -Parent {ps_log}), "
+            f"(Split-Path -Parent {ps_exit}))) {{ "
+            "if ($pDir -and -not (Test-Path $pDir)) { New-Item -ItemType Directory -Path $pDir -Force | Out-Null } }; "
+            "$p = Start-Process -FilePath 'powershell' "
+            f"-ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', {encoded_inner}) "
             "-WindowStyle Hidden -PassThru; "
-            f'Set-Content -Path {ps_pid} -Value $p.Id -NoNewline"'
+            f"Set-Content -Path {ps_pid} -Value $p.Id -NoNewline"
         )
+        cmd = self._wrap_ps(outer_ps)
         res = await conn.run(cmd, raise_on_error=False)
         if not res.ok:
             raise BackgroundBackendError(
@@ -547,14 +560,13 @@ class WindowsJobBackend:
         del session_id
         ps_pid = self._ps_quote(pid_path)
         ps_exit = self._ps_quote(exit_file_path)
-        cmd = (
-            'powershell -NoProfile -NonInteractive -Command "'
+        ps_body = (
             f"if ((Test-Path {ps_exit}) -or -not (Test-Path {ps_pid})) {{ exit 1 }}; "
             f"$procId = [int](Get-Content {ps_pid} -Raw).Trim(); "
-            '$p = Get-Process -Id $procId -ErrorAction SilentlyContinue; '
-            'if ($null -ne $p) { exit 0 } else { exit 1 }"'
+            "$p = Get-Process -Id $procId -ErrorAction SilentlyContinue; "
+            "if ($null -ne $p) { exit 0 } else { exit 1 }"
         )
-        res = await conn.run(cmd, raise_on_error=False)
+        res = await conn.run(self._wrap_ps(ps_body), raise_on_error=False)
         return res.ok
 
     async def get_pid(
@@ -568,14 +580,13 @@ class WindowsJobBackend:
         del session_id
         ps_pid = self._ps_quote(pid_path)
         ps_exit = self._ps_quote(exit_file_path)
-        cmd = (
-            'powershell -NoProfile -NonInteractive -Command "'
+        ps_body = (
             f"if (-not (Test-Path {ps_exit}) -and (Test-Path {ps_pid})) {{ "
             f"$procId = [int](Get-Content {ps_pid} -Raw).Trim(); "
             "$p = Get-Process -Id $procId -ErrorAction SilentlyContinue; "
-            'if ($null -ne $p) { Write-Output $procId } }"'
+            "if ($null -ne $p) { Write-Output $procId } }"
         )
-        res = await conn.run(cmd, raise_on_error=False)
+        res = await conn.run(self._wrap_ps(ps_body), raise_on_error=False)
         if not res.ok or not res.stdout.strip():
             return None
         try:
@@ -595,17 +606,19 @@ class WindowsJobBackend:
             else (prefix or "uniconn_")
         )
         safe_glob = re.sub(r"[^A-Za-z0-9._-]", "", glob_prefix)
-        cmd = (
-            'powershell -NoProfile -NonInteractive -Command "'
-            f"Get-ChildItem -Path '/tmp/{safe_glob}*.pid' -ErrorAction SilentlyContinue | ForEach-Object {{ "
+        ps_body = (
+            "$searchDirs = @([System.IO.Path]::GetTempPath()); "
+            "if (Test-Path '/tmp') { $searchDirs += '/tmp' }; "
+            f"$targets = $searchDirs | Select-Object -Unique | ForEach-Object {{ Join-Path $_ '{safe_glob}*.pid' }}; "
+            "Get-ChildItem -Path $targets -ErrorAction SilentlyContinue | ForEach-Object { "
             "$sid = $_.BaseName -replace '^uniconn_', ''; "
             "$exitFile = Join-Path $_.DirectoryName ('uniconn_' + $sid + '.exit'); "
             "if (-not (Test-Path $exitFile)) { "
             "$procId = [int](Get-Content $_.FullName -Raw).Trim(); "
             "if ($null -ne (Get-Process -Id $procId -ErrorAction SilentlyContinue)) { "
-            'Write-Output \\"$sid $procId\\" } } }"'
+            'Write-Output "$sid $procId" } } }'
         )
-        res = await conn.run(cmd, raise_on_error=False)
+        res = await conn.run(self._wrap_ps(ps_body), raise_on_error=False)
         if not res.ok:
             return {}
         sessions: dict[str, int] = {}
@@ -632,10 +645,7 @@ class WindowsJobBackend:
         pid = await self.get_pid(conn, session_id, pid_path, exit_file_path)
         if pid is not None:
             ps_cmd = f"Stop-Process -Id {pid} -ErrorAction SilentlyContinue"
-            await conn.run(
-                f'powershell -NoProfile -NonInteractive -Command "{ps_cmd}"',
-                raise_on_error=False,
-            )
+            await conn.run(self._wrap_ps(ps_cmd), raise_on_error=False)
 
     async def terminate(
         self,
@@ -646,13 +656,12 @@ class WindowsJobBackend:
         """Принудительно завершить процесс Windows через Stop-Process -Force."""
         del session_id
         ps_pid = self._ps_quote(pid_path)
-        cmd = (
-            'powershell -NoProfile -NonInteractive -Command "'
+        ps_body = (
             f"if (Test-Path {ps_pid}) {{ "
             f"$procId = [int](Get-Content {ps_pid} -Raw).Trim(); "
-            'Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue }"'
+            "Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue }"
         )
-        await conn.run(cmd, raise_on_error=False)
+        await conn.run(self._wrap_ps(ps_body), raise_on_error=False)
 
 
 _BACKENDS: dict[str, BackgroundBackendStrategy] = {
@@ -674,14 +683,24 @@ def get_backend_by_name(name: str) -> BackgroundBackendStrategy:
     return strategy
 
 
-def _is_windows_remote_conn(conn: Connection) -> bool:
-    """Проверить, является ли соединение WinRM/WSMan-подключением к Windows."""
+def is_windows_background_conn(conn: Connection) -> bool:
+    """Проверить, является ли соединение Windows-хостом (WinRM/WSMan или os_family=windows)."""
     t_name = getattr(conn, "transport_name", None)
     if isinstance(t_name, str) and t_name in ("winrm", "wsman"):
         return True
     cfg = getattr(conn, "config", None)
     cfg_t = getattr(cfg, "transport", None)
-    return isinstance(cfg_t, str) and cfg_t in ("winrm", "wsman")
+    if isinstance(cfg_t, str) and cfg_t in ("winrm", "wsman"):
+        return True
+    opts = getattr(cfg, "options", None)
+    if isinstance(opts, dict):
+        os_fam = opts.get("os_family")
+        if isinstance(os_fam, str) and os_fam.strip().lower() == "windows":
+            return True
+    return False
+
+
+_is_windows_remote_conn = is_windows_background_conn
 
 
 async def resolve_backend(

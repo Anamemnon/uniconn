@@ -423,7 +423,12 @@ class DirectorySynchronizer:
                             info = await transport.stat(entry_full)
                         except (OSError, ExecutionError):
                             continue
-                        if info.get("is_dir"):
+                        if info.get("is_symlink"):
+                            if entry_rel not in local_files:
+                                if not is_dry:
+                                    await transport.remove_file(entry_full)
+                                deleted.append(entry_rel)
+                        elif info.get("is_dir"):
                             await _walk_remote(entry_rel)
                         elif entry_rel not in local_files:
                             if not is_dry:
@@ -826,7 +831,12 @@ class FileOperationsService:
         effective_path = self._conn.context.resolve_path(remote_path)
         data = content.encode(encoding) if isinstance(content, str) else bytes(content)
 
-        if sudo and self._conn.transport_name not in ("winrm", "wsman"):
+        from .provisioning.windows import is_windows_connection
+
+        is_win_remote = (
+            self._conn.transport_name != "local" and is_windows_connection(self._conn)
+        )
+        if sudo and not is_win_remote:
             await self._stage_and_sudo_move(effective_path, data, mode, sudo=True)
             return
 
@@ -847,7 +857,7 @@ class FileOperationsService:
                 raise
             return
 
-        if self._conn.transport_name in ("winrm", "wsman"):
+        if is_win_remote:
             sep = "\\" if ("\\" in effective_path or ":" in effective_path) else "/"
             trimmed = effective_path.rstrip("\\/")
             parent_win = (trimmed.rsplit(sep, 1)[0] or ".") if sep in trimmed else "."
@@ -955,8 +965,11 @@ class FileOperationsService:
 
         cached_facts = getattr(self._conn, "_cached_facts", None)
         os_family = getattr(cached_facts, "os_family", None)
-        if not os_family and self._conn.transport_name in ("winrm", "wsman"):
-            os_family = "windows"
+        if not os_family:
+            from .provisioning.windows import is_windows_connection
+
+            if is_windows_connection(self._conn):
+                os_family = "windows"
         cmd = _build_checksum_command(effective_path, algorithm, os_family=os_family)
         res = await self._conn.run(
             cmd,

@@ -388,6 +388,8 @@ def build_auth_context(
     if action_type is None:
         if flow_name or tool_name in ("uniconn_run_flow", "uniconn_resume_flow") or tool_name.startswith("flow_"):
             eff_action_type = "flow_execution"
+        elif tool_name == "uniconn_read_file":
+            eff_action_type = "file_read"
         elif tool_name == "uniconn_write_file" or (eff_target_path and not cmd_str):
             eff_action_type = "file_write"
         else:

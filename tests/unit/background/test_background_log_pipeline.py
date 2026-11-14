@@ -299,19 +299,27 @@ class TestLocalFileHandlerRotationAndWindowsJobBackend:
         assert log_file.read_text(encoding="utf-8") == "ABCDEFGHIJKLMN\n"
 
     async def test_windows_job_backend_lifecycle(self) -> None:
+        import base64
+
         from uniconn.background import WindowsJobBackend, get_backend_by_name
 
         backend = get_backend_by_name("windows_job")
         assert isinstance(backend, WindowsJobBackend)
         assert backend.name == "windows_job"
 
-        conn = make_connection(
-            lambda cmd, **kw: make_result(
-                "5\n" if "PSVersionTable" in cmd else ("4321\n" if "Write-Output $procId" in cmd else "s1 4321\n"),
-                exit_code=0,
-                command=cmd,
-            )
-        )
+        def _decode(cmd: str) -> str:
+            if "-EncodedCommand " in cmd:
+                b64 = cmd.split("-EncodedCommand ", 1)[1].strip().split()[0]
+                return base64.b64decode(b64).decode("utf-16-le")
+            return cmd
+
+        def _handler(cmd: str, **kw: object) -> object:
+            ps = _decode(cmd)
+            assert ' -Command "' not in cmd
+            stdout = "5\n" if "PSVersionTable" in ps else ("4321\n" if "Write-Output $procId" in ps else "s1 4321\n")
+            return make_result(stdout, exit_code=0, command=cmd)
+
+        conn = make_connection(_handler)
         assert await backend.is_available(conn) is True
         await backend.start_session(
             conn, "s1", "C:\\tmp\\s1.ps1", "C:\\tmp\\s1.log", "C:\\tmp\\s1.exit", "C:\\tmp\\s1.pid"
@@ -526,5 +534,130 @@ class TestPatternTriggerAndTimelineAndWatchdog:
         assert len(trigger.matches) == 1
         assert list(trigger.matches[0].context_before) == ["line 1", "line 2"]
         assert timeline.entries_written == 4  # 3 lines + 1 match event
+
+    async def test_windows_job_encoded_command_paths_and_pool_temp_resolution(self) -> None:
+        """WindowsJobBackend использует -EncodedCommand, Split-Path -Parent и TEMP вместо хардкода /tmp."""
+        import base64
+
+        from uniconn.background import BackgroundPool, BackgroundSession, WindowsJobBackend
+
+        def _decode(cmd: str) -> str:
+            if "-EncodedCommand " in cmd:
+                b64 = cmd.split("-EncodedCommand ", 1)[1].strip().split()[0]
+                return base64.b64decode(b64).decode("utf-16-le")
+            return cmd
+
+        recorded_ps: list[str] = []
+
+        def _handler(cmd: str, **kw: object) -> object:
+            ps = _decode(cmd)
+            recorded_ps.append(ps)
+            if "GetTempPath()" in ps:
+                return make_result("C:\\Users\\ci\\AppData\\Local\\Temp\r\n", exit_code=0, command=cmd)
+            return make_result("", exit_code=0, command=cmd)
+
+        conn = make_connection(_handler)
+        conn._transport.config.transport = "winrm"  # type: ignore[attr-defined]
+        backend = WindowsJobBackend()
+
+        await backend.start_session(
+            conn,
+            "s1",
+            "C:\\Work\\logs\\uniconn_s1.ps1",
+            "C:\\Work\\logs\\s1.log",
+            "C:\\Work\\logs\\uniconn_s1.exit",
+            "C:\\Work\\logs\\uniconn_s1.pid",
+        )
+        start_ps = recorded_ps[-1]
+        assert "Split-Path -Parent" in start_ps
+        assert "'/tmp'" not in start_ps
+        assert "'-EncodedCommand'" in start_ps
+
+        await backend.list_sessions(conn, prefix="s")
+        list_ps = recorded_ps[-1]
+        assert "[System.IO.Path]::GetTempPath()" in list_ps
+        assert 'Write-Output "$sid $procId"' in list_ps
+        assert '\\"$sid' not in list_ps
+
+        # BackgroundSession на Windows кладёт .exit/.pid/.ps1 рядом с remote_log_path
+        sess = BackgroundSession(conn, "job1", "C:\\Work\\logs\\job1.log", backend=backend)
+        assert sess.script_path == "C:\\Work\\logs\\uniconn_job1.ps1"
+        assert sess.pid_file_path == "C:\\Work\\logs\\uniconn_job1.pid"
+        assert sess.exit_file_path == "C:\\Work\\logs\\uniconn_job1.exit"
+
+        # BackgroundPool резолвит %TEMP% через GetTempPath вместо /tmp
+        pool = BackgroundPool("winrm://admin:pass@win-host", backend="windows_job")
+        orig_handler = _handler
+
+        def _pool_handler(cmd: str, **kw: object) -> object:
+            ps = _decode(cmd)
+            if "Test-Path" in ps and "exit 1" in ps:
+                return make_result("", exit_code=1, command=cmd)
+            return orig_handler(cmd, **kw)
+
+        conn2 = make_connection(_pool_handler)
+        conn2._transport.config.transport = "winrm"  # type: ignore[attr-defined]
+        conn2.files.write_file = AsyncMock()  # type: ignore[method-assign]
+        pool._connection = conn2
+        pool._resolved_backend = backend
+        created = await pool.start("Write-Output 'hi'", name="winjob")
+        assert created.remote_log_path == "C:\\Users\\ci\\AppData\\Local\\Temp\\winjob.log"
+
+    async def test_windows_background_components_use_encoded_command(self) -> None:
+        """BackgroundSession, BackgroundLogCollector и BackgroundCleanupManager оборачивают PowerShell в -EncodedCommand."""
+        import base64
+
+        from uniconn.background import (
+            BackgroundCleanupManager,
+            BackgroundLogCollector,
+            BackgroundSession,
+            WindowsJobBackend,
+        )
+
+        executed: list[str] = []
+
+        def _decode(cmd: str) -> str:
+            assert cmd.startswith("powershell -NoProfile -NonInteractive -EncodedCommand "), cmd
+            b64 = cmd.split("-EncodedCommand ", 1)[1].strip().split()[0]
+            return base64.b64decode(b64).decode("utf-16-le")
+
+        def _handler(cmd: str, **kw: object) -> object:
+            executed.append(cmd)
+            ps = _decode(cmd)
+            if "if ((Test-Path" in ps and "Get-Process -Id" in ps:
+                return make_result("", exit_code=1, command=cmd)
+            if "Test-Path" in ps and "(Get-Content -Path" in ps and "-Raw).Trim()" in ps:
+                return make_result("0\n", exit_code=0, command=cmd)
+            if "Write-Output $procId" in ps:
+                return make_result("8888\n", exit_code=0, command=cmd)
+            if ".Length" in ps:
+                return make_result("6\n", exit_code=0, command=cmd)
+            if "StreamReader" in ps or ("Get-Content -Path" in ps and "-Raw" in ps):
+                return make_result("hello\n", exit_code=0, command=cmd)
+            return make_result("", exit_code=0, command=cmd)
+
+        conn = make_connection(_handler)
+        conn.transport_name = "winrm"
+        conn.config.transport = "winrm"
+        backend = WindowsJobBackend()
+        session = BackgroundSession(conn, "win1", "C:\\Work\\logs\\win1.log", backend=backend)
+
+        await session.create("Write-Output 'ok'")
+        assert await session.get_exit_code() == 0
+        await session.send_signal(9)
+        await session.cleanup()
+
+        collector = BackgroundLogCollector(conn)
+        lines, offset = await collector.read_chunk(session)
+        assert lines == ["hello\n"]
+        assert offset == 6
+        assert await collector.read_all(session) == "hello\n"
+
+        cleaner = BackgroundCleanupManager("pool_win")
+        await cleaner.install_server_side(conn)
+        assert await cleaner.cleanup_stale(conn, max_age_seconds=10) == []
+        assert len(executed) >= 8
+
+
 
 

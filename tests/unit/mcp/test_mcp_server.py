@@ -560,3 +560,286 @@ async def test_mcp_jsonrpc_batch_error_handling_and_stream_loop() -> None:
     assert len(written_lines) == 1
     assert json.loads(written_lines[0]) == {"jsonrpc": "2.0", "id": 100, "result": {}}
     await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_mcp_blocks_obfuscated_tier3_commands_even_without_guardrails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TIER_3_FORBIDDEN команды (в т.ч. обфусцированные) блокируются в uniconn_run и uniconn_propose_action."""
+    from uniconn.mcp.models import HITLPolicy
+    from uniconn.security.models import PolicyGuardrailConfig
+
+    executed_cmds: list[str] = []
+
+    async def _never_run(*args: Any, **kwargs: Any) -> Any:
+        executed_cmds.append(str(args))
+        raise AssertionError("TIER_3 command must never reach connection.run")
+
+    policy = MCPSecurityPolicy(
+        allow_write=True,
+        guardrails=PolicyGuardrailConfig(enabled=False),
+        hitl=HITLPolicy(enabled=True, store_path=str(tmp_path / "approvals.json")),
+    )
+    registry = MCPHostRegistry.from_sources(include_local=True, policy=policy)
+    server = MCPServer(registry=registry)
+
+    entry = registry.get_entry("local")
+    assert entry is not None
+    monkeypatch.setattr("uniconn.core.connection.Connection.run", _never_run)
+
+    for obf_cmd in (
+        "eval $(echo cm0gLXJmIC8= | base64 -d)",
+        "rm$IFS-rf$IFS/",
+        "{rm,-rf,/}",
+    ):
+        run_resp = await server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 201,
+                "method": "tools/call",
+                "params": {
+                    "name": "uniconn_run",
+                    "arguments": {"target": "local", "command": obf_cmd},
+                },
+            }
+        )
+        assert isinstance(run_resp, dict)
+        payload, is_err = _extract_tool_payload(run_resp)
+        assert is_err is True
+        assert payload["error"] == "PermissionError"
+
+        propose_resp = await server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 202,
+                "method": "tools/call",
+                "params": {
+                    "name": "uniconn_propose_action",
+                    "arguments": {"target": "local", "command": obf_cmd, "reason": "test"},
+                },
+            }
+        )
+        assert isinstance(propose_resp, dict)
+        propose_payload, propose_err = _extract_tool_payload(propose_resp)
+        assert propose_err is True
+        assert propose_payload["error"] == "PermissionError"
+
+    assert executed_cmds == []
+
+
+@pytest.mark.asyncio
+async def test_mcp_read_file_enforces_sensitive_path_blocklist_and_policy_guardrails(
+    tmp_path: Path,
+) -> None:
+    """uniconn_read_file блокирует чувствительные системные файлы, path traversal и правила policy DENY."""
+    from uniconn.security.models import PolicyGuardrailConfig
+
+    safe_file = tmp_path / "app.conf"
+    safe_file.write_text("port = 8080\n", encoding="utf-8")
+    blocked_custom = tmp_path / "secret.key"
+    blocked_custom.write_text("PRIVATE\n", encoding="utf-8")
+
+    policy_file = tmp_path / "rules.yaml"
+    policy_file.write_text(
+        "rules:\n"
+        "  - id: deny_secret_key_reads\n"
+        "    decision: DENY\n"
+        "    tool_name: uniconn_read_file\n"
+        "    path_regex: 'secret\\.key'\n"
+        "    message: 'Reading .key files is forbidden'\n",
+        encoding="utf-8",
+    )
+
+    policy = MCPSecurityPolicy(
+        guardrails=PolicyGuardrailConfig(
+            enabled=True,
+            preset="default",
+            policy_file=str(policy_file),
+        ),
+    )
+    registry = MCPHostRegistry.from_sources(include_local=True, policy=policy)
+    server = MCPServer(registry=registry)
+
+    # 1. Sensitive system paths and traversals are blocked with PermissionError
+    for dangerous_path in (
+        "/etc/shadow",
+        "/tmp/../etc/shadow",
+        "/root/.ssh/id_rsa",
+        "/var/run/secrets/kubernetes.io/serviceaccount/token",
+        "/proc/self/environ",
+        "C:\\Windows\\System32\\config\\SAM",
+    ):
+        resp = await server.handle_message(
+            {
+                "jsonrpc": "2.0",
+                "id": 301,
+                "method": "tools/call",
+                "params": {
+                    "name": "uniconn_read_file",
+                    "arguments": {"target": "local", "path": dangerous_path},
+                },
+            }
+        )
+        assert isinstance(resp, dict)
+        payload, is_err = _extract_tool_payload(resp)
+        assert is_err is True
+        assert payload["error"] == "PermissionError"
+
+    # 2. Custom Policy-as-Code DENY rule blocks uniconn_read_file via _evaluate_policy_gate
+    deny_resp = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 302,
+            "method": "tools/call",
+            "params": {
+                "name": "uniconn_read_file",
+                "arguments": {"target": "local", "path": str(blocked_custom)},
+            },
+        }
+    )
+    assert isinstance(deny_resp, dict)
+    deny_payload, deny_err = _extract_tool_payload(deny_resp)
+    assert deny_err is True
+    assert deny_payload["error"] == "PolicyViolationError"
+    assert "deny_secret_key_reads" in deny_payload["rule_names"]
+
+    # 3. uniconn_evaluate_policy sets action_type='file_read' for uniconn_read_file
+    eval_resp = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 303,
+            "method": "tools/call",
+            "params": {
+                "name": "uniconn_evaluate_policy",
+                "arguments": {
+                    "target": "local",
+                    "tool_name": "uniconn_read_file",
+                    "path": str(blocked_custom),
+                },
+            },
+        }
+    )
+    assert isinstance(eval_resp, dict)
+    eval_payload, eval_err = _extract_tool_payload(eval_resp)
+    assert not eval_err
+    assert eval_payload["decision"] == "DENY"
+    assert eval_payload["auth_context"]["action"]["type"] == "file_read"
+
+    # 4. Safe file read succeeds normally
+    ok_resp = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 304,
+            "method": "tools/call",
+            "params": {
+                "name": "uniconn_read_file",
+                "arguments": {"target": "local", "path": str(safe_file)},
+            },
+        }
+    )
+    assert isinstance(ok_resp, dict)
+    ok_payload, ok_err = _extract_tool_payload(ok_resp)
+    assert not ok_err
+    assert ok_payload["content"] == "port = 8080\n"
+
+
+@pytest.mark.asyncio
+async def test_mcp_evaluate_policy_denies_forbidden_when_guardrails_disabled_and_propose_read(
+    tmp_path: Path,
+) -> None:
+    """evaluate_policy всегда отклоняет TIER_3_FORBIDDEN, а propose_action поддерживает uniconn_read_file."""
+    from uniconn.security.models import PolicyGuardrailConfig
+
+    safe_file = tmp_path / "readme.txt"
+    safe_file.write_text("ok\n", encoding="utf-8")
+
+    policy = MCPSecurityPolicy(
+        guardrails=PolicyGuardrailConfig(enabled=False),
+    )
+    registry = MCPHostRegistry.from_sources(include_local=True, policy=policy)
+    server = MCPServer(registry=registry)
+
+    # 1. evaluate_policy with guardrails disabled still reports DENY / allowed=False for TIER_3_FORBIDDEN
+    eval_cmd_resp = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 401,
+            "method": "tools/call",
+            "params": {
+                "name": "uniconn_evaluate_policy",
+                "arguments": {"target": "local", "tool_name": "uniconn_run", "command": "rm -rf /"},
+            },
+        }
+    )
+    assert isinstance(eval_cmd_resp, dict)
+    cmd_payload, cmd_err = _extract_tool_payload(eval_cmd_resp)
+    assert not cmd_err
+    assert cmd_payload["decision"] == "DENY"
+    assert cmd_payload["allowed"] is False
+    assert cmd_payload["requires_approval"] is False
+
+    eval_read_resp = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 402,
+            "method": "tools/call",
+            "params": {
+                "name": "uniconn_evaluate_policy",
+                "arguments": {
+                    "target": "local",
+                    "tool_name": "uniconn_read_file",
+                    "path": "/etc/shadow",
+                },
+            },
+        }
+    )
+    assert isinstance(eval_read_resp, dict)
+    read_eval_payload, read_eval_err = _extract_tool_payload(eval_read_resp)
+    assert not read_eval_err
+    assert read_eval_payload["decision"] == "DENY"
+    assert read_eval_payload["allowed"] is False
+
+    # 2. propose_action supports uniconn_read_file
+    propose_ok_resp = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 403,
+            "method": "tools/call",
+            "params": {
+                "name": "uniconn_propose_action",
+                "arguments": {
+                    "target": "local",
+                    "tool_name": "uniconn_read_file",
+                    "path": str(safe_file),
+                },
+            },
+        }
+    )
+    assert isinstance(propose_ok_resp, dict)
+    propose_ok_payload, propose_ok_err = _extract_tool_payload(propose_ok_resp)
+    assert not propose_ok_err
+    assert propose_ok_payload["approval"]["tool_name"] == "uniconn_read_file"
+    assert propose_ok_payload["approval"]["status"] == "PENDING"
+
+    propose_bad_resp = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 404,
+            "method": "tools/call",
+            "params": {
+                "name": "uniconn_propose_action",
+                "arguments": {
+                    "target": "local",
+                    "tool_name": "uniconn_read_file",
+                    "path": "/etc/shadow",
+                },
+            },
+        }
+    )
+    assert isinstance(propose_bad_resp, dict)
+    propose_bad_payload, propose_bad_err = _extract_tool_payload(propose_bad_resp)
+    assert propose_bad_err is True
+    assert propose_bad_payload["error"] == "PermissionError"
+
+

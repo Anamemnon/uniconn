@@ -1,6 +1,7 @@
 # src/uniconn/background/_pool.py
 import asyncio
 import logging
+import ntpath
 import shlex
 import time
 import uuid
@@ -14,6 +15,7 @@ from ..exceptions import BackgroundError, BackgroundPoolFullError
 from ._backends import (
     BackgroundBackendStrategy,
     BackgroundBackendType,
+    WindowsJobBackend,
     resolve_backend,
 )
 from ._cleanup import BackgroundCleanupManager
@@ -84,6 +86,7 @@ class BackgroundPool:
         self._start_lock = asyncio.Lock()
         self._connection: Connection | None = None
         self._collector: BackgroundLogCollector | None = None
+        self._remote_win_temp: str | None = None
         self._cleanup_manager = BackgroundCleanupManager(
             self._pool_id,
             logger=self._logger,
@@ -258,10 +261,25 @@ class BackgroundPool:
             idx = self._counter
             self._counter += 1
             session_id = name or f"{self._session_prefix}_{idx}"
+            if backend_strategy.name == "windows_job":
+                if self._remote_win_temp is None:
+                    win_res = await connection.run(
+                        WindowsJobBackend._wrap_ps("[System.IO.Path]::GetTempPath().TrimEnd('\\', '/')"),
+                        raise_on_error=False,
+                    )
+                    resolved = (
+                        win_res.stdout.strip().splitlines()[0].strip()
+                        if win_res.ok and win_res.stdout.strip()
+                        else ""
+                    )
+                    self._remote_win_temp = resolved or "C:\\Windows\\Temp"
+                remote_log_path = ntpath.join(self._remote_win_temp, f"{session_id}.log")
+            else:
+                remote_log_path = f"/tmp/{session_id}.log"
             session = BackgroundSession(
                 connection,
                 session_id,
-                f"/tmp/{session_id}.log",
+                remote_log_path,
                 backend=backend_strategy,
                 logger=self._logger,
             )
