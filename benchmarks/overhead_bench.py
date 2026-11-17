@@ -123,22 +123,25 @@ async def bench_command_pipeline(
 ) -> BenchmarkStats:
     """Измерить чистые накладные расходы конвейера CommandPipeline."""
     conn = Connection.from_uri("local://localhost", retry_attempts=1)
-    pipeline = CommandPipeline(conn)
-    request = CommandRequest(raw_command="true", command="true", exec_command="true")
+    try:
+        pipeline = CommandPipeline(conn)
+        request = CommandRequest(raw_command="true", command="true", exec_command="true")
 
-    async def _mock_target(_req: CommandRequest) -> Result:
-        return Result(exit_code=0, stdout="", stderr="", duration=0.0, command="true")
+        async def _mock_target(_req: CommandRequest) -> Result:
+            return Result(exit_code=0, stdout="", stderr="", duration=0.0, command="true")
 
-    # Warmup
-    for _ in range(warmup):
-        await pipeline.execute(request, _mock_target)
+        # Warmup
+        for _ in range(warmup):
+            await pipeline.execute(request, _mock_target)
 
-    latencies_ns: list[int] = []
-    for _ in range(iterations):
-        t0 = time.perf_counter_ns()
-        await pipeline.execute(request, _mock_target)
-        t1 = time.perf_counter_ns()
-        latencies_ns.append(t1 - t0)
+        latencies_ns: list[int] = []
+        for _ in range(iterations):
+            t0 = time.perf_counter_ns()
+            await pipeline.execute(request, _mock_target)
+            t1 = time.perf_counter_ns()
+            latencies_ns.append(t1 - t0)
+    finally:
+        await conn.close()
 
     return _compute_stats("CommandPipeline", latencies_ns, threshold_p95_us)
 
@@ -185,28 +188,31 @@ async def bench_directory_synchronizer(
                 f.write_text(f"content-{i}-{j}\n", encoding="utf-8")
 
         conn = Connection.from_uri("local://localhost")
-        synchronizer = DirectorySynchronizer(conn)
+        try:
+            synchronizer = DirectorySynchronizer(conn)
 
-        # Warmup
-        for _ in range(warmup):
-            await synchronizer.sync(
-                local_dir=src_dir,
-                remote_dir="/tmp/uniconn_bench_dst",
-                dry_run=True,
-                exclude=["*.tmp", "*.pyc"],
-            )
+            # Warmup
+            for _ in range(warmup):
+                await synchronizer.sync(
+                    local_dir=src_dir,
+                    remote_dir="/tmp/uniconn_bench_dst",
+                    dry_run=True,
+                    exclude=["*.tmp", "*.pyc"],
+                )
 
-        latencies_ns: list[int] = []
-        for _ in range(iterations):
-            t0 = time.perf_counter_ns()
-            await synchronizer.sync(
-                local_dir=src_dir,
-                remote_dir="/tmp/uniconn_bench_dst",
-                dry_run=True,
-                exclude=["*.tmp", "*.pyc"],
-            )
-            t1 = time.perf_counter_ns()
-            latencies_ns.append(t1 - t0)
+            latencies_ns: list[int] = []
+            for _ in range(iterations):
+                t0 = time.perf_counter_ns()
+                await synchronizer.sync(
+                    local_dir=src_dir,
+                    remote_dir="/tmp/uniconn_bench_dst",
+                    dry_run=True,
+                    exclude=["*.tmp", "*.pyc"],
+                )
+                t1 = time.perf_counter_ns()
+                latencies_ns.append(t1 - t0)
+        finally:
+            await conn.close()
 
     return _compute_stats("DirectorySynchronizer", latencies_ns, threshold_p95_us)
 

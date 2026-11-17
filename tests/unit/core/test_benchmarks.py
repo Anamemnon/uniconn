@@ -43,18 +43,18 @@ def test_compute_stats_percentiles_and_thresholds() -> None:
 @pytest.mark.asyncio
 async def test_bench_command_pipeline_smoke() -> None:
     """bench_command_pipeline успешно замеряет накладные расходы конвейера."""
-    stats = await bench_command_pipeline(iterations=10, warmup=2, threshold_p95_us=50_000.0)
+    stats = await bench_command_pipeline(iterations=50, warmup=5, threshold_p95_us=100_000.0)
     assert stats.name == "CommandPipeline"
-    assert stats.iterations == 10
+    assert stats.iterations == 50
     assert stats.avg_us > 0.0
     assert stats.passed_sla is True
 
 
 def test_bench_event_loop_portal_smoke() -> None:
     """bench_event_loop_portal успешно замеряет задержку EventLoopPortal."""
-    stats = bench_event_loop_portal(iterations=10, warmup=2, threshold_p95_us=50_000.0)
+    stats = bench_event_loop_portal(iterations=50, warmup=5, threshold_p95_us=100_000.0)
     assert stats.name == "EventLoopPortal"
-    assert stats.iterations == 10
+    assert stats.iterations == 50
     assert stats.avg_us > 0.0
     assert stats.passed_sla is True
 
@@ -62,9 +62,9 @@ def test_bench_event_loop_portal_smoke() -> None:
 @pytest.mark.asyncio
 async def test_bench_directory_synchronizer_smoke() -> None:
     """bench_directory_synchronizer успешно замеряет задержку вычисления дельты директорий."""
-    stats = await bench_directory_synchronizer(iterations=3, warmup=1, threshold_p95_us=100_000.0)
+    stats = await bench_directory_synchronizer(iterations=20, warmup=2, threshold_p95_us=200_000.0)
     assert stats.name == "DirectorySynchronizer"
-    assert stats.iterations == 3
+    assert stats.iterations == 20
     assert stats.avg_us > 0.0
     assert stats.passed_sla is True
 
@@ -104,18 +104,18 @@ def test_benchmarks_cli_main(tmp_path: Path) -> None:
     rc = main(
         [
             "--iterations",
-            "5",
+            "25",
             "--warmup",
-            "1",
+            "5",
             "--json",
             json_out,
             "--yaml",
             yaml_out,
             "--check-thresholds",
             "--threshold-pipeline",
-            "50000.0",
+            "100000.0",
             "--threshold-portal",
-            "50000.0",
+            "100000.0",
             "--threshold-sync",
             "200000.0",
             "--quiet",

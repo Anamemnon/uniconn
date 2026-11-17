@@ -2,6 +2,7 @@
 """Unit-тесты SSH транспорта с моком asyncssh (без реальных соединений)."""
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,8 +14,11 @@ from uniconn.transports._ssh import SSHTransport
 
 
 @pytest.fixture
-def asyncssh_mock():
-    """Мок модуля asyncssh с классами исключений."""
+def asyncssh_mock(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Мок модуля asyncssh с классами исключений (изолирован от ~/.ssh окружения)."""
+    empty_home = tmp_path / "home"
+    empty_home.mkdir(exist_ok=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: empty_home))
     mock = MagicMock()
     mock.PermissionDenied = type("PermissionDenied", (Exception,), {})
     mock.DisconnectError = type("DisconnectError", (Exception,), {})
