@@ -414,7 +414,7 @@
       </nav>
       <div class="sidebar-note">
         <strong>Среда выполнения</strong>
-        <span id="meta-version">uniconn v0.11.1</span>
+        <span id="meta-version">uniconn v0.20.0</span>
         <span id="meta-python">Python 3.12</span>
       </div>
     </aside>
@@ -943,7 +943,12 @@
             <button type="button" class="btn secondary" data-suite="services" onclick="runTestSuite('services')">services</button>
             <button type="button" class="btn secondary" data-suite="transports" onclick="runTestSuite('transports')">transports</button>
             <button type="button" class="btn secondary" data-suite="pools" onclick="runTestSuite('pools')">pools</button>
-            <button type="button" class="btn secondary" data-suite="screen" onclick="runTestSuite('screen')">screen</button>
+            <button type="button" class="btn secondary" data-suite="background" onclick="runTestSuite('background')">background</button>
+            <button type="button" class="btn secondary" data-suite="security" onclick="runTestSuite('security')">security</button>
+            <button type="button" class="btn secondary" data-suite="mcp" onclick="runTestSuite('mcp')">mcp</button>
+            <button type="button" class="btn secondary" data-suite="mock" onclick="runTestSuite('mock')">mock</button>
+            <button type="button" class="btn secondary" data-suite="orchestration" onclick="runTestSuite('orchestration')">orchestration</button>
+            <button type="button" class="btn secondary" data-suite="parsing" onclick="runTestSuite('parsing')">parsing</button>
             <button type="button" class="btn secondary" data-suite="cli" onclick="runTestSuite('cli')">cli</button>
             <button type="button" class="btn secondary" data-suite="architecture" onclick="runTestSuite('architecture')">architecture</button>
             <button type="button" class="btn ghost" data-suite="benchmarks" onclick="runTestSuite('benchmarks')">benchmarks</button>
@@ -1167,7 +1172,7 @@
               <h2 class="panel-title">1. Interactive Use-Case &amp; Recipe Wizard</h2>
               <p class="panel-subtitle">Select your engineering goal to generate Async, Sync, CLI, and Migration code</p>
             </div>
-            <span id="rec-status-badge" class="status-text status-ok">6 RECIPES</span>
+            <span id="rec-status-badge" class="status-text status-ok">7 RECIPES</span>
           </div>
 
           <div class="preset-bar">
@@ -1378,11 +1383,17 @@
 
     async function apiFetch(url, options = {}) {
       const { silent = false, retries = 3, ...fetchOptions } = options || {};
+      const csrfToken = document.querySelector('meta[name="uniconn-csrf"]')?.getAttribute('content') || '';
+      const mergedHeaders = Object.assign({}, fetchOptions.headers || {});
+      if (csrfToken) {
+        mergedHeaders['X-Uniconn-Token'] = csrfToken;
+      }
+      const reqOptions = { ...fetchOptions, headers: mergedHeaders };
       const delays = [300, 700, 1500];
       let lastError = null;
       for (let attempt = 0; attempt <= retries; attempt++) {
         try {
-          const response = await window.fetch(url, fetchOptions);
+          const response = await window.fetch(url, reqOptions);
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           return response;
         } catch (error) {

@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import contextlib
 import fnmatch
+import re
 from pathlib import Path
 from typing import Any
 
 from ...config.models import ConnectionConfig
-from ...exceptions import ConnectionError
+from ...exceptions import ConfigurationError, ConnectionError
+
+_UNSAFE_PROXY_TOKEN_RE = re.compile(r"[\s;|&$`<>()\"'\\\x00-\x1f\x7f]")
 
 
 class OpenSSHConfigParser:
@@ -23,26 +26,37 @@ class OpenSSHConfigParser:
         username: str | None,
     ) -> str:
         """Подставить токены OpenSSH (``%h``, ``%p``, ``%r``, ``%%``) в строку ProxyCommand."""
+        if host is not None and _UNSAFE_PROXY_TOKEN_RE.search(str(host)):
+            raise ConfigurationError(f"Unsafe host value for ProxyCommand expansion: {host!r}")
+        if username is not None and _UNSAFE_PROXY_TOKEN_RE.search(str(username)):
+            raise ConfigurationError(f"Unsafe username value for ProxyCommand expansion: {username!r}")
+        port_val = 22 if port is None else int(port)
+        if not 1 <= port_val <= 65535:
+            raise ConfigurationError(f"Invalid port value for ProxyCommand expansion: {port_val!r}")
+
         sentinel = "\x00PERCENT\x00"
         expanded = template.replace("%%", sentinel)
         expanded = expanded.replace("%h", str(host or ""))
-        expanded = expanded.replace("%p", str(port or 22))
+        expanded = expanded.replace("%p", str(port_val))
         expanded = expanded.replace("%r", str(username or ""))
         return expanded.replace(sentinel, "%")
 
     @staticmethod
-    def resolve_known_hosts(known_hosts_option: Any, host: str | None = None) -> str | None:
+    def resolve_known_hosts(
+        known_hosts_option: Any,
+        host: str | None = None,
+    ) -> str | tuple[str, ...] | None:
         """Определить политику проверки known_hosts."""
         mode = str(known_hosts_option).lower()
 
-        if mode in ("no", "false", "none", ""):
+        if mode in ("no", "false", "none", "ignore", ""):
             return None
 
         if mode in ("strict", "default"):
             known_hosts_path = Path.home() / ".ssh" / "known_hosts"
             if known_hosts_path.exists():
                 return str(known_hosts_path)
-            return None
+            return ()
 
         path = Path(str(known_hosts_option)).expanduser()
         if path.exists():

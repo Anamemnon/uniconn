@@ -3,16 +3,23 @@
 
 from __future__ import annotations
 
-import builtins
-import contextlib
-import sys
+import json
 from typing import Any
 from urllib.parse import urlsplit
 
 from ....exceptions import (
     AuthenticationError,
     ConnectionError,
-    TimeoutError,
+)
+from ..._http_base import (
+    BaseAsyncHttpClient,
+    extract_response_headers,
+    parse_json_dict,
+    resolve_lazy_response,
+    resolve_niquests_module,
+)
+from ..._http_base import (
+    builtins_timeout_errors as _base_builtins_timeout_errors,
 )
 
 try:
@@ -23,21 +30,12 @@ except ImportError:
 
 def get_niquests_module() -> Any:
     """Получить модуль niquests с учётом возможного патчинга в bmc._redfish."""
-    shim_mod = sys.modules.get("uniconn.transports.bmc._redfish")
-    if shim_mod is not None and "niquests" in shim_mod.__dict__:
-        return shim_mod.__dict__["niquests"]
-    return niquests
+    return resolve_niquests_module("uniconn.transports.bmc._redfish", __name__, fallback=niquests)
 
 
 def builtins_timeout_errors() -> tuple[type[BaseException], ...]:
     """Собрать кортеж классов исключений таймаута (включая builtins.TimeoutError и niquests)."""
-    errs: list[type[BaseException]] = [builtins.TimeoutError]
-    niq = get_niquests_module()
-    if niq is not None:
-        niq_timeout = getattr(getattr(niq, "exceptions", None), "Timeout", None)
-        if isinstance(niq_timeout, type) and issubclass(niq_timeout, BaseException):
-            errs.append(niq_timeout)
-    return tuple(errs)
+    return _base_builtins_timeout_errors(get_niquests_module())
 
 
 def normalize_redfish_path(path: str) -> str:
@@ -52,14 +50,7 @@ def normalize_redfish_path(path: str) -> str:
     return stripped if stripped.startswith("/") else f"/{stripped}"
 
 
-async def resolve_lazy_response(session: Any, resp: Any) -> Any:
-    """Разрешить отложенный (lazy) ответ ``niquests`` при ``multiplexed=True``."""
-    if getattr(resp, "lazy", False) is True and hasattr(session, "gather"):
-        await session.gather(resp)
-    return resp
-
-
-class RedfishHttpClient:
+class RedfishHttpClient(BaseAsyncHttpClient):
     """Менеджер HTTP/2-сессии, аутентификации (X-Auth-Token / Basic) и ETag для Redfish."""
 
     def __init__(
@@ -73,39 +64,37 @@ class RedfishHttpClient:
         password: str,
         default_timeout: float,
     ) -> None:
-        self.base_url = base_url
-        self.verify = verify
-        self.multiplexed = multiplexed
+        super().__init__(
+            base_url=base_url,
+            verify=verify,
+            default_timeout=default_timeout,
+            multiplexed=multiplexed,
+            error_prefix="Redfish",
+        )
         self.auth_pref = auth_pref
         self.username = username
         self.password = password
-        self.default_timeout = default_timeout
 
-        self.session: Any = None
         self.auth_mode: str = "none"
         self.session_token: str | None = None
         self.session_location: str | None = None
         self.etags: dict[str, str] = {}
         self.last_response_headers: dict[str, str] = {}
 
+    def _get_niquests(self) -> Any:
+        return get_niquests_module()
+
     def create_async_session(self) -> Any:
         """Создать и сконфигурировать экземпляр ``niquests.AsyncSession``."""
-        niq = get_niquests_module()
-        if niq is None:
-            raise ImportError("niquests not installed. Run: pip install uniconn[bmc]")
-        session = niq.AsyncSession(
-            base_url=self.base_url,
-            multiplexed=self.multiplexed,
-        )
-        session.verify = self.verify
-        session.headers.update(
-            {
+        return self._build_session(
+            install_extra="bmc",
+            pass_base_url=True,
+            headers={
                 "Accept": "application/json",
                 "Content-Type": "application/json",
                 "OData-Version": "4.0",
-            }
+            },
         )
-        return session
 
     async def try_create_redfish_session(
         self,
@@ -115,12 +104,13 @@ class RedfishHttpClient:
         timeout: float,
     ) -> bool:
         """Попытаться создать сессию через POST /redfish/v1/SessionService/Sessions."""
-        resp = await session.post(
+        resp = await self._send_session_request(
+            session,
+            "POST",
             "/redfish/v1/SessionService/Sessions",
-            json={"UserName": username, "Password": password},
+            json_payload={"UserName": username, "Password": password},
             timeout=timeout,
         )
-        await resolve_lazy_response(session, resp)
         status = int(getattr(resp, "status_code", 0) or 0)
         headers = getattr(resp, "headers", {}) or {}
         token = headers.get("X-Auth-Token") or headers.get("x-auth-token")
@@ -130,10 +120,12 @@ class RedfishHttpClient:
             self.session_token = str(token)
             location = headers.get("Location") or headers.get("location")
             if not location:
-                with contextlib.suppress(Exception):
+                try:
                     body = resp.json()
                     if isinstance(body, dict) and "@odata.id" in body:
                         location = str(body["@odata.id"])
+                except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+                    pass
             self.session_location = (
                 normalize_redfish_path(str(location)) if location else None
             )
@@ -159,9 +151,11 @@ class RedfishHttpClient:
         etag_hdr = None
         if isinstance(headers, dict):
             etag_hdr = headers.get("ETag") or headers.get("etag")
-        else:
-            with contextlib.suppress(Exception):
+        elif hasattr(headers, "get"):
+            try:
                 etag_hdr = headers.get("ETag") or headers.get("etag")
+            except (TypeError, AttributeError):
+                etag_hdr = None
         etag_val = etag_hdr or data.get("@odata.etag")
         if etag_val:
             self.etags[clean_path] = str(etag_val)
@@ -194,32 +188,18 @@ class RedfishHttpClient:
             if cached_etag:
                 req_headers["If-Match"] = cached_etag
 
-        try:
-            req_fn = getattr(session, method.lower())
-            call_kwargs: dict[str, Any] = {"timeout": eff_timeout}
-            if payload is not None:
-                call_kwargs["json"] = payload
-            if req_headers:
-                call_kwargs["headers"] = req_headers
-            resp = await req_fn(norm_path, **call_kwargs)
-            await resolve_lazy_response(session, resp)
-        except builtins_timeout_errors() as exc:
-            raise TimeoutError(
-                f"Redfish {method_upper} {norm_path} timed out after {eff_timeout}s"
-            ) from exc
-        except Exception as exc:
-            raise ConnectionError(
-                f"Redfish {method_upper} {norm_path} failed: {exc}"
-            ) from exc
+        resp = await self._send_session_request(
+            session,
+            method_upper,
+            norm_path,
+            timeout=eff_timeout,
+            json_payload=payload,
+            headers=req_headers or None,
+            use_method_attr=True,
+        )
 
         status = int(getattr(resp, "status_code", 0) or 0)
-        raw_headers = getattr(resp, "headers", {}) or {}
-        resp_headers: dict[str, str] = {}
-        if isinstance(raw_headers, dict):
-            resp_headers = {str(k): str(v) for k, v in raw_headers.items()}
-        else:
-            with contextlib.suppress(Exception):
-                resp_headers = {str(k): str(v) for k, v in dict(raw_headers).items()}
+        resp_headers = extract_response_headers(resp)
         self.last_response_headers = resp_headers
 
         # Автоматическое пересоздание сессии при истечении X-Auth-Token (HTTP 401)
@@ -229,25 +209,24 @@ class RedfishHttpClient:
             and self.auth_mode == "session"
             and self.username
         ):
-            with contextlib.suppress(Exception):
-                session.headers.pop("X-Auth-Token", None)
-                refreshed = await self.try_create_redfish_session(
+            session.headers.pop("X-Auth-Token", None)
+            refreshed = await self.try_create_redfish_session(
+                session,
+                self.username,
+                self.password,
+                eff_timeout,
+            )
+            if refreshed:
+                return await self.request_json(
                     session,
-                    self.username,
-                    self.password,
-                    eff_timeout,
+                    method,
+                    path,
+                    payload=payload,
+                    headers=headers,
+                    timeout=timeout,
+                    _retry_on_401=False,
+                    _retry_on_412=_retry_on_412,
                 )
-                if refreshed:
-                    return await self.request_json(
-                        session,
-                        method,
-                        path,
-                        payload=payload,
-                        headers=headers,
-                        timeout=timeout,
-                        _retry_on_401=False,
-                        _retry_on_412=_retry_on_412,
-                    )
 
         # Автоматическое получение свежего ETag при HTTP 412 / 428 на PATCH/PUT
         if (
@@ -289,14 +268,7 @@ class RedfishHttpClient:
                 f"Redfish {method_upper} {norm_path} unauthorized (HTTP {status})"
             )
 
-        data: dict[str, Any] = {}
-        raw_text = getattr(resp, "text", "")
-        if raw_text:
-            try:
-                parsed = resp.json()
-                data = parsed if isinstance(parsed, dict) else {"data": parsed}
-            except Exception:
-                data = {"raw": str(raw_text)}
+        data = parse_json_dict(resp)
 
         if 200 <= status < 300:
             self.cache_etag(norm_path, resp_headers, data)

@@ -40,7 +40,7 @@ def test_sync_mock_ssh_server_context_manager(tmp_path: Path) -> None:
     with SyncMockSSHServer.from_cassette(cassette_path) as server:
         assert server.is_running
         assert server.port > 0
-        with SyncConnection.from_uri(server.uri) as conn:
+        with SyncConnection.from_uri(f"{server.uri}?known_hosts=no") as conn:
             res = conn.run("uname -s")
             assert res.ok
             assert res.text == "Linux"
@@ -68,7 +68,7 @@ def test_pytest_mock_ssh_server_fixture(mock_ssh_server: MockSSHServer) -> None:
     """Проверка работы фикстуры mock_ssh_server и маркера @pytest.mark.mock_ssh_server."""
     assert isinstance(mock_ssh_server, MockSSHServer)
     assert mock_ssh_server.port > 0
-    with SyncConnection.from_uri(mock_ssh_server.uri) as conn:
+    with SyncConnection.from_uri(f"{mock_ssh_server.uri}?known_hosts=no") as conn:
         res = conn.run("echo fixture-ok")
         assert res.ok
         assert res.text == "fixture-ok"

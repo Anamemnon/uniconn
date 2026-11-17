@@ -17,6 +17,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequenc
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from ..config.models import ConnectionConfig
 from ..core.bridge import pool_fan_out_dict
@@ -97,8 +98,21 @@ class ConnectionPool:
         self._colliding_hosts: frozenset[str] = frozenset(
             h for h, count in host_counts.items() if count > 1
         )
-        for target in self._uris:
-            key = self._target_key(target)
+        base_keys = [self._resolve_target_key(t) for t in self._uris]
+        key_counts: dict[str, int] = {}
+        for bk in base_keys:
+            key_counts[bk] = key_counts.get(bk, 0) + 1
+        self._target_keys: list[str] = []
+        seen_keys: dict[str, int] = {}
+        for bk in base_keys:
+            if key_counts[bk] == 1:
+                self._target_keys.append(bk)
+            else:
+                occ = seen_keys.get(bk, 0) + 1
+                seen_keys[bk] = occ
+                self._target_keys.append(f"{bk}#{occ}")
+        for idx, target in enumerate(self._uris):
+            key = self._target_keys[idx]
             if isinstance(target, Connection):
                 if self._dry_run:
                     target._dry_run = True
@@ -286,6 +300,13 @@ class ConnectionPool:
             auto_diagnostics=self._auto_diagnostics,
         )
         sub_pool._colliding_hosts = self._colliding_hosts
+        sub_pool._target_keys = [
+            self._target_keys[old_idx]
+            for old_idx, target in enumerate(self._uris)
+            if target in selected_uris
+        ]
+        if len(sub_pool._target_keys) != len(selected_uris):
+            sub_pool._target_keys = [self._resolve_target_key(t) for t in selected_uris]
         sub_pool._semaphore = self._semaphore
         sub_pool._circuit_breakers = self._circuit_breakers
         sub_pool._conn_initializers = list(self._conn_initializers)
@@ -296,6 +317,47 @@ class ConnectionPool:
             sub_pool._is_entered = True
             sub_pool._owns_active_conns = False
         return sub_pool
+
+    @staticmethod
+    def _sanitize_uri_key(uri: str) -> str:
+        """Удалить пароль и секретные query-параметры из URI без искажения схемы/хоста."""
+        if "://" not in uri:
+            return uri
+        try:
+            parts = urlsplit(uri)
+        except ValueError:
+            return uri
+        netloc = parts.netloc
+        if "@" in netloc:
+            userinfo, hostinfo = netloc.rsplit("@", 1)
+            user_only = userinfo.split(":", 1)[0]
+            netloc = f"{user_only}@{hostinfo}" if user_only else hostinfo
+        query = parts.query
+        if query:
+            secret_params = {
+                "password",
+                "passphrase",
+                "sudo_password",
+                "secret",
+                "token",
+                "token_secret",
+                "api_key",
+                "key",
+            }
+            filtered = [
+                (k, v)
+                for k, v in parse_qsl(query, keep_blank_values=True)
+                if k.lower() not in secret_params
+            ]
+            query = urlencode(filtered)
+        if parts.scheme and uri.lower().startswith(f"{parts.scheme.lower()}://"):
+            rebuilt = f"{parts.scheme}://{netloc}{parts.path}"
+            if query:
+                rebuilt += f"?{query}"
+            if parts.fragment:
+                rebuilt += f"#{parts.fragment}"
+            return rebuilt
+        return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
 
     @staticmethod
     def _raw_target_host(target: PoolTarget) -> str | None:
@@ -309,25 +371,35 @@ class ConnectionPool:
         return target.config.host
 
     def _resolve_target_key(self, target: PoolTarget) -> str:
-        """Вернуть строковый ключ хоста с учётом коллизий одноимённых хостов на разных портах/схемах."""
+        """Вернуть безопасный строковый ключ хоста без утечки паролей и секретов."""
         if isinstance(target, str):
-            return target
+            return self._sanitize_uri_key(target)
         cfg = target if isinstance(target, ConnectionConfig) else target.config
         if cfg.host and cfg.host in getattr(self, "_colliding_hosts", ()):
             return cfg.uri_safe
         return cfg.host or cfg.uri_safe
 
+    def _key_for_index(self, idx: int, target: PoolTarget) -> str:
+        """Вернуть уникальный безопасный ключ цели для индекса в пуле."""
+        keys = getattr(self, "_target_keys", None)
+        if isinstance(keys, list) and 0 <= idx < len(keys):
+            return keys[idx]
+        return self._resolve_target_key(target)
+
     def _target_key(self, target: PoolTarget) -> str:
         """Вернуть строковый ключ хоста для словаря результатов."""
+        for idx, item in enumerate(self._uris):
+            if item is target or item == target:
+                return self._key_for_index(idx, target)
         return self._resolve_target_key(target)
 
     def target_key(self, target: PoolTarget) -> str:
         """Публичный метод получения строкового ключа хоста для элемента пула."""
-        return self._resolve_target_key(target)
+        return self._target_key(target)
 
-    def _attach_resilience(self, target: PoolTarget, conn: Connection) -> Connection:
+    def _attach_resilience(self, target: PoolTarget, conn: Connection, *, key: str | None = None) -> Connection:
         """Привязать пуловый ``RateLimiter``, ``CircuitBreaker``, ``dry_run`` и инициализаторы к соединению."""
-        key = self._target_key(target)
+        resolved_key = key or self._target_key(target)
         if self._dry_run and hasattr(conn, "_dry_run"):
             conn._dry_run = True
         if self._auto_diagnostics is not None and hasattr(conn, "auto_diagnostics"):
@@ -338,10 +410,10 @@ class ConnectionPool:
             conn.rate_limiter = self._rate_limiter
         conn_cb = getattr(conn, "circuit_breaker", None)
         if isinstance(conn_cb, CircuitBreaker):
-            self._circuit_breakers.setdefault(key, conn_cb)
+            self._circuit_breakers.setdefault(resolved_key, conn_cb)
         elif self._circuit_breaker_enabled:
             cb = self._circuit_breakers.setdefault(
-                key,
+                resolved_key,
                 CircuitBreaker(
                     failure_threshold=self._failure_threshold,
                     recovery_timeout=self._recovery_timeout,
@@ -353,27 +425,27 @@ class ConnectionPool:
         return conn
 
     def _build_conn(
-        self, target: PoolTarget, *, with_defaults: bool = True
+        self, target: PoolTarget, *, with_defaults: bool = True, key: str | None = None
     ) -> Connection:
         """Создать экземпляр Connection из элемента пула."""
         if isinstance(target, Connection):
-            return self._attach_resilience(target, target)
+            return self._attach_resilience(target, target, key=key)
         if isinstance(target, ConnectionConfig):
             conn = Connection.from_config(
                 target,
                 retry_attempts=self._retry_attempts,
                 logger=self._logger,
             )
-            return self._attach_resilience(target, conn)
+            return self._attach_resilience(target, conn, key=key)
         if with_defaults:
             conn = Connection.from_uri(
                 target,
                 retry_attempts=self._retry_attempts,
                 logger=self._logger,
             )
-            return self._attach_resilience(target, conn)
+            return self._attach_resilience(target, conn, key=key)
         conn = Connection.from_uri(target)
-        return self._attach_resilience(target, conn)
+        return self._attach_resilience(target, conn, key=key)
 
     @contextlib.asynccontextmanager
     async def _use_conn(
@@ -391,18 +463,15 @@ class ConnectionPool:
             yield self._cassette_conns[idx]
             return
 
-        conn = self._build_conn(target, with_defaults=with_defaults)
+        key = self._key_for_index(idx, target)
+        conn = self._build_conn(target, with_defaults=with_defaults, key=key)
         cb = getattr(conn, "circuit_breaker", None)
         if not isinstance(cb, CircuitBreaker):
-            cb = self._circuit_breakers.get(self._target_key(target))
+            cb = self._circuit_breakers.get(key)
         if isinstance(cb, CircuitBreaker):
             cfg = getattr(conn, "config", None)
             cfg_host = getattr(cfg, "host", None)
-            host = (
-                cfg_host
-                if isinstance(cfg_host, str) and cfg_host
-                else self._target_key(target)
-            )
+            host = cfg_host if isinstance(cfg_host, str) and cfg_host else key
             cb.check_or_raise(host=host, command="<connect>")
         if isinstance(target, Connection) and target.transport.is_connected:
             yield conn
@@ -468,7 +537,7 @@ class ConnectionPool:
         async def _run_batch_item(
             idx: int, target: PoolTarget
         ) -> tuple[str, Any, bool]:
-            key = self._target_key(target)
+            key = self._key_for_index(idx, target)
             async with self._semaphore:
                 try:
                     async with self._use_conn(
@@ -512,8 +581,10 @@ class ConnectionPool:
                         completed_results=completed_results,
                         failed_hosts=batch_failures,
                     )
-            if first_exc is not None:
-                raise first_exc
+                self._logger.warning(
+                    f"Batch {batch_idx} completed with {len(batch_failures)}/{len(batch_items)} "
+                    f"failures within max_fail_ratio={eff_ratio:.2f}"
+                )
 
         return ordered_pairs
 
@@ -589,7 +660,7 @@ class ConnectionPool:
         results: dict[str, T] = {}
 
         async def _run_one(idx: int, target: PoolTarget) -> None:
-            key = self._target_key(target)
+            key = self._key_for_index(idx, target)
             async with (
                 self._semaphore,
                 self._use_conn(idx, target, with_defaults=with_defaults) as conn,
@@ -713,7 +784,7 @@ class ConnectionPool:
         cmd_str = format_command(command)
 
         async def _run_and_notify(idx: int, target: PoolTarget) -> None:
-            key = self._target_key(target)
+            key = self._key_for_index(idx, target)
             async with self._semaphore:
                 try:
                     async with self._use_conn(
@@ -748,7 +819,7 @@ class ConnectionPool:
         results: dict[str, Result | Exception] = {}
 
         async def _run_single(idx: int, target: PoolTarget) -> None:
-            key = self._target_key(target)
+            key = self._key_for_index(idx, target)
             async with self._semaphore:
                 try:
                     async with self._use_conn(
@@ -821,7 +892,7 @@ class ConnectionPool:
         results: dict[str, T] = {}
 
         async def _run_one(idx: int, target: PoolTarget) -> None:
-            key = self._target_key(target)
+            key = self._key_for_index(idx, target)
             async with self._semaphore:
                 if self._is_entered and idx in self._active_conns:
                     results[key] = await op(self._active_conns[idx])
@@ -830,7 +901,7 @@ class ConnectionPool:
                     results[key] = await op(self._cassette_conns[idx])
                     return
 
-                conn = self._build_conn(target, with_defaults=True)
+                conn = self._build_conn(target, with_defaults=True, key=key)
                 try:
                     results[key] = await op(conn)
                 finally:

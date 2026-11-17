@@ -12,11 +12,13 @@ import contextlib
 import hashlib
 import hmac
 import json
+import logging
 import os
 import secrets
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
@@ -30,7 +32,9 @@ from ..exceptions import (
     ApprovalRejectedError,
     ApprovalRequiredError,
     ApprovalTamperingError,
+    ConfigurationError,
 )
+from ..security.url_validation import build_ssrf_safe_opener, validate_outbound_url
 from .models import (
     ActionRiskTier,
     ApprovalRequest,
@@ -52,6 +56,7 @@ from .risk_classifier import (
 )
 
 DEFAULT_APPROVAL_STORE_PATH = Path.home() / ".uniconn" / "approvals.json"
+_LOGGER = logging.getLogger("uniconn.mcp.hitl")
 
 _ = (
     RiskAssessment,
@@ -168,10 +173,16 @@ class WebhookApprovalChannel:
         *,
         secret: str | None = None,
         timeout: float = 5.0,
+        allow_private_network: bool = False,
         sender: Callable[[str, bytes, dict[str, str], float], dict[str, Any] | None] | None = None,
     ) -> None:
-        """Инициализировать Webhook-канал с URL и опциональным секретом подписи."""
-        self.url = url
+        """Инициализировать Webhook-канал с URL, защитой от SSRF и опциональным секретом подписи."""
+        self.allow_private_network = bool(allow_private_network)
+        self.url = validate_outbound_url(
+            url,
+            allow_private_network=self.allow_private_network,
+            resolve_dns=False,
+        )
         self.secret = secret or ""
         self.timeout = timeout
         self._sender = sender
@@ -195,7 +206,14 @@ class WebhookApprovalChannel:
         }
         if self._sender is not None:
             return await asyncio.to_thread(self._sender, self.url, raw_body, headers, self.timeout)
-        return await asyncio.to_thread(self._default_send, self.url, raw_body, headers, self.timeout)
+        return await asyncio.to_thread(
+            self._default_send,
+            self.url,
+            raw_body,
+            headers,
+            self.timeout,
+            allow_private_network=self.allow_private_network,
+        )
 
     @staticmethod
     def _default_send(
@@ -203,16 +221,30 @@ class WebhookApprovalChannel:
         body: bytes,
         headers: dict[str, str],
         timeout: float,
+        *,
+        allow_private_network: bool = False,
     ) -> dict[str, Any] | None:
-        if not url.lower().startswith(("http://", "https://")):
+        try:
+            safe_url = validate_outbound_url(
+                url,
+                allow_private_network=allow_private_network,
+                resolve_dns=True,
+            )
+        except ConfigurationError as exc:
+            _LOGGER.warning("Blocked webhook delivery to unsafe URL %r: %s", url, exc)
             return None
-        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-        with contextlib.suppress(Exception), urllib.request.urlopen(req, timeout=timeout) as resp:
-            resp_bytes = resp.read(16384)
-            if resp_bytes:
-                data = json.loads(resp_bytes.decode("utf-8", errors="replace"))
-                if isinstance(data, dict):
-                    return data
+
+        req = urllib.request.Request(safe_url, data=body, headers=headers, method="POST")
+        opener = build_ssrf_safe_opener(allow_private_network=allow_private_network)
+        try:
+            with opener.open(req, timeout=timeout) as resp:
+                resp_bytes = resp.read(16384)
+                if resp_bytes:
+                    data = json.loads(resp_bytes.decode("utf-8", errors="replace"))
+                    if isinstance(data, dict):
+                        return data
+        except (OSError, urllib.error.URLError, ValueError, ConfigurationError) as exc:
+            _LOGGER.debug("Webhook approval delivery failed for %r: %s", safe_url, exc)
         return None
 
 
@@ -220,7 +252,7 @@ class WebhookApprovalChannel:
 
 
 def _normalize_parameters_for_hmac(parameters: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Нормализовать словарь параметров инструмента с маскированием секретов и SHA-256 для контента."""
+    """Нормализовать словарь параметров для безопасного хранения (секреты маскируются, content хешируется)."""
     if not parameters:
         return {}
     excluded = {"approval_id", "wait_for_approval"}
@@ -235,6 +267,33 @@ def _normalize_parameters_for_hmac(parameters: Mapping[str, Any] | None) -> dict
         else:
             cleaned[str(k)] = v
     return cleaned
+
+
+def _canonicalize_value_unmasked(value: Any) -> Any:
+    """Рекурсивно канонизировать значение без маскировки (строки заменяются на криптографический SHA-256)."""
+    if isinstance(value, str):
+        return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+    if isinstance(value, Mapping):
+        return {str(k): _canonicalize_value_unmasked(v) for k, v in sorted(value.items())}
+    if isinstance(value, (list, tuple)):
+        return [_canonicalize_value_unmasked(v) for v in value]
+    return value
+
+
+def _canonicalize_parameters_for_hmac(parameters: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Построить канонический словарь параметров для HMAC по исходным (немаскированным) значениям."""
+    if not parameters:
+        return {}
+    excluded = {"approval_id", "wait_for_approval"}
+    canonical: dict[str, Any] = {}
+    for k, v in sorted(parameters.items()):
+        if k in excluded:
+            continue
+        if k == "content" and isinstance(v, str):
+            canonical["content_sha256"] = hashlib.sha256(v.encode("utf-8")).hexdigest()
+        else:
+            canonical[str(k)] = _canonicalize_value_unmasked(v)
+    return canonical
 
 
 class ApprovalManager:
@@ -258,17 +317,60 @@ class ApprovalManager:
 
         env_secret = os.environ.get("UNICONN_HITL_SECRET")
         self._secret: str = secret or self.policy.webhook_secret or env_secret or ""
+        if not self._secret and self.store_path is not None:
+            self._secret = self._load_key_file_sync()
         if self.store_path is not None:
             self._load_from_disk_sync()
         if not self._secret:
             self._secret = secrets.token_hex(32)
             if self.store_path is not None:
-                self._save_to_disk_sync()
+                self._save_key_file_sync()
 
         if channels is not None:
             self._channels: list[ApprovalChannel] = list(channels)
         else:
             self._channels = self._build_default_channels()
+
+    def _key_file_path(self) -> Path | None:
+        """Вернуть путь к изолированному файлу HMAC-ключа (0600) рядом с JSON-стором."""
+        if self.store_path is None:
+            return None
+        return self.store_path.with_name(f".{self.store_path.name}.key")
+
+    def _load_key_file_sync(self) -> str:
+        key_path = self._key_file_path()
+        if key_path is None or not key_path.is_file() or key_path.is_symlink():
+            return ""
+        with contextlib.suppress(OSError):
+            val = key_path.read_text(encoding="utf-8").strip()
+            if val:
+                return val
+        return ""
+
+    def _save_key_file_sync(self) -> None:
+        key_path = self._key_file_path()
+        if key_path is None or not self._secret:
+            return
+        key_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if key_path.is_symlink():
+            raise PermissionError(f"Refusing to overwrite symlink HMAC key path: {key_path}")
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{key_path.name}_",
+            suffix=".tmp",
+            dir=str(key_path.parent),
+        )
+        try:
+            with contextlib.suppress(OSError):
+                os.chmod(tmp_name, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+                tmp_file.write(self._secret)
+            with contextlib.suppress(OSError):
+                os.chmod(tmp_name, 0o600)
+            os.replace(tmp_name, key_path)
+        except Exception:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+            raise
 
     def _build_default_channels(self) -> list[ApprovalChannel]:
         built: list[ApprovalChannel] = []
@@ -295,19 +397,25 @@ class ApprovalManager:
         cwd: str | None = None,
         parameters: Mapping[str, Any] | None = None,
         diff: str | None = None,
+        diff_sha256: str | None = None,
     ) -> str:
-        """Вычислить HMAC-SHA256 подпись канонического представления параметров операции."""
-        norm_cmd = SecretMaskingFilter._mask_string((command or "").strip())
-        norm_diff = SecretMaskingFilter._mask_string(diff or "")
+        """Вычислить HMAC-SHA256 подпись канонического дайджеста исходных (немаскированных) параметров."""
+        raw_cmd = (command or "").strip()
+        cmd_digest = hashlib.sha256(raw_cmd.encode("utf-8")).hexdigest()
+        effective_diff_sha256 = (
+            diff_sha256
+            if diff_sha256 is not None
+            else hashlib.sha256((diff or "").encode("utf-8")).hexdigest()
+        )
         canonical_dict = {
             "approval_id": approval_id,
             "target_host": target_host.strip(),
             "tool_name": tool_name.strip(),
-            "command": norm_cmd,
+            "command_sha256": cmd_digest,
             "sudo": bool(sudo),
             "cwd": (cwd or "").strip(),
-            "parameters": _normalize_parameters_for_hmac(parameters),
-            "diff_sha256": hashlib.sha256(norm_diff.encode("utf-8")).hexdigest(),
+            "parameters": _canonicalize_parameters_for_hmac(parameters),
+            "diff_sha256": effective_diff_sha256,
         }
         canonical_json = json.dumps(
             canonical_dict,
@@ -331,8 +439,9 @@ class ApprovalManager:
         sudo: bool = False,
         cwd: str | None = None,
         parameters: Mapping[str, Any] | None = None,
+        diff: str | None = None,
     ) -> bool:
-        """Проверить неизменность параметров операции относительно подписанной заявки."""
+        """Проверить неизменность исходных параметров операции относительно подписанной заявки."""
         expected = self.compute_hmac(
             approval_id=request.approval_id,
             target_host=target_host,
@@ -341,21 +450,19 @@ class ApprovalManager:
             sudo=sudo,
             cwd=cwd,
             parameters=parameters,
-            diff=request.diff,
+            diff=diff if diff is not None else request.diff,
+            diff_sha256=None if diff is not None else request.diff_sha256,
         )
         return hmac.compare_digest(request.hmac_signature, expected)
 
     def _load_from_disk_sync(self) -> None:
         if self.store_path is None or not self.store_path.is_file():
             return
-        with contextlib.suppress(Exception):
+        with contextlib.suppress(OSError, json.JSONDecodeError, ValueError, TypeError):
             raw_text = self.store_path.read_text(encoding="utf-8")
             data = json.loads(raw_text)
             if not isinstance(data, dict):
                 return
-            file_secret = data.get("hmac_secret")
-            if isinstance(file_secret, str) and file_secret and not self._secret:
-                self._secret = file_secret
             raw_reqs = data.get("requests")
             if isinstance(raw_reqs, dict):
                 for appr_id, item in raw_reqs.items():
@@ -370,7 +477,6 @@ class ApprovalManager:
             return
         self.store_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         payload = {
-            "hmac_secret": self._secret,
             "updated_at": datetime.now(UTC).isoformat(),
             "requests": {
                 k: v.model_dump(mode="json")
@@ -384,6 +490,8 @@ class ApprovalManager:
             dir=str(self.store_path.parent),
         )
         try:
+            with contextlib.suppress(OSError):
+                os.chmod(tmp_name, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
                 tmp_file.write(serialized)
             with contextlib.suppress(OSError):
@@ -416,7 +524,7 @@ class ApprovalManager:
             else None,
             **extra,
         }
-        with contextlib.suppress(Exception), audit_path.open("a", encoding="utf-8") as f:
+        with contextlib.suppress(OSError), audit_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def _expire_stale_unlocked(self, now: datetime | None = None) -> bool:
@@ -458,6 +566,7 @@ class ApprovalManager:
             norm_params = _normalize_parameters_for_hmac(parameters)
             masked_cmd = SecretMaskingFilter._mask_string(command.strip()) if command is not None else None
             masked_diff = SecretMaskingFilter._mask_string(diff) if diff is not None else None
+            diff_sha256 = hashlib.sha256((diff or "").encode("utf-8")).hexdigest()
 
             if deduplicate:
                 for existing in self._requests.values():
@@ -466,13 +575,22 @@ class ApprovalManager:
                         and not existing.is_expired()
                         and existing.target_host == norm_host
                         and existing.tool_name == norm_tool
-                        and existing.command == masked_cmd
                         and existing.sudo == bool(sudo)
                         and existing.cwd == norm_cwd
-                        and existing.parameters == norm_params
-                        and existing.diff == masked_diff
                     ):
-                        return existing
+                        expected_existing = self.compute_hmac(
+                            approval_id=existing.approval_id,
+                            target_host=norm_host,
+                            tool_name=norm_tool,
+                            command=command,
+                            sudo=sudo,
+                            cwd=norm_cwd,
+                            parameters=parameters,
+                            diff=diff,
+                            diff_sha256=diff_sha256,
+                        )
+                        if hmac.compare_digest(existing.hmac_signature, expected_existing):
+                            return existing
 
             approval_id = f"appr_{secrets.token_hex(6)}"
             now = datetime.now(UTC)
@@ -483,11 +601,12 @@ class ApprovalManager:
                 approval_id=approval_id,
                 target_host=norm_host,
                 tool_name=norm_tool,
-                command=masked_cmd,
+                command=command,
                 sudo=sudo,
                 cwd=norm_cwd,
-                parameters=norm_params,
-                diff=masked_diff,
+                parameters=parameters,
+                diff=diff,
+                diff_sha256=diff_sha256,
             )
 
             req = ApprovalRequest(
@@ -504,6 +623,7 @@ class ApprovalManager:
                 risk_tier=risk_tier,
                 risk_reasons=list(risk_reasons),
                 diff=masked_diff,
+                diff_sha256=diff_sha256,
                 status=ApprovalStatus.PENDING,
                 hmac_signature=sig,
             )
@@ -683,6 +803,7 @@ class ApprovalManager:
         sudo: bool = False,
         cwd: str | None = None,
         parameters: Mapping[str, Any] | None = None,
+        diff: str | None = None,
     ) -> ApprovalRequest:
         """Проверить статус и HMAC-подпись одобренной заявки и атомарно погасить одноразовый токен."""
         async with self._lock:
@@ -742,6 +863,7 @@ class ApprovalManager:
                 sudo=sudo,
                 cwd=cwd,
                 parameters=parameters,
+                diff=diff,
             ):
                 masked_cmd = SecretMaskingFilter._mask_string(command) if command is not None else None
                 self._write_audit_entry(

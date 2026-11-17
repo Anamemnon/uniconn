@@ -146,7 +146,28 @@ def register_bg_commands(app: Any, console: Any, renderer: CLIOutputRenderer) ->
         ] = False,
     ) -> None:
         """Read logs of a background session."""
-        log_path = f"/tmp/{session_id}.log"
+        default_log_path = f"/tmp/{session_id}.log"
+
+        async def _resolve_artifact_dir(conn: Any, filename: str) -> str | None:
+            q_name = shlex.quote(filename)
+            probe = (
+                f'for p in "${{XDG_RUNTIME_DIR:-/nonexistent}}"/uniconn_*/{q_name} '
+                f"/tmp/uniconn_*/{q_name} {shlex.quote(f'/tmp/{filename}')}; do "
+                'if [ -f "$p" ] && [ ! -L "$p" ]; then printf "%s" "$p"; break; fi; done'
+            )
+            res = await conn.run(probe, raise_on_error=False)
+            resolved = (
+                res.stdout.strip().splitlines()[-1].strip()
+                if res.ok and res.stdout.strip()
+                else ""
+            )
+            if resolved.startswith("/"):
+                return resolved
+            return None
+
+        async def _resolve_log_path(conn: Any) -> str:
+            found = await _resolve_artifact_dir(conn, f"{session_id}.log")
+            return found or default_log_path
 
         async def _execute() -> None:
             from ..background import BackgroundSession
@@ -154,6 +175,7 @@ def register_bg_commands(app: Any, console: Any, renderer: CLIOutputRenderer) ->
             logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
             try:
                 async with cli_pkg.Connection.from_uri(uri, logger=logger) as conn:
+                    log_path = await _resolve_log_path(conn)
                     if not follow:
                         result = await conn.run(
                             f"cat {shlex.quote(log_path)}", raise_on_error=False
@@ -341,11 +363,28 @@ def register_bg_commands(app: Any, console: Any, renderer: CLIOutputRenderer) ->
                         return
 
                     for sid in targets:
+                        rt_dir: str | None = None
+                        if strategy.name == "nohup":
+                            q_pid = shlex.quote(f"uniconn_{sid}.pid")
+                            probe_pid = (
+                                f'for p in "${{XDG_RUNTIME_DIR:-/nonexistent}}"/uniconn_*/{q_pid} '
+                                f"/tmp/uniconn_*/{q_pid} {shlex.quote(f'/tmp/uniconn_{sid}.pid')}; do "
+                                'if [ -f "$p" ] && [ ! -L "$p" ]; then dirname "$p"; break; fi; done'
+                            )
+                            pid_res = await conn.run(probe_pid, raise_on_error=False)
+                            cand = (
+                                pid_res.stdout.strip().splitlines()[-1].strip()
+                                if pid_res.ok and pid_res.stdout.strip()
+                                else ""
+                            )
+                            if cand.startswith("/"):
+                                rt_dir = cand
                         session = BackgroundSession(
                             conn,
                             sid,
                             f"/tmp/{sid}.log",
                             backend=strategy,
+                            runtime_dir=rt_dir,
                         )
                         if force:
                             await strategy.terminate(conn, sid, session.pid_file_path)

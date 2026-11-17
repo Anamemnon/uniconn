@@ -31,6 +31,10 @@ class ShellSession:
     regex-диалоги — в ``ExpectStateMachine``.
     """
 
+    _POSIX_SHELL_TYPES: frozenset[str] = frozenset(
+        {"posix", "sh", "bash", "zsh", "dash", "ash", "ksh"}
+    )
+
     def __init__(
         self,
         proc: Any,
@@ -39,6 +43,7 @@ class ShellSession:
         session_uuid: str | None = None,
         observers: Sequence[OperationObserver] | None = None,
         conn: Any = None,
+        shell_type: str = "posix",
     ) -> None:
         """Инициализировать интерактивную shell-сессию."""
         self._proc = proc
@@ -51,6 +56,8 @@ class ShellSession:
         self._lock = asyncio.Lock()
         self._closed = False
         self._initialized = False
+        self._needs_resync = False
+        self._shell_type = (shell_type or "posix").strip().lower()
         self._observers: list[OperationObserver] = list(observers or [])
         self._conn = conn
 
@@ -67,7 +74,8 @@ class ShellSession:
 
     async def initialize(self) -> None:
         """Выполнить начальную настройку оболочки (отключить prompt и эхо ввода)."""
-        await self.send("export PS1=''; stty -echo\n")
+        if self._shell_type in self._POSIX_SHELL_TYPES:
+            await self.send("export PS1=''; stty -echo\n")
         self._initialized = True
 
     async def send(self, text: str) -> None:
@@ -140,6 +148,30 @@ class ShellSession:
         """Очистить вывод от CRLF, возможного эха команды и лишнего перевода строки."""
         return PosixMarkerProtocol.clean_output(raw_output, command, wrapped_cmd)
 
+    async def _resync_after_timeout(self) -> None:
+        """Синхронизировать поток shell-сессии после предыдущего таймаута и Ctrl-C."""
+        self._needs_resync = False
+        self._buffer = ""
+        if self._shell_type not in self._POSIX_SHELL_TYPES or not self.is_alive:
+            return
+        sync_cmd = self._protocol.wrap_command(":")
+        with contextlib.suppress(Exception):
+            await self.send("\n" + sync_cmd)
+            deadline = time.monotonic() + 0.3
+            search_pos = 0
+            while time.monotonic() < deadline:
+                match = self._marker_pattern.search(self._buffer, search_pos)
+                if match is not None:
+                    self._buffer = self._buffer[match.end() :].lstrip("\r\n")
+                    return
+                search_pos = max(0, len(self._buffer) - 64)
+                rem = max(0.02, deadline - time.monotonic())
+                chunk = await asyncio.wait_for(self._read_chunk(), timeout=rem)
+                if chunk == "":
+                    return
+                self._buffer += chunk
+        self._buffer = ""
+
     async def _raw_execute(
         self,
         command: str | Sequence[str],
@@ -153,6 +185,9 @@ class ShellSession:
                     command=cmd_str,
                     host=self._host,
                 )
+
+            if self._needs_resync:
+                await self._resync_after_timeout()
 
             effective_timeout = (
                 timeout if timeout is not None else self._default_timeout
@@ -202,6 +237,7 @@ class ShellSession:
                 with contextlib.suppress(Exception):
                     self._proc.stdin.write("\x03")
                 self._buffer = ""
+                self._needs_resync = True
                 raise TimeoutError(
                     f"Shell command timed out after {effective_timeout}s",
                     command=cmd_str,
@@ -303,6 +339,9 @@ class ShellSession:
                 )
                 await self.send(payload)
 
+            if self._needs_resync:
+                await self._resync_after_timeout()
+
             initial_buf = self._buffer
             self._buffer = ""
 
@@ -325,6 +364,7 @@ class ShellSession:
                 with contextlib.suppress(Exception):
                     self._proc.stdin.write("\x03")
                 self._buffer = ""
+                self._needs_resync = True
                 raise TimeoutError(
                     f"Expect dialog timed out after {effective_timeout}s",
                     command=err_cmd,

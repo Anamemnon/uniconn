@@ -19,6 +19,7 @@ from typing import Any, Literal
 from ..config.models import ConnectionConfig
 from ..exceptions import (
     AuthenticationError,
+    ConfigurationError,
     ConnectionError,
     ExecutionError,
     FileTransferError,
@@ -50,6 +51,7 @@ _CLIXML_PREFIX = "#< CLIXML"
 _HEX_ESCAPE_SEQ_RE = re.compile(r"(?:_x[0-9a-fA-F]{4}_)+")
 _HEX_UNIT_RE = re.compile(r"_x([0-9a-fA-F]{4})_")
 _XML_DECL_RE = re.compile(r"<\?xml[^>]*\?>", flags=re.IGNORECASE)
+_CMD_UNSAFE_CWD_RE = re.compile(r'[\r\n\x00&|^%<>"!]')
 
 
 def _ps_quote(value: str) -> str:
@@ -387,7 +389,10 @@ class WinRMTransport(BaseTransport):
         """Синхронный цикл открытия WS-Man оболочки, запуска команды и чтения результата."""
         open_kwargs: dict[str, Any] = {}
         if cwd:
-            open_kwargs["working_directory"] = str(cwd).replace("\r", "").replace("\n", "")
+            cwd_str = str(cwd)
+            if any(ch in cwd_str for ch in ("\r", "\n", "\x00")):
+                raise ConfigurationError(f"Unsafe control character in WinRM working directory: {cwd_str!r}")
+            open_kwargs["working_directory"] = cwd_str
         if env:
             open_kwargs["env_vars"] = {
                 re.sub(r"[^A-Za-z0-9_]", "_", str(k)): str(v) for k, v in env.items()
@@ -439,14 +444,12 @@ class WinRMTransport(BaseTransport):
         if shell_mode in ("cmd", "cmd.exe"):
             cmd_str = command
             if cwd:
-                safe_cwd = (
-                    str(cwd)
-                    .replace("\r", "")
-                    .replace("\n", "")
-                    .replace('"', "")
-                    .replace("%", "%%")
-                )
-                cmd_str = f'cd /d "{safe_cwd}" && {cmd_str}'
+                cwd_str = str(cwd)
+                if _CMD_UNSAFE_CWD_RE.search(cwd_str):
+                    raise ConfigurationError(
+                        f"Unsafe characters in WinRM cmd.exe working directory: {cwd_str!r}"
+                    )
+                cmd_str = f'cd /d "{cwd_str}" && {cmd_str}'
             return cmd_str, [], cwd, env
 
         exec_bin, exec_args = build_powershell_encoded_command(

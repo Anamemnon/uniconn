@@ -31,13 +31,16 @@ class TestDashboardStatusAndShell:
         assert "local" in status["transports"]
         assert "3.10" not in status["python_version"]
         assert "test_suites" in status
-        assert len(status["test_suites"]) == 8
+        assert len(status["test_suites"]) == 13
         suite_ids = [s["id"] for s in status["test_suites"]]
         assert "architecture" in suite_ids
         assert "core" in suite_ids
         assert "services" in suite_ids
+        assert "security" in suite_ids
+        assert "mcp" in suite_ids
+        assert "background" in suite_ids
         total_tests = sum(s["count"] for s in status["test_suites"] if s["id"] != "all")
-        assert total_tests == 614
+        assert total_tests == 1187
         assert "default_inventory" in status
 
     def test_execute_shell_command_stateful_and_reset(self) -> None:

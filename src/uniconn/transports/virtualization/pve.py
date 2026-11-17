@@ -119,7 +119,9 @@ class PveTransport(GuestAgentTransportBase):
         """Проверить доступность QEMU Guest Agent через ``POST /agent/ping``."""
         if not self._connected or self.client is None:
             return False
-        return await self.client.agent_ping(timeout=timeout or 5.0)
+        return await self.client.agent_ping(
+            timeout=timeout if timeout is not None else 5.0
+        )
 
     def _resolve_shell_args(self, command: str) -> list[str]:
         """Сформировать массив аргументов командной оболочки для ``POST /agent/exec``."""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shlex
 import subprocess
 import time
 from typing import Any
@@ -118,9 +119,11 @@ def _execute_shell_command(
                     await conn.open_shell(term_size=(cols, rows)) as sh,
                 ):
                     if shell_state.get("cwd") and os.path.isdir(str(shell_state["cwd"])):
-                        await sh.execute(f"cd {shell_state['cwd']}")
+                        await sh.execute(f"cd {shlex.quote(str(shell_state['cwd']))}")
                     for k, v in dict(shell_state.get("env", {})).items():
-                        await sh.execute(f"export {k}={v}")
+                        key_str = str(k)
+                        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key_str):
+                            await sh.execute(f"export {key_str}={shlex.quote(str(v))}")
                     res = await sh.execute(cmd)
                     pwd_res = await sh.execute("pwd")
                     shell_state["cwd"] = pwd_res.text or shell_state.get("cwd", "/root")
@@ -157,7 +160,7 @@ def _execute_shell_command(
             return payload
 
         return asyncio.run(_run_shell())
-    except Exception:
+    except ImportError:
         pass
 
     proc = subprocess.run(
@@ -200,7 +203,7 @@ def _execute_local_command(cmd: str) -> dict[str, Any]:
                 return payload
 
         return asyncio.run(_run_local())
-    except Exception:
+    except ImportError:
         pass
 
     proc = subprocess.run(

@@ -135,7 +135,7 @@ class GnmiTransport(BaseTransport):
         elif "verify_ssl" in opts:
             self._insecure = not bool(opts["verify_ssl"])
         else:
-            self._insecure = True
+            self._insecure = False
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._rpc_lock = asyncio.Lock()

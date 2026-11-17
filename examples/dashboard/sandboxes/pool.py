@@ -60,9 +60,6 @@ def _execute_pool_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
             for idx, c in enumerate(conns):
                 h_name = host_names[idx] if idx < len(host_names) else (c.config.host or f"node-{idx + 1}")
                 opts = dict(c.config.options or {})
-                role = str(opts.get("role", "worker"))
-                dc = str(opts.get("dc", "eu-1"))
-                c._env_stack.append({"UNICONN_HOST": h_name, "UNICONN_ROLE": role, "UNICONN_DC": dc})
                 node_meta.append((h_name, opts))
 
             async with pool:

@@ -8,20 +8,14 @@
 from __future__ import annotations
 
 import difflib
-import os
 import re
-import shlex
 from collections.abc import Mapping
 from typing import Any
 
 from .._logging import SecretMaskingFilter
 from ..hooks import DEFAULT_BLOCKED_PATTERNS
 from ..security.ast_parser import (
-    _OPTS_WITH_ARG_BY_BIN,
     _SHELL_BINARIES,
-    _SUDO_OPTS_WITH_ARG,
-    _WRAPPER_BINARIES,
-    _WRAPPER_OPTS_WITH_ARG,
     CommandASTParser,
     normalize_target_path,
 )
@@ -43,7 +37,7 @@ _FORBIDDEN_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         "Root filesystem deletion (--no-preserve-root) is strictly forbidden",
     ),
     (
-        re.compile(r"\brm\s+-[a-zA-Z]*(?:rf|fr)[a-zA-Z]*\s+/(?:\*|$|\s)", re.IGNORECASE),
+        re.compile(r"\brm\s+-[a-zA-Z]*(?:rf|fr)[a-zA-Z]*\s+/(?:\*|$|\s|['\";|&)])", re.IGNORECASE),
         "Recursive deletion of root filesystem (/ or /*) is strictly forbidden",
     ),
     (
@@ -408,6 +402,34 @@ def _resolve_normalized_write_path(raw_path: str) -> str:
     return normalize_target_path(raw_path) or "/"
 
 
+_MUTATING_EXECUTABLES: frozenset[str] = frozenset(
+    {
+        "mkdir",
+        "touch",
+        "cp",
+        "mv",
+        "ln",
+        "install",
+        "chmod",
+        "chown",
+        "chgrp",
+        "chattr",
+        "setfacl",
+        "useradd",
+        "adduser",
+        "usermod",
+        "groupadd",
+        "patch",
+    }
+)
+_PACKAGE_MANAGERS: frozenset[str] = frozenset(
+    {"apt", "apt-get", "dpkg", "yum", "dnf", "apk", "pacman", "zypper", "helm", "pip", "uv", "npm"}
+)
+_DESTRUCTIVE_PKG_VERBS: frozenset[str] = frozenset({"remove", "purge", "erase", "autoremove", "uninstall", "del"})
+_MUTATING_PKG_VERBS: frozenset[str] = frozenset({"install", "update", "upgrade", "add", "sync"})
+_OUTPUT_REDIRECT_TARGET_RE = re.compile(r"^(?:\d*>>?|&>>?)\s*(\S+)")
+
+
 class ActionRiskClassifier:
     """Детерминированный классификатор рисков команд и инструментов ИИ-агента."""
 
@@ -423,7 +445,8 @@ class ActionRiskClassifier:
         _depth: int = 0,
         _preparsed_ast: Any = None,
     ) -> RiskAssessment:
-        """Оценить уровень риска shell-команды (включая AST-анализ, обфускацию и вложенные оболочки)."""
+        """Оценить уровень риска shell-команды на базе единого AST ``CommandASTParser``."""
+        del _depth
         cmd_stripped = command.strip()
         if not cmd_stripped:
             return RiskAssessment(
@@ -436,7 +459,14 @@ class ActionRiskClassifier:
         reasons: list[str] = []
         max_tier = ActionRiskTier.TIER_0_SAFE
 
-        # 1. Глобальная проверка цельной строки на FORBIDDEN (включая fork-бомбу)
+        def _elevate(tier: ActionRiskTier, msg: str | None = None) -> None:
+            nonlocal max_tier
+            if tier.severity > max_tier.severity:
+                max_tier = tier
+            if msg and msg not in reasons:
+                reasons.append(msg)
+
+        # 1. Глобальная проверка цельной строки на FORBIDDEN (включая fork-бомбу и raw-device редиректы)
         for regex, reason in _FORBIDDEN_PATTERNS:
             if regex.search(cmd_stripped):
                 return RiskAssessment(
@@ -446,12 +476,12 @@ class ActionRiskClassifier:
                     requires_approval=False,
                 )
 
-        # 2. Глубокий синтаксический AST-разбор (детекция обфускации и косвенных вызовов)
+        # 2. Единый глубокий AST-разбор через CommandASTParser (без дублирования развёртки обёрток)
         ast_obj = ast if ast is not None else _preparsed_ast
-        if ast_obj is None and _depth == 0:
+        if ast_obj is None:
             ast_obj = CommandASTParser.parse(cmd_stripped, sudo=sudo)
 
-        if ast_obj is not None and getattr(ast_obj, "is_obfuscated", False):
+        if getattr(ast_obj, "is_obfuscated", False):
             obf_reasons = tuple(
                 getattr(ast_obj, "obfuscation_reasons", ()) or ("Obfuscated command syntax detected",)
             )
@@ -462,30 +492,40 @@ class ActionRiskClassifier:
                 requires_approval=False,
             )
 
-        segments = _split_shell_segments(cmd_stripped) or [cmd_stripped]
-        for seg in segments:
-            seg_tier, seg_reasons = cls._classify_single_segment(
-                seg,
-                sudo=sudo,
-                is_production=is_production,
-                policy=policy,
-                _depth=_depth,
+        atomic_commands = tuple(getattr(ast_obj, "atomic_commands", ()) or ())
+        for idx, atom in enumerate(atomic_commands):
+            # Если shell (bash -c '...') уже распакован в дочерние AtomicCommand, саму обёртку пропускаем
+            is_unwrapped_shell_carrier = (
+                atom.executable in _SHELL_BINARIES
+                and any(flag in atom.flags for flag in ("-c", "-lc", "-ic"))
+                and any(
+                    f"{atom.executable} " in w
+                    for child in atomic_commands[idx + 1 :]
+                    for w in getattr(child, "wrappers", ())
+                )
             )
-            if seg_tier.severity > max_tier.severity:
-                max_tier = seg_tier
-            for r in seg_reasons:
-                if r not in reasons:
-                    reasons.append(r)
+            if is_unwrapped_shell_carrier:
+                continue
 
-        if ast_obj is not None:
-            dest_sev = ActionRiskTier.TIER_2_DESTRUCTIVE.severity
-            if getattr(ast_obj, "has_destructive_verbs", False) and max_tier.severity < dest_sev:
-                max_tier = ActionRiskTier.TIER_2_DESTRUCTIVE
-                ast_execs = ", ".join(getattr(ast_obj, "executables", ()))
-                reasons.append(f"AST analysis detected nested destructive operation ({ast_execs})")
-            if getattr(ast_obj, "complexity_exceeded", False) and max_tier.severity < dest_sev:
-                max_tier = ActionRiskTier.TIER_2_DESTRUCTIVE
-                reasons.append("Command exceeds AST complexity threshold (opaque script)")
+            atom_tier, atom_reasons = cls._classify_atomic_command(atom, inherited_sudo=sudo)
+            for msg in atom_reasons:
+                _elevate(atom_tier, msg)
+            if not atom_reasons:
+                _elevate(atom_tier)
+
+        # 3. Агрегированные признаки AST (деструктивные SQL-выражения и превышение лимитов сложности)
+        dest_sev = ActionRiskTier.TIER_2_DESTRUCTIVE.severity
+        if getattr(ast_obj, "has_destructive_verbs", False) and max_tier.severity < dest_sev:
+            ast_execs = ", ".join(getattr(ast_obj, "executables", ()))
+            _elevate(
+                ActionRiskTier.TIER_2_DESTRUCTIVE,
+                f"AST analysis detected nested destructive operation ({ast_execs})",
+            )
+        if getattr(ast_obj, "complexity_exceeded", False) and max_tier.severity < dest_sev:
+            _elevate(
+                ActionRiskTier.TIER_2_DESTRUCTIVE,
+                "Command exceeds AST complexity threshold (opaque script)",
+            )
 
         if sudo and max_tier == ActionRiskTier.TIER_1_MUTATING and is_production:
             max_tier = ActionRiskTier.TIER_2_DESTRUCTIVE
@@ -512,66 +552,108 @@ class ActionRiskClassifier:
         )
 
     @classmethod
-    def _classify_single_segment(
+    def _classify_redirect_or_tee(cls, atom: Any) -> tuple[ActionRiskTier, list[str]]:
+        """Оценить риск перенаправлений вывода (``>``, ``>>``) и записи через ``tee``."""
+        tier = ActionRiskTier.TIER_0_SAFE
+        reasons: list[str] = []
+
+        def _check_target(target: str) -> None:
+            nonlocal tier
+            norm = _resolve_normalized_write_path(target)
+            if norm == "/dev/null" or norm.startswith("&"):
+                return
+            if any(norm == p.rstrip("/") or norm.startswith(p) for p in _PROTECTED_PATH_PREFIXES):
+                tier = ActionRiskTier.TIER_2_DESTRUCTIVE
+                reasons.append("Overwriting or appending to protected system configuration path")
+            elif tier.severity < ActionRiskTier.TIER_1_MUTATING.severity:
+                tier = ActionRiskTier.TIER_1_MUTATING
+                reasons.append("Shell output redirection to file")
+
+        for redir in getattr(atom, "redirects", ()):
+            match = _OUTPUT_REDIRECT_TARGET_RE.search(redir.strip())
+            if match:
+                _check_target(match.group(1))
+
+        if atom.executable == "tee":
+            for arg in atom.arguments:
+                _check_target(arg)
+
+        return tier, reasons
+
+    @classmethod
+    def _classify_atomic_command(
         cls,
-        segment: str,
+        atom: Any,
         *,
-        sudo: bool = False,
-        is_production: bool = False,
-        policy: HITLPolicy | None = None,
-        _depth: int = 0,
+        inherited_sudo: bool = False,
     ) -> tuple[ActionRiskTier, list[str]]:
-        seg_reasons: list[str] = []
-        seg_stripped = segment.strip()
-        if not seg_stripped:
-            return ActionRiskTier.TIER_0_SAFE, seg_reasons
+        """Классифицировать одиночный ``AtomicCommand``, уже очищенный от обёрток парсером AST."""
+        best_tier, reasons = cls._classify_redirect_or_tee(atom)
+        base_bin = str(atom.executable or "").lower()
+        sub = atom.subcommand.lower() if atom.subcommand else None
+        args_lower = [str(a).lower() for a in atom.arguments]
+        flags_dict = atom.flags
+        effective_sudo = bool(atom.is_sudo or inherited_sudo)
 
-        for regex, reason in _FORBIDDEN_PATTERNS:
-            if regex.search(seg_stripped):
-                return ActionRiskTier.TIER_3_FORBIDDEN, [reason]
+        def _pick(tier: ActionRiskTier, msg: str) -> tuple[ActionRiskTier, list[str]]:
+            if best_tier.severity > tier.severity:
+                return best_tier, reasons
+            return tier, [msg] if msg else reasons
 
-        try:
-            tokens = shlex.split(seg_stripped)
-        except ValueError:
-            tokens = seg_stripped.split()
-
-        effective_sudo = sudo
-        unwrapped_tokens, had_sudo, nested_shell_cmd = cls._unwrap_command_tokens(tokens)
-        if had_sudo:
-            effective_sudo = True
-
-        if nested_shell_cmd and _depth < 4:
-            sub_assessment = cls.classify_command(
-                nested_shell_cmd,
-                sudo=effective_sudo,
-                is_production=is_production,
-                policy=policy,
-                _depth=_depth + 1,
+        # Проверка критически запрещённых атомарных операций (после раскрытия обёрток/подстановок)
+        if base_bin == "rm":
+            has_recursive = any(k in flags_dict for k in ("-r", "-R", "--recursive"))
+            targets_root = any(
+                str(a).strip() in ("/", "/*") or normalize_target_path(str(a)) in ("/", "/*")
+                for a in atom.arguments
             )
-            return sub_assessment.risk_tier, list(sub_assessment.reasons)
+            if "--no-preserve-root" in flags_dict or (has_recursive and targets_root):
+                return _pick(
+                    ActionRiskTier.TIER_3_FORBIDDEN,
+                    "Recursive deletion of root filesystem (/ or /*) is strictly forbidden",
+                )
+        if base_bin == "mkfs" or base_bin.startswith("mkfs."):
+            return _pick(
+                ActionRiskTier.TIER_3_FORBIDDEN,
+                f"Formatting filesystem ({base_bin}) is strictly forbidden",
+            )
 
-        for regex, reason in _DESTRUCTIVE_PATTERNS:
-            if regex.search(seg_stripped):
-                seg_reasons.append(reason)
-                return ActionRiskTier.TIER_2_DESTRUCTIVE, seg_reasons
+        # Проверка опасных перенаправлений в сырых устройствах/защищённых файлах в аргументах
+        if CommandASTParser._is_atomic_destructive(atom):
+            return _pick(
+                ActionRiskTier.TIER_2_DESTRUCTIVE,
+                f"Destructive operation ({base_bin}{f' {sub}' if sub else ''})",
+            )
 
-        for regex, reason in _MUTATING_PATTERNS:
-            if regex.search(seg_stripped):
-                seg_reasons.append(reason)
-                return ActionRiskTier.TIER_1_MUTATING, seg_reasons
+        if base_bin in ("iptables", "ip6tables") and any(
+            k in ("-F", "-X", "-Z", "--flush", "--delete-chain") for k in flags_dict
+        ):
+            return _pick(ActionRiskTier.TIER_2_DESTRUCTIVE, "Destructive firewall rule modification or flush")
 
-        if not unwrapped_tokens:
-            return ActionRiskTier.TIER_0_SAFE, seg_reasons
+        if base_bin in ("passwd", "chage") and (base_bin == "chage" or "-l" in flags_dict):
+            return _pick(ActionRiskTier.TIER_2_DESTRUCTIVE, "Deleting or locking system user/group accounts")
 
-        base_bin = os.path.basename(unwrapped_tokens[0]).lower()
-        rest_args = [t.lower() for t in unwrapped_tokens[1:]]
+        if base_bin in _PACKAGE_MANAGERS:
+            verb = sub or (args_lower[0] if args_lower else None)
+            if verb in _DESTRUCTIVE_PKG_VERBS or any(k.startswith("-R") for k in flags_dict):
+                return _pick(ActionRiskTier.TIER_2_DESTRUCTIVE, "Removing or purging installed packages")
+            if verb in _MUTATING_PKG_VERBS or any(a in _MUTATING_PKG_VERBS for a in args_lower):
+                return _pick(ActionRiskTier.TIER_1_MUTATING, "Installing or updating packages")
 
-        # Специальные случаи команд из _SAFE_COMMANDS с мутирующими/деструктивными флагами
-        ip_mut_flags = ("add", "del", "delete", "set", "flush", "change", "replace")
-        if base_bin == "ip" and any(a in ip_mut_flags for a in rest_args):
-            return ActionRiskTier.TIER_2_DESTRUCTIVE, ["Network interface or routing table modification via ip"]
-        if base_bin == "sysctl" and any(a == "-w" or "=" in a for a in rest_args):
-            return ActionRiskTier.TIER_1_MUTATING, ["Kernel parameter modification via sysctl"]
+        if base_bin == "ip":
+            ip_mut = ("add", "del", "delete", "set", "flush", "change", "replace")
+            if sub in ip_mut or any(a in ip_mut for a in args_lower):
+                return _pick(
+                    ActionRiskTier.TIER_2_DESTRUCTIVE,
+                    "Network interface or routing table modification via ip",
+                )
+            return _pick(ActionRiskTier.TIER_0_SAFE, "Safe read-only command (ip)")
+
+        if base_bin == "sysctl":
+            if "-w" in flags_dict or any("=" in a for a in args_lower):
+                return _pick(ActionRiskTier.TIER_1_MUTATING, "Kernel parameter modification via sysctl")
+            return _pick(ActionRiskTier.TIER_0_SAFE, "Safe read-only command (sysctl)")
+
         if base_bin == "systemctl":
             systemctl_ro = (
                 "status",
@@ -583,29 +665,36 @@ class ActionRiskClassifier:
                 "list-unit-files",
                 "cat",
             )
-            sub = _extract_first_subcommand(rest_args, _OPTS_WITH_ARG_BY_BIN["systemctl"])
-            if sub is not None:
-                if sub in systemctl_ro:
-                    return ActionRiskTier.TIER_0_SAFE, ["Read-only systemctl inspection"]
-                if sub in ("stop", "disable", "mask", "kill", "poweroff", "reboot"):
-                    return ActionRiskTier.TIER_2_DESTRUCTIVE, [f"Destructive systemctl action: {sub}"]
-                return ActionRiskTier.TIER_1_MUTATING, [f"Mutating systemctl action: {sub}"]
-            return ActionRiskTier.TIER_0_SAFE, ["Read-only systemctl inspection"]
+            if sub is None or sub in systemctl_ro:
+                return _pick(ActionRiskTier.TIER_0_SAFE, "Read-only systemctl inspection")
+            return _pick(ActionRiskTier.TIER_1_MUTATING, f"Mutating systemctl action: {sub}")
+
+        if base_bin == "service":
+            if sub is None or sub == "status":
+                return _pick(ActionRiskTier.TIER_0_SAFE, "Read-only service inspection")
+            return _pick(ActionRiskTier.TIER_1_MUTATING, f"Starting or restarting a system service ({sub})")
+
         if base_bin == "find":
-            if "-delete" in rest_args:
-                return ActionRiskTier.TIER_2_DESTRUCTIVE, ["Recursive file deletion via find -delete"]
-            if any(a in ("-exec", "-execdir", "-ok") for a in rest_args):
-                return ActionRiskTier.TIER_1_MUTATING, ["find with command execution flags"]
-            return ActionRiskTier.TIER_0_SAFE, ["Read-only find search"]
+            if any(k in flags_dict for k in ("-exec", "-execdir", "-ok")):
+                return _pick(ActionRiskTier.TIER_1_MUTATING, "find with command execution flags")
+            return _pick(ActionRiskTier.TIER_0_SAFE, "Read-only find search")
+
         if base_bin == "git":
             git_ro = ("status", "log", "diff", "show", "branch", "remote", "rev-parse", "describe", "ls-files")
-            sub = _extract_first_subcommand(rest_args, _OPTS_WITH_ARG_BY_BIN["git"])
-            if sub is not None:
-                if sub in git_ro:
-                    return ActionRiskTier.TIER_0_SAFE, ["Read-only git inspection"]
-                return ActionRiskTier.TIER_1_MUTATING, [f"Git operation: {sub}"]
-            return ActionRiskTier.TIER_0_SAFE, ["Read-only git inspection"]
+            if sub is None or sub in git_ro:
+                return _pick(ActionRiskTier.TIER_0_SAFE, "Read-only git inspection")
+            return _pick(ActionRiskTier.TIER_1_MUTATING, f"Git operation: {sub}")
+
         if base_bin in ("docker", "podman", "kubectl"):
+            if (
+                base_bin in ("docker", "podman")
+                and sub in ("system", "volume")
+                and any(a in ("prune", "rm") for a in args_lower)
+            ):
+                return _pick(
+                    ActionRiskTier.TIER_2_DESTRUCTIVE,
+                    "Destructive container or Kubernetes workload operation",
+                )
             container_ro = (
                 "ps",
                 "images",
@@ -619,113 +708,33 @@ class ActionRiskClassifier:
                 "describe",
                 "cluster-info",
             )
-            sub = _extract_first_subcommand(rest_args, _OPTS_WITH_ARG_BY_BIN[base_bin])
-            if sub is not None:
-                if sub in container_ro:
-                    return ActionRiskTier.TIER_0_SAFE, [f"Read-only {base_bin} inspection"]
-                return ActionRiskTier.TIER_1_MUTATING, [f"Container/cluster operation: {base_bin} {sub}"]
-            return ActionRiskTier.TIER_0_SAFE, [f"Read-only {base_bin} inspection"]
+            if sub is None or sub in container_ro:
+                return _pick(ActionRiskTier.TIER_0_SAFE, f"Read-only {base_bin} inspection")
+            return _pick(ActionRiskTier.TIER_1_MUTATING, f"Container/cluster operation: {base_bin} {sub}")
 
-        if base_bin in _SAFE_COMMANDS:
-            return ActionRiskTier.TIER_0_SAFE, [f"Safe read-only command ({base_bin})"]
+        if base_bin == "sed" and (
+            "-i" in flags_dict
+            or "--in-place" in flags_dict
+            or any(k.startswith("-i") for k in flags_dict)
+        ):
+            return _pick(ActionRiskTier.TIER_1_MUTATING, "In-place file editing")
+
+        if base_bin in _MUTATING_EXECUTABLES:
+            return _pick(ActionRiskTier.TIER_1_MUTATING, f"Mutating command ({base_bin})")
+
+        if base_bin in _SAFE_COMMANDS or (base_bin == "tee" and best_tier != ActionRiskTier.TIER_0_SAFE):
+            msg = "" if (base_bin == "tee" and reasons) else f"Safe read-only command ({base_bin})"
+            return _pick(ActionRiskTier.TIER_0_SAFE, msg)
 
         if effective_sudo:
-            return ActionRiskTier.TIER_2_DESTRUCTIVE, [
-                f"Unrecognized command ({base_bin!r}) executed with sudo privileges"
-            ]
-
-        return ActionRiskTier.TIER_1_MUTATING, [
-            f"Unrecognized or potentially mutating command ({base_bin!r})"
-        ]
-
-    @staticmethod
-    def _unwrap_command_tokens(tokens: list[str]) -> tuple[list[str], bool, str | None]:
-        """Снять префиксы env-переменных, sudo/doas/pkexec/su/env/nohup и обнаружить sh -c / su -c."""
-        idx = 0
-        n = len(tokens)
-        had_sudo = False
-
-        while idx < n:
-            tok = tokens[idx]
-            if "=" in tok and not tok.startswith("-") and tok.split("=", 1)[0].isidentifier():
-                idx += 1
-                continue
-            base = os.path.basename(tok).lower()
-            if base in ("sudo", "doas", "pkexec"):
-                had_sudo = True
-                idx += 1
-                while idx < n and tokens[idx].startswith("-"):
-                    opt = tokens[idx]
-                    idx += 1
-                    if opt == "--":
-                        break
-                    if opt in _SUDO_OPTS_WITH_ARG and idx < n:
-                        idx += 1
-                continue
-            if base in ("su", "runuser"):
-                had_sudo = True
-                idx += 1
-                while idx < n:
-                    cur = tokens[idx]
-                    if cur in ("-c", "--command") and idx + 1 < n:
-                        return tokens[idx:], True, tokens[idx + 1]
-                    if cur.startswith("--command="):
-                        return tokens[idx:], True, cur.split("=", 1)[1]
-                    if cur == "--":
-                        idx += 1
-                        break
-                    if cur.startswith("-"):
-                        idx += 2 if cur in ("-s", "--shell", "-u", "-g", "-G") and idx + 1 < n else 1
-                        continue
-                    if idx + 1 < n and tokens[idx + 1].startswith("-"):
-                        idx += 1
-                        continue
-                    break
-                continue
-            if base == "chroot" and idx + 1 < n:
-                idx += 1
-                while idx < n and tokens[idx].startswith("-"):
-                    opt = tokens[idx]
-                    idx += 1
-                    if opt in ("--userspec", "--groups") and idx < n:
-                        idx += 1
-                if idx + 1 < n:
-                    idx += 1
-                continue
-            if base == "timeout" and idx + 1 < n:
-                idx += 1
-                while idx < n and tokens[idx].startswith("-"):
-                    opt = tokens[idx]
-                    idx += 1
-                    if opt in ("-k", "--kill-after", "-s", "--signal") and idx < n:
-                        idx += 1
-                if idx < n:
-                    idx += 1  # Пропускаем значение длительности таймаута
-                continue
-            if base in _WRAPPER_BINARIES:
-                w_opts = _WRAPPER_OPTS_WITH_ARG.get(base, frozenset())
-                idx += 1
-                while idx < n and tokens[idx].startswith("-"):
-                    opt = tokens[idx]
-                    idx += 1
-                    if opt == "--":
-                        break
-                    if opt in w_opts and idx < n:
-                        idx += 1
-                continue
-            break
-
-        remaining = tokens[idx:]
-        if not remaining:
-            return [], had_sudo, None
-
-        first_base = os.path.basename(remaining[0]).lower()
-        if first_base in _SHELL_BINARIES:
-            for i in range(1, len(remaining) - 1):
-                if remaining[i] in ("-c", "-lc", "-ic"):
-                    return remaining, had_sudo, remaining[i + 1]
-
-        return remaining, had_sudo, None
+            return _pick(
+                ActionRiskTier.TIER_2_DESTRUCTIVE,
+                f"Unrecognized command ({base_bin!r}) executed with sudo privileges",
+            )
+        return _pick(
+            ActionRiskTier.TIER_1_MUTATING,
+            f"Unrecognized or potentially mutating command ({base_bin!r})",
+        )
 
     @classmethod
     def classify_file_write(

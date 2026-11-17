@@ -431,7 +431,7 @@ def _execute_v090_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
                     ],
                 )
                 async with MockSSHServer.from_cassette(cassette) as srv:
-                    async with Connection.from_uri(srv.uri) as conn:
+                    async with Connection.from_uri(f"{srv.uri}?known_hosts=no") as conn:
                         up_res = await conn.run("uptime")
                         host_txt = await conn.files.read_file("/etc/hostname")
                     return {

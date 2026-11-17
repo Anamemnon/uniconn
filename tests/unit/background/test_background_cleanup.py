@@ -48,13 +48,14 @@ class TestGenerateCleanupScript:
             session_ids=["uniconn_pool1_0", "custom_job"]
         )
         assert 'POOL_ID="pool1"' in script
+        assert "ART_DIR=/tmp" in script
         assert "tmux kill-session" in script
         assert "screen -ls" in script
         assert 'pkill -KILL -P "$pid"' in script
         assert "kill -KILL" in script
         assert "/tmp/uniconn_custom_job.pid" in script
-        assert "rm -f /tmp/uniconn_${POOL_ID}_*.log" in script
-        assert "rm -f /tmp/uniconn_${POOL_ID}.active" in script
+        assert 'rm -f "$ART_DIR"/uniconn_${POOL_ID}_*.log' in script
+        assert 'rm -f "$ART_DIR"/uniconn_${POOL_ID}.active' in script
         assert 'rm -f "$0"' in script
 
 
@@ -62,7 +63,7 @@ class TestInstallServerSide:
     """Тесты install_server_side."""
 
     async def test_runs_sentinel_script_chmod(self):
-        """install_server_side: sentinel printf, script printf, chmod +x — 3 вызова run."""
+        """install_server_side: private runtime_dir (0700), sentinel printf, script printf, chmod 0700."""
         conn = MagicMock()
         conn.run = AsyncMock(
             side_effect=lambda command, **kwargs: make_result("", command=command)
@@ -75,13 +76,16 @@ class TestInstallServerSide:
             manager.uninstall()
 
         calls = [c.args[0] for c in conn.run.call_args_list]
-        assert len(calls) == 3
-        assert calls[0].startswith("printf '%s'")
-        assert calls[0].endswith("> /tmp/uniconn_pool1.active")
-        assert '"pool1"' in calls[0] and '"s1"' in calls[0]
-        assert calls[1].startswith("printf '%s'")
-        assert calls[1].endswith("> /tmp/uniconn_cleanup_pool1.sh")
-        assert calls[2] == "chmod +x /tmp/uniconn_cleanup_pool1.sh"
+        assert len(calls) == 4
+        assert "umask 077;" in calls[0]
+        assert "umask 077 &&" in calls[1]
+        assert "printf '%s'" in calls[1]
+        assert manager.sentinel_path in calls[1]
+        assert '"pool1"' in calls[1] and '"s1"' in calls[1]
+        assert "umask 077 &&" in calls[2]
+        assert "printf '%s'" in calls[2]
+        assert manager.cleanup_script_path in calls[2]
+        assert calls[3] == f"chmod 0700 {manager.cleanup_script_path}"
 
 
 class TestCleanupAll:
@@ -162,7 +166,7 @@ class TestCleanupStale:
 
         async def _mock_run(command: str, **kwargs):
             executed_cmds.append(command)
-            if "for f in /tmp/uniconn_*.active" in command:
+            if "for f in" in command and "*.active" in command:
                 return make_result(listing_stdout, command=command)
             return make_result("", command=command)
 

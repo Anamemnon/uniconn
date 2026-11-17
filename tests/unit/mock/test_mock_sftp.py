@@ -75,7 +75,7 @@ async def test_mock_sftp_read_stat_and_listdir(tmp_path: Path) -> None:
     cassette = _sample_fs_cassette()
 
     async with MockSSHServer.from_cassette(cassette) as server:
-        async with Connection.from_uri(server.uri, retry_attempts=1) as conn:
+        async with Connection.from_uri(f"{server.uri}?known_hosts=no", retry_attempts=1) as conn:
             content = await conn.files.read_file("/etc/nginx/nginx.conf")
             assert content == "worker_processes auto;\n"
 
@@ -100,7 +100,7 @@ async def test_mock_sftp_write_verification_and_session_overlay() -> None:
     cassette = _sample_fs_cassette()
 
     async with MockSSHServer.from_cassette(cassette, strict_mode=True) as server:
-        async with Connection.from_uri(server.uri, retry_attempts=1) as conn:
+        async with Connection.from_uri(f"{server.uri}?known_hosts=no", retry_attempts=1) as conn:
             # 1. Запись по разрешённому в кассете пути проходит успешно и попадает в оверлей сессии
             new_cfg = "server {\n    listen 9090;\n}\n"
             await conn.files.write_file("/etc/nginx/conf.d/app.conf", new_cfg, mode=0o600)

@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
+import ntpath
 import os
-from pathlib import Path
+import posixpath
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -13,7 +14,7 @@ if TYPE_CHECKING:
 
 def _is_remote_abs_path(path_str: str) -> bool:
     r"""Проверить, является ли путь абсолютным (POSIX ``/``, Windows ``C:\`` или UNC ``\\``)."""
-    if Path(path_str).is_absolute() or path_str.startswith(("/", "\\\\")):
+    if posixpath.isabs(path_str) or ntpath.isabs(path_str) or path_str.startswith(("/", "\\\\")):
         return True
     return len(path_str) >= 3 and path_str[1] == ":" and path_str[2] in ("/", "\\")
 
@@ -24,7 +25,7 @@ def _join_remote_paths(base: str, rel: str) -> str:
         clean_base = base.rstrip("\\/")
         clean_rel = rel.lstrip("\\/").replace("/", "\\")
         return f"{clean_base}\\{clean_rel}" if clean_rel else clean_base
-    return str(Path(base) / rel)
+    return posixpath.join(base, rel)
 
 
 class CwdContext:

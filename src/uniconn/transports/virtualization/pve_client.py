@@ -6,7 +6,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
-import sys
 import time
 from typing import Any
 from urllib.parse import quote
@@ -18,7 +17,7 @@ from ...exceptions import (
     FileTransferError,
     TimeoutError,
 )
-from ..bmc.redfish.client import builtins_timeout_errors, resolve_lazy_response
+from .._http_base import BaseAsyncHttpClient, parse_json_dict, resolve_niquests_module
 
 try:
     import niquests
@@ -28,16 +27,14 @@ except ImportError:
 
 def get_pve_niquests_module() -> Any:
     """Получить модуль ``niquests`` с учётом возможного патчинга в тестах."""
-    pve_mod = sys.modules.get("uniconn.transports.virtualization.pve")
-    if pve_mod is not None and "niquests" in pve_mod.__dict__:
-        return pve_mod.__dict__["niquests"]
-    client_mod = sys.modules.get(__name__)
-    if client_mod is not None and "niquests" in client_mod.__dict__:
-        return client_mod.__dict__["niquests"]
-    return niquests
+    return resolve_niquests_module(
+        "uniconn.transports.virtualization.pve",
+        __name__,
+        fallback=niquests,
+    )
 
 
-class PveHttpClient:
+class PveHttpClient(BaseAsyncHttpClient):
     """Асинхронный клиент Proxmox VE REST API поверх ``niquests.AsyncSession``."""
 
     def __init__(
@@ -55,7 +52,13 @@ class PveHttpClient:
         default_timeout: float = 30.0,
         poll_interval: float = 0.2,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
+        super().__init__(
+            base_url=base_url,
+            verify=verify,
+            default_timeout=default_timeout,
+            multiplexed=False,
+            error_prefix="PVE",
+        )
         self.vmid = vmid
         self.node = node
         self.username = username
@@ -63,14 +66,22 @@ class PveHttpClient:
         self.password = password
         self.token_id = token_id
         self.token_secret = token_secret
-        self.verify = verify
-        self.default_timeout = default_timeout
         self.poll_interval = max(0.02, poll_interval)
 
-        self.session: Any = None
         self.auth_mode: str = "none"
         self.ticket: str | None = None
         self.csrf_token: str | None = None
+
+    def _get_niquests(self) -> Any:
+        return get_pve_niquests_module()
+
+    def _require_niquests(self, install_extra: str = "bmc", *, use_optional_dep: bool = False) -> Any:
+        niq = self._get_niquests()
+        if niq is None:
+            raise ImportError(
+                "niquests not installed. Run: pip install uniconn[bmc] or uniconn[pve]"
+            )
+        return niq
 
     @property
     def full_user(self) -> str:
@@ -82,15 +93,11 @@ class PveHttpClient:
 
     def create_async_session(self) -> Any:
         """Создать и сконфигурировать ``niquests.AsyncSession``."""
-        niq = get_pve_niquests_module()
-        if niq is None:
-            raise ImportError(
-                "niquests not installed. Run: pip install uniconn[bmc] or uniconn[pve]"
-            )
-        session = niq.AsyncSession(base_url=self.base_url, multiplexed=False)
-        session.verify = self.verify
-        session.headers.update({"Accept": "application/json"})
-        return session
+        return self._build_session(
+            install_extra="bmc",
+            pass_base_url=True,
+            headers={"Accept": "application/json"},
+        )
 
     async def connect(self, timeout: float | None = None) -> None:
         """Инициализировать HTTP-сессию, выполнить аутентификацию и определить ноду ВМ."""
@@ -114,18 +121,6 @@ class PveHttpClient:
         except Exception:
             await self.close()
             raise
-
-    async def close(self) -> None:
-        """Закрыть HTTP-сессию."""
-        session = self.session
-        self.session = None
-        if session is not None:
-            close_fn = getattr(session, "close", None)
-            if callable(close_fn):
-                res = close_fn()
-                if asyncio.iscoroutine(res):
-                    with contextlib.suppress(Exception):
-                        await res
 
     async def _authenticate_ticket(self, timeout: float) -> None:
         """Получить ``ticket`` и ``CSRFPreventionToken`` через ``POST /api2/json/access/ticket``."""
@@ -169,17 +164,14 @@ class PveHttpClient:
             norm_path = f"{norm_path}{sep}{'&'.join(query_parts)}"
 
         method_upper = method.upper()
-        try:
-            req_fn = getattr(self.session, method_upper.lower())
-            kwargs: dict[str, Any] = {"timeout": eff_timeout}
-            if payload is not None:
-                kwargs["json"] = payload
-            resp = await req_fn(norm_path, **kwargs)
-            await resolve_lazy_response(self.session, resp)
-        except builtins_timeout_errors() as exc:
-            raise TimeoutError(f"PVE {method_upper} {norm_path} timed out after {eff_timeout}s") from exc
-        except Exception as exc:
-            raise ConnectionError(f"PVE {method_upper} {norm_path} failed: {exc}") from exc
+        resp = await self._send_session_request(
+            self.session,
+            method_upper,
+            norm_path,
+            timeout=eff_timeout,
+            json_payload=payload,
+            use_method_attr=True,
+        )
 
         status = int(getattr(resp, "status_code", 0) or 0)
         if status == 401 and _retry_on_401 and self.auth_mode == "ticket" and self.password is not None:
@@ -196,21 +188,7 @@ class PveHttpClient:
         if status in (401, 403):
             raise AuthenticationError(f"PVE {method_upper} {norm_path} unauthorized (HTTP {status})")
 
-        data: dict[str, Any] = {}
-        raw_text = getattr(resp, "text", "")
-        if raw_text:
-            try:
-                parsed = resp.json()
-                data = parsed if isinstance(parsed, dict) else {"data": parsed}
-            except Exception:
-                data = {"raw": str(raw_text)}
-        else:
-            with contextlib.suppress(Exception):
-                parsed = resp.json()
-                if isinstance(parsed, dict):
-                    data = parsed
-
-        return status, data
+        return status, parse_json_dict(resp)
 
     async def discover_vm_node(self, timeout: float | None = None) -> str:
         """Автоматически определить имя ноды кластера Proxmox по ``vmid`` через ``/cluster/resources``."""

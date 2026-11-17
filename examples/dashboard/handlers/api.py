@@ -8,7 +8,9 @@ import os
 import platform
 import subprocess
 import sys
+import tempfile
 import time
+from pathlib import Path
 from typing import Any
 
 from examples.dashboard.sandboxes import (
@@ -249,8 +251,14 @@ def _execute_hitl_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
     action = str(payload.get("action") or "list").strip().lower()
+    is_http = bool(payload.get("_http_safe"))
     store_str = payload.get("store_path")
-    store_path = store_str if isinstance(store_str, str) and store_str.strip() else str(DEFAULT_APPROVAL_STORE_PATH)
+    if is_http:
+        store_path = str(Path(tempfile.gettempdir()) / "uniconn_dashboard_approvals.json")
+    else:
+        store_path = (
+            store_str if isinstance(store_str, str) and store_str.strip() else str(DEFAULT_APPROVAL_STORE_PATH)
+        )
     pol = HITLPolicy(enabled=True, store_path=store_path)
     mgr = ApprovalManager(policy=pol, store_path=store_path)
 
@@ -353,10 +361,28 @@ def _execute_policy_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
     engine_type = str(payload.get("engine") or "embedded").strip().lower()
     opa_url = payload.get("opa_url")
     opa_url_str = str(opa_url).strip() if isinstance(opa_url, str) and opa_url.strip() else None
+    if opa_url_str and payload.get("_http_safe"):
+        from uniconn.exceptions import ConfigurationError
+        from uniconn.security.url_validation import validate_outbound_url
+
+        try:
+            opa_url_str = validate_outbound_url(
+                opa_url_str,
+                allow_private_network=False,
+                resolve_dns=True,
+            )
+        except (ConfigurationError, ValueError) as exc:
+            return {"ok": False, "error": str(exc)}
     mw_raw = payload.get("maintenance_window_active")
     mw_override: bool | None = bool(mw_raw) if isinstance(mw_raw, bool) else None
-    max_depth = int(payload.get("max_ast_depth") or 4)
-    max_pipe = int(payload.get("max_pipeline_length") or 8)
+    try:
+        max_depth = max(1, min(32, int(payload.get("max_ast_depth") or 4)))
+    except (TypeError, ValueError):
+        max_depth = 4
+    try:
+        max_pipe = max(1, min(128, int(payload.get("max_pipeline_length") or 8)))
+    except (TypeError, ValueError):
+        max_pipe = 8
 
     is_prod = env.lower() in ("prod", "production", "prd", "critical")
     cfg = PolicyGuardrailConfig(

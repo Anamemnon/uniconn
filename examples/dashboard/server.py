@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hmac
 import json
+import os
+import secrets
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -59,6 +62,7 @@ class _ReusableThreadingHTTPServer(ThreadingHTTPServer):
 def serve_dev_dashboard(port: int = 3000) -> None:
     """Запустить HTTP-сервер предпросмотра и тестирования uniconn на 0.0.0.0:3000."""
     shell_state, metrics_state, screen_state = create_default_dashboard_states()
+    dashboard_token = os.environ.get("UNICONN_DASHBOARD_TOKEN") or secrets.token_urlsafe(24)
 
     if not _can_import_uniconn_in_proc():
         threading.Thread(target=_ensure_uv_env, daemon=True).start()
@@ -73,17 +77,22 @@ def serve_dev_dashboard(port: int = 3000) -> None:
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             self.wfile.write(body)
 
         def _read_json_body(self) -> dict[str, Any]:
-            length = int(self.headers.get("Content-Length", "0") or "0")
-            if length <= 0:
+            try:
+                length = int(self.headers.get("Content-Length", "0") or "0")
+            except ValueError:
+                return {}
+            if length <= 0 or length > 2 * 1024 * 1024:
                 return {}
             raw = self.rfile.read(length).decode("utf-8", errors="replace")
             try:
-                return json.loads(raw)
-            except Exception:
+                data = json.loads(raw)
+                return data if isinstance(data, dict) else {}
+            except (json.JSONDecodeError, ValueError):
                 return {}
 
         def _is_cross_site_request(self) -> bool:
@@ -93,19 +102,25 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                     return True
                 parsed_origin = urlparse(origin)
                 origin_host = (parsed_origin.hostname or "").lower()
-                if origin_host.endswith((".run.app", ".googleusercontent.com", ".google.com")):
-                    return False
                 host_header = (self.headers.get("Host") or "").split(":", 1)[0].strip().lower()
                 fwd_host = (self.headers.get("X-Forwarded-Host") or "").split(":", 1)[0].strip().lower()
-                allowed_hosts = {host_header, fwd_host, "localhost", "127.0.0.1", "0.0.0.0"}
-                if origin_host and origin_host not in allowed_hosts:
+                allowed_hosts = {h for h in (host_header, fwd_host, "localhost", "127.0.0.1") if h}
+                if not origin_host or origin_host not in allowed_hosts:
                     return True
             return False
+
+        def _has_valid_csrf_token(self) -> bool:
+            provided = (self.headers.get("X-Uniconn-Token") or "").strip()
+            return bool(provided) and hmac.compare_digest(provided, dashboard_token)
+
+        @staticmethod
+        def _local_exec_enabled() -> bool:
+            return os.environ.get("UNICONN_DASHBOARD_ALLOW_LOCAL_EXEC") == "1"
 
         def do_OPTIONS(self) -> None:
             self.send_response(204)
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Uniconn-Token")
             self.end_headers()
 
         def do_GET(self) -> None:
@@ -121,9 +136,18 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                 if parsed.path == "/api/status":
                     self._send_json(_dispatch_endpoint("status"))
                     return
+                if parsed.path in ("/api/shell", "/api/local", "/api/pytest", "/api/hitl") and not self._has_valid_csrf_token():
+                    self._send_json({"error": "Missing or invalid X-Uniconn-Token"}, status=403)
+                    return
                 if parsed.path == "/api/shell":
                     cmd = qs.get("cmd", ["pwd"])[0]
                     mode = qs.get("mode", ["fake"])[0]
+                    if mode == "local_pty" and not self._local_exec_enabled():
+                        self._send_json(
+                            {"error": "Local PTY execution is disabled (set UNICONN_DASHBOARD_ALLOW_LOCAL_EXEC=1 to enable)"},
+                            status=403,
+                        )
+                        return
                     reset = qs.get("reset", ["false"])[0].lower() == "true"
                     self._send_json(
                         _dispatch_endpoint(
@@ -134,6 +158,12 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                     )
                     return
                 if parsed.path == "/api/local":
+                    if not self._local_exec_enabled():
+                        self._send_json(
+                            {"error": "Local command endpoint is disabled (set UNICONN_DASHBOARD_ALLOW_LOCAL_EXEC=1 to enable)"},
+                            status=403,
+                        )
+                        return
                     cmd = qs.get("cmd", ["uname -a"])[0]
                     self._send_json(_dispatch_endpoint("local", {"cmd": cmd}))
                     return
@@ -144,7 +174,7 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                 if parsed.path == "/api/hitl":
                     status_param = qs.get("status", [None])[0]
                     self._send_json(
-                        _dispatch_endpoint("hitl", {"action": "list", "status": status_param})
+                        _dispatch_endpoint("hitl", {"action": "list", "status": status_param, "_http_safe": True})
                     )
                     return
 
@@ -153,22 +183,29 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                     return
 
                 if parsed.path.startswith("/docs/") or parsed.path.endswith((".svg", ".png", ".jpg", ".ico")):
-                    safe_rel = parsed.path.lstrip("/").replace("..", "")
-                    static_file = (Path(ROOT_DIR) / safe_rel).resolve()
-                    if static_file.is_file() and str(static_file).startswith(str(ROOT_DIR)):
+                    root_resolved = Path(ROOT_DIR).resolve()
+                    safe_rel = parsed.path.lstrip("/")
+                    static_file = (root_resolved / safe_rel).resolve()
+                    if static_file.is_file() and static_file.is_relative_to(root_resolved):
                         ctype = "image/svg+xml; charset=utf-8" if static_file.suffix == ".svg" else "application/octet-stream"
                         data = static_file.read_bytes()
                         self.send_response(200)
                         self.send_header("Content-Type", ctype)
                         self.send_header("Content-Length", str(len(data)))
+                        self.send_header("X-Content-Type-Options", "nosniff")
                         self.end_headers()
                         self.wfile.write(data)
                         return
 
-                body = HTML_TEMPLATE_PATH.read_bytes()
+                raw_html = HTML_TEMPLATE_PATH.read_text(encoding="utf-8")
+                csrf_meta = f'<meta name="uniconn-csrf" content="{dashboard_token}">\n'
+                rendered_html = raw_html.replace("</head>", f"{csrf_meta}</head>", 1)
+                body = rendered_html.encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Content-Type-Options", "nosniff")
                 self.end_headers()
                 self.wfile.write(body)
             except Exception as exc:
@@ -183,10 +220,19 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                         status=403,
                     )
                     return
+                if parsed.path.startswith("/api/") and not self._has_valid_csrf_token():
+                    self._send_json({"error": "Missing or invalid X-Uniconn-Token"}, status=403)
+                    return
                 payload = self._read_json_body()
                 if parsed.path == "/api/shell":
                     cmd = str(payload.get("cmd") or "pwd")
                     mode = str(payload.get("mode") or "fake")
+                    if mode == "local_pty" and not self._local_exec_enabled():
+                        self._send_json(
+                            {"error": "Local PTY execution is disabled (set UNICONN_DASHBOARD_ALLOW_LOCAL_EXEC=1 to enable)"},
+                            status=403,
+                        )
+                        return
                     try:
                         cols = max(20, int(payload.get("cols") or 120))
                     except (TypeError, ValueError):
@@ -211,7 +257,7 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                     )
                     return
                 if parsed.path == "/api/hooks":
-                    self._send_json(_dispatch_endpoint("hooks", payload, metrics_state))
+                    self._send_json(_dispatch_endpoint("hooks", {**payload, "_http_safe": True}, metrics_state))
                     return
                 if parsed.path == "/api/uri":
                     self._send_json(_dispatch_endpoint("uri", payload))
@@ -220,7 +266,7 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                     self._send_json(_dispatch_endpoint("pool", payload))
                     return
                 if parsed.path == "/api/screen":
-                    self._send_json(_dispatch_endpoint("screen", payload, screen_state))
+                    self._send_json(_dispatch_endpoint("screen", {**payload, "_http_safe": True}, screen_state))
                     return
                 if parsed.path == "/api/v070":
                     self._send_json(_dispatch_endpoint("v070", payload))
@@ -232,10 +278,10 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                     self._send_json(_dispatch_endpoint("v090", payload))
                     return
                 if parsed.path == "/api/hitl":
-                    self._send_json(_dispatch_endpoint("hitl", payload))
+                    self._send_json(_dispatch_endpoint("hitl", {**payload, "_http_safe": True}))
                     return
                 if parsed.path == "/api/policy":
-                    self._send_json(_dispatch_endpoint("policy", payload))
+                    self._send_json(_dispatch_endpoint("policy", {**payload, "_http_safe": True}))
                     return
                 if parsed.path == "/api/recipes":
                     self._send_json(_dispatch_endpoint("recipes", payload))

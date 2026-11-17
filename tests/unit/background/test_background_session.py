@@ -164,7 +164,7 @@ class TestResolveBackendAndStrategies:
                     exit_code=0,
                     command=command,
                 )
-            if "for f in /tmp/" in command:
+            if "for f in" in command and ".pid" in command:
                 return make_result(
                     "uniconn_p1_0 7788\n" if state["alive"] else "",
                     exit_code=0,
@@ -208,17 +208,22 @@ class TestCreate:
         calls = [c.args[0] for c in session.connection.run.call_args_list]
         assert calls[0] == "command -v screen >/dev/null 2>&1"
         assert calls[1] == "screen -ls"
+        assert calls[2].startswith("umask 077;")
         # Wrapper-скрипт содержит запись PID, POSIX trap (EXIT/INT/TERM), команду и запись exit code
-        assert "printf '%s'" in calls[2]
-        assert "echo $$ > /tmp/uniconn_s1.pid" in calls[2]
-        assert 'trap "rc=\\$?; [ -f /tmp/uniconn_s1.exit ] || echo \\$rc > /tmp/uniconn_s1.exit" EXIT' in calls[2]
-        assert 'trap "exit 130" INT' in calls[2]
-        assert 'trap "exit 143" TERM' in calls[2]
-        assert "stress-ng --cpu 4" in calls[2]
-        assert "echo $? > /tmp/uniconn_s1.exit" in calls[2]
-        assert "/tmp/uniconn_s1.sh" in calls[2]
-        assert calls[3].startswith("screen -dmS s1")
-        assert "/tmp/s1.log" in calls[3]
+        assert "printf '%s'" in calls[3]
+        assert "chmod 0700" in calls[3]
+        assert "echo $$ > /tmp/uniconn_s1/uniconn_s1.pid" in calls[3]
+        assert (
+            'trap "rc=\\$?; [ -f /tmp/uniconn_s1/uniconn_s1.exit ] || '
+            'echo \\$rc > /tmp/uniconn_s1/uniconn_s1.exit" EXIT'
+        ) in calls[3]
+        assert 'trap "exit 130" INT' in calls[3]
+        assert 'trap "exit 143" TERM' in calls[3]
+        assert "stress-ng --cpu 4" in calls[3]
+        assert "echo $? > /tmp/uniconn_s1/uniconn_s1.exit" in calls[3]
+        assert "/tmp/uniconn_s1/uniconn_s1.sh" in calls[3]
+        assert calls[4].startswith("screen -dmS s1")
+        assert "/tmp/s1.log" in calls[4]
 
     async def test_create_backend_not_found(self):
         """Create падает с BackgroundBackendError, если явно указанный screen не установлен."""

@@ -420,11 +420,13 @@ class NohupBackend:
         glob_prefix = f"uniconn_{prefix}" if prefix and not prefix.startswith("uniconn_") else (prefix or "uniconn_")
         safe_glob = re.sub(r"[^A-Za-z0-9._-]", "", glob_prefix)
         cmd = (
-            f"for f in /tmp/{safe_glob}*.pid; do "
-            'test -s "$f" || continue; '
+            f'for f in "${{XDG_RUNTIME_DIR:-/nonexistent}}"/uniconn_*/{safe_glob}*.pid '
+            f"/tmp/uniconn_*/{safe_glob}*.pid /tmp/{safe_glob}*.pid; do "
+            'test -s "$f" && test ! -L "$f" && test -O "$f" || continue; '
             'base=$(basename "$f" .pid); '
+            'fdir=$(dirname "$f"); '
             'sid=${base#uniconn_}; '
-            'test ! -f "/tmp/uniconn_${sid}.exit" || continue; '
+            'test ! -f "${fdir}/uniconn_${sid}.exit" || continue; '
             'pid=$(cat "$f"); '
             'if kill -0 "$pid" 2>/dev/null; then echo "$sid $pid"; fi; '
             "done"

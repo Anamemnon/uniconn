@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import posixpath
+import re
 import shlex
 import shutil
 from collections.abc import AsyncIterator, Mapping
@@ -28,8 +30,11 @@ from ._container_base import (
     _parse_ls_stat_output,
     _parse_stat_output,
     _symbolic_mode_to_int,
+    _validate_shell_bin,
 )
 from ._local import _LocalShellProcess
+
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class DockerTransport(ContainerExecTransportBase):
@@ -101,9 +106,12 @@ class DockerTransport(ContainerExecTransportBase):
 
         if env:
             for k, v in env.items():
-                args.extend(["-e", f"{k}={v}"])
+                key_str = str(k)
+                if not _ENV_KEY_RE.fullmatch(key_str):
+                    raise ValueError(f"Invalid environment variable name: {key_str!r}")
+                args.extend(["-e", f"{key_str}={v}"])
 
-        shell = str(self.config.options.get("shell", "/bin/sh"))
+        shell = _validate_shell_bin(self.config.options.get("shell", "/bin/sh"), self.name)
         args.extend([self.container, shell, "-c", command])
         return args
 
@@ -157,7 +165,7 @@ class DockerTransport(ContainerExecTransportBase):
         total_bytes = self._compute_local_size(local_path) if callable(progress_cb) else 0
         if callable(progress_cb):
             progress_cb(0, total_bytes)
-        parent = str(Path(remote_path).parent)
+        parent = posixpath.dirname(remote_path)
         if parent and parent not in (".", "/"):
             await self.mkdir(parent, parents=True, exist_ok=True)
         cp_args = [
@@ -221,7 +229,10 @@ class DockerTransport(ContainerExecTransportBase):
                 host=self.config.host,
             )
 
-        shell_bin = str(kwargs.pop("shell", self.config.options.get("shell", "/bin/sh")))
+        shell_bin = _validate_shell_bin(
+            kwargs.pop("shell", self.config.options.get("shell", "/bin/sh")),
+            self.name,
+        )
         args = [*self._base_cli_args(), "exec", "-i"]
         user = self.config.username or self.config.options.get("user")
         if user:

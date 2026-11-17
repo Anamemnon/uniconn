@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import re
 import time
@@ -16,15 +15,9 @@ from ...config.models import ConnectionConfig
 from ...exceptions import (
     AuthenticationError,
     ExecutionError,
-    OptionalDependencyError,
-)
-from ...exceptions import (
-    ConnectionError as UniconnConnectionError,
-)
-from ...exceptions import (
-    TimeoutError as UniconnTimeoutError,
 )
 from ...result import NetResult, Result, TelemetrySample
+from .._http_base import BaseAsyncHttpClient, resolve_niquests_module
 from ..base import BaseTransport
 from .base import (
     data_to_xml,
@@ -44,7 +37,7 @@ _HOST_META_LINK_RE = re.compile(
 )
 
 
-class RestconfClient:
+class RestconfClient(BaseAsyncHttpClient):
     """Асинхронный HTTP/HTTPS клиент для работы с RESTCONF API (RFC 8040)."""
 
     def __init__(
@@ -57,13 +50,19 @@ class RestconfClient:
         username: str | None = None,
         password: str | None = None,
         token: str | None = None,
-        verify_ssl: bool | str = False,
+        verify_ssl: bool | str = True,
         timeout: float = 30.0,
         discover_root: bool = False,
         http_handler: Callable[..., Any] | None = None,
     ) -> None:
         """Инициализировать клиент RESTCONF."""
-        self.base_url = base_url.rstrip("/")
+        super().__init__(
+            base_url=base_url,
+            verify=verify_ssl,
+            default_timeout=timeout,
+            multiplexed=False,
+            error_prefix="RESTCONF",
+        )
         self.root = "/" + root.strip("/") if root.strip("/") else "/restconf"
         self.fmt: Literal["json", "xml"] = "xml" if str(fmt).lower() == "xml" else "json"
         self.auth_type = auth_type.lower()
@@ -74,8 +73,18 @@ class RestconfClient:
         self.timeout = timeout
         self.discover_root = discover_root
         self._http_handler = http_handler
-        self._session: Any = None
         self._connected = False
+
+    @property
+    def _session(self) -> Any:
+        return self.session
+
+    @_session.setter
+    def _session(self, value: Any) -> None:
+        self.session = value
+
+    def _get_niquests(self) -> Any:
+        return resolve_niquests_module(__name__)
 
     @property
     def is_connected(self) -> bool:
@@ -103,20 +112,23 @@ class RestconfClient:
         if self._connected:
             return
         if self._http_handler is None:
-            try:
-                import niquests
-            except ImportError as exc:
-                raise OptionalDependencyError(
-                    "restconf transport requires 'niquests'. Install with: pip install uniconn[restconf]"
-                ) from exc
             auth = None
             if self.auth_type == "basic" and self.username is not None:
                 auth = (self.username, self.password or "")
-            self._session = niquests.AsyncSession(verify=self.verify_ssl, auth=auth)
+            self.session = self._build_session(
+                install_extra="restconf",
+                use_optional_dep=True,
+                pass_base_url=False,
+                auth=auth,
+            )
 
         self._connected = True
-        if self.discover_root:
-            await self._discover_restconf_root()
+        try:
+            if self.discover_root:
+                await self._discover_restconf_root()
+        except Exception:
+            await self.close()
+            raise
 
     async def _discover_restconf_root(self) -> str:
         """Определить корневой путь RESTCONF через ``GET /.well-known/host-meta`` (RFC 8040 Section 3.1)."""
@@ -133,10 +145,7 @@ class RestconfClient:
 
     async def close(self) -> None:
         """Закрыть HTTP-сессию."""
-        if self._session is not None:
-            with contextlib.suppress(Exception):
-                await self._session.close()
-            self._session = None
+        await super().close()
         self._connected = False
 
     async def raw_request(
@@ -187,26 +196,19 @@ class RestconfClient:
             serialized = json.dumps(resp_body, ensure_ascii=False)
             return int(status_code), serialized, serialized.encode("utf-8")
 
-        try:
-            resp = await self._session.request(
-                method.upper(),
-                full_url,
-                data=body_bytes,
-                params=dict(params) if params else None,
-                headers=req_headers,
-                timeout=eff_timeout,
-            )
-            raw_content = resp.content or b""
-            text_content = resp.text or raw_content.decode("utf-8", errors="replace")
-            return int(resp.status_code), text_content, raw_content
-        except TimeoutError as exc:
-            raise UniconnTimeoutError(
-                f"RESTCONF {method} {url_path} timed out after {eff_timeout}s"
-            ) from exc
-        except Exception as exc:
-            raise UniconnConnectionError(
-                f"RESTCONF HTTP error on {method} {url_path}: {exc}"
-            ) from exc
+        resp = await self._send_session_request(
+            self.session,
+            method.upper(),
+            full_url,
+            timeout=eff_timeout,
+            params=params,
+            data=body_bytes,
+            headers=req_headers,
+            use_method_attr=False,
+        )
+        raw_content = resp.content or b""
+        text_content = resp.text or raw_content.decode("utf-8", errors="replace")
+        return int(resp.status_code), text_content, raw_content
 
 
 class RestconfTransport(BaseTransport):
@@ -233,7 +235,7 @@ class RestconfTransport(BaseTransport):
         elif "insecure" in opts:
             verify_ssl = not bool(opts["insecure"])
         else:
-            verify_ssl = False
+            verify_ssl = True
         discover_root = bool(opts.get("discover_root", False)) or is_auto_root
         password_str = config.password.get_secret_value() if config.password else None
         token_str = str(opts["token"]) if "token" in opts else None

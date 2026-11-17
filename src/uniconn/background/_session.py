@@ -34,10 +34,12 @@ class BackgroundSession:
         remote_log_path: str,
         backend: BackgroundBackendStrategy | BackgroundBackendType = "auto",
         logger: logging.Logger | None = None,
+        runtime_dir: str | None = None,
     ):
         self._connection = connection
         self._session_id = session_id
         self._remote_log_path = remote_log_path
+        self._runtime_dir = runtime_dir
         if isinstance(backend, BackgroundBackendStrategy):
             self._backend: BackgroundBackendStrategy | None = backend
             self._backend_spec: BackgroundBackendType = "auto"
@@ -67,7 +69,41 @@ class BackgroundSession:
             parent = posixpath.dirname(raw)
             if parent:
                 return parent
+            return "/tmp"
+        if self._runtime_dir:
+            return self._runtime_dir
+        parent = posixpath.dirname(self._remote_log_path.strip())
+        if parent and parent not in ("", "/", "/tmp"):
+            return parent
         return "/tmp"
+
+    async def _ensure_posix_artifact_dir(self) -> str:
+        """Создать приватную 0700-директорию для артефактов, если они иначе попали бы в общий /tmp."""
+        cur = self._artifact_dir()
+        if cur != "/tmp":
+            return cur
+        safe_sid = "".join(
+            ch if (ch.isalnum() or ch in ("_", "-")) else "_" for ch in self._session_id
+        )
+        cmd = (
+            "umask 077; "
+            'if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ] '
+            '&& [ -O "$XDG_RUNTIME_DIR" ] && [ ! -L "$XDG_RUNTIME_DIR" ]; then '
+            f'd="$XDG_RUNTIME_DIR/uniconn_{safe_sid}"; '
+            'if [ -L "$d" ]; then exit 1; fi; '
+            'mkdir -p -m 0700 "$d" && chmod 0700 "$d" && printf "%s" "$d"; '
+            "else "
+            f'mktemp -d "${{TMPDIR:-/tmp}}/uniconn_{safe_sid}_XXXXXX"; '
+            "fi"
+        )
+        res = await self._connection.run(cmd, raise_on_error=False)
+        if not res.ok:
+            raise BackgroundBackendError(
+                f"Не удалось создать приватную директорию артефактов для {self._session_id!r}: {res.stderr.strip()}"
+            )
+        resolved = res.stdout.strip().splitlines()[-1].strip() if res.stdout.strip() else ""
+        self._runtime_dir = resolved or f"/tmp/uniconn_{safe_sid}"
+        return self._runtime_dir
 
     def _join_artifact(self, filename: str) -> str:
         base = self._artifact_dir()
@@ -155,10 +191,14 @@ class BackgroundSession:
             )
             write_result = await self._connection.run(WindowsJobBackend._wrap_ps(write_cmd))
         else:
+            art_dir = await self._ensure_posix_artifact_dir()
             # Wrapper-скрипт решает проблему экранирования кавычек, фиксирует PID
             # оболочки и гарантированно записывает код возврата (включая SIGINT/SIGTERM) в exit-файл.
+            q_dir = shlex.quote(art_dir)
             q_pid = shlex.quote(self.pid_file_path)
             q_exit = shlex.quote(self.exit_file_path)
+            q_script = shlex.quote(self.script_path)
+            q_log = shlex.quote(self._remote_log_path)
             script = (
                 "#!/bin/sh\n"
                 f"echo $$ > {q_pid}\n"
@@ -169,8 +209,11 @@ class BackgroundSession:
                 f"echo $? > {q_exit}\n"
             )
             write_result = await self._connection.run(
-                f"rm -f {shlex.quote(self.exit_file_path)} {shlex.quote(self.pid_file_path)} && "
-                f"printf '%s' {shlex.quote(script)} > {shlex.quote(self.script_path)}"
+                f"umask 077 && [ ! -L {q_dir} ] && mkdir -p -m 0700 {q_dir} && chmod 0700 {q_dir} && "
+                f"[ ! -L {q_exit} ] && [ ! -L {q_pid} ] && [ ! -L {q_script} ] && [ ! -L {q_log} ] && "
+                f"rm -f {q_exit} {q_pid} && "
+                f"printf '%s' {shlex.quote(script)} > {q_script} && "
+                f"chmod 0700 {q_script}"
             )
         if not write_result.ok:
             raise BackgroundBackendError(

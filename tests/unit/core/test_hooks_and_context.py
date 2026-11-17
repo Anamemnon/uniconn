@@ -30,50 +30,82 @@ from uniconn.transports._ssh import SSHTransport
 
 @pytest.mark.asyncio
 async def test_sudo_with_password_via_stdin():
-    """При sudo=True пароль передаётся через закрытый stdin, а не в строке команды."""
+    """При sudo=True сначала проверяется NOPASSWD без утечки пароля, затем передаётся пароль в stdin и кэшируется."""
     config = ConnectionConfig(
         transport="local",
         password=SecretStr("my_sudo_secret"),
     )
     conn = Connection.from_config(config)
-    mock_run = AsyncMock(
-        return_value=MagicMock(
+
+    async def fake_run(cmd: str, **kwargs: object) -> MagicMock:
+        if cmd.startswith("sudo -n "):
+            return MagicMock(
+                exit_code=1,
+                stdout="",
+                stderr="sudo: a password is required\n",
+                duration=0.01,
+                command=cmd,
+                ok=False,
+            )
+        return MagicMock(
             exit_code=0,
             stdout="root\n",
             stderr="",
             duration=0.01,
-            command="sudo -S -k -p '' -- sh -c whoami",
+            command=cmd,
             ok=True,
         )
-    )
+
+    mock_run = AsyncMock(side_effect=fake_run)
     conn._transport.run = mock_run  # type: ignore[method-assign]
     conn._transport._connected = True
 
-    await conn.run("whoami", sudo=True)
+    res = await conn.run("whoami", sudo=True)
+    assert res.ok
+    assert len(mock_run.call_args_list) == 2
 
-    call_args = mock_run.call_args
-    executed_cmd = call_args.args[0]
-    passed_input = call_args.kwargs["input"]
+    probe_call, retry_call = mock_run.call_args_list
+    assert probe_call.args[0] == "sudo -n -- sh -c whoami"
+    assert "input" not in probe_call.kwargs
 
+    executed_cmd = retry_call.args[0]
+    passed_input = retry_call.kwargs["input"]
     assert "my_sudo_secret" not in executed_cmd
     assert executed_cmd == "sudo -S -k -p '' -- sh -c whoami"
     assert passed_input == "my_sudo_secret\n"
 
+    # Повторный вызов использует кэш nopasswd=False и не тратит лишний запрос на пробу
+    res2 = await conn.run("id", sudo=True)
+    assert res2.ok
+    assert len(mock_run.call_args_list) == 3
+    assert mock_run.call_args_list[2].args[0] == "sudo -S -k -p '' -- sh -c id"
+
 
 @pytest.mark.asyncio
 async def test_sudo_with_custom_user_and_combined_stdin():
-    """sudo_user и sudo_password корректно комбинируются с пользовательским input."""
+    """sudo_user и sudo_password корректно комбинируются с пользовательским input после sudo -n."""
     conn = Connection.from_uri("local://")
-    mock_run = AsyncMock(
-        return_value=MagicMock(
+
+    async def fake_run(cmd: str, **kwargs: object) -> MagicMock:
+        if cmd.startswith("sudo -n "):
+            return MagicMock(
+                exit_code=1,
+                stdout="",
+                stderr="sudo: a password is required\n",
+                duration=0.01,
+                command=cmd,
+                ok=False,
+            )
+        return MagicMock(
             exit_code=0,
             stdout="ok\n",
             stderr="",
             duration=0.01,
-            command="replaced",
+            command=cmd,
             ok=True,
         )
-    )
+
+    mock_run = AsyncMock(side_effect=fake_run)
     conn._transport.run = mock_run  # type: ignore[method-assign]
     conn._transport._connected = True
 
@@ -85,9 +117,34 @@ async def test_sudo_with_custom_user_and_combined_stdin():
         input="SELECT 1;\n",
     )
 
-    call_args = mock_run.call_args
-    assert call_args.args[0] == "sudo -S -k -p '' -u postgres -- sh -c cat"
-    assert call_args.kwargs["input"] == "pg_secret\nSELECT 1;\n"
+    assert len(mock_run.call_args_list) == 2
+    assert mock_run.call_args_list[0].kwargs.get("input") == "SELECT 1;\n"
+    retry_call = mock_run.call_args_list[1]
+    assert retry_call.args[0] == "sudo -S -k -p '' -u postgres -- sh -c cat"
+    assert retry_call.kwargs["input"] == "pg_secret\nSELECT 1;\n"
+
+
+@pytest.mark.asyncio
+async def test_sudo_nopasswd_never_leaks_password_to_stdin():
+    """При активном NOPASSWD даже при заданном sudo_password пароль не попадает в stdin команды."""
+    conn = Connection.from_uri("local://")
+    mock_run = AsyncMock(
+        return_value=MagicMock(
+            exit_code=0,
+            stdout="",
+            stderr="",
+            duration=0.01,
+            command="sudo -n -- sh -c cat",
+            ok=True,
+        )
+    )
+    conn._transport.run = mock_run  # type: ignore[method-assign]
+    conn._transport._connected = True
+
+    await conn.run("cat", sudo=True, sudo_password="top_secret_should_not_leak")
+    assert mock_run.call_count == 1
+    assert mock_run.call_args.args[0] == "sudo -n -- sh -c cat"
+    assert "input" not in mock_run.call_args.kwargs
 
 
 @pytest.mark.asyncio

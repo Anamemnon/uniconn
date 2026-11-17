@@ -38,6 +38,8 @@ from .models import (
     build_auth_context,
     is_within_maintenance_windows,
 )
+from .regex_safety import validate_safe_regex
+from .url_validation import build_ssrf_safe_opener, validate_outbound_url
 
 __all__ = [
     "BUILTIN_POLICY_PRESETS",
@@ -63,6 +65,7 @@ __all__ = [
     "ResourceContext",
     "SubjectContext",
     "build_auth_context",
+    "build_ssrf_safe_opener",
     "create_policy_engine",
     "is_within_maintenance_windows",
     "load_declarative_rules",
@@ -73,4 +76,6 @@ __all__ = [
     "rule_prod_maintenance_window_guard",
     "rule_readonly_role_guard",
     "rule_strict_prod_deny_junior",
+    "validate_outbound_url",
+    "validate_safe_regex",
 ]

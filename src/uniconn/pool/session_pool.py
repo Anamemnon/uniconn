@@ -75,6 +75,7 @@ class SSHSessionPool:
             raise ConfigurationError("min_sessions_per_conn must be >= 1")
 
         self._uri = uri
+        self._uri_safe = self._sanitize_uri(uri)
         self._max_sessions = max_sessions_per_conn
         self._max_connections = max_connections
         self._min_sessions = min(min_sessions_per_conn, max_sessions_per_conn)
@@ -158,10 +159,20 @@ class SSHSessionPool:
         """Автоматический предохранитель пула SSH-сессий (если настроен)."""
         return self._circuit_breaker
 
+    @staticmethod
+    def _sanitize_uri(uri: str) -> str:
+        from .._logging import SecretMaskingFilter
+        from ..config.models import ConnectionConfig
+
+        try:
+            return ConnectionConfig.from_uri(uri).uri_safe
+        except Exception:
+            return SecretMaskingFilter._mask_string(uri)
+
     def stats(self) -> dict[str, Any]:
         """Вернуть сводку текущих лимитов и телеметрии пула."""
         return {
-            "uri": self._uri,
+            "uri": self._uri_safe,
             "max_sessions_per_conn": self._max_sessions,
             "max_connections": self._max_connections,
             "min_sessions_per_conn": self._min_sessions,
@@ -235,7 +246,7 @@ class SSHSessionPool:
                 )
                 if active_count < self._max_connections:
                     self._logger.debug(
-                        f"Creating SSH connection #{active_count + 1} for {self._uri}"
+                        f"Creating SSH connection #{active_count + 1} for {self._uri_safe}"
                     )
                     conn = Connection.from_uri(
                         self._uri,
@@ -244,6 +255,7 @@ class SSHSessionPool:
                     )
                     new_slot = _PooledConnectionSlot(conn=conn, in_flight=1)
                     self._slots.append(new_slot)
+                    self._condition.notify_all()
                     return new_slot, True
 
                 await self._condition.wait()
@@ -308,7 +320,7 @@ class SSHSessionPool:
                         self._max_connections = new_max_conns
                         self._scale_down_events += 1
                         self._logger.warning(
-                            f"Adaptive SSHSessionPool ({self._uri}): new connection rejected; "
+                            f"Adaptive SSHSessionPool ({self._uri_safe}): new connection rejected; "
                             f"scaling down max_connections {old_max} -> {new_max_conns}"
                         )
                     self._condition.notify_all()
@@ -337,7 +349,7 @@ class SSHSessionPool:
                         self._max_sessions = target_sessions
                         self._scale_down_events += 1
                         self._logger.warning(
-                            f"Adaptive SSHSessionPool ({self._uri}): channel limit reached at "
+                            f"Adaptive SSHSessionPool ({self._uri_safe}): channel limit reached at "
                             f"concurrency={channel_idx}; scaling down max_sessions_per_conn "
                             f"{old_sessions} -> {target_sessions}"
                         )
@@ -356,7 +368,7 @@ class SSHSessionPool:
     ) -> tuple[Result | None, bool]:
         """Выполнить команду в выделенном слоте."""
         if self._circuit_breaker is not None:
-            self._circuit_breaker.check_or_raise(host=self._uri, command=command)
+            self._circuit_breaker.check_or_raise(host=self._uri_safe, command=command)
         if self._rate_limiter is not None:
             await self._rate_limiter.acquire()
 
@@ -373,7 +385,7 @@ class SSHSessionPool:
                 and not await slot.conn.is_alive()
             ):
                 self._logger.debug(
-                    f"Unhealthy connection detected in SSHSessionPool for {self._uri}; reconnecting"
+                    f"Unhealthy connection detected in SSHSessionPool for {self._uri_safe}; reconnecting"
                 )
                 await slot.conn.close()
             res = await slot.conn.run(command, **kwargs)
@@ -394,19 +406,30 @@ class SSHSessionPool:
 
     async def check_health(self, timeout: float | None = None) -> int:
         """Проверить живость всех соединений пула и удалить оборванные."""
-        dead_conns: list[Connection] = []
         async with self._condition:
-            for slot in list(self._slots):
-                if slot.closed:
-                    continue
-                if await slot.conn.is_alive(timeout=timeout):
-                    continue
-                slot.draining = True
-                if slot.in_flight == 0:
-                    slot.closed = True
-                    self._slots.remove(slot)
-                    dead_conns.append(slot.conn)
-            self._condition.notify_all()
+            candidates = [s for s in self._slots if not s.closed]
+
+        probe_results = await asyncio.gather(
+            *(slot.conn.is_alive(timeout=timeout) for slot in candidates),
+            return_exceptions=True,
+        )
+        dead_slot_ids = {
+            id(slot)
+            for slot, ok in zip(candidates, probe_results, strict=True)
+            if isinstance(ok, BaseException) or not ok
+        }
+
+        dead_conns: list[Connection] = []
+        if dead_slot_ids:
+            async with self._condition:
+                for slot in list(self._slots):
+                    if id(slot) in dead_slot_ids and not slot.closed:
+                        slot.draining = True
+                        if slot.in_flight == 0:
+                            slot.closed = True
+                            self._slots.remove(slot)
+                            dead_conns.append(slot.conn)
+                self._condition.notify_all()
 
         for conn in dead_conns:
             await conn.close()
@@ -429,7 +452,12 @@ class SSHSessionPool:
         slot, _ = await self._acquire_slot()
         try:
             res, _ = await self._run_on_slot(slot, command, **kwargs)
-            assert res is not None
+            if res is None:
+                raise ConnectionError(
+                    f"SSHSessionPool exhausted adaptive recovery attempts for {self._uri_safe}",
+                    command=command,
+                    host=self._uri_safe,
+                )
             return res
         finally:
             await self._release_slot(slot)

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import difflib
 import re
 import shlex
@@ -11,8 +10,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from ..._logging import get_logger
+from ...exceptions import UniconnError
 from ...result import EnsureResult
 from .service_managers import ServiceState
+
+_logger = get_logger("uniconn.services.provisioning.system")
 
 if TYPE_CHECKING:
     from .facade import StateManagementService
@@ -253,6 +256,10 @@ async def ensure_user(
 ) -> EnsureResult:
     """Идемпотентно управлять системным пользователем и его группами."""
     username = _validate_username(username)
+    if group is not None:
+        group = _validate_username(group)
+    if groups is not None:
+        groups = [_validate_username(g) for g in groups]
     is_dry_run = svc._conn.dry_run if dry_run is None else dry_run
 
     if not svc._can_inspect_in_dry_run():
@@ -461,6 +468,7 @@ async def ensure_authorized_key(
     dry_run: bool | None = None,
 ) -> EnsureResult:
     """Идемпотентно управлять SSH-ключами в ``~/.ssh/authorized_keys``."""
+    user = _validate_username(user)
     is_dry_run = svc._conn.dry_run if dry_run is None else dry_run
     clean_key = key.strip()
     if not clean_key:
@@ -486,9 +494,11 @@ async def ensure_authorized_key(
     file_exists = await svc._conn.files.exists(auth_file)
     old_text = ""
     if file_exists:
-        with contextlib.suppress(Exception):
+        try:
             raw = await svc._conn.files.read_file(auth_file, encoding="utf-8")
             old_text = raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace")
+        except (OSError, UniconnError, UnicodeDecodeError) as exc:
+            _logger.debug("Unable to read %s before update: %s", auth_file, exc)
 
     existing_lines = [ln.rstrip("\r") for ln in old_text.splitlines()]
     desired_keys = [ln.strip() for ln in clean_key.splitlines() if ln.strip()]

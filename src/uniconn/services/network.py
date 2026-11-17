@@ -8,9 +8,12 @@ import json
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
-from ..exceptions import CapabilityNotSupportedError
+from .._logging import get_logger
+from ..exceptions import CapabilityNotSupportedError, CassetteMissError, UniconnError
 from ..result import NetResult, TelemetrySample
 from ..transports.network.base import StructuredNetworkTransport
+
+_logger = get_logger("uniconn.services.network")
 
 if TYPE_CHECKING:
     from ..core.connection import Connection
@@ -103,7 +106,8 @@ class NetworkOperationsService:
                         duration=replay_res.duration,
                         host=self._conn.config.host,
                     )
-                except Exception:
+                except (CassetteMissError, json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+                    _logger.debug("Network cassette replay miss for %s: %s", cmd_tag, exc)
                     if not can_record or real_tr is None:
                         raise
 
@@ -350,10 +354,12 @@ class NetworkOperationsService:
             )
             if can_replay:
                 replayed = False
-                with contextlib.suppress(Exception):
+                try:
                     async for line in cassette_proxy.stream(stream_key, timeout=timeout):
                         replayed = True
                         yield TelemetrySample.from_dict(json.loads(line))
+                except (CassetteMissError, json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
+                    _logger.debug("Network subscribe cassette replay miss for %s: %s", stream_key, exc)
                 if replayed or not can_record or real_tr is None:
                     return
 
@@ -413,8 +419,10 @@ class NetworkOperationsService:
         try:
             yield lock_res
         finally:
-            with contextlib.suppress(Exception):
+            try:
                 await self.unlock(datastore, timeout=timeout)
+            except (OSError, UniconnError) as exc:
+                _logger.debug("Network unlock cleanup failed for %s: %s", datastore, exc)
 
     @contextlib.asynccontextmanager
     async def transaction(
@@ -443,13 +451,17 @@ class NetworkOperationsService:
             )
             commit_res.raise_for_status()
         except Exception:
-            with contextlib.suppress(Exception):
+            try:
                 await self.discard_changes(timeout=timeout)
+            except (OSError, UniconnError) as exc:
+                _logger.debug("Network discard_changes rollback failed: %s", exc)
             raise
         finally:
             if lock:
-                with contextlib.suppress(Exception):
+                try:
                     await self.unlock(datastore, timeout=timeout)
+                except (OSError, UniconnError) as exc:
+                    _logger.debug("Network transaction unlock cleanup failed for %s: %s", datastore, exc)
 
 
 __all__ = ["NetworkOperationsService"]

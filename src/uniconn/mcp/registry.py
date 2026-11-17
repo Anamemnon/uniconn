@@ -43,7 +43,7 @@ def mask_uri_secrets(uri: str) -> str:
                 netloc = f"{user}:***REDACTED***@{hostinfo}"
         query = _QUERY_SECRET_RE.sub(r"\1***REDACTED***", parts.query)
         return urlunsplit((parts.scheme, netloc, parts.path, query, parts.fragment))
-    except Exception:
+    except (ValueError, TypeError, AttributeError, ConfigurationError):
         return SecretMaskingFilter._mask_string(uri)
 
 

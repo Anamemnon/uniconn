@@ -78,7 +78,7 @@ class TestSSHConnect:
         assert kwargs["port"] == 22
         assert kwargs["username"] == "admin"
         assert kwargs["password"] == "secret"
-        assert kwargs["known_hosts"] is None  # режим "no" по умолчанию
+        assert kwargs["known_hosts"] == ()  # strict режим по умолчанию (без доверенных ключей)
 
     @pytest.mark.asyncio
     async def test_connect_permission_denied(self, asyncssh_mock, ssh_config):
@@ -106,9 +106,15 @@ class TestSSHConnect:
 class TestSSHKnownHosts:
     """Тесты режимов known_hosts."""
 
-    def test_known_hosts_no(self, asyncssh_mock, ssh_config):
-        """Режим "no" — проверка отключена."""
+    def test_known_hosts_strict_default(self, asyncssh_mock, ssh_config):
+        """По умолчанию без ~/.ssh/known_hosts включена строгая проверка (пустой tuple)."""
         transport = SSHTransport(ssh_config)
+        assert transport._resolve_known_hosts() == ()
+
+    def test_known_hosts_no(self, asyncssh_mock, ssh_config):
+        """Режим "no" (insecure opt-out) — проверка отключена."""
+        config = ssh_config.model_copy(update={"options": {"known_hosts": "no"}})
+        transport = SSHTransport(config)
         assert transport._resolve_known_hosts() is None
 
     def test_known_hosts_explicit_file(self, asyncssh_mock, ssh_config, tmp_path):

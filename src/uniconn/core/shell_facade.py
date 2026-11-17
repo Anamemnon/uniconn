@@ -157,6 +157,7 @@ async def raw_open_shell(
     if not conn.transport.is_connected:
         await conn.transport.connect()
 
+    shell_type = str(kwargs.pop("shell_type", conn.config.options.get("shell_type", "posix"))).strip().lower()
     proc = await conn.transport.open_shell(
         term_type=term_type,
         term_size=term_size,
@@ -168,9 +169,13 @@ async def raw_open_shell(
         default_timeout=conn.config.timeout,
         observers=list(conn.operation_observers),
         conn=conn,
+        shell_type=shell_type,
     )
     should_init_posix = (
-        (conn.transport_name not in ("serial", "uart"))
+        (
+            conn.transport_name not in ("serial", "uart")
+            and shell_type in ShellSession._POSIX_SHELL_TYPES
+        )
         if init_posix is None
         else init_posix
     )

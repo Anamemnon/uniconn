@@ -54,7 +54,7 @@ class SSHTransport(BaseTransport):
         self._sftp_inst: SFTPClientAdapter | None = SFTPClientAdapter(self)
         self._ssh_config_proxy_command: str | None = None
         self._shell_procs: list[Any] = []
-        self._known_hosts = self.config.options.get("known_hosts", "no")
+        self._known_hosts = self.config.options.get("known_hosts", "strict")
 
     @property
     def _jump_manager(self) -> SSHJumpChainManager:
@@ -116,7 +116,7 @@ class SSHTransport(BaseTransport):
         """Подставить токены OpenSSH (``%h``, ``%p``, ``%r``, ``%%``) в строку ProxyCommand."""
         return OpenSSHConfigParser.expand_proxy_command(template, host, port, username)
 
-    def _resolve_known_hosts(self) -> str | None:
+    def _resolve_known_hosts(self) -> str | tuple[str, ...] | None:
         """Определить политику проверки known_hosts."""
         return OpenSSHConfigParser.resolve_known_hosts(self._known_hosts, host=self.config.host)
 
@@ -244,7 +244,11 @@ class SSHTransport(BaseTransport):
                 self.config.options.get("proxy_command")
                 or self._ssh_config_proxy_command
             )
-            if raw_proxy_cmd and str(raw_proxy_cmd).lower() != "none":
+            if (
+                "tunnel" not in connect_kwargs
+                and raw_proxy_cmd
+                and str(raw_proxy_cmd).lower() != "none"
+            ):
                 expanded_cmd = self.expand_proxy_command(
                     str(raw_proxy_cmd),
                     host=connect_kwargs.get("host"),
@@ -252,9 +256,7 @@ class SSHTransport(BaseTransport):
                     username=connect_kwargs.get("username"),
                 )
                 self._active_proxy_command = expanded_cmd
-                proxy_proc = await self._start_proxy_command(expanded_cmd)
-                if "tunnel" not in connect_kwargs:
-                    connect_kwargs["tunnel"] = proxy_proc
+                connect_kwargs["tunnel"] = await self._start_proxy_command(expanded_cmd)
 
             self._conn = await asyncssh.connect(**connect_kwargs)
             self._connected = True
@@ -307,7 +309,7 @@ class SSHTransport(BaseTransport):
         try:
             result = await asyncio.wait_for(
                 self._conn.run("true"),
-                timeout=timeout or 5.0,
+                timeout=timeout if timeout is not None else 5.0,
             )
             return result.exit_status == 0
         except Exception:
@@ -369,8 +371,9 @@ class SSHTransport(BaseTransport):
 
         duration = time.monotonic() - start_time
 
+        exit_code = proc.returncode if proc.returncode is not None else -1
         return Result(
-            exit_code=proc.returncode or 0,
+            exit_code=exit_code,
             stdout=stdout if isinstance(stdout, str) else stdout.decode(),
             stderr=stderr if isinstance(stderr, str) else stderr.decode(),
             duration=duration,
@@ -433,7 +436,7 @@ class SSHTransport(BaseTransport):
         raw_stderr = (
             stderr.encode("utf-8") if isinstance(stderr, str) else bytes(stderr or b"")
         )
-        exit_code = proc.returncode or 0
+        exit_code = proc.returncode if proc.returncode is not None else -1
         if raise_on_error and exit_code != 0:
             raise ExecutionError(
                 f"Command failed with exit code {exit_code}",

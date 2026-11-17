@@ -32,6 +32,7 @@ from typing import Any, Self
 
 from ._logging import SecretMaskingFilter, get_struct_logger, log_event
 from .result import Result
+from .security.regex_safety import validate_safe_regex
 from .telemetry import (
     InMemoryTracer,
     OtelTracingHook,
@@ -207,7 +208,7 @@ def blocklist_hook(
         if blocked_patterns is None
         else list(blocked_patterns)
     )
-    compiled = [re.compile(p) for p in patterns]
+    compiled = [validate_safe_regex(p) for p in patterns]
 
     def _on_before_run(
         command: str,

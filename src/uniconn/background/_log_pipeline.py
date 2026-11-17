@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import shlex
+import string
 import tarfile
 import threading
 import time
@@ -33,6 +34,9 @@ logger = logging.getLogger(__name__)
 # Символы, безопасные для подстановки в имя файла (без разделителей путей)
 _SAFE_NAME_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+)
+_ALLOWED_TEMPLATE_FIELDS = frozenset(
+    {"pool_id", "session_id", "idx", "timestamp", "host", "command"}
 )
 
 MatchCallback = Callable[[LogMatchEvent], Any]
@@ -318,6 +322,36 @@ class LocalFileHandler(LogHandler):
 
     DEFAULT_TEMPLATE = "{session_id}.log"
 
+    @staticmethod
+    def _validate_name_template(template: str) -> str:
+        """Проверить шаблон имени файла на допустимые поля форматирования и отсутствие обхода пути."""
+        if not template or "\x00" in template:
+            raise ConfigurationError("LocalFileHandler name_template must be a non-empty valid string")
+        try:
+            parsed = list(string.Formatter().parse(template))
+        except ValueError as exc:
+            raise ConfigurationError(f"Invalid LocalFileHandler name_template {template!r}: {exc}") from exc
+        for _literal, field_name, format_spec, conversion in parsed:
+            if field_name is None:
+                continue
+            if not field_name or any(ch in field_name for ch in (".", "[", "]")):
+                raise ConfigurationError(
+                    f"Unsupported attribute/index access in name_template field: {field_name!r}"
+                )
+            if field_name not in _ALLOWED_TEMPLATE_FIELDS:
+                raise ConfigurationError(
+                    f"Unsupported placeholder {field_name!r} in LocalFileHandler name_template"
+                )
+            if conversion is not None:
+                raise ConfigurationError(
+                    f"Format conversions are not allowed in name_template: {field_name!r}"
+                )
+            if format_spec and field_name != "timestamp":
+                raise ConfigurationError(
+                    f"Format specifiers are only allowed for 'timestamp' in name_template: {field_name!r}"
+                )
+        return template
+
     def __init__(
         self,
         local_dir: str | Path,
@@ -334,7 +368,7 @@ class LocalFileHandler(LogHandler):
         logger: logging.Logger | None = None,
     ):
         self._local_dir = Path(local_dir)
-        self._name_template = name_template or self.DEFAULT_TEMPLATE
+        self._name_template = self._validate_name_template(name_template or self.DEFAULT_TEMPLATE)
         self._pool_id = pool_id
         self._idx = idx
         self._host = host
@@ -365,7 +399,14 @@ class LocalFileHandler(LogHandler):
                 host=_sanitize_name(self._host),
                 command=_sanitize_name(self._command),
             )
-            self._paths[session_id] = self._local_dir / name
+            base_resolved = self._local_dir.resolve()
+            candidate = self._local_dir / name
+            candidate_resolved = candidate.resolve()
+            if candidate_resolved == base_resolved or not candidate_resolved.is_relative_to(base_resolved):
+                raise ConfigurationError(
+                    f"Resolved log path {candidate!s} escapes local_dir {self._local_dir!s}"
+                )
+            self._paths[session_id] = candidate
         return self._paths[session_id]
 
     @property
@@ -581,21 +622,24 @@ class TimelineHandler(LogHandler):
         """Общее количество записанных событий в хронологический лог."""
         return self._seq
 
+    def _write_records_locked(self, records: list[dict[str, Any]]) -> None:
+        if not self._dir_ensured:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._dir_ensured = True
+        payload = "".join(
+            json.dumps(rec, ensure_ascii=False) + "\n" for rec in records
+        )
+        with self._path.open("a", encoding="utf-8", newline="\n") as f:
+            f.write(payload)
+            if self._fsync:
+                f.flush()
+                os.fsync(f.fileno())
+
     def _append_records(self, records: list[dict[str, Any]]) -> None:
         if not records:
             return
         with self._lock:
-            if not self._dir_ensured:
-                self._path.parent.mkdir(parents=True, exist_ok=True)
-                self._dir_ensured = True
-            payload = "".join(
-                json.dumps(rec, ensure_ascii=False) + "\n" for rec in records
-            )
-            with self._path.open("a", encoding="utf-8", newline="\n") as f:
-                f.write(payload)
-                if self._fsync:
-                    f.flush()
-                    os.fsync(f.fileno())
+            self._write_records_locked(records)
 
     def record_event(
         self,
@@ -606,21 +650,45 @@ class TimelineHandler(LogHandler):
         extra: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Сформировать и синхронно записать одиночное событие в ``timeline.jsonl``."""
-        self._seq += 1
-        now_mono = time.monotonic()
-        elapsed_ms = round(max(0.0, (now_mono - self._started_mono) * 1000.0), 3)
-        rec: dict[str, Any] = {
-            "seq": self._seq,
-            "timestamp_utc": _utc_now_iso(),
-            "elapsed_ms": elapsed_ms,
-            "stream": stream,
-            "kind": kind,
-            "text": text.rstrip("\r\n"),
-        }
-        if extra:
-            rec.update(extra)
-        self._append_records([rec])
-        return rec
+        with self._lock:
+            self._seq += 1
+            now_mono = time.monotonic()
+            elapsed_ms = round(max(0.0, (now_mono - self._started_mono) * 1000.0), 3)
+            rec: dict[str, Any] = {
+                "seq": self._seq,
+                "timestamp_utc": _utc_now_iso(),
+                "elapsed_ms": elapsed_ms,
+                "stream": stream,
+                "kind": kind,
+                "text": text.rstrip("\r\n"),
+            }
+            if extra:
+                rec.update(extra)
+            self._write_records_locked([rec])
+            return rec
+
+    def _append_chunk_sync(
+        self,
+        session_id: str,
+        lines: list[str],
+        ts_utc: str,
+        elapsed_ms: float,
+    ) -> None:
+        with self._lock:
+            records: list[dict[str, Any]] = []
+            for clean_line in lines:
+                self._seq += 1
+                records.append(
+                    {
+                        "seq": self._seq,
+                        "timestamp_utc": ts_utc,
+                        "elapsed_ms": elapsed_ms,
+                        "stream": session_id,
+                        "kind": "line",
+                        "text": clean_line,
+                    }
+                )
+            self._write_records_locked(records)
 
     async def handle(self, session_id: str, chunk: list[str]) -> None:
         """Записать порцию строк потока как события ``kind='line'``."""
@@ -630,20 +698,7 @@ class TimelineHandler(LogHandler):
         now_mono = time.monotonic()
         elapsed_ms = round(max(0.0, (now_mono - self._started_mono) * 1000.0), 3)
         ts_utc = _utc_now_iso()
-        records: list[dict[str, Any]] = []
-        for clean_line in lines:
-            self._seq += 1
-            records.append(
-                {
-                    "seq": self._seq,
-                    "timestamp_utc": ts_utc,
-                    "elapsed_ms": elapsed_ms,
-                    "stream": session_id,
-                    "kind": "line",
-                    "text": clean_line,
-                }
-            )
-        await asyncio.to_thread(self._append_records, records)
+        await asyncio.to_thread(self._append_chunk_sync, session_id, lines, ts_utc, elapsed_ms)
 
     async def finalize(self) -> Path:
         """Завершить работу с файлом хронологической шкалы и вернуть его путь."""

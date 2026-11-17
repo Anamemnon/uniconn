@@ -79,6 +79,7 @@ class ApprovalRequest(BaseModel):
     risk_tier: ActionRiskTier
     risk_reasons: list[str] = Field(default_factory=list)
     diff: str | None = None
+    diff_sha256: str | None = None
     status: ApprovalStatus = ApprovalStatus.PENDING
     decided_by: str | None = None
     decided_at: datetime | None = None

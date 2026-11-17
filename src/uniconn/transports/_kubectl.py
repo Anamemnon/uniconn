@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -23,7 +24,7 @@ from typing import Any
 
 from ..config.models import ConnectionConfig
 from ..exceptions import ConfigurationError, ConnectionError
-from ._container_base import ContainerExecTransportBase
+from ._container_base import ContainerExecTransportBase, _validate_shell_bin
 from ._local import _LocalShellProcess
 
 _PORT_FORWARD_RE = re.compile(
@@ -159,7 +160,7 @@ class KubectlTransport(ContainerExecTransportBase):
         if self.container:
             args.extend(["-c", self.container])
 
-        shell = str(self.config.options.get("shell", "/bin/sh"))
+        shell = _validate_shell_bin(self.config.options.get("shell", "/bin/sh"), self.name)
         wrapped_cmd = self._wrap_command_with_context(command, cwd=cwd, env=env)
         args.extend([self.pod, "--", shell, "-c", wrapped_cmd])
         return args
@@ -224,7 +225,7 @@ class KubectlTransport(ContainerExecTransportBase):
         total_bytes = self._compute_local_size(local_path) if callable(progress_cb) else 0
         if callable(progress_cb):
             progress_cb(0, total_bytes)
-        parent = str(Path(remote_path).parent)
+        parent = posixpath.dirname(remote_path)
         if parent and parent not in (".", "/"):
             await self.mkdir(parent, parents=True, exist_ok=True)
         cp_args = [*self._base_cli_args(), "cp"]
@@ -284,7 +285,10 @@ class KubectlTransport(ContainerExecTransportBase):
                 host=self.config.host,
             )
 
-        shell_bin = str(kwargs.pop("shell", self.config.options.get("shell", "/bin/sh")))
+        shell_bin = _validate_shell_bin(
+            kwargs.pop("shell", self.config.options.get("shell", "/bin/sh")),
+            self.name,
+        )
         args = [*self._base_cli_args(), "exec", "-i"]
         if self.container:
             args.extend(["-c", self.container])

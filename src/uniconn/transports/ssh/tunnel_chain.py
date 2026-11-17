@@ -9,6 +9,8 @@ import inspect
 from typing import Any
 
 from ...config.models import ConnectionConfig
+from ...exceptions import ConfigurationError
+from .config_parser import OpenSSHConfigParser
 
 
 class SSHJumpChainManager:
@@ -20,6 +22,42 @@ class SSHJumpChainManager:
         self.tunnel_conns: list[Any] = []
         self.proxy_procs: list[Any] = []
         self.active_proxy_command: str | None = None
+
+    @staticmethod
+    def _parse_proxy_target(
+        proxy_host: str,
+        default_username: str | None,
+    ) -> tuple[str, int, str | None]:
+        user: str | None = None
+        target = proxy_host.strip()
+        if "@" in target:
+            user, target = target.split("@", 1)
+
+        port = 22
+        host = target
+        if target.startswith("["):
+            end_bracket = target.find("]")
+            if end_bracket == -1:
+                raise ConfigurationError(f"Invalid IPv6 proxy host specification: {proxy_host!r}")
+            host = target[1:end_bracket]
+            rest = target[end_bracket + 1 :]
+            if rest.startswith(":"):
+                try:
+                    port = int(rest[1:])
+                except ValueError as exc:
+                    raise ConfigurationError(f"Invalid proxy port in {proxy_host!r}") from exc
+        elif target.count(":") == 1:
+            host_part, port_part = target.split(":", 1)
+            if port_part:
+                try:
+                    port = int(port_part)
+                except ValueError as exc:
+                    raise ConfigurationError(f"Invalid proxy port in {proxy_host!r}") from exc
+                host = host_part
+
+        if not host or not 1 <= port <= 65535:
+            raise ConfigurationError(f"Invalid proxy target specification: {proxy_host!r}")
+        return host, port, (user or default_username)
 
     async def start_proxy_command(self, expanded_command: str) -> Any:
         """Запустить дочерний процесс ProxyCommand."""
@@ -40,16 +78,17 @@ class SSHJumpChainManager:
         tunnel: Any = None,
     ) -> Any:
         """Создать подключение к одному jump/proxy хосту."""
-        user: str | None = None
-        host = proxy_host
-        if "@" in proxy_host:
-            user, host = proxy_host.split("@", 1)
+        host, port, username = self._parse_proxy_target(proxy_host, self.config.username)
+        known_hosts = OpenSSHConfigParser.resolve_known_hosts(
+            self.config.options.get("known_hosts", "strict"),
+            host=host,
+        )
 
         proxy_kwargs: dict[str, Any] = {
             "host": host,
-            "port": 22,
-            "username": user or self.config.username,
-            "known_hosts": None,
+            "port": port,
+            "username": username,
+            "known_hosts": known_hosts,
             "connect_timeout": self.config.timeout,
         }
 

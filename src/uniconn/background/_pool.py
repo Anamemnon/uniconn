@@ -275,13 +275,19 @@ class BackgroundPool:
                     self._remote_win_temp = resolved or "C:\\Windows\\Temp"
                 remote_log_path = ntpath.join(self._remote_win_temp, f"{session_id}.log")
             else:
-                remote_log_path = f"/tmp/{session_id}.log"
+                runtime_dir = await self._cleanup_manager.ensure_posix_runtime_dir(
+                    connection
+                )
+                remote_log_path = f"{runtime_dir.rstrip('/')}/{session_id}.log"
             session = BackgroundSession(
                 connection,
                 session_id,
                 remote_log_path,
                 backend=backend_strategy,
                 logger=self._logger,
+                runtime_dir=self._cleanup_manager.runtime_dir
+                if backend_strategy.name != "windows_job"
+                else None,
             )
             await session.create(command)
 
@@ -517,7 +523,13 @@ class BackgroundPool:
         if self._connection is not None:
             q_sentinel = shlex.quote(self._cleanup_manager.sentinel_path)
             q_cleanup = shlex.quote(self._cleanup_manager.cleanup_script_path)
-            await self._connection.run(f"rm -f {q_sentinel} {q_cleanup}")
+            rt_dir = self._cleanup_manager.runtime_dir
+            rmdir_part = (
+                f" && rmdir {shlex.quote(rt_dir)} 2>/dev/null || true"
+                if rt_dir and rt_dir != "/tmp"
+                else ""
+            )
+            await self._connection.run(f"rm -f {q_sentinel} {q_cleanup}{rmdir_part}")
             await self._connection.close()
             self._connection = None
             self._collector = None

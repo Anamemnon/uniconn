@@ -13,6 +13,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .._logging import get_logger
+from ..exceptions import UniconnError
 from .facts_models import (
     DEFAULT_DIFF_FIELDS,
     FACT_COLLECTION_SCRIPT,
@@ -33,6 +35,8 @@ from .facts_models import (
 
 if TYPE_CHECKING:
     from ..core.connection import Connection
+
+_logger = get_logger("uniconn.services.facts")
 
 _ARTIFACT_PATH_RE = re.compile(
     r"(/[A-Za-z0-9._/-]+\.(?:tar\.xz|tar\.gz|tgz|tar\.bz2|zip|log|json|txt))"
@@ -190,8 +194,10 @@ class ExternalToolRunner:
             local_dest = target_dir / artifact_name
             await self._conn.files.download(remote_artifact, str(local_dest))
             if tool.cleanup_remote:
-                with contextlib.suppress(Exception):
+                try:
                     await self._conn.files.remove_file(remote_artifact)
+                except (OSError, UniconnError) as exc:
+                    _logger.debug("cleanup_remote failed for %s: %s", remote_artifact, exc)
             return {
                 "ok": True,
                 "artifact_path": str(local_dest),
@@ -388,11 +394,13 @@ class FactCollector:
                 worker = getattr(self._conn, "_python_worker", None)
                 worker_facts: HostFacts | None = None
                 if worker is not None and worker.can_auto_accelerate():
-                    with contextlib.suppress(Exception):
+                    try:
                         worker_facts = await worker.gather_facts(
                             default_host=default_host,
                             timeout=timeout,
                         )
+                    except (OSError, UniconnError, RuntimeError, ValueError, TypeError) as exc:
+                        _logger.debug("Python worker gather_facts fallback to shell: %s", exc)
                 if worker_facts is not None:
                     facts = worker_facts
                 elif (
@@ -455,94 +463,98 @@ class FactCollector:
         if not hasattr(target_tr, "gather_qga_native_facts"):
             return
 
-        with contextlib.suppress(Exception):
+        try:
             qga_data = await target_tr.gather_qga_native_facts(timeout=timeout or 5.0)
-            if not isinstance(qga_data, dict) or not qga_data:
-                return
+        except (OSError, UniconnError, RuntimeError, ValueError, TypeError) as exc:
+            _logger.debug("QGA native facts enrichment skipped: %s", exc)
+            return
 
-            tr_name = getattr(target_tr, "name", "qga")
-            custom_key = "pve" if tr_name == "pve" else "qga"
-            facts.custom[custom_key] = qga_data
+        if not isinstance(qga_data, dict) or not qga_data:
+            return
 
-            qga_hn = str(qga_data.get("hostname") or "").strip()
-            if qga_hn and facts.hostname in ("localhost", default_host, "Unknown", ""):
-                facts.hostname = qga_hn
+        tr_name = getattr(target_tr, "name", "qga")
+        custom_key = "pve" if tr_name == "pve" else "qga"
+        facts.custom[custom_key] = qga_data
 
-            osinfo = qga_data.get("osinfo")
-            if isinstance(osinfo, dict) and osinfo:
-                if facts.distro == "Unknown":
-                    facts.distro = str(
-                        osinfo.get("pretty-name") or osinfo.get("name") or "Unknown"
+        qga_hn = str(qga_data.get("hostname") or "").strip()
+        if qga_hn and facts.hostname in ("localhost", default_host, "Unknown", ""):
+            facts.hostname = qga_hn
+
+        osinfo = qga_data.get("osinfo")
+        if isinstance(osinfo, dict) and osinfo:
+            if facts.distro == "Unknown":
+                facts.distro = str(
+                    osinfo.get("pretty-name") or osinfo.get("name") or "Unknown"
+                )
+            if facts.kernel == "Unknown" and osinfo.get("kernel-release"):
+                facts.kernel = str(osinfo["kernel-release"])
+            if facts.arch == "Unknown" and osinfo.get("machine"):
+                facts.arch = str(osinfo["machine"])
+            if facts.os_family == "Unknown":
+                os_id = str(osinfo.get("id") or "").lower()
+                if "mswindows" in os_id:
+                    facts.os_family = "Windows"
+                elif os_id:
+                    from .facts_models import _detect_os_family
+
+                    facts.os_family = _detect_os_family({"ID": os_id}, "Linux")
+
+        vcpus = qga_data.get("vcpus")
+        if isinstance(vcpus, list) and vcpus and facts.cpu_count <= 1:
+            facts.cpu_count = len(vcpus)
+
+        native_ifaces = qga_data.get("interfaces")
+        if isinstance(native_ifaces, list) and native_ifaces:
+            by_name = {iface.name: iface for iface in facts.interfaces}
+            for item in native_ifaces:
+                if not isinstance(item, dict) or not item.get("name"):
+                    continue
+                if_name = str(item["name"])
+                if if_name in by_name:
+                    existing = by_name[if_name]
+                    if not existing.mac or existing.mac == "00:00:00:00:00:00":
+                        existing.mac = str(item.get("mac") or existing.mac)
+                    for ip4 in item.get("ipv4") or []:
+                        if ip4 not in existing.ipv4:
+                            existing.ipv4.append(str(ip4))
+                    for ip6 in item.get("ipv6") or []:
+                        if ip6 not in existing.ipv6:
+                            existing.ipv6.append(str(ip6))
+                else:
+                    new_iface = NetworkInterface(
+                        name=if_name,
+                        mac=str(item.get("mac") or ""),
+                        ipv4=[str(x) for x in (item.get("ipv4") or [])],
+                        ipv6=[str(x) for x in (item.get("ipv6") or [])],
+                        state=str(item.get("state") or "UP"),
+                        mtu=int(item.get("mtu") or 1500),
                     )
-                if facts.kernel == "Unknown" and osinfo.get("kernel-release"):
-                    facts.kernel = str(osinfo["kernel-release"])
-                if facts.arch == "Unknown" and osinfo.get("machine"):
-                    facts.arch = str(osinfo["machine"])
-                if facts.os_family == "Unknown":
-                    os_id = str(osinfo.get("id") or "").lower()
-                    if "mswindows" in os_id:
-                        facts.os_family = "Windows"
-                    elif os_id:
-                        from .facts_models import _detect_os_family
+                    facts.interfaces.append(new_iface)
+                    by_name[if_name] = new_iface
 
-                        facts.os_family = _detect_os_family({"ID": os_id}, "Linux")
-
-            vcpus = qga_data.get("vcpus")
-            if isinstance(vcpus, list) and vcpus and facts.cpu_count <= 1:
-                facts.cpu_count = len(vcpus)
-
-            native_ifaces = qga_data.get("interfaces")
-            if isinstance(native_ifaces, list) and native_ifaces:
-                by_name = {iface.name: iface for iface in facts.interfaces}
-                for item in native_ifaces:
-                    if not isinstance(item, dict) or not item.get("name"):
-                        continue
-                    if_name = str(item["name"])
-                    if if_name in by_name:
-                        existing = by_name[if_name]
-                        if not existing.mac or existing.mac == "00:00:00:00:00:00":
-                            existing.mac = str(item.get("mac") or existing.mac)
-                        for ip4 in item.get("ipv4") or []:
-                            if ip4 not in existing.ipv4:
-                                existing.ipv4.append(str(ip4))
-                        for ip6 in item.get("ipv6") or []:
-                            if ip6 not in existing.ipv6:
-                                existing.ipv6.append(str(ip6))
-                    else:
-                        new_iface = NetworkInterface(
-                            name=if_name,
-                            mac=str(item.get("mac") or ""),
-                            ipv4=[str(x) for x in (item.get("ipv4") or [])],
-                            ipv6=[str(x) for x in (item.get("ipv6") or [])],
-                            state=str(item.get("state") or "UP"),
-                            mtu=int(item.get("mtu") or 1500),
-                        )
-                        facts.interfaces.append(new_iface)
-                        by_name[if_name] = new_iface
-
-            fsinfo = qga_data.get("fsinfo")
-            if isinstance(fsinfo, list) and fsinfo and not facts.disks:
-                for fs in fsinfo:
-                    if not isinstance(fs, dict):
-                        continue
-                    mount = str(fs.get("mountpoint") or "")
-                    if not mount:
-                        continue
-                    total_b = int(fs.get("total-bytes") or 0)
-                    used_b = int(fs.get("used-bytes") or 0)
-                    avail_b = max(0, total_b - used_b)
-                    pct = round((used_b / total_b) * 100.0, 1) if total_b > 0 else 0.0
-                    facts.disks.append(
-                        DiskInfo(
-                            device=str(fs.get("name") or mount),
-                            mountpoint=mount,
-                            fstype=str(fs.get("type") or ""),
-                            total_bytes=total_b,
-                            used_bytes=used_b,
-                            available_bytes=avail_b,
-                            use_percent=pct,
-                        )
+        fsinfo = qga_data.get("fsinfo")
+        if isinstance(fsinfo, list) and fsinfo and not facts.disks:
+            for fs in fsinfo:
+                if not isinstance(fs, dict):
+                    continue
+                mount = str(fs.get("mountpoint") or "")
+                if not mount:
+                    continue
+                total_b = int(fs.get("total-bytes") or 0)
+                used_b = int(fs.get("used-bytes") or 0)
+                avail_b = max(0, total_b - used_b)
+                pct = round((used_b / total_b) * 100.0, 1) if total_b > 0 else 0.0
+                facts.disks.append(
+                    DiskInfo(
+                        device=str(fs.get("name") or mount),
+                        mountpoint=mount,
+                        fstype=str(fs.get("type") or ""),
+                        total_bytes=total_b,
+                        used_bytes=used_b,
+                        available_bytes=avail_b,
+                        use_percent=pct,
                     )
+                )
 
     @staticmethod
     def _parse_custom_value(raw: str, parse_json: bool) -> Any:
@@ -565,8 +577,8 @@ class FactCollector:
                 return content[:max_bytes].strip()
             if isinstance(content, bytes):
                 return content[:max_bytes].decode("utf-8", errors="replace").strip()
-        except Exception:
-            pass
+        except (OSError, UniconnError, UnicodeDecodeError) as exc:
+            _logger.debug("files.read_file fallback for fact source %s: %s", file_spec.path, exc)
 
         # Fallback через shell-команду head -c (для совместимости с моками или хостами без SFTP)
         try:
@@ -574,7 +586,8 @@ class FactCollector:
             cmd = f"head -c {max_bytes} {q_path} 2>/dev/null || true"
             res = await self._conn.run(cmd, timeout=default_timeout, raise_on_error=False)
             return res.stdout.strip()
-        except Exception:
+        except (OSError, UniconnError) as exc:
+            _logger.debug("head fallback failed for fact source %s: %s", file_spec.path, exc)
             return ""
 
     async def _collect_spec_sources(

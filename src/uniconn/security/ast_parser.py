@@ -10,371 +10,36 @@ timeout, sh -c, find -exec, xargs, docker/kubectl exec), инспектируе�
 
 from __future__ import annotations
 
-import base64
-import binascii
 import os
-import posixpath
 import re
 import shlex
 from dataclasses import dataclass, field
 from typing import Any
 
-_WRAPPER_BINARIES: frozenset[str] = frozenset(
-    {
-        "sudo",
-        "doas",
-        "pkexec",
-        "su",
-        "runuser",
-        "chroot",
-        "nsenter",
-        "watch",
-        "strace",
-        "ltrace",
-        "env",
-        "nohup",
-        "nice",
-        "time",
-        "stdbuf",
-        "chrt",
-        "ionice",
-        "taskset",
-        "setsid",
-        "busybox",
-    }
+from ._ast_rules import (
+    _DESTRUCTIVE_EXECUTABLES,
+    _DESTRUCTIVE_SUBCOMMANDS,
+    _GLOB_OBFUSCATED_BIN_RE,
+    _INLINE_DESTRUCTIVE_RE,
+    _INLINE_SCRIPT_BINS,
+    _OPTS_WITH_ARG_BY_BIN,
+    _REDIRECT_RE,
+    _SHELL_BINARIES,
+    _SQL_DESTRUCTIVE_RE,
+    _SUDO_OPTS_WITH_ARG,
+    _VAR_CONCAT_EXEC_RE,
+    _WIN_DRIVE_PATH_RE,
+    _WRAPPER_BINARIES,
+    _WRAPPER_OPTS_WITH_ARG,
+    _XARGS_OPTS_WITH_ARG,
+    _decode_ansi_c_escapes,
+    _has_brace_expansion,
+    _is_quote_spliced_token,
+    _split_raw_shell_words,
+    detect_global_obfuscation,
+    extract_base64_payloads,
+    normalize_target_path,
 )
-_SHELL_BINARIES: frozenset[str] = frozenset({"sh", "bash", "zsh", "dash", "ksh", "ash", "csh", "tcsh"})
-_INLINE_SCRIPT_BINS: dict[str, tuple[str, ...]] = {
-    "python": ("-c",),
-    "python2": ("-c",),
-    "python3": ("-c",),
-    "perl": ("-e", "-E"),
-    "ruby": ("-e",),
-    "node": ("-e", "--eval", "-p", "--print"),
-    "nodejs": ("-e", "--eval"),
-    "php": ("-r",),
-    "lua": ("-e",),
-}
-
-_SUDO_OPTS_WITH_ARG: frozenset[str] = frozenset(
-    {"-u", "-g", "-C", "-D", "-R", "-T", "-U", "-h", "-p", "-r", "-t", "-L", "--user"}
-)
-_WRAPPER_OPTS_WITH_ARG: dict[str, frozenset[str]] = {
-    "watch": frozenset({"-n", "--interval", "-d", "--differences"}),
-    "nice": frozenset({"-n", "--adjustment"}),
-    "ionice": frozenset({"-c", "--class", "-n", "--classdata", "-p", "--pid", "-P", "-u"}),
-    "taskset": frozenset({"-c", "--cpu-list"}),
-    "stdbuf": frozenset({"-i", "--input", "-o", "--output", "-e", "--error"}),
-    "strace": frozenset({"-e", "-o", "-p", "-s", "-u", "-E"}),
-    "ltrace": frozenset({"-e", "-o", "-p", "-s", "-u", "-l"}),
-    "nsenter": frozenset({"-t", "--target", "-F"}),
-}
-_XARGS_OPTS_WITH_ARG: frozenset[str] = frozenset(
-    {"-a", "--arg-file", "-d", "--delimiter", "-E", "-e", "-I", "-i", "-L", "-l", "-n", "-P", "-s"}
-)
-_OPTS_WITH_ARG_BY_BIN: dict[str, frozenset[str]] = {
-    "systemctl": frozenset(
-        {"-h", "--host", "-m", "--machine", "--root", "-t", "--type", "--state", "-p", "--property", "-n", "-o"}
-    ),
-    "git": frozenset({"-c", "-C", "--git-dir", "--work-tree", "--namespace"}),
-    "docker": frozenset({"-h", "--host", "-c", "--context", "--config", "-l", "--log-level"}),
-    "podman": frozenset({"--url", "--context", "--root", "--runroot", "--log-level"}),
-    "kubectl": frozenset(
-        {"-n", "--namespace", "--context", "--kubeconfig", "--cluster", "--user", "-s", "--server", "-l", "-o"}
-    ),
-    "ip": frozenset({"-n", "-netns", "-V", "-rc", "-b", "-batch"}),
-    "service": frozenset(),
-}
-
-_TRAVERSAL_SYSTEM_ROOTS: tuple[str, ...] = (
-    "etc/",
-    "boot/",
-    "root/",
-    "proc/",
-    "sys/",
-    "dev/",
-    "usr/",
-    "lib/",
-    "lib64/",
-    "sbin/",
-    "bin/",
-    "var/",
-)
-_WIN_DRIVE_PATH_RE = re.compile(r"^([A-Za-z]:)(.*)$")
-
-
-def _resolve_relative_system_traversal(norm_rel: str) -> str | None:
-    """Распознать относительный путь вида ``../../etc/shadow`` или ``../Windows/...``."""
-    rel_tail = norm_rel
-    while rel_tail.startswith(("../", "./")):
-        rel_tail = rel_tail[3:] if rel_tail.startswith("../") else rel_tail[2:]
-    rel_tail = rel_tail.lstrip("/")
-    if not rel_tail:
-        return None
-    if any(rel_tail == root.rstrip("/") or rel_tail.startswith(root) for root in _TRAVERSAL_SYSTEM_ROOTS):
-        return "/" + rel_tail
-    rel_lower = rel_tail.lower()
-    if rel_lower == "windows" or rel_lower.startswith("windows/"):
-        return "/" + rel_tail
-    return None
-
-
-def normalize_target_path(raw_path: str) -> str:
-    """Нормализовать целевой путь (POSIX/Windows/``~``) для защиты от path traversal."""
-    cleaned = raw_path.strip().replace("\\", "/")
-    if not cleaned:
-        return ""
-
-    if cleaned.startswith(("//?/", "//./", "/??/")):
-        tail = cleaned[4:]
-        cleaned = "//" + tail[4:] if tail[:4].lower() == "unc/" else tail
-
-    if cleaned.startswith("~"):
-        norm_tilde = posixpath.normpath(cleaned)
-        if norm_tilde.startswith("~"):
-            return norm_tilde
-        cleaned = norm_tilde
-
-    drive_match = _WIN_DRIVE_PATH_RE.match(cleaned)
-    if drive_match is not None:
-        drive, rest = drive_match.groups()
-        if not rest:
-            return f"{drive}/"
-        if rest.startswith("/") or ".." in rest.split("/"):
-            norm_rest = posixpath.normpath("/" + rest.lstrip("/"))
-            return f"{drive}{norm_rest}"
-        return f"{drive}{posixpath.normpath(rest)}"
-
-    norm = posixpath.normpath(cleaned)
-    if cleaned.startswith("/"):
-        if norm.startswith("//"):
-            return "/" + norm.lstrip("/")
-        return norm
-
-    resolved_traversal = _resolve_relative_system_traversal(norm)
-    if resolved_traversal is not None:
-        return posixpath.normpath(resolved_traversal)
-    return norm
-
-_DESTRUCTIVE_EXECUTABLES: frozenset[str] = frozenset(
-    {
-        "rm",
-        "rmdir",
-        "unlink",
-        "shred",
-        "truncate",
-        "wipefs",
-        "mkfs",
-        "fdisk",
-        "parted",
-        "sfdisk",
-        "gdisk",
-        "dd",
-        "kill",
-        "pkill",
-        "killall",
-        "reboot",
-        "shutdown",
-        "poweroff",
-        "halt",
-        "init",
-        "telinit",
-        "userdel",
-        "groupdel",
-        "dropdb",
-    }
-)
-_DESTRUCTIVE_SUBCOMMANDS: dict[str, frozenset[str]] = {
-    "systemctl": frozenset({"stop", "disable", "mask", "kill", "poweroff", "reboot", "halt", "isolate"}),
-    "service": frozenset({"stop", "force-reload"}),
-    "docker": frozenset({"rm", "rmi", "stop", "kill", "prune"}),
-    "podman": frozenset({"rm", "rmi", "stop", "kill", "prune"}),
-    "kubectl": frozenset({"delete", "drain", "cordon", "taint"}),
-    "ufw": frozenset({"disable", "reset", "delete", "deny", "reject"}),
-    "nft": frozenset({"flush", "delete", "destroy"}),
-    "ip": frozenset({"del", "delete", "flush"}),
-    "apt": frozenset({"remove", "purge", "autoremove"}),
-    "apt-get": frozenset({"remove", "purge", "autoremove"}),
-    "dnf": frozenset({"remove", "erase", "autoremove"}),
-    "yum": frozenset({"remove", "erase", "autoremove"}),
-    "apk": frozenset({"del"}),
-    "pacman": frozenset({"-r", "-rs", "-rns", "--remove"}),
-    "zypper": frozenset({"rm", "remove"}),
-    "helm": frozenset({"uninstall", "delete"}),
-}
-
-_SUBSHELL_RE = re.compile(r"(?<!\$)\$\((?!\()([^()]+)\)|`([^`]+)`")
-_REDIRECT_RE = re.compile(r"(?:\d*>>?|\d*<(?!<<)|&>>?|>&\d+)\s*(\S+)?")
-_BASE64_PIPE_RE = re.compile(
-    r"(?:echo|printf)\s+(?:-[eEn]+\s+)*(['\"]?)([A-Za-z0-9+/=]{6,})\1\s*\|\s*"
-    r"(?:base64\s+(?:-[A-Za-z]+\s+)*(?:-d|--decode|-D)|openssl\s+enc\s+-d\s+-base64)",
-    re.IGNORECASE,
-)
-_BASE64_HERESTRING_RE = re.compile(
-    r"(?:base64\s+(?:-[A-Za-z]+\s+)*(?:-d|--decode|-D)|openssl\s+enc\s+-d\s+-base64)"
-    r"\s*<<<\s*(['\"]?)([A-Za-z0-9+/=]{6,})\1",
-    re.IGNORECASE,
-)
-_HEX_ESCAPE_RE = re.compile(r"\\x[0-9a-fA-F]{2}|\\[0-7]{3}")
-_ANSI_C_QUOTE_RE = re.compile(r"\$'([^']*)'")
-_VAR_CONCAT_EXEC_RE = re.compile(r"^(?:\$\{?[A-Za-z_]\w*\}?){2,}$|^\$\{?[A-Za-z_]\w*\}?$")
-_GLOB_OBFUSCATED_BIN_RE = re.compile(r"^/(?:usr/)?(?:s?bin)/.*[?*\[\]].*$")
-_INLINE_DESTRUCTIVE_RE = re.compile(
-    r"\b(?:shutil\.rmtree|os\.(?:remove|unlink|rmdir|system|popen|exec\w*|spawn\w*)"
-    r"|subprocess\.(?:run|Popen|call|check_call|check_output)"
-    r"|pty\.spawn|pathlib\.Path\([^)]*\)\.unlink|FileUtils\.rm_rf"
-    r"|fs\.(?:rmSync|unlinkSync|rmdirSync)|child_process\.exec"
-    r"|system\s*\(|exec\s*\(|eval\s*\(|base64\.b64decode)\b"
-)
-_SQL_DESTRUCTIVE_RE = re.compile(
-    r"\b(?:DROP\s+(?:DATABASE|TABLE|SCHEMA)|TRUNCATE\s+TABLE|DELETE\s+FROM)\b",
-    re.IGNORECASE,
-)
-
-
-def _decode_ansi_c_escapes(raw: str) -> str:
-    r"""Раскодировать последовательности \xHH и \OOO внутри строк для выявления скрытых команд."""
-
-    def _replace_hex(m: re.Match[str]) -> str:
-        try:
-            return chr(int(m.group(0)[2:], 16))
-        except ValueError:
-            return m.group(0)
-
-    def _replace_oct(m: re.Match[str]) -> str:
-        try:
-            return chr(int(m.group(0)[1:], 8))
-        except ValueError:
-            return m.group(0)
-
-    step1 = re.sub(r"\\x[0-9a-fA-F]{2}", _replace_hex, raw)
-    return re.sub(r"\\[0-7]{3}", _replace_oct, step1)
-
-
-def _is_quote_spliced_token(raw_token: str) -> bool:
-    r"""Проверить, содержит ли сырой токен исполняемого файла обфускацию кавычками/бэкслешами.
-
-    Чисто закавыченный целиком путь вроде ``"/usr/bin/ls"`` или ``'/bin/echo'`` НЕ считается
-    обфускацией, тогда как ``r'm'``, ``'r'm``, ``"r"m`` или ``r\m`` распознаются как склейка.
-    """
-    tok = raw_token.strip()
-    if not tok or tok.startswith(("-", "$", "(")) or "=" in tok:
-        return False
-    if len(tok) >= 2 and tok[0] in ("'", '"') and tok[-1] == tok[0]:
-        inner = tok[1:-1]
-        if not any(c in inner for c in ("'", '"', "\\")):
-            return False
-    return any(c in tok for c in ("'", '"', "\\"))
-
-
-_IFS_EXPAND_RE = re.compile(r"^\$(?:\{IFS(?:[^A-Za-z0-9_}]|\})|IFS(?![A-Za-z0-9_]))")
-
-
-def _contains_unquoted_ifs(raw: str) -> bool:
-    """Проверить наличие раскрытия ``$IFS`` или ``${IFS}`` вне одинарных и двойных кавычек."""
-    in_single = False
-    in_double = False
-    escape = False
-    i = 0
-    n = len(raw)
-    while i < n:
-        ch = raw[i]
-        if escape:
-            escape = False
-            i += 1
-            continue
-        if ch == "\\" and not in_single:
-            escape = True
-            i += 1
-            continue
-        if ch == "'" and not in_double:
-            in_single = not in_single
-            i += 1
-            continue
-        if ch == '"' and not in_single:
-            in_double = not in_double
-            i += 1
-            continue
-        if not in_single and not in_double and ch == "$" and _IFS_EXPAND_RE.match(raw[i:]):
-            return True
-        i += 1
-    return False
-
-
-def _has_brace_expansion(raw_word: str) -> bool:
-    """Проверить наличие bash-раскрытия фигурных скобок ``{a,b}`` вне кавычек и ``${...}``."""
-    if "{" not in raw_word or "}" not in raw_word:
-        return False
-    in_single = False
-    in_double = False
-    escape = False
-    brace_has_comma: list[bool] = []
-    i = 0
-    n = len(raw_word)
-    while i < n:
-        ch = raw_word[i]
-        if escape:
-            escape = False
-            i += 1
-            continue
-        if ch == "\\" and not in_single:
-            escape = True
-            i += 1
-            continue
-        if ch == "'" and not in_double:
-            in_single = not in_single
-            i += 1
-            continue
-        if ch == '"' and not in_single:
-            in_double = not in_double
-            i += 1
-            continue
-        if not in_single and not in_double:
-            if ch == "{":
-                prev_unescaped = i > 0 and raw_word[i - 1] == "$" and not (i > 1 and raw_word[i - 2] == "\\")
-                if not prev_unescaped:
-                    brace_has_comma.append(False)
-            elif ch == "," and brace_has_comma:
-                brace_has_comma[-1] = True
-            elif ch == "}" and brace_has_comma and brace_has_comma.pop():
-                return True
-        i += 1
-    return False
-
-
-def _split_raw_shell_words(segment: str) -> list[str]:
-    """Разбить сегмент на сырые слова (сохраняя кавычки и бэкслеши) синхронно с shlex."""
-    words: list[str] = []
-    buf: list[str] = []
-    in_single = False
-    in_double = False
-    escape = False
-    for ch in segment:
-        if escape:
-            buf.append(ch)
-            escape = False
-            continue
-        if ch == "\\" and not in_single:
-            buf.append(ch)
-            escape = True
-            continue
-        if ch == "'" and not in_double:
-            in_single = not in_single
-            buf.append(ch)
-            continue
-        if ch == '"' and not in_single:
-            in_double = not in_double
-            buf.append(ch)
-            continue
-        if ch.isspace() and not in_single and not in_double:
-            if buf:
-                words.append("".join(buf))
-                buf.clear()
-            continue
-        buf.append(ch)
-    if buf:
-        words.append("".join(buf))
-    return words
 
 
 @dataclass(frozen=True, slots=True)
@@ -475,12 +140,59 @@ class ParsedCommandAST:
         }
 
 
+def _scan_paren_inner(text: str, start: int) -> tuple[str, int]:
+    """Просканировать содержимое ``$(...)`` или ``<(...)`` / ``>(...)`` с учётом баланса скобок."""
+    n = len(text)
+    p_depth = 1
+    j = start
+    sub_single = False
+    sub_double = False
+    sub_esc = False
+    while j < n and p_depth > 0:
+        c2 = text[j]
+        if sub_esc:
+            sub_esc = False
+        elif c2 == "\\" and not sub_single:
+            sub_esc = True
+        elif c2 == "'" and not sub_double:
+            sub_single = not sub_single
+        elif c2 == '"' and not sub_single:
+            sub_double = not sub_double
+        elif not sub_single and not sub_double:
+            if c2 == "(":
+                p_depth += 1
+            elif c2 == ")":
+                p_depth -= 1
+        j += 1
+    inner = text[start : j - 1].strip() if p_depth == 0 else text[start:].strip()
+    return inner, j
+
+
+def _scan_backtick_inner(text: str, start: int) -> tuple[str, int]:
+    """Просканировать содержимое в обратных кавычках `` `...` ``."""
+    n = len(text)
+    j = start
+    sub_esc = False
+    while j < n:
+        if sub_esc:
+            sub_esc = False
+        elif text[j] == "\\":
+            sub_esc = True
+        elif text[j] == "`":
+            break
+        j += 1
+    return text[start:j].strip(), j + 1
+
+
 class CommandASTParser:
     """Детерминированный синтаксический анализатор shell-команд для Policy-as-Code Guardrails."""
 
     MAX_COMMAND_LENGTH: int = 4096
     MAX_SEGMENTS: int = 64
     MAX_RECURSION_DEPTH: int = 6
+
+    _extract_base64_payloads = staticmethod(extract_base64_payloads)
+    _detect_global_obfuscation = staticmethod(detect_global_obfuscation)
 
     @classmethod
     def parse(
@@ -513,36 +225,28 @@ class CommandASTParser:
         sub_cmds_with_depth = cls._extract_subshell_commands(probe_no_arith)
         has_subshells = bool(sub_cmds_with_depth)
 
-        cls._detect_global_obfuscation(raw, obfuscation_reasons)
+        detect_global_obfuscation(raw, obfuscation_reasons)
 
-        # Раскрываем base64-пайплайны в памяти, чтобы увидеть спрятанную команду
-        decoded_payloads = cls._extract_base64_payloads(raw)
+        decoded_payloads = extract_base64_payloads(raw)
         for dec_cmd in decoded_payloads:
             reason = f"Base64-encoded command payload detected ({dec_cmd!r})"
             if reason not in obfuscation_reasons:
                 obfuscation_reasons.append(reason)
 
-        # Отслеживаем присваивания однобуквенных/коротких переменных для склейки (C1="r"; C2="m"; $C1$C2)
         var_table: dict[str, str] = {}
-
-        work_queue: list[tuple[str, tuple[str, ...], bool, int]] = [
-            (seg, (), sudo, 0) for seg in segments
-        ]
+        work_queue: list[tuple[str, tuple[str, ...], bool, int]] = [(seg, (), sudo, 0) for seg in segments]
         for dec_cmd in decoded_payloads:
             work_queue.append((dec_cmd, ("base64 -d",), sudo, 1))
 
-        # Добавляем команды из $(...) и `...` с учётом глубины вложенности
         for sub_c, sub_depth in sub_cmds_with_depth:
-            for sub_dec in cls._extract_base64_payloads(sub_c):
+            for sub_dec in extract_base64_payloads(sub_c):
                 reason = f"Base64-encoded command payload detected ({sub_dec!r})"
                 if reason not in obfuscation_reasons:
                     obfuscation_reasons.append(reason)
                 work_queue.append((sub_dec, ("subshell", "base64 -d"), sudo, sub_depth + 1))
             sub_segs, sub_p, sub_b = cls._tokenize_top_level_segments(sub_c)
-            if sub_p:
-                has_pipes = True
-            if sub_b:
-                has_bg = True
+            has_pipes = has_pipes or sub_p
+            has_bg = has_bg or sub_b
             for s_item in sub_segs:
                 work_queue.append((s_item, ("subshell",), sudo, sub_depth))
 
@@ -569,53 +273,16 @@ class CommandASTParser:
             atomic_list.extend(parsed_atoms)
             for nested_cmd_str, nested_wrap, nested_sudo in nested_cmds:
                 sub_segs, sub_pipes, sub_bg = cls._tokenize_top_level_segments(nested_cmd_str)
-                if sub_pipes:
-                    has_pipes = True
-                if sub_bg:
-                    has_bg = True
+                has_pipes = has_pipes or sub_pipes
+                has_bg = has_bg or sub_bg
                 for s_item in sub_segs:
                     work_queue.append((s_item, nested_wrap, nested_sudo, depth + 1))
 
         if len(atomic_list) > eff_max_segments:
             complexity_exceeded = True
 
-        # Проверяем пайплайны вида `... | sh` / `... | bash` / `... | python`
-        interp_bins = _SHELL_BINARIES | set(_INLINE_SCRIPT_BINS.keys())
-        feeder_bins = ("curl", "wget", "fetch", "base64", "xxd", "openssl", "printf", "echo")
-        if has_pipes and len(atomic_list) >= 2:
-            for pos in range(1, len(atomic_list)):
-                prev_atom = atomic_list[pos - 1]
-                curr_atom = atomic_list[pos]
-                if (
-                    curr_atom.executable in interp_bins
-                    and not curr_atom.arguments
-                    and prev_atom.executable in feeder_bins
-                ):
-                    r_msg = (
-                        f"Piping output of {prev_atom.executable!r} directly into "
-                        f"interpreter {curr_atom.executable!r}"
-                    )
-                    if r_msg not in obfuscation_reasons:
-                        obfuscation_reasons.append(r_msg)
-
+        cls._flag_pipe_to_interpreter(atomic_list, has_pipes, obfuscation_reasons)
         is_obf = bool(obfuscation_reasons) or any(a.is_obfuscated for a in atomic_list)
-        if is_obf:
-            atomic_list = [
-                AtomicCommand(
-                    executable=a.executable,
-                    raw_executable=a.raw_executable,
-                    subcommand=a.subcommand,
-                    arguments=a.arguments,
-                    flags=a.flags,
-                    env_assignments=a.env_assignments,
-                    redirects=a.redirects,
-                    wrappers=a.wrappers,
-                    is_sudo=a.is_sudo,
-                    is_obfuscated=bool(a.is_obfuscated),
-                    subshell_depth=a.subshell_depth,
-                )
-                for a in atomic_list
-            ]
 
         executables: list[str] = []
         subcommands: list[str] = []
@@ -649,6 +316,31 @@ class CommandASTParser:
             complexity_exceeded=complexity_exceeded,
             max_depth=observed_max_depth,
         )
+
+    @staticmethod
+    def _flag_pipe_to_interpreter(
+        atomic_list: list[AtomicCommand],
+        has_pipes: bool,
+        obfuscation_reasons: list[str],
+    ) -> None:
+        if not (has_pipes and len(atomic_list) >= 2):
+            return
+        interp_bins = _SHELL_BINARIES | set(_INLINE_SCRIPT_BINS.keys())
+        feeder_bins = ("curl", "wget", "fetch", "base64", "xxd", "openssl", "printf", "echo")
+        for pos in range(1, len(atomic_list)):
+            prev_atom = atomic_list[pos - 1]
+            curr_atom = atomic_list[pos]
+            if (
+                curr_atom.executable in interp_bins
+                and not curr_atom.arguments
+                and prev_atom.executable in feeder_bins
+            ):
+                r_msg = (
+                    f"Piping output of {prev_atom.executable!r} directly into "
+                    f"interpreter {curr_atom.executable!r}"
+                )
+                if r_msg not in obfuscation_reasons:
+                    obfuscation_reasons.append(r_msg)
 
     @classmethod
     def _tokenize_top_level_segments(cls, command: str) -> tuple[list[str], bool, bool]:
@@ -690,18 +382,11 @@ class CommandASTParser:
             if not in_single and not in_double:
                 if ch == "(":
                     paren_depth += 1
-                    buf.append(ch)
-                    i += 1
-                    continue
-                if ch == ")" and paren_depth > 0:
+                elif ch == ")" and paren_depth > 0:
                     paren_depth -= 1
-                    buf.append(ch)
-                    i += 1
-                    continue
-                if paren_depth == 0:
+                elif paren_depth == 0:
                     if ch in (";", "\n"):
-                        seg = "".join(buf).strip()
-                        if seg:
+                        if seg := "".join(buf).strip():
                             segments.append(seg)
                         buf.clear()
                         i += 1
@@ -709,26 +394,19 @@ class CommandASTParser:
                     if ch in ("&", "|"):
                         prev_ch = command[i - 1] if i > 0 else ""
                         next_ch = command[i + 1] if i + 1 < n else ""
-                        if ch == "&" and (prev_ch == ">" or next_ch == ">"):
-                            buf.append(ch)
-                            i += 1
+                        if not (ch == "&" and (prev_ch == ">" or next_ch == ">")):
+                            if seg := "".join(buf).strip():
+                                segments.append(seg)
+                            buf.clear()
+                            has_pipes = has_pipes or (ch == "|" and next_ch != "|")
+                            has_bg = has_bg or (ch == "&" and next_ch != "&")
+                            i += 2 if next_ch == ch else 1
                             continue
-                        seg = "".join(buf).strip()
-                        if seg:
-                            segments.append(seg)
-                        buf.clear()
-                        if ch == "|" and next_ch != "|":
-                            has_pipes = True
-                        if ch == "&" and next_ch != "&":
-                            has_bg = True
-                        i += 2 if next_ch == ch else 1
-                        continue
 
             buf.append(ch)
             i += 1
 
-        tail = "".join(buf).strip()
-        if tail:
+        if tail := "".join(buf).strip():
             segments.append(tail)
         return segments, has_pipes, has_bg
 
@@ -760,7 +438,6 @@ class CommandASTParser:
                     i += 1
                     continue
                 if not in_single:
-                    # Подстановка $(...) и process substitution <(...), >(...) с балансом скобок
                     if (
                         ch in ("$", "<", ">")
                         and i + 1 < n
@@ -770,149 +447,102 @@ class CommandASTParser:
                         if ch == "$" and i + 2 < n and text[i + 2] == "(":
                             i += 3
                             continue
-                        p_depth = 1
-                        j = i + 2
-                        sub_single = False
-                        sub_double = False
-                        sub_esc = False
-                        while j < n and p_depth > 0:
-                            c2 = text[j]
-                            if sub_esc:
-                                sub_esc = False
-                                j += 1
-                                continue
-                            if c2 == "\\" and not sub_single:
-                                sub_esc = True
-                                j += 1
-                                continue
-                            if c2 == "'" and not sub_double:
-                                sub_single = not sub_single
-                            elif c2 == '"' and not sub_single:
-                                sub_double = not sub_double
-                            elif not sub_single and not sub_double:
-                                if c2 == "(":
-                                    p_depth += 1
-                                elif c2 == ")":
-                                    p_depth -= 1
-                            j += 1
-                        inner = text[i + 2 : j - 1].strip() if p_depth == 0 else text[i + 2 :].strip()
+                        inner, i = _scan_paren_inner(text, i + 2)
                         if inner and inner not in seen:
                             seen.add(inner)
                             extracted.append((inner, current_depth))
                             _scan(inner, current_depth + 1)
-                        i = j
                         continue
-                    # Обратные кавычки `...`
                     if ch == "`":
-                        j = i + 1
-                        sub_esc = False
-                        while j < n:
-                            if sub_esc:
-                                sub_esc = False
-                                j += 1
-                                continue
-                            if text[j] == "\\":
-                                sub_esc = True
-                                j += 1
-                                continue
-                            if text[j] == "`":
-                                break
-                            j += 1
-                        inner = text[i + 1 : j].strip()
+                        inner, i = _scan_backtick_inner(text, i + 1)
                         if inner and inner not in seen:
                             seen.add(inner)
                             extracted.append((inner, current_depth))
                             _scan(inner, current_depth + 1)
-                        i = j + 1
                         continue
                 i += 1
 
         _scan(probe_str, base_depth)
         return extracted
 
-    @classmethod
-    def _extract_base64_payloads(cls, raw: str) -> list[str]:
-        """Раскодировать явные base64-строки (из пайпов и <<< here-string) для глубокого AST-анализа."""
-        decoded_list: list[str] = []
-        for pattern in (_BASE64_PIPE_RE, _BASE64_HERESTRING_RE):
-            for match in pattern.finditer(raw):
-                b64_token = match.group(2).strip()
-                try:
-                    padded = b64_token + "=" * ((4 - len(b64_token) % 4) % 4)
-                    raw_bytes = base64.b64decode(padded, validate=False)
-                    text = raw_bytes.decode("utf-8", errors="ignore").strip()
-                    if (
-                        text
-                        and text not in decoded_list
-                        and all(31 < ord(c) < 127 or c in "\n\r\t" for c in text)
-                    ):
-                        decoded_list.append(text)
-                except (binascii.Error, ValueError):
-                    continue
-        return decoded_list
+    @staticmethod
+    def _consume_su_wrapper(
+        tokens: list[str],
+        idx: int,
+        base_tok: str,
+        wrappers: list[str],
+    ) -> tuple[int, tuple[str, tuple[str, ...], bool] | None]:
+        n = len(tokens)
+        wrappers.append(base_tok)
+        idx += 1
+        while idx < n:
+            cur = tokens[idx]
+            if cur in ("-c", "--command") and idx + 1 < n:
+                return idx, (tokens[idx + 1], (*wrappers, f"{base_tok} -c"), True)
+            if cur.startswith("--command="):
+                return idx, (cur.split("=", 1)[1], (*wrappers, f"{base_tok} -c"), True)
+            if cur == "--":
+                return idx + 1, None
+            if cur.startswith("-"):
+                idx += 2 if cur in ("-s", "--shell", "-u", "-g", "-G") and idx + 1 < n else 1
+                continue
+            if idx + 1 < n and tokens[idx + 1].startswith("-"):
+                idx += 1
+                continue
+            break
+        return idx, None
+
+    @staticmethod
+    def _consume_env_wrapper(
+        tokens: list[str],
+        idx: int,
+        wrappers: list[str],
+        env_assignments: dict[str, str],
+        var_table: dict[str, str],
+    ) -> tuple[int, tuple[str, tuple[str, ...], bool] | None, bool]:
+        n = len(tokens)
+        wrappers.append("env")
+        idx += 1
+        while idx < n:
+            cur = tokens[idx]
+            if cur in ("-S", "--split-string") and idx + 1 < n:
+                return idx, (tokens[idx + 1], (*wrappers, "env -S"), False), True
+            if cur.startswith("-"):
+                idx += 1
+                continue
+            if "=" in cur and cur.split("=", 1)[0].isidentifier():
+                ek, ev = cur.split("=", 1)
+                env_assignments[ek] = ev
+                var_table[ek] = ev
+                idx += 1
+                continue
+            break
+        return idx, None, False
 
     @classmethod
-    def _detect_global_obfuscation(cls, raw: str, reasons: list[str]) -> None:
-        """Проверить глобальные признаки обфускации на уровне сырой командной строки."""
-        if _HEX_ESCAPE_RE.search(raw):
-            decoded_preview = _decode_ansi_c_escapes(raw)
-            reasons.append(f"Hex or octal escape sequences detected in command ({decoded_preview[:60]!r})")
-        for ansi_match in _ANSI_C_QUOTE_RE.finditer(raw):
-            inner = ansi_match.group(1)
-            if "\\x" in inner or re.search(r"\\[0-7]{2,3}", inner):
-                reasons.append("ANSI-C quoting ($'...') with encoded characters detected")
-                break
-        if _contains_unquoted_ifs(raw):
-            msg = "Shell $IFS variable delimiter obfuscation detected"
-            if msg not in reasons:
-                reasons.append(msg)
-
-    @classmethod
-    def _parse_single_segment(
+    def _strip_wrappers(
         cls,
-        segment: str,
+        tokens: list[str],
         *,
         inherited_wrappers: tuple[str, ...],
         inherited_sudo: bool,
         var_table: dict[str, str],
         obfuscation_reasons: list[str],
-        subshell_depth: int = 0,
-    ) -> tuple[list[AtomicCommand], list[tuple[str, tuple[str, ...], bool]], bool]:
-        """Разобрать одиночный сегмент пайплайна/цепочки в AtomicCommand и список вложенных команд."""
-        seg_clean = segment.strip()
-        if not seg_clean or seg_clean.startswith("#"):
-            return [], [], False
-
-        # Извлекаем редиректы до shlex.split
-        redirects: list[str] = []
-        for redir_match in _REDIRECT_RE.finditer(seg_clean):
-            full_redir = redir_match.group(0).strip()
-            if full_redir:
-                redirects.append(full_redir)
-
-        segment_obf = False
-        raw_words = _split_raw_shell_words(seg_clean)
-        for rw in raw_words:
-            if _has_brace_expansion(rw):
-                segment_obf = True
-                msg = f"Shell brace expansion obfuscation detected ({rw!r})"
-                if msg not in obfuscation_reasons:
-                    obfuscation_reasons.append(msg)
-        try:
-            tokens = shlex.split(seg_clean, posix=True)
-        except ValueError:
-            tokens = seg_clean.split()
-
-        if not tokens:
-            return [], [], False
-
+    ) -> tuple[
+        int,
+        dict[str, str],
+        list[str],
+        bool,
+        bool,
+        tuple[str, tuple[str, ...], bool] | None,
+    ]:
         env_assignments: dict[str, str] = {}
         wrappers: list[str] = list(inherited_wrappers)
         effective_sudo = inherited_sudo
+        segment_obf = False
         idx = 0
         n = len(tokens)
 
-        # 1. Снимаем ведущие присваивания переменных окружения и обёртки (sudo, doas, pkexec, su, env, timeout...)
         while idx < n:
             tok = tokens[idx]
             if "=" in tok and not tok.startswith("-") and tok.split("=", 1)[0].isidentifier():
@@ -945,33 +575,9 @@ class CommandASTParser:
 
             if base_tok in ("su", "runuser"):
                 effective_sudo = True
-                wrappers.append(base_tok)
-                idx += 1
-                while idx < n:
-                    cur = tokens[idx]
-                    if cur in ("-c", "--command") and idx + 1 < n:
-                        return (
-                            [],
-                            [(tokens[idx + 1], (*wrappers, f"{base_tok} -c"), True)],
-                            False,
-                        )
-                    if cur.startswith("--command="):
-                        return (
-                            [],
-                            [(cur.split("=", 1)[1], (*wrappers, f"{base_tok} -c"), True)],
-                            False,
-                        )
-                    if cur == "--":
-                        idx += 1
-                        break
-                    if cur.startswith("-"):
-                        idx += 2 if cur in ("-s", "--shell", "-u", "-g", "-G") and idx + 1 < n else 1
-                        continue
-                    # Имя целевого пользователя (например, `su root -c "..."`)
-                    if idx + 1 < n and tokens[idx + 1].startswith("-"):
-                        idx += 1
-                        continue
-                    break
+                idx, early_nested = cls._consume_su_wrapper(tokens, idx, base_tok, wrappers)
+                if early_nested is not None:
+                    return idx, env_assignments, wrappers, effective_sudo, segment_obf, early_nested
                 continue
 
             if base_tok == "chroot" and idx + 1 < n:
@@ -983,30 +589,17 @@ class CommandASTParser:
                     if opt in ("--userspec", "--groups") and idx < n:
                         idx += 1
                 if idx + 1 < n:
-                    idx += 1  # Пропускаем NEWROOT перед исполняемой командой
+                    idx += 1
                 continue
 
             if base_tok == "env":
-                wrappers.append("env")
-                idx += 1
-                while idx < n:
-                    cur = tokens[idx]
-                    if cur in ("-S", "--split-string") and idx + 1 < n:
-                        return (
-                            [],
-                            [(tokens[idx + 1], (*wrappers, "env -S"), effective_sudo)],
-                            False,
-                        )
-                    if cur.startswith("-"):
-                        idx += 1
-                        continue
-                    if "=" in cur and cur.split("=", 1)[0].isidentifier():
-                        ek, ev = cur.split("=", 1)
-                        env_assignments[ek] = ev
-                        var_table[ek] = ev
-                        idx += 1
-                        continue
-                    break
+                idx, env_nested, is_split = cls._consume_env_wrapper(
+                    tokens, idx, wrappers, env_assignments, var_table
+                )
+                if is_split and env_nested is not None:
+                    return idx, env_assignments, wrappers, effective_sudo, segment_obf, (
+                        env_nested[0], env_nested[1], effective_sudo
+                    )
                 continue
 
             if base_tok == "timeout" and idx + 1 < n:
@@ -1018,7 +611,7 @@ class CommandASTParser:
                     if opt in ("-k", "--kill-after", "-s", "--signal") and idx < n:
                         idx += 1
                 if idx < n:
-                    idx += 1  # Пропускаем значение длительности
+                    idx += 1
                 continue
 
             if base_tok in _WRAPPER_BINARIES:
@@ -1036,19 +629,22 @@ class CommandASTParser:
 
             break
 
-        remaining = tokens[idx:]
-        if not remaining:
-            return [], [], False
+        return idx, env_assignments, wrappers, effective_sudo, segment_obf, None
 
-        raw_exec = remaining[0]
-        raw_word_for_exec = raw_words[idx] if idx < len(raw_words) else raw_exec
+    @staticmethod
+    def _resolve_obfuscated_executable(
+        raw_exec: str,
+        raw_word_for_exec: str,
+        var_table: dict[str, str],
+        obfuscation_reasons: list[str],
+    ) -> tuple[str, bool]:
+        segment_obf = False
         if _is_quote_spliced_token(raw_word_for_exec):
             segment_obf = True
             msg = f"Quote or backslash obfuscation inside executable token ({raw_word_for_exec!r})"
             if msg not in obfuscation_reasons:
                 obfuscation_reasons.append(msg)
 
-        # Подстановка известных переменных при склейке ($C1$C2 -> rm)
         resolved_exec = raw_exec
         if "$" in raw_exec:
             if _VAR_CONCAT_EXEC_RE.match(raw_exec):
@@ -1066,13 +662,151 @@ class CommandASTParser:
                 obfuscation_reasons.append(msg)
 
         exec_name = os.path.basename(resolved_exec).lower() or resolved_exec.lower()
+        return exec_name, segment_obf
+
+    @staticmethod
+    def _extract_nested_wrapper_commands(
+        exec_name: str,
+        subcmd: str | None,
+        rest: list[str],
+        wrappers: list[str],
+        effective_sudo: bool,
+        obfuscation_reasons: list[str],
+    ) -> tuple[list[tuple[str, tuple[str, ...], bool]], bool, bool]:
+        nested_commands: list[tuple[str, tuple[str, ...], bool]] = []
+        has_inline = False
+        segment_obf = False
+
+        if exec_name in _SHELL_BINARIES:
+            for i, arg in enumerate(rest):
+                if arg in ("-c", "-lc", "-ic") and i + 1 < len(rest):
+                    nested_commands.append((rest[i + 1], (*wrappers, f"{exec_name} {arg}"), effective_sudo))
+                    break
+
+        if exec_name in _INLINE_SCRIPT_BINS:
+            inline_flags = _INLINE_SCRIPT_BINS[exec_name]
+            for i, arg in enumerate(rest):
+                if arg in inline_flags and i + 1 < len(rest):
+                    has_inline = True
+                    if _INLINE_DESTRUCTIVE_RE.search(rest[i + 1]):
+                        segment_obf = True
+                        msg = f"Inline {exec_name} script contains destructive or system-execution call"
+                        if msg not in obfuscation_reasons:
+                            obfuscation_reasons.append(msg)
+                    break
+        elif exec_name in ("awk", "gawk", "mawk", "nawk") and "system(" in " ".join(rest):
+            has_inline = True
+            segment_obf = True
+            msg = "Inline awk system() command execution detected"
+            if msg not in obfuscation_reasons:
+                obfuscation_reasons.append(msg)
+
+        if exec_name == "find":
+            for i, arg in enumerate(rest):
+                if arg in ("-exec", "-execdir", "-ok") and i + 1 < len(rest):
+                    exec_tokens: list[str] = []
+                    for sub_tok in rest[i + 1 :]:
+                        if sub_tok in (";", r"\;", "+"):
+                            break
+                        if sub_tok != "{}":
+                            exec_tokens.append(sub_tok)
+                    if exec_tokens:
+                        nested_commands.append(
+                            (shlex.join(exec_tokens), (*wrappers, f"find {arg}"), effective_sudo)
+                        )
+
+        if exec_name == "xargs":
+            x_idx = 0
+            while x_idx < len(rest):
+                xt = rest[x_idx]
+                if xt.startswith("-"):
+                    x_idx += 2 if xt in _XARGS_OPTS_WITH_ARG and x_idx + 1 < len(rest) else 1
+                    continue
+                break
+            if rest[x_idx:]:
+                nested_commands.append(
+                    (shlex.join(rest[x_idx:]), (*wrappers, "xargs"), effective_sudo)
+                )
+
+        if exec_name in ("docker", "podman") and subcmd == "exec" and "exec" in rest:
+            after_exec = rest[rest.index("exec") + 1 :]
+            c_idx = 0
+            container_arg_opts = ("-u", "--user", "-w", "--workdir", "-e", "--env")
+            while c_idx < len(after_exec) and after_exec[c_idx].startswith("-"):
+                c_idx += 2 if after_exec[c_idx] in container_arg_opts and c_idx + 1 < len(after_exec) else 1
+            if c_idx + 1 < len(after_exec):
+                nested_commands.append(
+                    (shlex.join(after_exec[c_idx + 1 :]), (*wrappers, f"{exec_name} exec"), effective_sudo)
+                )
+        elif exec_name == "kubectl" and subcmd == "exec" and "--" in rest:
+            sep_idx = rest.index("--")
+            if sep_idx + 1 < len(rest):
+                nested_commands.append(
+                    (shlex.join(rest[sep_idx + 1 :]), (*wrappers, "kubectl exec"), effective_sudo)
+                )
+
+        return nested_commands, has_inline, segment_obf
+
+    @classmethod
+    def _parse_single_segment(
+        cls,
+        segment: str,
+        *,
+        inherited_wrappers: tuple[str, ...],
+        inherited_sudo: bool,
+        var_table: dict[str, str],
+        obfuscation_reasons: list[str],
+        subshell_depth: int = 0,
+    ) -> tuple[list[AtomicCommand], list[tuple[str, tuple[str, ...], bool]], bool]:
+        """Разобрать одиночный сегмент пайплайна/цепочки в AtomicCommand и список вложенных команд."""
+        seg_clean = segment.strip()
+        if not seg_clean or seg_clean.startswith("#"):
+            return [], [], False
+
+        redirects = [
+            m.group(0).strip() for m in _REDIRECT_RE.finditer(seg_clean) if m.group(0).strip()
+        ]
+
+        segment_obf = False
+        raw_words = _split_raw_shell_words(seg_clean)
+        for rw in raw_words:
+            if _has_brace_expansion(rw):
+                segment_obf = True
+                msg = f"Shell brace expansion obfuscation detected ({rw!r})"
+                if msg not in obfuscation_reasons:
+                    obfuscation_reasons.append(msg)
+        try:
+            tokens = shlex.split(seg_clean, posix=True)
+        except ValueError:
+            tokens = seg_clean.split()
+        if not tokens:
+            return [], [], False
+
+        idx, env_assignments, wrappers, effective_sudo, wrapper_obf, early_nested = cls._strip_wrappers(
+            tokens,
+            inherited_wrappers=inherited_wrappers,
+            inherited_sudo=inherited_sudo,
+            var_table=var_table,
+            obfuscation_reasons=obfuscation_reasons,
+        )
+        segment_obf = segment_obf or wrapper_obf
+        if early_nested is not None:
+            return [], [early_nested], False
+
+        remaining = tokens[idx:]
+        if not remaining:
+            return [], [], False
+
+        raw_exec = remaining[0]
+        raw_word_for_exec = raw_words[idx] if idx < len(raw_words) else raw_exec
+        exec_name, exec_obf = cls._resolve_obfuscated_executable(
+            raw_exec, raw_word_for_exec, var_table, obfuscation_reasons
+        )
+        segment_obf = segment_obf or exec_obf
         rest = remaining[1:]
 
-        # Проверка eval / base64 -d / xxd -r
         if exec_name == "eval":
-            segment_obf = True
-            eval_arg = " ".join(rest).strip()
-            decoded_eval = _decode_ansi_c_escapes(eval_arg)
+            decoded_eval = _decode_ansi_c_escapes(" ".join(rest).strip())
             msg = "Dynamic shell 'eval' execution is forbidden by AST guardrails"
             if msg not in obfuscation_reasons:
                 obfuscation_reasons.append(msg)
@@ -1095,7 +829,6 @@ class CommandASTParser:
             msg = "Base64 payload decoding (base64 -d) detected in command pipeline"
             if msg not in obfuscation_reasons:
                 obfuscation_reasons.append(msg)
-
         if exec_name == "xxd" and "-r" in rest:
             segment_obf = True
             msg = "Hex payload decoding (xxd -r) detected in command pipeline"
@@ -1104,97 +837,10 @@ class CommandASTParser:
 
         flags, pos_args = cls._parse_flags_and_args(exec_name, rest)
         subcmd = cls._extract_subcommand(exec_name, rest)
-        nested_commands: list[tuple[str, tuple[str, ...], bool]] = []
-        has_inline = False
-
-        # 2. Раскрытие sh -c / bash -c
-        if exec_name in _SHELL_BINARIES:
-            for i, arg in enumerate(rest):
-                if arg in ("-c", "-lc", "-ic") and i + 1 < len(rest):
-                    nested_commands.append((rest[i + 1], (*wrappers, f"{exec_name} {arg}"), effective_sudo))
-                    break
-
-        # 3. Инспекция инлайн-скриптов: python3 -c, perl -e, ruby -e, node -e, php -r, awk
-        if exec_name in _INLINE_SCRIPT_BINS:
-            inline_flags = _INLINE_SCRIPT_BINS[exec_name]
-            for i, arg in enumerate(rest):
-                if arg in inline_flags and i + 1 < len(rest):
-                    has_inline = True
-                    code_body = rest[i + 1]
-                    if _INLINE_DESTRUCTIVE_RE.search(code_body):
-                        segment_obf = True
-                        msg = f"Inline {exec_name} script contains destructive or system-execution call"
-                        if msg not in obfuscation_reasons:
-                            obfuscation_reasons.append(msg)
-                    break
-        elif exec_name in ("awk", "gawk", "mawk", "nawk"):
-            joined_awk = " ".join(rest)
-            if "system(" in joined_awk:
-                has_inline = True
-                segment_obf = True
-                msg = "Inline awk system() command execution detected"
-                if msg not in obfuscation_reasons:
-                    obfuscation_reasons.append(msg)
-
-        # 4. Раскрытие find ... -exec / -execdir / -ok
-        if exec_name == "find":
-            for i, arg in enumerate(rest):
-                if arg in ("-exec", "-execdir", "-ok") and i + 1 < len(rest):
-                    exec_tokens: list[str] = []
-                    for sub_tok in rest[i + 1 :]:
-                        if sub_tok in (";", r"\;", "+"):
-                            break
-                        if sub_tok != "{}":
-                            exec_tokens.append(sub_tok)
-                    if exec_tokens:
-                        nested_commands.append(
-                            (shlex.join(exec_tokens), (*wrappers, f"find {arg}"), effective_sudo)
-                        )
-
-        # 5. Раскрытие xargs <cmd>
-        if exec_name == "xargs":
-            x_idx = 0
-            while x_idx < len(rest):
-                xt = rest[x_idx]
-                if xt.startswith("-"):
-                    if xt in _XARGS_OPTS_WITH_ARG and x_idx + 1 < len(rest):
-                        x_idx += 2
-                    else:
-                        x_idx += 1
-                    continue
-                break
-            xargs_target = rest[x_idx:]
-            if xargs_target:
-                nested_commands.append(
-                    (shlex.join(xargs_target), (*wrappers, "xargs"), effective_sudo)
-                )
-
-        # 6. Раскрытие docker/podman/kubectl exec
-        if exec_name in ("docker", "podman") and subcmd == "exec":
-            try:
-                exec_pos = rest.index("exec")
-                after_exec = rest[exec_pos + 1 :]
-                c_idx = 0
-                container_arg_opts = ("-u", "--user", "-w", "--workdir", "-e", "--env")
-                while c_idx < len(after_exec) and after_exec[c_idx].startswith("-"):
-                    if after_exec[c_idx] in container_arg_opts and c_idx + 1 < len(after_exec):
-                        c_idx += 2
-                    else:
-                        c_idx += 1
-                if c_idx + 1 < len(after_exec):
-                    container_cmd = after_exec[c_idx + 1 :]
-                    nested_commands.append(
-                        (shlex.join(container_cmd), (*wrappers, f"{exec_name} exec"), effective_sudo)
-                    )
-            except ValueError:
-                pass
-        elif exec_name == "kubectl" and subcmd == "exec" and "--" in rest:
-            sep_idx = rest.index("--")
-            if sep_idx + 1 < len(rest):
-                k8s_cmd = rest[sep_idx + 1 :]
-                nested_commands.append(
-                    (shlex.join(k8s_cmd), (*wrappers, "kubectl exec"), effective_sudo)
-                )
+        nested_commands, has_inline, nested_obf = cls._extract_nested_wrapper_commands(
+            exec_name, subcmd, rest, wrappers, effective_sudo, obfuscation_reasons
+        )
+        segment_obf = segment_obf or nested_obf
 
         atom = AtomicCommand(
             executable=exec_name,
@@ -1234,30 +880,19 @@ class CommandASTParser:
                 after_double_dash = True
                 idx += 1
                 continue
-            if tok.startswith("--") and len(tok) > 2:
+            is_long = tok.startswith("--") and len(tok) > 2
+            is_short = tok.startswith("-") and len(tok) > 1 and not tok[1:].isdigit()
+            if is_long or is_short:
                 if "=" in tok:
                     fk, fv = tok.split("=", 1)
                     flags[fk] = fv
-                elif tok in opts_with_arg and idx + 1 < n:
+                elif (tok in opts_with_arg or tok.lower() in opts_with_arg) and idx + 1 < n:
                     flags[tok] = tokens[idx + 1]
                     idx += 2
                     continue
                 else:
                     flags[tok] = True
-                idx += 1
-                continue
-            if tok.startswith("-") and len(tok) > 1 and not tok[1:].isdigit():
-                if "=" in tok:
-                    fk, fv = tok.split("=", 1)
-                    flags[fk] = fv
-                elif tok in opts_with_arg and idx + 1 < n:
-                    flags[tok] = tokens[idx + 1]
-                    idx += 2
-                    continue
-                else:
-                    flags[tok] = True
-                    # Также разворачиваем комбинированные короткие флаги вроде -rf -> -r, -f
-                    if len(tok) > 2 and tok[1:].isalpha():
+                    if is_short and not is_long and len(tok) > 2 and tok[1:].isalpha():
                         for ch in tok[1:]:
                             flags[f"-{ch}"] = True
                 idx += 1
@@ -1302,13 +937,10 @@ class CommandASTParser:
             if tok == "--":
                 return tokens[idx + 1].lower() if idx + 1 < n else None
             if tok.startswith("-"):
-                if "=" in tok:
-                    idx += 1
-                    continue
-                if tok in opts_with_arg:
+                if "=" not in tok and (tok in opts_with_arg or tok.lower() in opts_with_arg):
                     idx += 2
-                    continue
-                idx += 1
+                else:
+                    idx += 1
                 continue
             return tok.lower()
         return None

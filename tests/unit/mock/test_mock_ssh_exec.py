@@ -66,7 +66,7 @@ async def test_mock_ssh_server_exec_stdout_stderr_and_exit_code() -> None:
         assert server.port > 0
         assert server.uri == f"ssh://127.0.0.1:{server.port}"
 
-        async with Connection.from_uri(server.uri) as conn:
+        async with Connection.from_uri(f"{server.uri}?known_hosts=no") as conn:
             res_ok = await conn.run("uptime")
             assert res_ok.ok
             assert "load average: 0.12" in res_ok.stdout
@@ -96,13 +96,13 @@ async def test_mock_ssh_server_strict_vs_non_strict_miss() -> None:
     cassette = _sample_exec_cassette()
 
     async with MockSSHServer.from_cassette(cassette, strict_mode=False, default_exit_code=127) as srv_non_strict:
-        async with Connection.from_uri(srv_non_strict.uri, retry_attempts=1) as conn:
+        async with Connection.from_uri(f"{srv_non_strict.uri}?known_hosts=no", retry_attempts=1) as conn:
             res = await conn.run("unknown_cmd_xyz")
             assert res.exit_code == 127
             assert "mock: command not found: unknown_cmd_xyz" in res.stderr
 
     async with MockSSHServer.from_cassette(cassette, strict_mode=True, default_exit_code=42) as srv_strict:
-        async with Connection.from_uri(srv_strict.uri, retry_attempts=1) as conn:
+        async with Connection.from_uri(f"{srv_strict.uri}?known_hosts=no", retry_attempts=1) as conn:
             res_strict = await conn.run("unknown_cmd_xyz")
             assert res_strict.exit_code == 42
             assert "uniconn mock: no matching interaction for: unknown_cmd_xyz" in res_strict.stderr
@@ -117,7 +117,7 @@ async def test_mock_ssh_server_allow_repeats_false() -> None:
         ],
     )
     async with MockSSHServer.from_cassette(cassette, allow_repeats=False, strict_mode=True) as server:
-        async with Connection.from_uri(server.uri, retry_attempts=1) as conn:
+        async with Connection.from_uri(f"{server.uri}?known_hosts=no", retry_attempts=1) as conn:
             first = await conn.run("whoami")
             assert first.ok
             assert first.text == "root"
@@ -143,12 +143,12 @@ async def test_mock_ssh_server_password_authentication_policy(tmp_path: Path) ->
     )
     async with MockSSHServer(cfg) as server:
         assert "deploy:secret-password@" in server.uri
-        async with Connection.from_uri(server.uri, retry_attempts=1) as good_conn:
+        async with Connection.from_uri(f"{server.uri}?known_hosts=no", retry_attempts=1) as good_conn:
             res = await good_conn.run("id -u")
             assert res.ok
             assert res.text == "1000"
 
-        bad_uri = f"ssh://deploy:wrong-pass@127.0.0.1:{server.port}"
+        bad_uri = f"ssh://deploy:wrong-pass@127.0.0.1:{server.port}?known_hosts=no"
         with pytest.raises((AuthenticationError, asyncssh.PermissionDenied)):
             async with Connection.from_uri(bad_uri, retry_attempts=1) as bad_conn:
                 await bad_conn.run("id -u")

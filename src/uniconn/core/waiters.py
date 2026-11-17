@@ -11,8 +11,12 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from .._logging import get_logger
 from ..exceptions import TimeoutError as UniconnTimeoutError
+from ..exceptions import UniconnError
 from ..result import PingResult
+
+_logger = get_logger("uniconn.core.waiters")
 
 if TYPE_CHECKING:
     from .connection import Connection
@@ -78,12 +82,14 @@ async def wait_for_connection(
         probe_timeout = max(0.5, min(interval * 2.0, max(0.5, remaining)))
         try:
             if not conn.transport.is_connected:
-                with contextlib.suppress(Exception):
+                try:
                     await conn.transport.disconnect()
+                except (OSError, UniconnError) as exc:
+                    _logger.debug("wait_for_connection disconnect before retry failed: %s", exc)
             last_res = await conn.ping(timeout=probe_timeout)
             if last_res.alive:
                 return last_res
-        except Exception as exc:
+        except (OSError, UniconnError, TimeoutError) as exc:
             last_res = PingResult(
                 host=conn.config.host or "localhost",
                 alive=False,
@@ -143,13 +149,15 @@ async def wait_for_port(
                     timeout=probe_timeout,
                 )
                 writer.close()
-                with contextlib.suppress(Exception):
+                with contextlib.suppress(OSError, RuntimeError):
                     await writer.wait_closed()
                 is_open = True
-            except Exception:
+            except (OSError, TimeoutError):
                 is_open = False
         else:
-            if conn.transport_name in ("winrm", "wsman"):
+            from ..services.provisioning.windows import is_windows_connection
+
+            if conn.transport_name in ("winrm", "wsman") or is_windows_connection(conn):
                 ps_host = "'" + target_host.replace("'", "''") + "'"
                 probe_cmd = (
                     "$c = [System.Net.Sockets.TcpClient]::new(); "
@@ -166,9 +174,11 @@ async def wait_for_port(
                     f"|| nc -z -w 2 {q_host} {port_num} 2>/dev/null "
                     f"|| (echo >/dev/tcp/{q_host}/{port_num}) >/dev/null 2>&1"
                 )
-            with contextlib.suppress(Exception):
+            try:
                 res = await conn.run(probe_cmd, raise_on_error=False, dry_run=False)
                 is_open = res.ok
+            except (OSError, UniconnError, TimeoutError) as exc:
+                _logger.debug("wait_for_port remote probe failed on %s:%d: %s", target_host, port_num, exc)
 
         if (state == "open" and is_open) or (state == "closed" and not is_open):
             return time.monotonic() - start
@@ -205,14 +215,18 @@ async def wait_for_path(
     if delay > 0:
         await asyncio.sleep(delay)
 
+    from ..services.provisioning.windows import is_windows_connection
+
     path_str = str(remote_path)
     q_path = shlex.quote(path_str)
+    is_win = conn.transport_name in ("winrm", "wsman") or is_windows_connection(conn)
+    ps_path = "'" + path_str.replace("'", "''") + "'"
     compiled_re = re.compile(content_regex) if content_regex is not None else None
 
     while True:
         exists = False
-        with contextlib.suppress(Exception):
-            if sudo:
+        try:
+            if sudo and not is_win:
                 chk = await conn.run(
                     f"test -e {q_path}",
                     sudo=True,
@@ -223,13 +237,21 @@ async def wait_for_path(
             else:
                 try:
                     exists = await conn.files.exists(path_str)
-                except Exception:
+                except (OSError, UniconnError) as exc:
+                    _logger.debug("wait_for_path files.exists fallback for %s: %s", path_str, exc)
+                    chk_cmd = (
+                        f"if (Test-Path -LiteralPath {ps_path}) {{ exit 0 }} else {{ exit 1 }}"
+                        if is_win
+                        else f"test -e {q_path}"
+                    )
                     chk = await conn.run(
-                        f"test -e {q_path}",
+                        chk_cmd,
                         raise_on_error=False,
                         dry_run=False,
                     )
                     exists = chk.ok
+        except (OSError, UniconnError, TimeoutError) as exc:
+            _logger.debug("wait_for_path probe failed for %s: %s", path_str, exc)
 
         if state == "absent" and not exists:
             return time.monotonic() - start
@@ -238,8 +260,8 @@ async def wait_for_path(
             if compiled_re is None:
                 return time.monotonic() - start
             text_content: str | None = None
-            with contextlib.suppress(Exception):
-                if sudo:
+            try:
+                if sudo and not is_win:
                     cat_res = await conn.run(
                         f"cat {q_path}",
                         sudo=True,
@@ -253,6 +275,8 @@ async def wait_for_path(
                     text_content = (
                         raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace")
                     )
+            except (OSError, UniconnError, UnicodeDecodeError, TimeoutError) as exc:
+                _logger.debug("wait_for_path content read failed for %s: %s", path_str, exc)
             if text_content is not None and compiled_re.search(text_content):
                 return time.monotonic() - start
 

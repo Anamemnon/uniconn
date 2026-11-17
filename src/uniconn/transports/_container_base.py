@@ -7,6 +7,7 @@ import abc
 import asyncio
 import builtins
 import contextlib
+import posixpath
 import shlex
 import stat as stat_module
 import time
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config.models import ConnectionConfig
-from ..exceptions import ConnectionError, ExecutionError, TimeoutError
+from ..exceptions import ConfigurationError, ConnectionError, ExecutionError, TimeoutError
 from ..result import Result
 from ._local import _LocalShellProcess
 from .base import BaseTransport, FileStat
@@ -29,6 +30,20 @@ _FILETYPE_MAP: dict[str, int] = {
     "p": stat_module.S_IFIFO,
     "s": stat_module.S_IFSOCK,
 }
+
+
+def _validate_shell_bin(shell: Any, transport_name: str = "container") -> str:
+    """Проверить корректность пути/имени shell для exec без инъекции флагов и разделителей."""
+    shell_str = str(shell).strip() if shell is not None else ""
+    if not shell_str:
+        raise ConfigurationError(f"Empty shell executable is not allowed for {transport_name} transport")
+    if shell_str.startswith("-"):
+        raise ConfigurationError(
+            f"Shell executable must not start with '-' (flag injection): {shell_str!r}"
+        )
+    if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in shell_str):
+        raise ConfigurationError(f"Unsafe characters in shell executable: {shell_str!r}")
+    return shell_str
 
 
 def _symbolic_mode_to_int(perm_str: str) -> int:
@@ -370,7 +385,7 @@ class ContainerExecTransportBase(BaseTransport):
     ) -> None:
         """Записать байты в файл внутри контейнера/пода и опционально применить ``chmod``."""
         q_path = shlex.quote(remote_path)
-        parent = str(Path(remote_path).parent)
+        parent = posixpath.dirname(remote_path)
         mkdir_part = f"mkdir -p -- {shlex.quote(parent)} && " if parent and parent != "." else ""
         chmod_part = f" && chmod {oct(mode)[2:]} -- {q_path}" if mode is not None else ""
         cmd = f"{mkdir_part}cat > {q_path}{chmod_part}"
@@ -460,4 +475,5 @@ __all__ = [
     "_parse_ls_stat_output",
     "_parse_stat_output",
     "_symbolic_mode_to_int",
+    "_validate_shell_bin",
 ]

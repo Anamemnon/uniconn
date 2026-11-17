@@ -77,8 +77,14 @@ class RedfishTransport(BaseTransport):
         ca_file = opts.get("ca_file")
         if ca_file:
             self._verify: bool | str = str(ca_file)
+        elif "verify_ssl" in opts:
+            self._verify = bool(opts["verify_ssl"])
+        elif "verify_tls" in opts:
+            self._verify = bool(opts["verify_tls"])
+        elif "insecure" in opts:
+            self._verify = not bool(opts["insecure"])
         else:
-            self._verify = bool(opts.get("verify_ssl", False))
+            self._verify = True
 
         self._multiplexed: bool = bool(opts.get("multiplexed", True))
         self._auth_pref: str = str(opts.get("auth", "auto")).lower()

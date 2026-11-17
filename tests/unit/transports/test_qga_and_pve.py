@@ -412,6 +412,10 @@ class TestPveTransportAndMockServer:
             assert cat_res.stdout == "hello_stdin_stream\n"
 
             await conn.run("id", sudo=True, sudo_password="my_sudo_pass")
+            assert mock_qga.last_input_data is None  # NOPASSWD: пароль не утекает в stdin
+            mock_qga.command_handlers["sudo -n"] = (1, "", "sudo: a password is required\n")
+            conn._sudo_nopasswd_cache.clear()
+            await conn.run("id", sudo=True, sudo_password="my_sudo_pass")
             assert mock_qga.last_input_data == b"my_sudo_pass\n"
 
         # 2. PVE: проверка cd(), env(), input и fallback чтения при truncated=1

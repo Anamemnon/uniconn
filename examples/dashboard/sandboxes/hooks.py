@@ -6,7 +6,6 @@ import asyncio
 import io
 import json
 import logging
-import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -261,7 +260,9 @@ def _execute_screen_sandbox(payload: dict[str, Any], screen_state: dict[str, Any
                 written_bytes = final_path.stat().st_size if final_path.exists() else 0
                 rel_name = final_path.name
 
-            compiled = re.compile(regex_pattern)
+            from uniconn.security.regex_safety import validate_safe_regex
+
+            compiled = validate_safe_regex(regex_pattern)
             matched_events: list[dict[str, Any]] = []
             for line_no, raw_line in enumerate(sample_logs_raw.splitlines(), start=1):
                 m = compiled.search(raw_line)

@@ -181,9 +181,12 @@ class TestBgLogs:
     """Тесты команды bg-logs."""
 
     def test_oneshot_reads_log(self, cli_app, runner):
-        """Без --follow лог читается один раз."""
+        """Без --follow лог сначала находится в runtime_dir, затем читается через cat."""
         conn_cls, conn = make_connection_mock(
-            run_return=make_result(stdout="line1\nline2\n")
+            run_side_effect=[
+                make_result(stdout="/tmp/uniconn_p1/uniconn_abc123_0.log\n"),
+                make_result(stdout="line1\nline2\n"),
+            ]
         )
 
         with patch("uniconn.cli.Connection", conn_cls):
@@ -194,14 +197,15 @@ class TestBgLogs:
 
         assert result.exit_code == 0, result.output
         assert "line1" in result.output
-        conn.run.assert_awaited_once_with(
-            "cat /tmp/uniconn_abc123_0.log", raise_on_error=False
-        )
+        assert conn.run.await_count == 2
+        assert "uniconn_abc123_0.log" in conn.run.await_args_list[0].args[0]
+        assert conn.run.await_args_list[1].args[0] == "cat /tmp/uniconn_p1/uniconn_abc123_0.log"
 
     def test_follow_stops_when_session_dead(self, cli_app, runner):
         """--follow читает порции и останавливается после завершения сессии."""
         conn_cls, conn = make_connection_mock(
             run_side_effect=[
+                make_result(stdout="/tmp/uniconn_p1/uniconn_abc123_0.log\n"),  # probe log path
                 make_result(stdout="chunk1\n"),  # tail: новые данные
                 make_result(stdout="screen\n"),  # auto-probe -> screen
                 make_result(exit_code=1),        # screen -ls: сессии нет
@@ -216,7 +220,7 @@ class TestBgLogs:
 
         assert result.exit_code == 0, result.output
         assert "chunk1" in result.output
-        assert conn.run.await_count == 3
+        assert conn.run.await_count == 4
 
 
 class TestBgStatus:

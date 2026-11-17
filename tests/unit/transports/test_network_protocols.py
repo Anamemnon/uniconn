@@ -165,7 +165,7 @@ async def test_netconf_crud_locks_confirmed_commit_and_notifications() -> None:
         MockNetconfServer(
             notifications=[{"link-up": {"interface": "GigabitEthernet0/0/0", "status": "up"}}]
         ) as server,
-        Connection.from_uri(server.uri) as conn,
+        Connection.from_uri(f"{server.uri}?known_hosts=no") as conn,
     ):
         caps_res = await conn.net.capabilities()
         assert caps_res.ok
@@ -222,7 +222,7 @@ async def test_netconf_crud_locks_confirmed_commit_and_notifications() -> None:
         assert rolled_back.data["system"]["hostname"] == "core-sw-01"
 
         # Проверка блокировки (lock contention между двумя сессиями)
-        async with Connection.from_uri(server.uri) as conn2:
+        async with Connection.from_uri(f"{server.uri}?known_hosts=no") as conn2:
             async with conn.net.locked("candidate"):
                 lock_denied = await conn2.net.lock("candidate")
                 assert not lock_denied.ok
@@ -256,7 +256,7 @@ def test_sync_netconf_connection_and_mock_server() -> None:
     """Синхронные обёртки SyncMockNetconfServer и SyncConnection.net работают прозрачно."""
     with (
         SyncMockNetconfServer() as server,
-        Connection.from_uri(server.uri).to_sync() as conn,
+        Connection.from_uri(f"{server.uri}?known_hosts=no").to_sync() as conn,
     ):
         res = conn.net.get("/system")
         assert res.ok
@@ -555,7 +555,7 @@ async def test_netconf_subtree_fallback_and_ensure_yang_state_absent() -> None:
     ]
     async with (
         MockNetconfServer(capabilities=caps_no_xpath) as server,
-        Connection.from_uri(server.uri) as conn,
+        Connection.from_uri(f"{server.uri}?known_hosts=no") as conn,
     ):
         # Автоматический выбор subtree-фильтр с предикатом ключа
         lo_res = await conn.net.get("/interfaces/interface[name=Loopback0]")

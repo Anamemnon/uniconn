@@ -4,6 +4,7 @@ import atexit
 import contextlib
 import json
 import logging
+import posixpath
 import shlex
 import signal
 import threading
@@ -36,10 +37,12 @@ class BackgroundCleanupManager:
         pool_id: str,
         logger: logging.Logger | None = None,
         stale_ttl_seconds: float | None = None,
+        runtime_dir: str | None = None,
     ):
         self._pool_id = pool_id
         self._logger = logger or logging.getLogger(__name__)
         self._stale_ttl_seconds = stale_ttl_seconds
+        self._runtime_dir = runtime_dir
         self._sessions: dict[str, BackgroundSession] = {}
         self._signal_count = 0
         self._installed = False
@@ -51,14 +54,52 @@ class BackgroundCleanupManager:
         return self._stale_ttl_seconds
 
     @property
+    def runtime_dir(self) -> str | None:
+        """Приватная директория артефактов пула (с правами ``0700``)."""
+        return self._runtime_dir
+
+    @runtime_dir.setter
+    def runtime_dir(self, value: str | None) -> None:
+        self._runtime_dir = value
+
+    @property
     def sentinel_path(self) -> str:
         """Путь к sentinel-файлу пула на сервере."""
-        return f"/tmp/uniconn_{self._pool_id}.active"
+        base = self._runtime_dir or "/tmp"
+        return posixpath.join(base, f"uniconn_{self._pool_id}.active")
 
     @property
     def cleanup_script_path(self) -> str:
         """Путь к cleanup-скрипту пула на сервере."""
-        return f"/tmp/uniconn_cleanup_{self._pool_id}.sh"
+        base = self._runtime_dir or "/tmp"
+        return posixpath.join(base, f"uniconn_cleanup_{self._pool_id}.sh")
+
+    async def ensure_posix_runtime_dir(self, connection: Connection) -> str:
+        """Создать или проверить приватную POSIX-директорию ``0700`` для артефактов пула."""
+        if self._runtime_dir:
+            return self._runtime_dir
+        safe_pool = "".join(
+            ch if (ch.isalnum() or ch in ("_", "-")) else "_" for ch in self._pool_id
+        )
+        cmd = (
+            "umask 077; "
+            'if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ] '
+            '&& [ -O "$XDG_RUNTIME_DIR" ] && [ ! -L "$XDG_RUNTIME_DIR" ]; then '
+            f'd="$XDG_RUNTIME_DIR/uniconn_{safe_pool}"; '
+            'if [ -L "$d" ]; then exit 1; fi; '
+            'mkdir -p -m 0700 "$d" && chmod 0700 "$d" && printf "%s" "$d"; '
+            "else "
+            f'mktemp -d "${{TMPDIR:-/tmp}}/uniconn_{safe_pool}_XXXXXX"; '
+            "fi"
+        )
+        res = await connection.run(cmd, raise_on_error=False)
+        resolved = res.stdout.strip().splitlines()[-1].strip() if res.ok and res.stdout.strip() else ""
+        if not res.ok:
+            raise RuntimeError(
+                f"Failed to create private runtime directory for pool {self._pool_id}: {res.stderr.strip()}"
+            )
+        self._runtime_dir = resolved or f"/tmp/uniconn_{safe_pool}"
+        return self._runtime_dir
 
     @property
     def sessions(self) -> dict[str, BackgroundSession]:
@@ -169,9 +210,12 @@ class BackgroundCleanupManager:
             session_ids = sorted(self._sessions)
         prefix = f"uniconn_{self._pool_id}_"
         custom = [s for s in session_ids if not s.startswith(prefix)]
+        art_dir = self._runtime_dir or "/tmp"
+        q_art_dir = shlex.quote(art_dir)
 
         script = f"""#!/bin/sh
 POOL_ID="{self._pool_id}"
+ART_DIR={q_art_dir}
 if command -v tmux >/dev/null 2>&1; then
     for s in $(tmux list-sessions -F '#{{session_name}}' 2>/dev/null | grep "^uniconn_${{POOL_ID}}_"); do
         tmux kill-session -t "=$s" 2>/dev/null
@@ -182,8 +226,8 @@ if command -v screen >/dev/null 2>&1; then
         screen -S "$s" -X kill 2>/dev/null
     done
 fi
-for pf in /tmp/uniconn_uniconn_${{POOL_ID}}_*.pid /tmp/uniconn_${{POOL_ID}}_*.pid; do
-    if [ -s "$pf" ]; then
+for pf in "$ART_DIR"/uniconn_uniconn_${{POOL_ID}}_*.pid "$ART_DIR"/uniconn_${{POOL_ID}}_*.pid; do
+    if [ -s "$pf" ] && [ ! -L "$pf" ]; then
         pid=$(cat "$pf")
         pkill -KILL -P "$pid" 2>/dev/null || true
         kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
@@ -193,11 +237,11 @@ done
         for name in custom:
             q_name = shlex.quote(name)
             q_tmux_target = shlex.quote(f"={name}")
-            q_pid_file = shlex.quote(f"/tmp/uniconn_{name}.pid")
+            q_pid_file = shlex.quote(posixpath.join(art_dir, f"uniconn_{name}.pid"))
             script += f"command -v tmux >/dev/null 2>&1 && tmux kill-session -t {q_tmux_target} 2>/dev/null\n"
             script += f"command -v screen >/dev/null 2>&1 && screen -S {q_name} -X kill 2>/dev/null\n"
             script += (
-                f"if [ -s {q_pid_file} ]; then pid=$(cat {q_pid_file}); "
+                f"if [ -s {q_pid_file} ] && [ ! -L {q_pid_file} ]; then pid=$(cat {q_pid_file}); "
                 'pkill -KILL -P "$pid" 2>/dev/null || true; '
                 'kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; fi\n'
             )
@@ -206,20 +250,21 @@ done
                 + " ".join(
                     shlex.quote(p)
                     for p in (
-                        f"/tmp/{name}.log",
-                        f"/tmp/uniconn_{name}.exit",
-                        f"/tmp/uniconn_{name}.pid",
-                        f"/tmp/uniconn_{name}.sh",
+                        posixpath.join(art_dir, f"{name}.log"),
+                        posixpath.join(art_dir, f"uniconn_{name}.exit"),
+                        posixpath.join(art_dir, f"uniconn_{name}.pid"),
+                        posixpath.join(art_dir, f"uniconn_{name}.sh"),
                     )
                 )
                 + "\n"
             )
-        script += """rm -f /tmp/uniconn_${POOL_ID}_*.log
-rm -f /tmp/uniconn_uniconn_${POOL_ID}_*.exit /tmp/uniconn_${POOL_ID}_*.exit
-rm -f /tmp/uniconn_uniconn_${POOL_ID}_*.pid /tmp/uniconn_${POOL_ID}_*.pid
-rm -f /tmp/uniconn_uniconn_${POOL_ID}_*.sh /tmp/uniconn_${POOL_ID}_*.sh
-rm -f /tmp/uniconn_${POOL_ID}.active
+        script += """rm -f "$ART_DIR"/uniconn_${POOL_ID}_*.log
+rm -f "$ART_DIR"/uniconn_uniconn_${POOL_ID}_*.exit "$ART_DIR"/uniconn_${POOL_ID}_*.exit
+rm -f "$ART_DIR"/uniconn_uniconn_${POOL_ID}_*.pid "$ART_DIR"/uniconn_${POOL_ID}_*.pid
+rm -f "$ART_DIR"/uniconn_uniconn_${POOL_ID}_*.sh "$ART_DIR"/uniconn_${POOL_ID}_*.sh
+rm -f "$ART_DIR"/uniconn_${POOL_ID}.active
 rm -f "$0"
+if [ "$ART_DIR" != "/tmp" ]; then rmdir "$ART_DIR" 2>/dev/null || true; fi
 """
         return script
 
@@ -242,16 +287,19 @@ rm -f "$0"
             )
             await connection.run(WindowsJobBackend._wrap_ps(ps_cmd))
             return
+        await self.ensure_posix_runtime_dir(connection)
         q_sentinel_path = shlex.quote(self.sentinel_path)
         q_cleanup_path = shlex.quote(self.cleanup_script_path)
+        q_dir = shlex.quote(self._runtime_dir or "/tmp")
         await connection.run(
-            f"printf '%s' {shlex.quote(sentinel)} > {q_sentinel_path}"
+            f"umask 077 && [ ! -L {q_dir} ] && mkdir -p -m 0700 {q_dir} && chmod 0700 {q_dir} && "
+            f"[ ! -L {q_sentinel_path} ] && printf '%s' {shlex.quote(sentinel)} > {q_sentinel_path}"
         )
         await connection.run(
-            f"printf '%s' {shlex.quote(self.generate_cleanup_script())} "
-            f"> {q_cleanup_path}"
+            f"umask 077 && [ ! -L {q_cleanup_path} ] && "
+            f"printf '%s' {shlex.quote(self.generate_cleanup_script())} > {q_cleanup_path}"
         )
-        await connection.run(f"chmod +x {q_cleanup_path}")
+        await connection.run(f"chmod 0700 {q_cleanup_path}")
 
     async def cleanup_stale(
         self,
@@ -279,8 +327,10 @@ rm -f "$0"
             return []
 
         res = await connection.run(
-            "for f in /tmp/uniconn_*.active; do "
-            '[ -f "$f" ] && printf "%s\\t%s\\n" "$f" "$(cat "$f" 2>/dev/null)"; '
+            'for f in "${XDG_RUNTIME_DIR:-/nonexistent}"/uniconn_*/uniconn_*.active '
+            "/tmp/uniconn_*/uniconn_*.active /tmp/uniconn_*.active; do "
+            '[ -f "$f" ] && [ ! -L "$f" ] && [ -O "$f" ] && '
+            'printf "%s\\t%s\\n" "$f" "$(cat "$f" 2>/dev/null)"; '
             "done"
         )
         if not res.stdout.strip():
@@ -320,14 +370,20 @@ rm -f "$0"
                 continue
 
             if (now - float(created_at)) >= float(file_ttl):
-                q_script = shlex.quote(f"/tmp/uniconn_cleanup_{pool_id}.sh")
+                stale_dir = posixpath.dirname(path_part) or "/tmp"
+                script_candidate = posixpath.join(stale_dir, f"uniconn_cleanup_{pool_id}.sh")
+                q_script = shlex.quote(script_candidate)
                 q_sentinel = shlex.quote(path_part)
+                q_dir = shlex.quote(stale_dir)
                 q_pid = shlex.quote(pool_id)
                 await connection.run(
-                    f"if [ -x {q_script} ]; then {q_script}; "
+                    f"if [ -x {q_script} ] && [ ! -L {q_script} ] && [ -O {q_script} ]; then "
+                    f"{q_script}; "
                     f"else rm -f {q_sentinel} {q_script} "
-                    f"/tmp/uniconn_{q_pid}_*.log /tmp/uniconn_*{q_pid}_*.pid "
-                    f"/tmp/uniconn_*{q_pid}_*.exit /tmp/uniconn_*{q_pid}_*.sh; fi"
+                    f"{q_dir}/uniconn_{q_pid}_*.log {q_dir}/uniconn_*{q_pid}_*.pid "
+                    f"{q_dir}/uniconn_*{q_pid}_*.exit {q_dir}/uniconn_*{q_pid}_*.sh; "
+                    f'if [ {q_dir} != "/tmp" ]; then rmdir {q_dir} 2>/dev/null || true; fi; '
+                    "fi"
                 )
                 cleaned.append(pool_id)
 

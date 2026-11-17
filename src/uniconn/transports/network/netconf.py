@@ -9,7 +9,7 @@ import json
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import AsyncIterator, Mapping, Sequence
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import asyncssh
 
@@ -26,6 +26,7 @@ from ...exceptions import (
 )
 from ...result import NetResult, Result, TelemetrySample
 from ..base import BaseTransport
+from ..ssh.config_parser import OpenSSHConfigParser
 from .base import (
     data_to_xml,
     extract_yang_interfaces_and_system,
@@ -136,20 +137,23 @@ class NetconfTransport(BaseTransport):
                     connect_kwargs["client_keys"] = [self.config.key_file]
                 if self.config.passphrase is not None:
                     connect_kwargs["passphrase"] = self.config.passphrase.get_secret_value()
-                strict_hk = bool(
-                    opts.get("strict_host_key_checking", opts.get("verify_host_key", False))
-                )
-                if not strict_hk:
+                strict_opt = opts.get("strict_host_key_checking", opts.get("verify_host_key"))
+                if strict_opt is False:
                     connect_kwargs["known_hosts"] = None
-                elif "known_hosts" in opts:
-                    connect_kwargs["known_hosts"] = opts["known_hosts"]
+                else:
+                    raw_kh = opts.get("known_hosts", "strict")
+                    connect_kwargs["known_hosts"] = OpenSSHConfigParser.resolve_known_hosts(
+                        raw_kh,
+                        host=self.config.host,
+                    )
 
                 self._ssh_conn = await asyncio.wait_for(
                     asyncssh.connect(**connect_kwargs),
                     timeout=self.config.timeout,
                 )
+                ssh_conn_any = cast(Any, self._ssh_conn)
                 self._process = await asyncio.wait_for(
-                    self._ssh_conn.create_process(subsystem="netconf", encoding=None),
+                    ssh_conn_any.create_process(subsystem="netconf", encoding=None),
                     timeout=self.config.timeout,
                 )
 

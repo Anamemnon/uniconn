@@ -221,7 +221,7 @@ class SshUnixSocketChannel(StreamQgaChannelBase):
         passphrase: str | None = None,
         socket_path: str | None = None,
         vm_name: str | None = None,
-        known_hosts: Any = None,
+        known_hosts: Any = (),
     ) -> None:
         super().__init__()
         self.host = host
@@ -337,7 +337,7 @@ class VirshCommandChannel:
         ssh_user: str | None = None,
         ssh_password: str | None = None,
         ssh_key_file: str | None = None,
-        known_hosts: Any = None,
+        known_hosts: Any = (),
     ) -> None:
         self.domain = domain
         self.libvirt_uri = libvirt_uri

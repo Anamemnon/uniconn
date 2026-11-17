@@ -58,7 +58,8 @@ class GuestAgentTransportBase(BaseTransport):
     def __init__(self, config: ConnectionConfig) -> None:
         super().__init__(config)
         opts = config.options
-        self.exec_timeout = float(opts.get("exec_timeout", config.timeout or 60.0))
+        default_to = config.timeout if config.timeout is not None else 60.0
+        self.exec_timeout = float(opts.get("exec_timeout", default_to))
         self.os_type = str(opts.get("os_type", "auto")).lower()
         self._is_windows = self.os_type == "windows"
         self.guest_osinfo: dict[str, Any] = {}

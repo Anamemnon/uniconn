@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import difflib
 import hashlib
 import os
@@ -14,8 +13,12 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from ..._logging import get_logger
+from ...exceptions import UniconnError
 from ...result import EnsureResult
 from ._plan import ChangePlan, _parse_mode
+
+_logger = get_logger("uniconn.services.provisioning.files")
 
 if TYPE_CHECKING:
     from .facade import StateManagementService
@@ -227,7 +230,8 @@ async def _plan_mode_change(
     try:
         st = await svc._conn.files.stat(path_str)
         cur_mode = svc._extract_stat_mode(st)
-    except Exception:
+    except (OSError, UniconnError, ValueError) as exc:
+        _logger.debug("Unable to stat mode for %s: %s", path_str, exc)
         cur_mode = -1
     if cur_mode == parsed_mode and not recurse:
         return False
@@ -318,9 +322,11 @@ async def _ensure_file_absent(
 
     old_text = ""
     if not is_symlink:
-        with contextlib.suppress(Exception):
+        try:
             raw = await svc._conn.files.read_file(path_str, encoding=encoding)
             old_text = raw if isinstance(raw, str) else raw.decode(encoding, errors="replace")
+        except (OSError, UniconnError, UnicodeDecodeError) as exc:
+            _logger.debug("Skipping diff preview read before remove for %s: %s", path_str, exc)
 
     diff_str = (
         "".join(
@@ -559,9 +565,11 @@ async def _ensure_file_present(
     file_exists = await svc._conn.files.exists(path_str)
     old_bytes = b""
     if file_exists:
-        with contextlib.suppress(Exception):
+        try:
             raw_existing = await svc._conn.files.read_file(path_str, encoding=None)
             old_bytes = raw_existing if isinstance(raw_existing, bytes) else raw_existing.encode(encoding)
+        except (OSError, UniconnError, UnicodeDecodeError) as exc:
+            _logger.debug("Unable to read existing content for diff on %s: %s", path_str, exc)
 
     plan = ChangePlan(target=path_str, state="present", is_dry_run=is_dry_run)
     content_changed = _plan_content_change(

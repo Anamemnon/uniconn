@@ -69,7 +69,7 @@ class TestStart:
         try:
             assert session.session_id.startswith("uniconn_")
             assert session.session_id.endswith("_0")
-            assert session.remote_log_path == f"/tmp/{session.session_id}.log"
+            assert session.remote_log_path == f"/tmp/uniconn_{pool.pool_id}/{session.session_id}.log"
             assert session.session_id in pool.sessions
             assert pool.resolved_backend is not None
             assert pool.resolved_backend.name == "screen"
@@ -85,7 +85,7 @@ class TestStart:
         session = await pool.start("uptime", name="mysess")
         try:
             assert session.session_id == "mysess"
-            assert session.remote_log_path == "/tmp/mysess.log"
+            assert session.remote_log_path == f"/tmp/uniconn_{pool.pool_id}/mysess.log"
         finally:
             detach_hooks(pool)
 

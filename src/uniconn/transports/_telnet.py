@@ -189,17 +189,21 @@ class TelnetTransport(BaseTransport):
 
     async def disconnect(self) -> None:
         """Закрыть Telnet подключение и активные shell-сессии."""
-        while self._shell_procs:
-            proc = self._shell_procs.pop()
-            proc.terminate()
-            proc.close()
-        if self._writer:
-            self._writer.close()
-            with contextlib.suppress(Exception):
-                await self._writer.wait_closed()
-        self._connected = False
-        self._reader = None
-        self._writer = None
+        try:
+            while self._shell_procs:
+                proc = self._shell_procs.pop()
+                with contextlib.suppress(Exception):
+                    proc.terminate()
+                    proc.close()
+            if self._writer:
+                with contextlib.suppress(Exception):
+                    self._writer.close()
+                with contextlib.suppress(Exception):
+                    await self._writer.wait_closed()
+        finally:
+            self._connected = False
+            self._reader = None
+            self._writer = None
 
     async def open_shell(
         self,
@@ -245,7 +249,7 @@ class TelnetTransport(BaseTransport):
             raise ConnectionError("Not connected", host=self.config.host)
 
         start_time = time.monotonic()
-        cmd_timeout = timeout or self.config.timeout
+        cmd_timeout = timeout if timeout is not None else self.config.timeout
 
         try:
             # Отправляем команду
@@ -272,10 +276,11 @@ class TelnetTransport(BaseTransport):
                     decoded = raw_line.rstrip()
                     output_lines.append(decoded)
 
-                    # Проверяем на приглашение оболочки (конец вывода)
+                    # Проверяем на приглашение оболочки только в конце строки (без ложных срабатываний в тексте)
+                    stripped_eol = raw_line.rstrip("\r\n")
                     if (
                         (
-                            any(prompt in raw_line for prompt in ["$ ", "# ", "> "])
+                            any(stripped_eol.endswith(prompt) for prompt in ("$ ", "# ", "> "))
                             or decoded in ("$", "#", ">")
                         )
                         and len(output_lines) > 1
@@ -345,7 +350,7 @@ class TelnetTransport(BaseTransport):
         if not self._reader or not self._writer:
             raise ConnectionError("Not connected", host=self.config.host)
 
-        cmd_timeout = timeout or self.config.timeout
+        cmd_timeout = timeout if timeout is not None else self.config.timeout
 
         # Отправляем команду
         self._writer.write(command + "\n")
@@ -381,4 +386,8 @@ class TelnetTransport(BaseTransport):
                 yield decoded
 
             except TimeoutError:
-                break
+                raise UniconnTimeoutError(
+                    f"Telnet stream timeout after {cmd_timeout}s: {command!r}",
+                    command=command,
+                    host=self.config.host,
+                ) from None

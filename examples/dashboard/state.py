@@ -52,14 +52,19 @@ groups:
 """
 
 TEST_SUITES_META: list[dict[str, Any]] = [
-    {"id": "all", "label": "All Unit Tests", "path": "tests/unit", "count": 614},
-    {"id": "core", "label": "Core & Logging", "path": "tests/unit/core", "count": 246},
-    {"id": "services", "label": "Domain Services & Provisioning", "path": "tests/unit/services", "count": 43},
-    {"id": "transports", "label": "Transports & SFTP", "path": "tests/unit/transports", "count": 154},
-    {"id": "pools", "label": "Connection & SSH Pools", "path": "tests/unit/pools", "count": 29},
-    {"id": "screen", "label": "BackgroundPool & LogPipeline", "path": "tests/unit/screen", "count": 70},
-    {"id": "cli", "label": "CLI & Web Dashboard", "path": "tests/unit/cli", "count": 48},
-    {"id": "architecture", "label": "Architecture & API Surface", "path": "tests/unit/architecture", "count": 24},
+    {"id": "all", "label": "All Unit Tests", "path": "tests/unit", "count": 1187},
+    {"id": "core", "label": "Core & Logging", "path": "tests/unit/core", "count": 404},
+    {"id": "services", "label": "Domain Services & Provisioning", "path": "tests/unit/services", "count": 98},
+    {"id": "transports", "label": "Transports & SFTP", "path": "tests/unit/transports", "count": 298},
+    {"id": "pools", "label": "Connection & SSH Pools", "path": "tests/unit/pools", "count": 34},
+    {"id": "background", "label": "BackgroundPool & LogPipeline", "path": "tests/unit/background", "count": 87},
+    {"id": "security", "label": "AST Parser & Policy Guardrails", "path": "tests/unit/security", "count": 32},
+    {"id": "mcp", "label": "MCP Server & HITL Risk Classifier", "path": "tests/unit/mcp", "count": 41},
+    {"id": "mock", "label": "Mock Protocol Servers", "path": "tests/unit/mock", "count": 15},
+    {"id": "orchestration", "label": "DAG Flow Orchestration", "path": "tests/unit/orchestration", "count": 19},
+    {"id": "parsing", "label": "Semantic Output Parsing", "path": "tests/unit/parsing", "count": 51},
+    {"id": "cli", "label": "CLI & Web Dashboard", "path": "tests/unit/cli", "count": 64},
+    {"id": "architecture", "label": "Architecture & API Surface", "path": "tests/unit/architecture", "count": 44},
 ]
 
 SUITE_TO_POE_TASK: dict[str, str] = {
@@ -75,6 +80,11 @@ SUITE_TO_POE_TASK: dict[str, str] = {
     "pools": "test-pools",
     "screen": "test-background",
     "background": "test-background",
+    "mcp": "test-mcp",
+    "mock": "test-mock",
+    "orchestration": "test-orchestration",
+    "parsing": "test-parsing",
+    "security": "test-security",
     "cli": "test-cli",
     "architecture": "test-arch",
     "check": "check",
@@ -200,14 +210,8 @@ def _ensure_uv_env() -> str | None:
 
         try:
             uv_bin = _find_uv_binary()
-            if uv_bin == "uv":
-                os.makedirs(UV_BIN_DIR, exist_ok=True)
-                install_cmd = (
-                    f'curl -LsSf https://astral.sh/uv/install.sh | '
-                    f'env UV_INSTALL_DIR="{UV_BIN_DIR}" sh'
-                )
-                subprocess.run(install_cmd, shell=True, cwd=ROOT_DIR, check=True, timeout=60)
-                uv_bin = _find_uv_binary()
+            if uv_bin == "uv" and shutil.which("uv") is None:
+                return _find_venv_python()
 
             env = _get_env()
             env["UV_PROJECT_ENVIRONMENT"] = UV_VENV_DIR
@@ -223,7 +227,7 @@ def _ensure_uv_env() -> str | None:
             if venv_py:
                 _UV_ENV_READY = True
             return venv_py
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
             return _find_venv_python()
 
 

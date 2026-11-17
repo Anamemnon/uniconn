@@ -17,8 +17,11 @@ from collections.abc import AsyncIterator, Iterator, Mapping
 from pathlib import Path, PurePath, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any, Literal, Self
 
+from .._logging import get_logger
 from ..core.bridge import EventLoopPortal, sync_method
 from ..exceptions import UniconnError
+
+_logger = get_logger("uniconn.services.remote_path")
 
 if TYPE_CHECKING:
     from ..core.connection import Connection
@@ -638,7 +641,7 @@ class RemotePath(os.PathLike[str]):
         # 1. Быстрый путь через активный или авто-активируемый Python-воркер
         worker = getattr(self._conn, "_python_worker", None)
         if worker is not None and worker.can_auto_accelerate():
-            with contextlib.suppress(Exception):
+            try:
                 entries = await worker.glob_with_stat(
                     eff_base,
                     pattern=pattern,
@@ -652,6 +655,8 @@ class RemotePath(os.PathLike[str]):
                     )
                     for item in entries
                 ]
+            except (OSError, UniconnError, RuntimeError, ValueError, TypeError) as exc:
+                _logger.debug("RemotePath worker.glob_with_stat fallback to fs walk: %s", exc)
 
         # 2. Универсальный путь через FileOperationsService (поддерживает SFTP, Local, WinRM, Replay/Cassette)
         results: list[RemotePath] = []

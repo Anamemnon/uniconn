@@ -10,6 +10,7 @@ from typing import Any
 from ...config.models import ConnectionConfig
 from ...exceptions import ConnectionError
 from ...result import Result
+from ..ssh.config_parser import OpenSSHConfigParser
 from .guest_base import GuestAgentTransportBase, parse_qga_network_interfaces
 from .qga_protocol import (
     LocalUnixSocketChannel,
@@ -60,7 +61,10 @@ class QgaTransport(GuestAgentTransportBase):
 
         password_str = self.config.password.get_secret_value() if self.config.password else None
         passphrase_str = self.config.passphrase.get_secret_value() if self.config.passphrase else None
-        known_hosts = self.config.options.get("known_hosts")
+        known_hosts = OpenSSHConfigParser.resolve_known_hosts(
+            self.config.options.get("known_hosts", "strict"),
+            host=self.config.host,
+        )
 
         if self.backend == "virsh":
             domain = self.vm_name or (self.config.host if self.config.host not in ("localhost", "127.0.0.1") else "")
@@ -132,7 +136,9 @@ class QgaTransport(GuestAgentTransportBase):
         """Проверить доступность гостевого агента через нативный ``guest-ping``."""
         if not self._connected or self.client is None:
             return False
-        return await self.client.ping(timeout=timeout or 5.0)
+        return await self.client.ping(
+            timeout=timeout if timeout is not None else 5.0
+        )
 
     def _resolve_shell_invocation(self, command: str) -> tuple[str, list[str]]:
         """Обернуть строковую команду в вызов командного интерпретатора гостевой ОС."""

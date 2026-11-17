@@ -517,10 +517,12 @@ class DiagnosticSession:
         fwd_conn = self._active_forward_conn()
         if fwd_conn is not None:
             remote_dir = self._config.forward_remote_dir.rstrip("/")
-            with contextlib.suppress(Exception):
+            try:
                 await fwd_conn.run(
                     f"mkdir -p {shlex.quote(remote_dir)}", raise_on_error=False
                 )
+            except Exception as exc:
+                logger.warning("Не удалось подготовить каталог форвардинга %s: %s", remote_dir, exc)
             self._forward_handler = ForwardHandler(
                 connection=fwd_conn,
                 remote_path=f"{remote_dir}/{{session_id}}.log",

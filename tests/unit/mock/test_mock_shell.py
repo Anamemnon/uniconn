@@ -57,7 +57,7 @@ async def test_mock_ssh_interactive_shell_with_uniconn_shell_session() -> None:
     cassette = _sample_shell_cassette()
 
     async with MockSSHServer.from_cassette(cassette) as server:
-        async with Connection.from_uri(server.uri) as conn:
+        async with Connection.from_uri(f"{server.uri}?known_hosts=no") as conn:
             async with await conn.open_shell(term_type="xterm", term_size=(100, 30)) as shell:
                 res_ver = await shell.execute("show version")
                 assert res_ver.ok
