@@ -265,8 +265,8 @@ async def test_python_worker_windows_quoting_and_malformed_json_frame() -> None:
     )
     win_conn._transport.name = "winrm"
     boot = win_conn.python_worker._build_bootstrap_command()
-    assert '& "C:\\Program Files\\Python312\\python.exe"' in boot
-    assert "'C:" not in boot
+    assert "& 'C:\\Program Files\\Python312\\python.exe'" in boot
+    assert '& "C:' not in boot
 
     # Битый JSON-RPC фрейм в oneshot-ответе -> ExecutionError, а не необработанный JSONDecodeError
     local_conn = Connection.from_uri("local://")

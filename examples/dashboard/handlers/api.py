@@ -254,7 +254,8 @@ def _execute_hitl_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
     is_http = bool(payload.get("_http_safe"))
     store_str = payload.get("store_path")
     if is_http:
-        store_path = str(Path(tempfile.gettempdir()) / "uniconn_dashboard_approvals.json")
+        uid_suffix = getattr(os, "getuid", lambda: 0)()
+        store_path = str(Path(tempfile.gettempdir()) / f"uniconn_dashboard_approvals_{uid_suffix}.json")
     else:
         store_path = (
             store_str if isinstance(store_str, str) and store_str.strip() else str(DEFAULT_APPROVAL_STORE_PATH)
@@ -390,6 +391,7 @@ def _execute_policy_sandbox(payload: dict[str, Any]) -> dict[str, Any]:
         engine="opa" if (engine_type == "opa" and opa_url_str) else "embedded",
         preset=preset,
         opa_url=opa_url_str,
+        opa_allow_private_network=not bool(payload.get("_http_safe")),
         default_agent_id=agent_id,
         default_role=role,
         maintenance_window_active=mw_override,

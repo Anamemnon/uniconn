@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import asyncio
 import html
+import re
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
 from typing import Any, Literal
+from xml.sax import saxutils
 
 from ...exceptions import ConnectionError as UniconnConnectionError
 from ...exceptions import ExecutionError
@@ -17,6 +19,8 @@ NETCONF_BASE_NS = "urn:ietf:params:xml:ns:netconf:base:1.0"
 NETCONF_NOTIFICATION_NS = "urn:ietf:params:xml:ns:netconf:notification:1.0"
 NETCONF_DELIM_10 = b"]]>]]>"
 NETCONF_END_CHUNKS_11 = b"\n##\n"
+DEFAULT_MAX_FRAME_BYTES = 32 * 1024 * 1024  # 32 MiB защита от OOM при битом/враждебном фрейме
+_VALID_XML_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:-]*$")
 
 BASE_10_CAP = "urn:ietf:params:netconf:base:1.0"
 BASE_11_CAP = "urn:ietf:params:netconf:base:1.1"
@@ -111,8 +115,18 @@ class NetconfFrameCodec:
         *,
         version: Literal["1.0", "1.1"] = "1.0",
         timeout: float | None = 30.0,
+        max_frame_bytes: int = DEFAULT_MAX_FRAME_BYTES,
     ) -> bytes:
         """Вычитать ровно один фрейм NETCONF 1.0 или 1.1 из асинхронного байтового потока."""
+        limit = max(1024, int(max_frame_bytes))
+
+        def _check_frame_size(size: int) -> None:
+            if size > limit:
+                raise ExecutionError(
+                    f"NETCONF frame exceeds maximum allowed size ({size} > {limit} bytes)",
+                    command="netconf.read_frame",
+                    exit_code=1,
+                )
 
         async def _read_more() -> bytes:
             chunk = await reader.read(65536)
@@ -124,9 +138,11 @@ class NetconfFrameCodec:
             while True:
                 idx = buffer.find(NETCONF_DELIM_10)
                 if idx != -1:
+                    _check_frame_size(idx)
                     frame = bytes(buffer[:idx])
                     del buffer[: idx + len(NETCONF_DELIM_10)]
                     return frame.strip()
+                _check_frame_size(len(buffer))
                 buffer.extend(await _read_more())
 
         async def _read_chunked_11() -> bytes:
@@ -137,12 +153,14 @@ class NetconfFrameCodec:
                     idx_10 = buffer.find(NETCONF_DELIM_10)
                     idx_11 = buffer.find(b"\n#")
                     if idx_10 != -1 and (idx_11 == -1 or idx_10 < idx_11):
+                        _check_frame_size(idx_10)
                         frame = bytes(buffer[:idx_10])
                         del buffer[: idx_10 + len(NETCONF_DELIM_10)]
                         return frame.strip()
 
                 # Ищем заголовок чанка \n#<len>\n или конец сообщения \n##\n
                 while len(buffer) < 4 or b"\n" not in buffer[2:]:
+                    _check_frame_size(len(assembled) + len(buffer))
                     buffer.extend(await _read_more())
 
                 # Пропускаем ведущие пробелы/CR перед \n#
@@ -152,6 +170,7 @@ class NetconfFrameCodec:
                         buffer[:0] = b"\n"
                         start_idx = 0
                     else:
+                        _check_frame_size(len(assembled) + len(buffer))
                         buffer.extend(await _read_more())
                         continue
                 if start_idx > 0:
@@ -163,6 +182,7 @@ class NetconfFrameCodec:
 
                 header_end = buffer.find(b"\n", 2)
                 if header_end == -1:
+                    _check_frame_size(len(assembled) + len(buffer))
                     buffer.extend(await _read_more())
                     continue
 
@@ -182,6 +202,7 @@ class NetconfFrameCodec:
                         exit_code=1,
                     ) from exc
 
+                _check_frame_size(len(assembled) + chunk_len)
                 del buffer[: header_end + 1]
                 while len(buffer) < chunk_len:
                     buffer.extend(await _read_more())
@@ -234,7 +255,7 @@ class NetconfVendorAdapter:
                 return cleaned
             return f'<filter type="subtree">{cleaned}</filter>'
         if filter_type == "xpath" and supports_xpath:
-            escaped_select = cleaned.replace('"', "&quot;")
+            escaped_select = saxutils.escape(cleaned, {'"': "&quot;"})
             return f'<filter type="xpath" select="{escaped_select}"/>'
         # Конвертация простого пути /a/b в subtree-фильтр <a><b/></a>
         from .base import parse_yang_path_steps
@@ -244,7 +265,14 @@ class NetconfVendorAdapter:
             return ""
         inner = ""
         for node_name, keys in reversed(steps):
-            key_xml = "".join(f"<{k}>{v}</{k}>" for k, v in keys.items())
+            if not _VALID_XML_NAME_RE.match(node_name):
+                raise ValueError(f"Invalid XML element name in NETCONF filter path: {node_name!r}")
+            key_parts: list[str] = []
+            for k, v in keys.items():
+                if not _VALID_XML_NAME_RE.match(k):
+                    raise ValueError(f"Invalid XML key name in NETCONF filter path: {k!r}")
+                key_parts.append(f"<{k}>{saxutils.escape(str(v))}</{k}>")
+            key_xml = "".join(key_parts)
             inner = (
                 f"<{node_name}>{key_xml}{inner}</{node_name}>"
                 if (inner or key_xml)

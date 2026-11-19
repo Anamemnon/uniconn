@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
+from pathlib import Path
 from typing import Annotated, Any
 
 from .._logging import get_logger
@@ -318,9 +320,15 @@ async def _exec_template(
             batch_size=batch_size,
             max_fail_ratio=max_fail_ratio,
         )
+        template_input: str | Path = template_path
+        if "\n" not in template_path and len(template_path) <= 4096:
+            with contextlib.suppress(OSError):
+                candidate = Path(template_path)
+                if candidate.is_file():
+                    template_input = candidate
         rendered_map = await pool.files.write_template(
             remote_path=remote_path,
-            template_str_or_path=template_path,
+            template_str_or_path=template_input,
             context=ctx,
             mode=mode_int,
             engine=eng_val,

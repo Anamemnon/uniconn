@@ -249,18 +249,19 @@ class ConnectionPool:
             host_set = set(hosts)
 
         selected_uris: list[PoolTarget] = []
+        selected_keys: list[str] = []
         selected_active: dict[int, Connection] = {}
         selected_cassette: dict[int, Connection] = {}
 
         for old_idx, target in enumerate(self._uris):
-            key = self._target_key(target)
+            key = self._key_for_index(old_idx, target)
             conn_obj = (
                 self._active_conns[old_idx]
                 if (self._is_entered and old_idx in self._active_conns)
                 else (
                     self._cassette_conns[old_idx]
                     if old_idx in self._cassette_conns
-                    else self._build_conn(target, with_defaults=True)
+                    else self._build_conn(target, with_defaults=True, key=key)
                 )
             )
             short_host = conn_obj.config.host or key.split("://", 1)[-1]
@@ -280,6 +281,7 @@ class ConnectionPool:
             if matched:
                 new_idx = len(selected_uris)
                 selected_uris.append(target)
+                selected_keys.append(key)
                 if self._is_entered and old_idx in self._active_conns:
                     selected_active[new_idx] = self._active_conns[old_idx]
                 if old_idx in self._cassette_conns:
@@ -300,13 +302,7 @@ class ConnectionPool:
             auto_diagnostics=self._auto_diagnostics,
         )
         sub_pool._colliding_hosts = self._colliding_hosts
-        sub_pool._target_keys = [
-            self._target_keys[old_idx]
-            for old_idx, target in enumerate(self._uris)
-            if target in selected_uris
-        ]
-        if len(sub_pool._target_keys) != len(selected_uris):
-            sub_pool._target_keys = [self._resolve_target_key(t) for t in selected_uris]
+        sub_pool._target_keys = selected_keys
         sub_pool._semaphore = self._semaphore
         sub_pool._circuit_breakers = self._circuit_breakers
         sub_pool._conn_initializers = list(self._conn_initializers)
@@ -619,7 +615,7 @@ class ConnectionPool:
                 except Exception as exc:
                     if log_errors:
                         self._logger.error(
-                            f"Failed to execute on {self._target_key(target)}: {exc}"
+                            f"Failed to execute on {self._key_for_index(idx, target)}: {exc}"
                         )
                     raise
 
@@ -680,16 +676,17 @@ class ConnectionPool:
 
         async def _open_one(idx: int, target: PoolTarget) -> None:
             async with self._semaphore:
-                conn = self._build_conn(target, with_defaults=True)
+                key = self._key_for_index(idx, target)
+                conn = self._build_conn(target, with_defaults=True, key=key)
                 await conn.__aenter__()
                 self._active_conns[idx] = conn
 
+        self._owns_active_conns = True
         try:
             async with asyncio.TaskGroup() as tg:
                 for idx, target in enumerate(self._uris):
                     tg.create_task(_open_one(idx, target))
             self._is_entered = True
-            self._owns_active_conns = True
         except BaseException:
             await self.close()
             raise

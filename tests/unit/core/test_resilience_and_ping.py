@@ -173,24 +173,27 @@ class TestCircuitBreakerAndRateLimiter:
         assert limiter._async_lock is None
         assert limiter._async_lock_loop is None
 
-        async def _contend() -> list[float]:
-            return list(await asyncio.gather(limiter.acquire(), limiter.acquire()))
+        async def _contend() -> tuple[
+            list[float],
+            asyncio.AbstractEventLoop,
+            asyncio.AbstractEventLoop | None,
+            asyncio.Lock | None,
+        ]:
+            waits = list(await asyncio.gather(limiter.acquire(), limiter.acquire()))
+            return waits, asyncio.get_running_loop(), limiter._async_lock_loop, limiter._async_lock
 
         # Первый event loop (с конкуренцией за лок)
-        waits_1 = asyncio.run(_contend())
-        loop_1 = limiter._async_lock_loop
-        lock_1 = limiter._async_lock
+        waits_1, running_1, loop_1, lock_1 = asyncio.run(_contend())
         assert len(waits_1) == 2
         assert lock_1 is not None
-        assert loop_1 is not None
+        assert loop_1 is running_1
 
         # Второй независимый event loop — лок должен пересоздаться без RuntimeError
-        waits_2 = asyncio.run(_contend())
-        loop_2 = limiter._async_lock_loop
-        lock_2 = limiter._async_lock
+        waits_2, running_2, loop_2, lock_2 = asyncio.run(_contend())
         assert len(waits_2) == 2
         assert lock_2 is not None
         assert lock_2 is not lock_1
+        assert loop_2 is running_2
         assert loop_2 is not loop_1
 
         # Использование того же экземпляра RateLimiter в SyncConnection (фоновый поток EventLoopPortal)

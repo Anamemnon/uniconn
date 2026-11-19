@@ -146,13 +146,28 @@ class SysVStrategy(ServiceManagerStrategy):
         return f"service {shlex.quote(service)} {action}"
 
     def is_enabled_cmd(self, service: str) -> str:
-        """Команда проверки автозапуска."""
-        return f"systemctl is-enabled --quiet {shlex.quote(service)}"
+        """Команда проверки автозапуска в SysVinit (chkconfig или rc*.d)."""
+        q_svc = shlex.quote(service)
+        return (
+            f"if command -v chkconfig >/dev/null 2>&1; then chkconfig {q_svc}; "
+            f"else ls /etc/rc[2-5].d/S*{q_svc} >/dev/null 2>&1; fi"
+        )
 
     def set_enabled_cmd(self, service: str, enabled: bool) -> str:
-        """Команда включения или отключения автозапуска."""
-        verb = "enable" if enabled else "disable"
-        return f"systemctl {verb} {shlex.quote(service)}"
+        """Команда включения или отключения автозапуска в SysVinit (update-rc.d / chkconfig)."""
+        q_svc = shlex.quote(service)
+        if enabled:
+            return (
+                f"if command -v update-rc.d >/dev/null 2>&1; then "
+                f"update-rc.d {q_svc} defaults && update-rc.d {q_svc} enable; "
+                f"elif command -v chkconfig >/dev/null 2>&1; then chkconfig {q_svc} on; "
+                f"else false; fi"
+            )
+        return (
+            f"if command -v update-rc.d >/dev/null 2>&1; then update-rc.d {q_svc} disable; "
+            f"elif command -v chkconfig >/dev/null 2>&1; then chkconfig {q_svc} off; "
+            f"else false; fi"
+        )
 
 
 class UniversalServiceStrategy(ServiceManagerStrategy):
@@ -183,13 +198,34 @@ class UniversalServiceStrategy(ServiceManagerStrategy):
         )
 
     def is_enabled_cmd(self, service: str) -> str:
-        """Команда проверки автозапуска."""
-        return f"systemctl is-enabled --quiet {shlex.quote(service)}"
+        """Универсальная команда проверки автозапуска (systemd -> OpenRC -> SysV)."""
+        q_svc = shlex.quote(service)
+        return (
+            f"if command -v systemctl >/dev/null 2>&1; then systemctl is-enabled --quiet {q_svc}; "
+            f"elif command -v rc-update >/dev/null 2>&1; then "
+            f"rc-update show default 2>/dev/null | grep -qw {q_svc}; "
+            f"elif command -v chkconfig >/dev/null 2>&1; then chkconfig {q_svc}; "
+            f"else ls /etc/rc[2-5].d/S*{q_svc} >/dev/null 2>&1; fi"
+        )
 
     def set_enabled_cmd(self, service: str, enabled: bool) -> str:
-        """Команда включения или отключения автозапуска."""
-        verb = "enable" if enabled else "disable"
-        return f"systemctl {verb} {shlex.quote(service)}"
+        """Универсальная команда включения или отключения автозапуска (systemd -> OpenRC -> SysV)."""
+        q_svc = shlex.quote(service)
+        sd_verb = "enable" if enabled else "disable"
+        rc_verb = "add" if enabled else "del"
+        chk_verb = "on" if enabled else "off"
+        upd_clause = (
+            f"update-rc.d {q_svc} defaults && update-rc.d {q_svc} enable"
+            if enabled
+            else f"update-rc.d {q_svc} disable"
+        )
+        return (
+            f"if command -v systemctl >/dev/null 2>&1; then systemctl {sd_verb} {q_svc}; "
+            f"elif command -v rc-update >/dev/null 2>&1; then rc-update {rc_verb} {q_svc} default; "
+            f"elif command -v update-rc.d >/dev/null 2>&1; then {upd_clause}; "
+            f"elif command -v chkconfig >/dev/null 2>&1; then chkconfig {q_svc} {chk_verb}; "
+            f"else false; fi"
+        )
 
 
 SERVICE_STRATEGIES: dict[str, ServiceManagerStrategy] = {

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import difflib
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from .._logging import SecretMaskingFilter
@@ -195,7 +195,6 @@ _SAFE_COMMANDS: frozenset[str] = frozenset(
         "uniq",
         "cut",
         "tr",
-        "awk",
         "df",
         "du",
         "free",
@@ -428,6 +427,39 @@ _PACKAGE_MANAGERS: frozenset[str] = frozenset(
 _DESTRUCTIVE_PKG_VERBS: frozenset[str] = frozenset({"remove", "purge", "erase", "autoremove", "uninstall", "del"})
 _MUTATING_PKG_VERBS: frozenset[str] = frozenset({"install", "update", "upgrade", "add", "sync"})
 _OUTPUT_REDIRECT_TARGET_RE = re.compile(r"^(?:\d*>>?|&>>?)\s*(\S+)")
+_AWK_BINARIES: frozenset[str] = frozenset({"awk", "gawk", "mawk", "nawk"})
+_AWK_EXEC_OR_WRITE_RE = re.compile(
+    r"\bsystem\s*\(|\bgetline\b|\|\s*&?\s*['\"]|(?<![<>!=])>{1,2}\s*['\"$A-Za-z/]",
+    re.IGNORECASE,
+)
+_NO_FILE_READ_COMMANDS: frozenset[str] = frozenset({"echo", "printf", "true", "false"})
+_SYSTEMCTL_RO_SUBCOMMANDS: frozenset[str] = frozenset(
+    {"status", "is-active", "is-enabled", "is-failed", "show", "list-units", "list-unit-files", "cat"}
+)
+_GIT_RO_SUBCOMMANDS: frozenset[str] = frozenset(
+    {"status", "log", "diff", "show", "branch", "remote", "rev-parse", "describe", "ls-files"}
+)
+_CONTAINER_RO_SUBCOMMANDS: frozenset[str] = frozenset(
+    {"ps", "images", "inspect", "logs", "version", "info", "stats", "top", "get", "describe", "cluster-info"}
+)
+_FIND_MUTATING_FLAGS: frozenset[str] = frozenset(
+    {"-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls"}
+)
+
+
+def _match_forbidden_read_path(raw_path: str) -> str | None:
+    """Вернуть нормализованный путь, если он указывает на запрещённый секрет, ключ или устройство."""
+    if not raw_path or raw_path.startswith("-"):
+        return None
+    norm_path = _resolve_normalized_write_path(raw_path)
+    norm_lower = norm_path.lower()
+    if (
+        norm_path in _FORBIDDEN_READ_EXACT
+        or norm_path.startswith(_FORBIDDEN_READ_PREFIXES)
+        or any(pat.search(norm_lower) for pat in _FORBIDDEN_READ_REGEXES)
+    ):
+        return norm_path
+    return None
 
 
 class ActionRiskClassifier:
@@ -580,6 +612,94 @@ class ActionRiskClassifier:
 
         return tier, reasons
 
+    @staticmethod
+    def _classify_package_manager(
+        sub: str | None,
+        args_lower: list[str],
+        flags_dict: Mapping[str, Any],
+    ) -> tuple[ActionRiskTier, str] | None:
+        verb = sub or (args_lower[0] if args_lower else None)
+        if verb in _DESTRUCTIVE_PKG_VERBS or any(k.startswith("-R") for k in flags_dict):
+            return ActionRiskTier.TIER_2_DESTRUCTIVE, "Removing or purging installed packages"
+        if verb in _MUTATING_PKG_VERBS or any(a in _MUTATING_PKG_VERBS for a in args_lower):
+            return ActionRiskTier.TIER_1_MUTATING, "Installing or updating packages"
+        return None
+
+    @staticmethod
+    def _classify_container_cli(
+        base_bin: str,
+        sub: str | None,
+        args_lower: list[str],
+    ) -> tuple[ActionRiskTier, str]:
+        if (
+            base_bin in ("docker", "podman")
+            and sub in ("system", "volume")
+            and any(a in ("prune", "rm") for a in args_lower)
+        ):
+            return ActionRiskTier.TIER_2_DESTRUCTIVE, "Destructive container or Kubernetes workload operation"
+        if sub is None or sub in _CONTAINER_RO_SUBCOMMANDS:
+            return ActionRiskTier.TIER_0_SAFE, f"Read-only {base_bin} inspection"
+        return ActionRiskTier.TIER_1_MUTATING, f"Container/cluster operation: {base_bin} {sub}"
+
+    @staticmethod
+    def _classify_awk(args: Sequence[Any], flags_dict: Mapping[str, Any]) -> tuple[ActionRiskTier, str]:
+        script_parts = [str(a) for a in args]
+        script_parts.extend(str(v) for v in flags_dict.values() if isinstance(v, str))
+        joined_args = " ".join(script_parts)
+        if _AWK_EXEC_OR_WRITE_RE.search(joined_args) or "-f" in flags_dict or "--file" in flags_dict:
+            return (
+                ActionRiskTier.TIER_2_DESTRUCTIVE,
+                "awk script with external command execution, file output, or script file",
+            )
+        return ActionRiskTier.TIER_1_MUTATING, "awk scripting interpreter may execute commands or write files"
+
+    @classmethod
+    def _classify_special_binary(
+        cls,
+        base_bin: str,
+        sub: str | None,
+        args: Sequence[Any],
+        args_lower: list[str],
+        flags_dict: Mapping[str, Any],
+    ) -> tuple[ActionRiskTier, str] | None:
+        """Разобрать команды со смешанными read-only и mutating подкомандами/флагами."""
+        if base_bin in _PACKAGE_MANAGERS:
+            return cls._classify_package_manager(sub, args_lower, flags_dict)
+        if base_bin in _AWK_BINARIES:
+            return cls._classify_awk(args, flags_dict)
+        if base_bin == "ip":
+            ip_mut = ("add", "del", "delete", "set", "flush", "change", "replace")
+            if sub in ip_mut or any(a in ip_mut for a in args_lower):
+                return ActionRiskTier.TIER_2_DESTRUCTIVE, "Network interface or routing table modification via ip"
+            return ActionRiskTier.TIER_0_SAFE, "Safe read-only command (ip)"
+        if base_bin == "sysctl":
+            if "-w" in flags_dict or any("=" in a for a in args_lower):
+                return ActionRiskTier.TIER_1_MUTATING, "Kernel parameter modification via sysctl"
+            return ActionRiskTier.TIER_0_SAFE, "Safe read-only command (sysctl)"
+        if base_bin == "systemctl":
+            if sub is None or sub in _SYSTEMCTL_RO_SUBCOMMANDS:
+                return ActionRiskTier.TIER_0_SAFE, "Read-only systemctl inspection"
+            return ActionRiskTier.TIER_1_MUTATING, f"Mutating systemctl action: {sub}"
+        if base_bin == "service":
+            if sub is None or sub == "status":
+                return ActionRiskTier.TIER_0_SAFE, "Read-only service inspection"
+            return ActionRiskTier.TIER_1_MUTATING, f"Starting or restarting a system service ({sub})"
+        if base_bin == "find":
+            if any(k in flags_dict for k in _FIND_MUTATING_FLAGS):
+                return ActionRiskTier.TIER_1_MUTATING, "find with command execution or file output flags"
+            return ActionRiskTier.TIER_0_SAFE, "Read-only find search"
+        if base_bin == "git":
+            if sub is None or sub in _GIT_RO_SUBCOMMANDS:
+                return ActionRiskTier.TIER_0_SAFE, "Read-only git inspection"
+            return ActionRiskTier.TIER_1_MUTATING, f"Git operation: {sub}"
+        if base_bin in ("docker", "podman", "kubectl"):
+            return cls._classify_container_cli(base_bin, sub, args_lower)
+        if base_bin == "sed" and (
+            "-i" in flags_dict or "--in-place" in flags_dict or any(k.startswith("-i") for k in flags_dict)
+        ):
+            return ActionRiskTier.TIER_1_MUTATING, "In-place file editing"
+        return None
+
     @classmethod
     def _classify_atomic_command(
         cls,
@@ -618,6 +738,31 @@ class ActionRiskClassifier:
                 f"Formatting filesystem ({base_bin}) is strictly forbidden",
             )
 
+        # Запрет чтения/доступа к критическим секретным файлам и raw-устройствам через shell-команды
+        if base_bin not in _NO_FILE_READ_COMMANDS:
+            candidate_paths: list[str] = []
+            for raw_arg in atom.arguments:
+                arg_str = str(raw_arg)
+                candidate_paths.append(arg_str)
+                if "=" in arg_str:
+                    _, rhs = arg_str.split("=", 1)
+                    if rhs:
+                        candidate_paths.append(rhs)
+            for flag_val in flags_dict.values():
+                if isinstance(flag_val, str) and flag_val:
+                    candidate_paths.append(flag_val)
+            for redir in atom.redirects:
+                redir_target = re.sub(r"^(?:\d*>>?|\d*<|&>>?|>&\d+)\s*", "", str(redir)).strip().strip("'\"")
+                if redir_target:
+                    candidate_paths.append(redir_target)
+            for candidate in candidate_paths:
+                forbidden_path = _match_forbidden_read_path(candidate)
+                if forbidden_path is not None:
+                    return _pick(
+                        ActionRiskTier.TIER_3_FORBIDDEN,
+                        f"Accessing sensitive credential, key, or device path {forbidden_path!r} is forbidden",
+                    )
+
         # Проверка опасных перенаправлений в сырых устройствах/защищённых файлах в аргументах
         if CommandASTParser._is_atomic_destructive(atom):
             return _pick(
@@ -633,91 +778,9 @@ class ActionRiskClassifier:
         if base_bin in ("passwd", "chage") and (base_bin == "chage" or "-l" in flags_dict):
             return _pick(ActionRiskTier.TIER_2_DESTRUCTIVE, "Deleting or locking system user/group accounts")
 
-        if base_bin in _PACKAGE_MANAGERS:
-            verb = sub or (args_lower[0] if args_lower else None)
-            if verb in _DESTRUCTIVE_PKG_VERBS or any(k.startswith("-R") for k in flags_dict):
-                return _pick(ActionRiskTier.TIER_2_DESTRUCTIVE, "Removing or purging installed packages")
-            if verb in _MUTATING_PKG_VERBS or any(a in _MUTATING_PKG_VERBS for a in args_lower):
-                return _pick(ActionRiskTier.TIER_1_MUTATING, "Installing or updating packages")
-
-        if base_bin == "ip":
-            ip_mut = ("add", "del", "delete", "set", "flush", "change", "replace")
-            if sub in ip_mut or any(a in ip_mut for a in args_lower):
-                return _pick(
-                    ActionRiskTier.TIER_2_DESTRUCTIVE,
-                    "Network interface or routing table modification via ip",
-                )
-            return _pick(ActionRiskTier.TIER_0_SAFE, "Safe read-only command (ip)")
-
-        if base_bin == "sysctl":
-            if "-w" in flags_dict or any("=" in a for a in args_lower):
-                return _pick(ActionRiskTier.TIER_1_MUTATING, "Kernel parameter modification via sysctl")
-            return _pick(ActionRiskTier.TIER_0_SAFE, "Safe read-only command (sysctl)")
-
-        if base_bin == "systemctl":
-            systemctl_ro = (
-                "status",
-                "is-active",
-                "is-enabled",
-                "is-failed",
-                "show",
-                "list-units",
-                "list-unit-files",
-                "cat",
-            )
-            if sub is None or sub in systemctl_ro:
-                return _pick(ActionRiskTier.TIER_0_SAFE, "Read-only systemctl inspection")
-            return _pick(ActionRiskTier.TIER_1_MUTATING, f"Mutating systemctl action: {sub}")
-
-        if base_bin == "service":
-            if sub is None or sub == "status":
-                return _pick(ActionRiskTier.TIER_0_SAFE, "Read-only service inspection")
-            return _pick(ActionRiskTier.TIER_1_MUTATING, f"Starting or restarting a system service ({sub})")
-
-        if base_bin == "find":
-            if any(k in flags_dict for k in ("-exec", "-execdir", "-ok")):
-                return _pick(ActionRiskTier.TIER_1_MUTATING, "find with command execution flags")
-            return _pick(ActionRiskTier.TIER_0_SAFE, "Read-only find search")
-
-        if base_bin == "git":
-            git_ro = ("status", "log", "diff", "show", "branch", "remote", "rev-parse", "describe", "ls-files")
-            if sub is None or sub in git_ro:
-                return _pick(ActionRiskTier.TIER_0_SAFE, "Read-only git inspection")
-            return _pick(ActionRiskTier.TIER_1_MUTATING, f"Git operation: {sub}")
-
-        if base_bin in ("docker", "podman", "kubectl"):
-            if (
-                base_bin in ("docker", "podman")
-                and sub in ("system", "volume")
-                and any(a in ("prune", "rm") for a in args_lower)
-            ):
-                return _pick(
-                    ActionRiskTier.TIER_2_DESTRUCTIVE,
-                    "Destructive container or Kubernetes workload operation",
-                )
-            container_ro = (
-                "ps",
-                "images",
-                "inspect",
-                "logs",
-                "version",
-                "info",
-                "stats",
-                "top",
-                "get",
-                "describe",
-                "cluster-info",
-            )
-            if sub is None or sub in container_ro:
-                return _pick(ActionRiskTier.TIER_0_SAFE, f"Read-only {base_bin} inspection")
-            return _pick(ActionRiskTier.TIER_1_MUTATING, f"Container/cluster operation: {base_bin} {sub}")
-
-        if base_bin == "sed" and (
-            "-i" in flags_dict
-            or "--in-place" in flags_dict
-            or any(k.startswith("-i") for k in flags_dict)
-        ):
-            return _pick(ActionRiskTier.TIER_1_MUTATING, "In-place file editing")
+        special = cls._classify_special_binary(base_bin, sub, atom.arguments, args_lower, flags_dict)
+        if special is not None:
+            return _pick(special[0], special[1])
 
         if base_bin in _MUTATING_EXECUTABLES:
             return _pick(ActionRiskTier.TIER_1_MUTATING, f"Mutating command ({base_bin})")
@@ -749,8 +812,10 @@ class ActionRiskClassifier:
         norm_path = _resolve_normalized_write_path(path)
         reasons: list[str] = []
 
-        if norm_path in ("/", "/etc/shadow", "/etc/gshadow", "/etc/sudoers") or norm_path.startswith(
-            (*_FORBIDDEN_FILE_PREFIXES, "/etc/sudoers.d/")
+        if (
+            norm_path in ("/", "/etc/sudoers")
+            or norm_path in _FORBIDDEN_READ_EXACT
+            or norm_path.startswith((*_FORBIDDEN_FILE_PREFIXES, "/etc/sudoers.d/"))
         ):
             return RiskAssessment(
                 risk_tier=ActionRiskTier.TIER_3_FORBIDDEN,
@@ -802,13 +867,7 @@ class ActionRiskClassifier:
         """Оценить уровень риска чтения файла (uniconn_read_file)."""
         del policy
         norm_path = _resolve_normalized_write_path(path)
-        norm_lower = norm_path.lower()
-        is_forbidden = (
-            norm_path in _FORBIDDEN_READ_EXACT
-            or norm_path.startswith(_FORBIDDEN_READ_PREFIXES)
-            or any(pat.search(norm_lower) for pat in _FORBIDDEN_READ_REGEXES)
-        )
-        if is_forbidden:
+        if _match_forbidden_read_path(path) is not None:
             return RiskAssessment(
                 risk_tier=ActionRiskTier.TIER_3_FORBIDDEN,
                 reasons=(f"Reading sensitive credential, key, or device path {norm_path!r} is forbidden",),

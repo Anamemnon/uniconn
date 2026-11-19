@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import html
 import json
 import os
 import secrets
@@ -59,8 +60,10 @@ class _ReusableThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
 
-def serve_dev_dashboard(port: int = 3000) -> None:
-    """Запустить HTTP-сервер предпросмотра и тестирования uniconn на 0.0.0.0:3000."""
+def serve_dev_dashboard(port: int = 3000, host: str | None = None) -> None:
+    """Запустить HTTP-сервер предпросмотра и тестирования uniconn (по умолчанию 127.0.0.1:3000)."""
+    bind_host = (host or os.environ.get("UNICONN_DASHBOARD_HOST") or "127.0.0.1").strip()
+    is_loopback_bind = bind_host in ("127.0.0.1", "localhost", "::1")
     shell_state, metrics_state, screen_state = create_default_dashboard_states()
     dashboard_token = os.environ.get("UNICONN_DASHBOARD_TOKEN") or secrets.token_urlsafe(24)
 
@@ -96,6 +99,9 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                 return {}
 
         def _is_cross_site_request(self) -> bool:
+            sec_fetch_site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+            if sec_fetch_site == "cross-site":
+                return True
             origin = (self.headers.get("Origin") or "").strip()
             if origin:
                 if origin.lower() == "null":
@@ -103,8 +109,7 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                 parsed_origin = urlparse(origin)
                 origin_host = (parsed_origin.hostname or "").lower()
                 host_header = (self.headers.get("Host") or "").split(":", 1)[0].strip().lower()
-                fwd_host = (self.headers.get("X-Forwarded-Host") or "").split(":", 1)[0].strip().lower()
-                allowed_hosts = {h for h in (host_header, fwd_host, "localhost", "127.0.0.1") if h}
+                allowed_hosts = {h for h in (host_header, "localhost", "127.0.0.1") if h}
                 if not origin_host or origin_host not in allowed_hosts:
                     return True
             return False
@@ -136,7 +141,10 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                 if parsed.path == "/api/status":
                     self._send_json(_dispatch_endpoint("status"))
                     return
-                if parsed.path in ("/api/shell", "/api/local", "/api/pytest", "/api/hitl") and not self._has_valid_csrf_token():
+                if (
+                    parsed.path in ("/api/shell", "/api/local", "/api/pytest", "/api/hitl")
+                    and not self._has_valid_csrf_token()
+                ):
                     self._send_json({"error": "Missing or invalid X-Uniconn-Token"}, status=403)
                     return
                 if parsed.path == "/api/shell":
@@ -144,7 +152,12 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                     mode = qs.get("mode", ["fake"])[0]
                     if mode == "local_pty" and not self._local_exec_enabled():
                         self._send_json(
-                            {"error": "Local PTY execution is disabled (set UNICONN_DASHBOARD_ALLOW_LOCAL_EXEC=1 to enable)"},
+                            {
+                                "error": (
+                                    "Local PTY execution is disabled "
+                                    "(set UNICONN_DASHBOARD_ALLOW_LOCAL_EXEC=1 to enable)"
+                                )
+                            },
                             status=403,
                         )
                         return
@@ -160,7 +173,12 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                 if parsed.path == "/api/local":
                     if not self._local_exec_enabled():
                         self._send_json(
-                            {"error": "Local command endpoint is disabled (set UNICONN_DASHBOARD_ALLOW_LOCAL_EXEC=1 to enable)"},
+                            {
+                                "error": (
+                                    "Local command endpoint is disabled "
+                                    "(set UNICONN_DASHBOARD_ALLOW_LOCAL_EXEC=1 to enable)"
+                                )
+                            },
                             status=403,
                         )
                         return
@@ -187,7 +205,11 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                     safe_rel = parsed.path.lstrip("/")
                     static_file = (root_resolved / safe_rel).resolve()
                     if static_file.is_file() and static_file.is_relative_to(root_resolved):
-                        ctype = "image/svg+xml; charset=utf-8" if static_file.suffix == ".svg" else "application/octet-stream"
+                        ctype = (
+                            "image/svg+xml; charset=utf-8"
+                            if static_file.suffix == ".svg"
+                            else "application/octet-stream"
+                        )
                         data = static_file.read_bytes()
                         self.send_response(200)
                         self.send_header("Content-Type", ctype)
@@ -198,8 +220,13 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                         return
 
                 raw_html = HTML_TEMPLATE_PATH.read_text(encoding="utf-8")
-                csrf_meta = f'<meta name="uniconn-csrf" content="{dashboard_token}">\n'
-                rendered_html = raw_html.replace("</head>", f"{csrf_meta}</head>", 1)
+                embed_token = is_loopback_bind or os.environ.get("UNICONN_DASHBOARD_EMBED_TOKEN") == "1"
+                if embed_token:
+                    escaped_token = html.escape(dashboard_token, quote=True)
+                    csrf_meta = f'<meta name="uniconn-csrf" content="{escaped_token}">\n'
+                    rendered_html = raw_html.replace("</head>", f"{csrf_meta}</head>", 1)
+                else:
+                    rendered_html = raw_html
                 body = rendered_html.encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -229,7 +256,12 @@ def serve_dev_dashboard(port: int = 3000) -> None:
                     mode = str(payload.get("mode") or "fake")
                     if mode == "local_pty" and not self._local_exec_enabled():
                         self._send_json(
-                            {"error": "Local PTY execution is disabled (set UNICONN_DASHBOARD_ALLOW_LOCAL_EXEC=1 to enable)"},
+                            {
+                                "error": (
+                                    "Local PTY execution is disabled "
+                                    "(set UNICONN_DASHBOARD_ALLOW_LOCAL_EXEC=1 to enable)"
+                                )
+                            },
                             status=403,
                         )
                         return
@@ -291,8 +323,8 @@ def serve_dev_dashboard(port: int = 3000) -> None:
             except Exception as exc:
                 self._send_json({"status": "error", "error": str(exc)}, status=500)
 
-    server = _ReusableThreadingHTTPServer(("0.0.0.0", port), Handler)
-    print(f"uniconn dev dashboard listening on http://0.0.0.0:{port}", flush=True)
+    server = _ReusableThreadingHTTPServer((bind_host, port), Handler)
+    print(f"uniconn dev dashboard listening on http://{bind_host}:{port}", flush=True)
     server.serve_forever()
 
 

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config.models import ConnectionConfig
+from ..core._shell_quoting import parse_bool, validate_env_key
 from ..exceptions import ConfigurationError, ConnectionError
 from ._container_base import ContainerExecTransportBase, _validate_shell_bin
 from ._local import _LocalShellProcess
@@ -31,7 +32,6 @@ _PORT_FORWARD_RE = re.compile(
     r"(?:Forwarding from\s+.+:|127\.0\.0\.1:|\[::1\]:)(\d+)\s*->\s*\d+",
     re.IGNORECASE,
 )
-_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 async def _wait_for_local_port_ready(
@@ -76,10 +76,22 @@ class KubectlTransport(ContainerExecTransportBase):
         """Название транспорта."""
         return "kubectl"
 
+    _ALLOWED_KUBECTL_BINS: frozenset[str] = frozenset({"kubectl", "oc", "k3s", "microk8s.kubectl"})
+
     @property
     def kubectl_bin(self) -> str:
         """Имя или путь к исполняемому файлу ``kubectl``."""
-        return str(self.config.options.get("kubectl_bin", "kubectl"))
+        raw = str(self.config.options.get("kubectl_bin", "kubectl")).strip()
+        if not raw or raw.startswith("-") or any(ch.isspace() or ord(ch) < 32 for ch in raw):
+            raise ConfigurationError(f"Invalid kubectl executable: {raw!r}")
+        allow_custom = parse_bool(self.config.options.get("allow_custom_bin"), default=False)
+        has_path_sep = "/" in raw or "\\" in raw
+        if not allow_custom and (has_path_sep or raw.lower().removesuffix(".exe") not in self._ALLOWED_KUBECTL_BINS):
+            raise ConfigurationError(
+                f"Untrusted kubectl binary {raw!r} is not in allowlist {sorted(self._ALLOWED_KUBECTL_BINS)} "
+                "(pass allow_custom_bin=true for trusted custom binaries)"
+            )
+        return raw
 
     @property
     def pod(self) -> str:
@@ -132,9 +144,7 @@ class KubectlTransport(ContainerExecTransportBase):
         if env:
             export_parts: list[str] = []
             for k, v in env.items():
-                key_str = str(k)
-                if not _ENV_KEY_RE.fullmatch(key_str):
-                    raise ValueError(f"Invalid environment variable name: {key_str!r}")
+                key_str = validate_env_key(k)
                 export_parts.append(f"{key_str}={shlex.quote(str(v))}")
             exports = " ".join(export_parts)
             prefixes.append(f"export {exports}")

@@ -228,15 +228,17 @@ class RestconfTransport(BaseTransport):
         fmt_raw = str(opts.get("format", "json")).lower()
         fmt: Literal["json", "xml"] = "xml" if fmt_raw == "xml" else "json"
         auth_type = str(opts.get("auth", "basic")).lower()
+        from ...core._shell_quoting import parse_bool, parse_verify_ssl
+
         if "verify_ssl" in opts:
-            verify_ssl: bool | str = opts["verify_ssl"]
+            verify_ssl: bool | str = parse_verify_ssl(opts["verify_ssl"], default=True)
         elif "verify_tls" in opts:
-            verify_ssl = bool(opts["verify_tls"])
+            verify_ssl = parse_bool(opts["verify_tls"], default=True)
         elif "insecure" in opts:
-            verify_ssl = not bool(opts["insecure"])
+            verify_ssl = not parse_bool(opts["insecure"], default=False)
         else:
             verify_ssl = True
-        discover_root = bool(opts.get("discover_root", False)) or is_auto_root
+        discover_root = parse_bool(opts.get("discover_root"), default=False) or is_auto_root
         password_str = config.password.get_secret_value() if config.password else None
         token_str = str(opts["token"]) if "token" in opts else None
 

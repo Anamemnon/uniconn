@@ -178,13 +178,17 @@ class RateLimiter:
         self._tokens = float(burst)
         self._updated_at = time.monotonic()
         self._async_lock: asyncio.Lock | None = None
-        self._async_lock_loop: asyncio.AbstractEventLoop | None = None
+        self._async_lock_loop_ref: weakref.ref[asyncio.AbstractEventLoop] | None = None
         self._loop_locks: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock] = (
             weakref.WeakKeyDictionary()
         )
         self._thread_lock = threading.Lock()
         self._total_acquired = 0
         self._total_wait_seconds = 0.0
+
+    @property
+    def _async_lock_loop(self) -> asyncio.AbstractEventLoop | None:
+        return self._async_lock_loop_ref() if self._async_lock_loop_ref is not None else None
 
     def _get_lock(self) -> asyncio.Lock:
         """Получить asyncio.Lock, привязанный к текущему активному циклу событий."""
@@ -195,7 +199,7 @@ class RateLimiter:
                 lock = asyncio.Lock()
                 self._loop_locks[loop] = lock
             self._async_lock = lock
-            self._async_lock_loop = loop
+            self._async_lock_loop_ref = weakref.ref(loop)
             return lock
 
     @property

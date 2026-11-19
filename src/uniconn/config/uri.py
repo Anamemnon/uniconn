@@ -30,6 +30,7 @@ import re
 from typing import TYPE_CHECKING, Any
 from urllib.parse import ParseResult, parse_qs, quote, unquote, urlparse
 
+from ..core._shell_quoting import parse_bool
 from ..exceptions import ConfigurationError
 
 if TYPE_CHECKING:
@@ -69,11 +70,13 @@ class URIParser:
         return f"{prefix}{encoded_secret}{suffix}"
 
     @classmethod
-    def parse(cls, uri: str) -> ConnectionConfig:
+    def parse(cls, uri: str, *, resolve_secrets: bool = True) -> ConnectionConfig:
         """Распарсить URI в ConnectionConfig.
 
         Args:
             uri: URI строка (например, "ssh://user:pass@host:22")
+            resolve_secrets: Разрешать ли ссылки ``env://`` и ``file://`` в секретных полях.
+                Для недоверенного пользовательского ввода следует передавать ``False``.
 
         Returns:
             ConnectionConfig объект
@@ -82,6 +85,8 @@ class URIParser:
             ConfigurationError: Если URI некорректен (наследуется от ValueError)
 
         """
+        from .models import _RESOLVE_SECRETS_VAR
+
         normalized_uri = cls._normalize_inline_secret_in_userinfo(uri)
         parsed = urlparse(normalized_uri)
 
@@ -91,29 +96,32 @@ class URIParser:
             )
 
         transport = parsed.scheme.lower()
+        token = _RESOLVE_SECRETS_VAR.set(resolve_secrets)
+        try:
+            if transport in ("serial", "uart"):
+                return cls._parse_serial(parsed, uri, transport=transport)
 
-        if transport in ("serial", "uart"):
-            return cls._parse_serial(parsed, uri, transport=transport)
+            if transport == "local":
+                return cls._parse_local(parsed)
 
-        if transport == "local":
-            return cls._parse_local(parsed)
+            if transport == "replay":
+                return cls._parse_replay(parsed)
 
-        if transport == "replay":
-            return cls._parse_replay(parsed)
+            if transport in ("docker", "podman"):
+                return cls._parse_container(parsed, transport)
 
-        if transport in ("docker", "podman"):
-            return cls._parse_container(parsed, transport)
+            if transport == "kubectl":
+                return cls._parse_kubectl(parsed)
 
-        if transport == "kubectl":
-            return cls._parse_kubectl(parsed)
+            if transport in ("qga", "qemu-ga"):
+                return cls._parse_qga(parsed, transport)
 
-        if transport in ("qga", "qemu-ga"):
-            return cls._parse_qga(parsed, transport)
+            if transport == "pve":
+                return cls._parse_pve(parsed)
 
-        if transport == "pve":
-            return cls._parse_pve(parsed)
-
-        return cls._parse_network(parsed, transport)
+            return cls._parse_network(parsed, transport)
+        finally:
+            _RESOLVE_SECRETS_VAR.reset(token)
 
     @classmethod
     def _parse_container(cls, parsed: ParseResult, transport: str) -> ConnectionConfig:
@@ -221,7 +229,7 @@ class URIParser:
             ):
                 port = 80
             elif transport in ("winrm", "wsman") and (
-                bool(options.get("ssl", False))
+                parse_bool(options.get("ssl"), default=False)
                 or str(options.get("scheme", "")).lower() == "https"
                 or str(options.get("transport", "")).lower() == "ssl"
             ):

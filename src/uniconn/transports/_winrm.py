@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from ..config.models import ConnectionConfig
+from ..core._shell_quoting import parse_bool, ps_quote
 from ..exceptions import (
     AuthenticationError,
     ConfigurationError,
@@ -51,12 +52,9 @@ _CLIXML_PREFIX = "#< CLIXML"
 _HEX_ESCAPE_SEQ_RE = re.compile(r"(?:_x[0-9a-fA-F]{4}_)+")
 _HEX_UNIT_RE = re.compile(r"_x([0-9a-fA-F]{4})_")
 _XML_DECL_RE = re.compile(r"<\?xml[^>]*\?>", flags=re.IGNORECASE)
+_FORBIDDEN_XML_RE = re.compile(r"<!\s*(DOCTYPE|ENTITY)\b", flags=re.IGNORECASE)
 _CMD_UNSAFE_CWD_RE = re.compile(r'[\r\n\x00&|^%<>"!]')
-
-
-def _ps_quote(value: str) -> str:
-    """Экранировать строку для безопасной подстановки в одинарные кавычки PowerShell."""
-    return "'" + value.replace("'", "''") + "'"
+_ps_quote = ps_quote
 
 
 def _unescape_clixml_text(text: str) -> str:
@@ -105,6 +103,8 @@ def clean_clixml_stderr(raw_stderr: bytes | str) -> str:
         extracted_messages.append(leading)
 
     try:
+        if _FORBIDDEN_XML_RE.search(xml_part):
+            raise ET.ParseError("Forbidden XML DOCTYPE/ENTITY declaration in CLIXML stderr")
         wrapped_xml = f"<Root>{xml_part}</Root>"
         root = ET.fromstring(wrapped_xml)
         for elem in root.iter():
@@ -205,7 +205,7 @@ class WinRMTransport(BaseTransport):
             self.username = raw_user
 
         use_ssl = (
-            bool(opts.get("ssl", False))
+            parse_bool(opts.get("ssl"), default=False)
             or str(opts.get("scheme", "")).lower() == "https"
             or raw_auth == "ssl"
             or config.port == 5986
@@ -223,7 +223,9 @@ class WinRMTransport(BaseTransport):
             else:
                 self.server_cert_validation = str(raw_cert).lower()
         elif "verify_ssl" in opts:
-            self.server_cert_validation = "validate" if opts["verify_ssl"] else "ignore"
+            self.server_cert_validation = (
+                "validate" if parse_bool(opts["verify_ssl"], default=True) else "ignore"
+            )
         else:
             self.server_cert_validation = "validate"
 
@@ -357,7 +359,7 @@ class WinRMTransport(BaseTransport):
         try:
             if self._protocol is None:
                 self._protocol = self._build_protocol()
-            if self.config.options.get("validate_on_connect", False):
+            if parse_bool(self.config.options.get("validate_on_connect"), default=False):
                 shell_id = await asyncio.to_thread(self._protocol.open_shell)
                 await asyncio.to_thread(self._protocol.close_shell, shell_id)
             self._connected = True

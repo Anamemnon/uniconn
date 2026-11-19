@@ -54,8 +54,8 @@ class _LocalShellProcess:
         term_size: tuple[int, int] = (80, 24),
         shell: str = "",
     ) -> None:
-        assert proc.stdin is not None
-        assert proc.stdout is not None
+        if proc.stdin is None or proc.stdout is None:
+            raise RuntimeError("Local shell process was created without stdin/stdout pipes")
         self._proc = proc
         self.stdin = _LocalShellStdin(proc.stdin)
         self.stdout = _LocalShellStdout(proc.stdout)

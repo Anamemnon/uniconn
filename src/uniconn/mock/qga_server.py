@@ -257,17 +257,27 @@ class MockQgaServer:
                 return 0, base64.b64encode(self.files[target]).decode("ascii") + "\n", ""
             return 1, "", "No such file"
 
+        # Декодировать PowerShell -EncodedCommand (UTF-16-LE) для эмуляции файловых операций Windows
+        ps_cmd = shell_cmd
+        lower_cmd = shell_cmd.lower()
+        enc_marker = "-encodedcommand "
+        if "powershell" in lower_cmd and enc_marker in lower_cmd:
+            idx = lower_cmd.index(enc_marker) + len(enc_marker)
+            b64_token = shell_cmd[idx:].strip().split()[0].strip("'\"")
+            with contextlib.suppress(Exception):
+                ps_cmd = base64.b64decode(b64_token).decode("utf-16-le")
+
         # Поддержка Windows PowerShell файловых операций (stat, listdir, remove_file, exists, mkdir, base64)
-        if "Get-Item -LiteralPath" in shell_cmd:
-            target = shell_cmd.split("Get-Item -LiteralPath '", 1)[-1].split("'", 1)[0]
+        if "Get-Item -LiteralPath" in ps_cmd:
+            target = ps_cmd.split("Get-Item -LiteralPath '", 1)[-1].split("'", 1)[0]
             if target in self.files:
                 return 0, f"{len(self.files[target])}|1700000000|False\n", ""
             if any(k.startswith(target.rstrip("\\/") + "\\") for k in self.files):
                 return 0, "0|1700000000|True\n", ""
             return 1, "", "Cannot find path"
 
-        if "Get-ChildItem -LiteralPath" in shell_cmd:
-            target = shell_cmd.split("Get-ChildItem -LiteralPath '", 1)[-1].split("'", 1)[0]
+        if "Get-ChildItem -LiteralPath" in ps_cmd:
+            target = ps_cmd.split("Get-ChildItem -LiteralPath '", 1)[-1].split("'", 1)[0]
             prefix = target.rstrip("\\/")
             items: set[str] = set()
             for k in self.files:
@@ -277,14 +287,14 @@ class MockQgaServer:
                         items.add(rel.split("/", 1)[0])
             return 0, ("\n".join(sorted(items)) + "\n") if items else "", ""
 
-        if "Remove-Item -LiteralPath" in shell_cmd:
-            target = shell_cmd.split("Remove-Item -LiteralPath '", 1)[-1].split("'", 1)[0]
+        if "Remove-Item -LiteralPath" in ps_cmd:
+            target = ps_cmd.split("Remove-Item -LiteralPath '", 1)[-1].split("'", 1)[0]
             self.files.pop(target, None)
             self.file_modes.pop(target, None)
             return 0, "", ""
 
-        if "Test-Path -LiteralPath" in shell_cmd:
-            target = shell_cmd.split("Test-Path -LiteralPath '", 1)[-1].split("'", 1)[0]
+        if "Test-Path -LiteralPath" in ps_cmd:
+            target = ps_cmd.split("Test-Path -LiteralPath '", 1)[-1].split("'", 1)[0]
             clean_t = target.rstrip("\\/")
             exists = target in self.files or any(
                 k.startswith((clean_t + "\\", clean_t + "/"))
@@ -292,11 +302,11 @@ class MockQgaServer:
             )
             return (0 if exists else 1), "", ""
 
-        if "New-Item -ItemType Directory" in shell_cmd:
+        if "New-Item -ItemType Directory" in ps_cmd:
             return 0, "", ""
 
-        if "[Convert]::ToBase64String([IO.File]::ReadAllBytes(" in shell_cmd:
-            target = shell_cmd.split("ReadAllBytes('", 1)[-1].split("'", 1)[0]
+        if "[Convert]::ToBase64String([IO.File]::ReadAllBytes(" in ps_cmd:
+            target = ps_cmd.split("ReadAllBytes('", 1)[-1].split("'", 1)[0]
             if target in self.files:
                 return 0, base64.b64encode(self.files[target]).decode("ascii") + "\n", ""
             return 1, "", "File not found"

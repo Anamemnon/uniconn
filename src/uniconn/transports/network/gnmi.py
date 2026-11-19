@@ -12,6 +12,7 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any, Literal
 
 from ...config.models import ConnectionConfig
+from ...core._shell_quoting import parse_bool
 from ...exceptions import (
     AuthenticationError,
     ExecutionError,
@@ -129,11 +130,11 @@ class GnmiTransport(BaseTransport):
         self._origin = str(opts.get("origin", ""))
         self._tls_mode = opts.get("tls", False)
         if "insecure" in opts:
-            self._insecure = bool(opts["insecure"])
+            self._insecure = parse_bool(opts["insecure"], default=False)
         elif "verify_tls" in opts:
-            self._insecure = not bool(opts["verify_tls"])
+            self._insecure = not parse_bool(opts["verify_tls"], default=True)
         elif "verify_ssl" in opts:
-            self._insecure = not bool(opts["verify_ssl"])
+            self._insecure = not parse_bool(opts["verify_ssl"], default=True)
         else:
             self._insecure = False
         self._reader: asyncio.StreamReader | None = None
@@ -157,10 +158,11 @@ class GnmiTransport(BaseTransport):
 
     def _build_ssl_context(self) -> ssl.SSLContext | None:
         tls_opt = self._tls_mode
-        if tls_opt in (False, "false", "0", "no", None):
+        tls_norm = str(tls_opt).strip().lower() if tls_opt is not None else ""
+        if tls_opt is False or tls_opt is None or tls_norm in ("false", "0", "no", "off", ""):
             return None
         ctx = ssl.create_default_context()
-        if str(tls_opt).lower() == "insecure" or self._insecure:
+        if tls_norm == "insecure" or self._insecure:
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
         cert_file = self.config.options.get("cert") or self.config.options.get("cert_file")
@@ -230,7 +232,8 @@ class GnmiTransport(BaseTransport):
             secret=self._auth_secret(),
         )
         async with self._rpc_lock:
-            assert self._writer is not None and self._reader is not None
+            if self._writer is None or self._reader is None:
+                raise UniconnConnectionError("gNMI transport stream is not connected", host=self.config.host)
             try:
                 self._writer.write(frame)
                 await self._writer.drain()

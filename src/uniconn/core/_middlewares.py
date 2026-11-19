@@ -205,15 +205,13 @@ class HITLApprovalMiddleware:
         if pol is None or not getattr(pol, "enabled", False) or request.dry_run or _ACTIVE_DIAGNOSTIC_PROBE.get():
             return await call_next(request)
 
-        from ..exceptions import (
-            ApprovalExpiredError,
-            ApprovalRejectedError,
-            ApprovalRequiredError,
-        )
         from ..mcp.hitl import ActionRiskClassifier
-        from ..mcp.models import ActionRiskTier, ApprovalStatus
+        from ..mcp.models import ActionRiskTier
+        from ._shell_quoting import parse_bool
 
-        is_prod = self._is_production or bool(self._conn.config.options.get("is_production", False))
+        is_prod = self._is_production or parse_bool(
+            self._conn.config.options.get("is_production"), default=False
+        )
         assessment = ActionRiskClassifier.classify_command(
             request.command,
             sudo=request.sudo,
@@ -226,79 +224,125 @@ class HITLApprovalMiddleware:
                 f"Command {request.command!r} on host {host!r} is forbidden by HITL policy "
                 f"({'; '.join(assessment.reasons)})"
             )
-
-        appr_id = request.approval_id or request.transport_kwargs.pop("approval_id", None)
-        mgr = self.manager
-        cwd = self._conn.current_cwd
-        hmac_params = {"command": request.command, "sudo": request.sudo, "cwd": cwd or ""}
-        if appr_id is not None and mgr is not None:
-            await mgr.verify_and_consume(
-                str(appr_id),
-                target_host=host,
-                tool_name="conn.run",
-                command=request.command,
-                sudo=request.sudo,
-                cwd=cwd,
-                parameters=hmac_params,
-            )
+        if not assessment.requires_approval:
             return await call_next(request)
 
-        if assessment.requires_approval and mgr is not None:
-            req = await mgr.create_request(
-                target_host=host,
-                tool_name="conn.run",
-                risk_tier=assessment.risk_tier,
-                risk_reasons=assessment.reasons,
-                command=request.command,
-                sudo=request.sudo,
-                cwd=cwd,
-                parameters=hmac_params,
-            )
-            if getattr(pol, "wait_for_approval", False):
-                decided = await mgr.wait_for_decision(
-                    req.approval_id,
-                    timeout=getattr(pol, "wait_timeout_seconds", 30.0),
-                )
-                if decided.status == ApprovalStatus.APPROVED:
-                    await mgr.verify_and_consume(
-                        req.approval_id,
-                        target_host=host,
-                        tool_name="conn.run",
-                        command=request.command,
-                        sudo=request.sudo,
-                        cwd=cwd,
-                        parameters=hmac_params,
-                    )
-                    return await call_next(request)
-                if decided.status == ApprovalStatus.REJECTED:
-                    raise ApprovalRejectedError(
-                        f"Command {request.command!r} on {host!r} was rejected by operator "
-                        f"({decided.decided_by or 'operator'}): {decided.decision_reason or 'Rejected'}",
-                        approval_id=decided.approval_id,
-                        decided_by=decided.decided_by,
-                        decision_reason=decided.decision_reason,
-                        approval_request=decided,
-                        command=request.command,
-                        host=host,
-                    )
-                if decided.status == ApprovalStatus.EXPIRED:
-                    raise ApprovalExpiredError(
-                        f"Approval request {decided.approval_id!r} for {request.command!r} expired",
-                        approval_id=decided.approval_id,
-                        approval_request=decided,
-                        command=request.command,
-                        host=host,
-                    )
-            raise ApprovalRequiredError(
-                f"Command {request.command!r} on {host!r} requires human operator approval "
-                f"(approval_id={req.approval_id!r}, tier={req.risk_tier.value})",
-                approval_id=req.approval_id,
-                approval_request=req,
-                command=request.command,
-                host=host,
-            )
+        return await enforce_pipeline_hitl(
+            request,
+            call_next,
+            manager=self.manager,
+            host=host,
+            cwd=self._conn.current_cwd,
+            requires_approval=assessment.requires_approval,
+            risk_tier=assessment.risk_tier,
+            risk_reasons=assessment.reasons,
+            policy=pol,
+        )
 
+
+async def enforce_pipeline_hitl(
+    request: CommandRequest,
+    call_next: NextHandler,
+    *,
+    manager: Any,
+    host: str,
+    cwd: str | None,
+    requires_approval: bool,
+    risk_tier: Any,
+    risk_reasons: tuple[str, ...],
+    policy: Any = None,
+    agent_id: str | None = None,
+    reason_suffix: str | None = None,
+) -> Result:
+    """Единый обработчик HITL-подтверждения для конвейерных middleware (защита от повторного потребления)."""
+    if request.metadata.get("hitl_approval_verified"):
         return await call_next(request)
+
+    from ..exceptions import ApprovalExpiredError, ApprovalRejectedError, ApprovalRequiredError
+    from ..mcp.models import ApprovalStatus
+
+    appr_id = request.approval_id or request.transport_kwargs.pop("approval_id", None)
+    hmac_params = {"command": request.command, "sudo": request.sudo, "cwd": cwd or ""}
+
+    if appr_id is not None and manager is not None:
+        await manager.verify_and_consume(
+            str(appr_id),
+            target_host=host,
+            tool_name="conn.run",
+            command=request.command,
+            sudo=request.sudo,
+            cwd=cwd,
+            parameters=hmac_params,
+        )
+        request.metadata["hitl_approval_verified"] = True
+        request.metadata["hitl_approval_id"] = str(appr_id)
+        request.approval_id = None
+        return await call_next(request)
+
+    if requires_approval and manager is not None:
+        create_kwargs: dict[str, Any] = {
+            "target_host": host,
+            "tool_name": "conn.run",
+            "risk_tier": risk_tier,
+            "risk_reasons": risk_reasons,
+            "command": request.command,
+            "sudo": request.sudo,
+            "cwd": cwd,
+            "parameters": hmac_params,
+        }
+        if agent_id is not None:
+            create_kwargs["agent_id"] = agent_id
+        req = await manager.create_request(**create_kwargs)
+        eff_pol = policy if policy is not None else getattr(manager, "policy", None)
+        if getattr(eff_pol, "wait_for_approval", False):
+            decided = await manager.wait_for_decision(
+                req.approval_id,
+                timeout=getattr(eff_pol, "wait_timeout_seconds", 30.0),
+            )
+            if decided.status == ApprovalStatus.APPROVED:
+                await manager.verify_and_consume(
+                    req.approval_id,
+                    target_host=host,
+                    tool_name="conn.run",
+                    command=request.command,
+                    sudo=request.sudo,
+                    cwd=cwd,
+                    parameters=hmac_params,
+                )
+                request.metadata["hitl_approval_verified"] = True
+                request.metadata["hitl_approval_id"] = req.approval_id
+                request.approval_id = None
+                return await call_next(request)
+            if decided.status == ApprovalStatus.REJECTED:
+                raise ApprovalRejectedError(
+                    f"Command {request.command!r} on {host!r} was rejected by operator "
+                    f"({decided.decided_by or 'operator'}): {decided.decision_reason or 'Rejected'}",
+                    approval_id=decided.approval_id,
+                    decided_by=decided.decided_by,
+                    decision_reason=decided.decision_reason,
+                    approval_request=decided,
+                    command=request.command,
+                    host=host,
+                )
+            if decided.status == ApprovalStatus.EXPIRED:
+                raise ApprovalExpiredError(
+                    f"Approval request {decided.approval_id!r} for {request.command!r} expired",
+                    approval_id=decided.approval_id,
+                    approval_request=decided,
+                    command=request.command,
+                    host=host,
+                )
+        detail = reason_suffix or f"tier={req.risk_tier.value}"
+        raise ApprovalRequiredError(
+            f"Command {request.command!r} on {host!r} requires human operator approval "
+            f"(approval_id={req.approval_id!r}, {detail})",
+            approval_id=req.approval_id,
+            approval_request=req,
+            command=request.command,
+            host=host,
+        )
+
+    return await call_next(request)
 
 
 _SUDO_PWD_REQUIRED_HINTS: tuple[str, ...] = (
@@ -902,5 +946,6 @@ class RetryMiddleware:
                         )
                     raise
 
-        assert result is not None
+        if result is None:
+            raise RuntimeError("RetryMiddleware exhausted attempts without producing a result")
         return result

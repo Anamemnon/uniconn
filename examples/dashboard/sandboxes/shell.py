@@ -160,33 +160,23 @@ def _execute_shell_command(
             return payload
 
         return asyncio.run(_run_shell())
-    except ImportError:
-        pass
-
-    proc = subprocess.run(
-        cmd,
-        shell=True,
-        cwd=shell_state["cwd"] if os.path.isdir(str(shell_state.get("cwd"))) else ROOT_DIR,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    dur = round(time.monotonic() - t0, 4)
-    return {
-        "mode": "ShellSession.execute",
-        "command": cmd,
-        "exit_code": proc.returncode,
-        "ok": proc.returncode == 0,
-        "stdout": proc.stdout.strip(),
-        "stderr": proc.stderr.strip(),
-        "text": proc.stdout.strip(),
-        "lines": proc.stdout.strip().splitlines(),
-        "cwd": shell_state.get("cwd", "/root"),
-        "env": shell_state.get("env", {}),
-        "term_size": [cols, rows],
-        "duration_s": dur,
-        "duration_ms": round(dur * 1000, 2),
-    }
+    except ImportError as exc:
+        dur = round(time.monotonic() - t0, 4)
+        return {
+            "mode": "ShellSession.execute() [Unavailable]",
+            "command": cmd,
+            "exit_code": 1,
+            "ok": False,
+            "stdout": "",
+            "stderr": f"Sandbox runtime unavailable (uniconn import error): {exc}",
+            "text": "",
+            "lines": [],
+            "cwd": shell_state.get("cwd", "/root"),
+            "env": shell_state.get("env", {}),
+            "term_size": [cols, rows],
+            "duration_s": dur,
+            "duration_ms": round(dur * 1000, 2),
+        }
 
 
 def _execute_local_command(cmd: str) -> dict[str, Any]:
@@ -259,13 +249,20 @@ def _build_and_validate_uri(payload: dict[str, Any]) -> dict[str, Any]:
                 options=clean_opts or None,
             )
 
-        cfg = URIParser.parse(built_uri)
+        cfg = URIParser.parse(built_uri, resolve_secrets=False)
         clean_overrides = {str(k): v for k, v in dict(overrides_raw).items() if v not in ("", None)}
         if clean_overrides:
             from uniconn import Connection
 
             conn = Connection.from_config(cfg).with_overrides(**clean_overrides)
             cfg = conn.config
+
+        from uniconn.config.models import _is_secret_option_key
+
+        safe_options = {
+            k: ("***REDACTED***" if _is_secret_option_key(str(k)) else v)
+            for k, v in cfg.options.items()
+        }
 
         uri_safe = cfg.uri_safe
         async_snippet = (
@@ -302,7 +299,7 @@ def _build_and_validate_uri(payload: dict[str, Any]) -> dict[str, Any]:
                 "key_file": cfg.key_file,
                 "ssh_config": cfg.ssh_config,
                 "timeout": cfg.timeout,
-                "options": cfg.options,
+                "options": safe_options,
             },
             "snippets": {
                 "uri": built_uri,

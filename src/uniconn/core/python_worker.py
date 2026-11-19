@@ -155,8 +155,14 @@ class RemotePythonWorker:
         if self._conn.transport_name in ("winrm", "wsman") or (
             self._conn.transport_name != "local" and is_windows_connection(self._conn)
         ):
-            clean_interp = raw_interp.replace('"', "").strip() or "python"
-            interp_expr = f'& "{clean_interp}"' if (" " in clean_interp or "\\" in clean_interp) else clean_interp
+            from ._shell_quoting import ps_quote, validate_windows_interpreter
+
+            clean_interp = validate_windows_interpreter(raw_interp or "python")
+            interp_expr = (
+                f"& {ps_quote(clean_interp)}"
+                if (" " in clean_interp or "\\" in clean_interp)
+                else clean_interp
+            )
             return (
                 f"{interp_expr} -u -c "
                 f"\"import base64; exec(base64.b64decode('{b64_script}').decode('utf-8'))\""
@@ -189,7 +195,8 @@ class RemotePythonWorker:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            assert proc.stdout is not None
+            if proc.stdout is None:
+                raise RuntimeError("Local Python worker subprocess was created without stdout pipe")
             raw_line = await asyncio.wait_for(proc.stdout.readline(), timeout=timeout)
             line = raw_line.decode("utf-8", errors="replace").strip()
             if WORKER_READY_MARKER not in line:
@@ -292,8 +299,12 @@ class RemotePythonWorker:
         req_line = json.dumps(payload, ensure_ascii=False) + "\n"
 
         if self._local_proc is not None and self._local_proc.returncode is None:
-            assert self._local_proc.stdin is not None
-            assert self._local_proc.stdout is not None
+            if self._local_proc.stdin is None or self._local_proc.stdout is None:
+                await self._reset_worker()
+                raise ExecutionError(
+                    "Local Python worker pipes are not attached",
+                    host=self._conn.config.host,
+                )
             self._local_proc.stdin.write(req_line.encode("utf-8"))
             await self._local_proc.stdin.drain()
 

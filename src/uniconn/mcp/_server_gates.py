@@ -130,6 +130,7 @@ class MCPServerGatesMixin:
         flow_tasks: Sequence[str] = (),
         agent_id: str | None = None,
         role: str | None = None,
+        allow_role_override: bool = False,
         enforce_deny: bool = True,
     ) -> tuple[AuthContext, PolicyEvaluationResult]:
         """Построить ``AuthContext`` и вычислить решение активного ``PolicyEngine``."""
@@ -181,7 +182,7 @@ class MCPServerGatesMixin:
         )
         eff_role = (
             str(role).strip()
-            if isinstance(role, str) and str(role).strip()
+            if allow_role_override and isinstance(role, str) and str(role).strip()
             else guardrails.default_role
         )
         auth_ctx = build_auth_context(

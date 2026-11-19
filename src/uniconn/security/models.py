@@ -303,8 +303,9 @@ class PolicyGuardrailConfig(BaseModel):
     policy_file: str | None = None
     opa_url: str | None = None
     opa_timeout_seconds: float = Field(default=3.0, gt=0.05)
+    opa_allow_private_network: bool = True
     fail_closed: bool = True
-    allow_safe_on_opa_failure: bool = True
+    allow_safe_on_opa_failure: bool = False
     cache_ttl_seconds: float = Field(default=5.0, ge=0.0)
     maintenance_windows: tuple[str, ...] = ()
     maintenance_window_active: bool | None = None

@@ -52,6 +52,7 @@ _RESERVED_MCP_FLOW_ARGS: frozenset[str] = frozenset(
         "resume_run_id",
         "run_id",
         "agent_id",
+        "role",
     }
 )
 

@@ -47,7 +47,7 @@ class TestGenerateCleanupScript:
         script = BackgroundCleanupManager("pool1").generate_cleanup_script(
             session_ids=["uniconn_pool1_0", "custom_job"]
         )
-        assert 'POOL_ID="pool1"' in script
+        assert "POOL_ID=pool1" in script
         assert "ART_DIR=/tmp" in script
         assert "tmux kill-session" in script
         assert "screen -ls" in script

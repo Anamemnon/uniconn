@@ -9,9 +9,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from ..exceptions import (
-    ApprovalExpiredError,
-    ApprovalRejectedError,
-    ApprovalRequiredError,
     ConfigurationError,
     PolicyViolationError,
 )
@@ -195,6 +192,7 @@ def create_policy_engine(config: PolicyGuardrailConfig | None = None) -> Embedde
             timeout_seconds=cfg.opa_timeout_seconds,
             fail_closed=cfg.fail_closed,
             allow_safe_on_failure=cfg.allow_safe_on_opa_failure,
+            allow_private_network=cfg.opa_allow_private_network,
             cache_ttl_seconds=cfg.cache_ttl_seconds,
             fallback_embedded=embedded,
         )
@@ -289,7 +287,6 @@ class PolicyGuardrailMiddleware:
             return await call_next(request)
 
         from ..mcp.hitl import ActionRiskClassifier
-        from ..mcp.models import ApprovalStatus
 
         opts: Mapping[str, Any] = self._conn.config.options if self._conn is not None else {}
         host = (
@@ -300,16 +297,19 @@ class PolicyGuardrailMiddleware:
             or "localhost"
         )
         transport_name = self._conn.transport_name if self._conn is not None else "local"
+        from ..core._shell_quoting import parse_bool
+
+        opt_is_prod = parse_bool(opts.get("is_production"), default=False)
         eff_env = (
             self.environment
             or opts.get("environment")
             or opts.get("env")
-            or ("production" if (self.is_production or opts.get("is_production")) else None)
+            or ("production" if (self.is_production or opt_is_prod) else None)
         )
         is_prod = (
             bool(self.is_production)
             or str(eff_env or "").lower() in ("prod", "production", "prd", "critical")
-            or bool(opts.get("is_production", False))
+            or opt_is_prod
         )
 
         ast = CommandASTParser.parse(
@@ -368,86 +368,29 @@ class PolicyGuardrailMiddleware:
                 host=host,
             )
 
-        appr_id = request.approval_id or request.transport_kwargs.pop("approval_id", None)
-        mgr = self.approval_manager
+        if eval_res.decision != PolicyDecision.REQUIRE_APPROVAL:
+            return await call_next(request)
+
+        from ..core._middlewares import enforce_pipeline_hitl
+
         cwd = (
             self._conn.current_cwd
             if self._conn is not None
             else request.transport_kwargs.get("cwd")
         )
-        hmac_params = {"command": request.command, "sudo": request.sudo, "cwd": cwd or ""}
-
-        if appr_id is not None and mgr is not None:
-            await mgr.verify_and_consume(
-                str(appr_id),
-                target_host=host,
-                tool_name="conn.run",
-                command=request.command,
-                sudo=request.sudo,
-                cwd=cwd,
-                parameters=hmac_params,
-            )
-            return await call_next(request)
-
-        if eval_res.decision == PolicyDecision.REQUIRE_APPROVAL and mgr is not None:
-            combined_reasons = tuple(dict.fromkeys([*assessment.reasons, *eval_res.reasons]))
-            req = await mgr.create_request(
-                target_host=host,
-                tool_name="conn.run",
-                risk_tier=assessment.risk_tier,
-                risk_reasons=combined_reasons,
-                command=request.command,
-                sudo=request.sudo,
-                cwd=cwd,
-                parameters=hmac_params,
-                agent_id=req_agent,
-            )
-            hitl_pol = getattr(mgr, "policy", None)
-            if getattr(hitl_pol, "wait_for_approval", False):
-                decided = await mgr.wait_for_decision(
-                    req.approval_id,
-                    timeout=getattr(hitl_pol, "wait_timeout_seconds", 30.0),
-                )
-                if decided.status == ApprovalStatus.APPROVED:
-                    await mgr.verify_and_consume(
-                        req.approval_id,
-                        target_host=host,
-                        tool_name="conn.run",
-                        command=request.command,
-                        sudo=request.sudo,
-                        cwd=cwd,
-                        parameters=hmac_params,
-                    )
-                    return await call_next(request)
-                if decided.status == ApprovalStatus.REJECTED:
-                    raise ApprovalRejectedError(
-                        f"Command {request.command!r} on {host!r} was rejected by operator "
-                        f"({decided.decided_by or 'operator'}): {decided.decision_reason or 'Rejected'}",
-                        approval_id=decided.approval_id,
-                        decided_by=decided.decided_by,
-                        decision_reason=decided.decision_reason,
-                        approval_request=decided,
-                        command=request.command,
-                        host=host,
-                    )
-                if decided.status == ApprovalStatus.EXPIRED:
-                    raise ApprovalExpiredError(
-                        f"Approval request {decided.approval_id!r} for {request.command!r} expired",
-                        approval_id=decided.approval_id,
-                        approval_request=decided,
-                        command=request.command,
-                        host=host,
-                    )
-            raise ApprovalRequiredError(
-                f"Command {request.command!r} on {host!r} requires human operator approval per policy "
-                f"(approval_id={req.approval_id!r}, reasons={'; '.join(eval_res.reasons)})",
-                approval_id=req.approval_id,
-                approval_request=req,
-                command=request.command,
-                host=host,
-            )
-
-        return await call_next(request)
+        combined_reasons = tuple(dict.fromkeys([*assessment.reasons, *eval_res.reasons]))
+        return await enforce_pipeline_hitl(
+            request,
+            call_next,
+            manager=self.approval_manager,
+            host=host,
+            cwd=cwd,
+            requires_approval=True,
+            risk_tier=assessment.risk_tier,
+            risk_reasons=combined_reasons,
+            agent_id=req_agent,
+            reason_suffix=f"reasons={'; '.join(eval_res.reasons)}",
+        )
 
 
 __all__ = [

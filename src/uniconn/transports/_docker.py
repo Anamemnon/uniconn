@@ -15,7 +15,6 @@ import asyncio
 import contextlib
 import os
 import posixpath
-import re
 import shlex
 import shutil
 from collections.abc import AsyncIterator, Mapping
@@ -23,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config.models import ConnectionConfig
+from ..core._shell_quoting import parse_bool, validate_env_key
 from ..exceptions import ConfigurationError, ConnectionError
 from ._container_base import (
     ContainerExecTransportBase,
@@ -33,8 +33,6 @@ from ._container_base import (
     _validate_shell_bin,
 )
 from ._local import _LocalShellProcess
-
-_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class DockerTransport(ContainerExecTransportBase):
@@ -53,10 +51,22 @@ class DockerTransport(ContainerExecTransportBase):
         """Название транспорта."""
         return "docker"
 
+    _ALLOWED_RUNTIMES: frozenset[str] = frozenset({"docker", "podman", "nerdctl", "lima", "finch"})
+
     @property
     def runtime(self) -> str:
         """Имя исполняемого файла контейнерного рантайма (``docker`` или ``podman``)."""
-        return str(self.config.options.get("runtime", self.DEFAULT_RUNTIME))
+        raw = str(self.config.options.get("runtime", self.DEFAULT_RUNTIME)).strip()
+        if not raw or raw.startswith("-") or any(ch.isspace() or ord(ch) < 32 for ch in raw):
+            raise ConfigurationError(f"Invalid container runtime executable: {raw!r}")
+        allow_custom = parse_bool(self.config.options.get("allow_custom_runtime"), default=False)
+        has_path_sep = "/" in raw or "\\" in raw
+        if not allow_custom and (has_path_sep or raw.lower().removesuffix(".exe") not in self._ALLOWED_RUNTIMES):
+            raise ConfigurationError(
+                f"Untrusted container runtime {raw!r} is not in allowlist {sorted(self._ALLOWED_RUNTIMES)} "
+                "(pass allow_custom_runtime=true for trusted custom binaries)"
+            )
+        return raw
 
     @property
     def container(self) -> str:
@@ -106,9 +116,7 @@ class DockerTransport(ContainerExecTransportBase):
 
         if env:
             for k, v in env.items():
-                key_str = str(k)
-                if not _ENV_KEY_RE.fullmatch(key_str):
-                    raise ValueError(f"Invalid environment variable name: {key_str!r}")
+                key_str = validate_env_key(k)
                 args.extend(["-e", f"{key_str}={v}"])
 
         shell = _validate_shell_bin(self.config.options.get("shell", "/bin/sh"), self.name)

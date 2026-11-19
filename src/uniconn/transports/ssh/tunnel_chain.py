@@ -108,18 +108,22 @@ class SSHJumpChainManager:
 
     async def close_all(self) -> None:
         """Закрыть все промежуточные jump-соединения и процессы ProxyCommand в обратном порядке."""
-        while self.tunnel_conns:
-            conn = self.tunnel_conns.pop()
-            conn.close()
-            await conn.wait_closed()
-        while self.proxy_procs:
-            proc = self.proxy_procs.pop()
-            with contextlib.suppress(Exception):
-                proc.terminate()
-            with contextlib.suppress(Exception):
-                wait_fn = getattr(proc, "wait", None)
-                if callable(wait_fn):
-                    res = wait_fn()
-                    if inspect.isawaitable(res):
-                        await res
-        self.active_proxy_command = None
+        try:
+            while self.tunnel_conns:
+                conn = self.tunnel_conns.pop()
+                with contextlib.suppress(Exception):
+                    conn.close()
+                with contextlib.suppress(Exception):
+                    await conn.wait_closed()
+            while self.proxy_procs:
+                proc = self.proxy_procs.pop()
+                with contextlib.suppress(Exception):
+                    proc.terminate()
+                with contextlib.suppress(Exception):
+                    wait_fn = getattr(proc, "wait", None)
+                    if callable(wait_fn):
+                        res = wait_fn()
+                        if inspect.isawaitable(res):
+                            await res
+        finally:
+            self.active_proxy_command = None

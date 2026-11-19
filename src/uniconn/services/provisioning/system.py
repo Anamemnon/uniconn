@@ -34,6 +34,10 @@ class UserAttributeSpec:
 
     def format_cli_arg(self, raw_value: str | int) -> str:
         """Сформировать аргумент командной строки для ``useradd`` или ``usermod``."""
+        if self.name == "uid":
+            if isinstance(raw_value, bool) or not isinstance(raw_value, int) or raw_value < 0:
+                raise ValueError(f"Invalid numeric UID value: {raw_value!r}")
+            return str(raw_value)
         text = str(raw_value)
         return shlex.quote(text) if self.quote_value else text
 

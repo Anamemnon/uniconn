@@ -97,7 +97,10 @@ class TelnetTransport(BaseTransport):
             AuthenticationError: При ошибке аутентификации
 
         """
-        assert telnetlib3 is not None
+        if telnetlib3 is None:
+            raise ImportError(
+                "telnetlib3 is required for TelnetTransport. Install with: pip install uniconn[telnet]"
+            )
         port = self.config.port or 23
         try:
             host = self.config.host
@@ -126,12 +129,17 @@ class TelnetTransport(BaseTransport):
 
             self._connected = True
 
+        except AuthenticationError:
+            await self.disconnect()
+            raise
         except TimeoutError as e:
+            await self.disconnect()
             raise ConnectionError(
                 f"Telnet connection timeout to {self.config.host}:{port}",
                 host=self.config.host
             ) from e
         except Exception as e:
+            await self.disconnect()
             raise ConnectionError(
                 f"Telnet connection failed: {e}",
                 host=self.config.host
@@ -147,6 +155,15 @@ class TelnetTransport(BaseTransport):
             self.config.password.get_secret_value()
             if self.config.password
             else ""
+        )
+        auth_fail_markers = (
+            "login incorrect",
+            "authentication failed",
+            "access denied",
+            "permission denied",
+            "invalid password",
+            "bad password",
+            "invalid credentials",
         )
 
         # Ждём и обрабатываем login/password prompts
@@ -175,11 +192,25 @@ class TelnetTransport(BaseTransport):
                 self._writer.write(password + "\n")
                 await self._writer.drain()
 
-                # Ждём приветствия/приглашения
-                await asyncio.wait_for(
+                # Ждём приветствия/приглашения и проверяем на явный отказ аутентификации
+                post_data = await asyncio.wait_for(
                     self._reader.read(4096),
                     timeout=5.0
                 )
+                post_text = (
+                    post_data.decode("utf-8", errors="replace")
+                    if isinstance(post_data, bytes)
+                    else str(post_data)
+                )
+                post_lower = post_text.lower()
+                if (
+                    any(marker in post_lower for marker in auth_fail_markers)
+                    or post_lower.rstrip().endswith(("login:", "username:", "password:"))
+                ):
+                    raise AuthenticationError(
+                        f"Telnet authentication rejected by {self.config.host}",
+                        host=self.config.host,
+                    )
 
         except TimeoutError as e:
             raise AuthenticationError(

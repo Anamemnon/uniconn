@@ -42,9 +42,12 @@ def _build_checksum_command(
     """Построить кроссплатформенную команду расчёта хеша (Linux/macOS/BSD/OpenSSL/Windows)."""
     q_path = shlex.quote(path)
     if os_family and os_family.lower() == "windows":
+        from ..core._shell_quoting import has_cmd_metacharacters, ps_encoded_command, ps_quote
+
         win_algo = algo.upper()
-        ps_q = "'" + path.replace("'", "''") + "'"
-        return f"certutil -hashfile {ps_q} {win_algo}"
+        if has_cmd_metacharacters(path):
+            return ps_encoded_command(f"(Get-FileHash -LiteralPath {ps_quote(path)} -Algorithm {win_algo}).Hash")
+        return f'certutil -hashfile "{path}" {win_algo}'
 
     if algo == "sha256":
         return (

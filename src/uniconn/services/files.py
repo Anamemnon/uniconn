@@ -461,17 +461,25 @@ class FileOperationsService:
             return
 
         if is_win_remote:
+            from ..core._shell_quoting import ps_encoded_command, ps_quote
+
             sep = "\\" if ("\\" in effective_path or ":" in effective_path) else "/"
             trimmed = effective_path.rstrip("\\/")
             parent_win = (trimmed.rsplit(sep, 1)[0] or ".") if sep in trimmed else "."
             tmp_name = f".uniconn_tmp_{uuid.uuid4().hex[:12]}"
             staged_remote = f"{parent_win}{sep}{tmp_name}"
-            q_staged = "'" + staged_remote.replace("'", "''") + "'"
-            q_dest = "'" + effective_path.replace("'", "''") + "'"
+            move_script = (
+                f"Move-Item -LiteralPath {ps_quote(staged_remote)} "
+                f"-Destination {ps_quote(effective_path)} -Force -ErrorAction Stop"
+            )
+            tr_name = self._conn.transport_name
+            winrm_shell = str(self._conn.config.options.get("shell", "powershell")).lower()
+            use_native_ps = tr_name in ("winrm", "wsman") and winrm_shell not in ("cmd", "cmd.exe")
+            move_cmd = move_script if use_native_ps else ps_encoded_command(move_script)
             try:
                 await self._conn.transport.write_file(staged_remote, data, mode=mode)
                 await self._conn.run(
-                    f"Move-Item -LiteralPath {q_staged} -Destination {q_dest} -Force -ErrorAction Stop",
+                    move_cmd,
                     raise_on_error=True,
                     dry_run=False,
                 )
@@ -678,12 +686,14 @@ class FileOperationsService:
         *,
         atomic: bool = False,
         sudo: bool = False,
+        allow_file_path: bool = False,
     ) -> str:
         """Отрендерить шаблон конфигурации и записать его на хост."""
         rendered = TemplateEngine.render(
             template_str_or_path=template_str_or_path,
             context=context,
             engine=engine,
+            allow_file_path=allow_file_path,
         )
         await self.write_file(
             str(remote_path),

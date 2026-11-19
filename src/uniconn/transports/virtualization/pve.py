@@ -63,8 +63,10 @@ class PveTransport(GuestAgentTransportBase):
         host = config.host or "localhost"
         self.base_url = f"{scheme}://{host}:{port}"
 
+        from ...core._shell_quoting import parse_verify_ssl
+
         verify_opt = opts.get("verify_ssl", opts.get("verify", True))
-        self.verify_ssl: bool | str = verify_opt if isinstance(verify_opt, (bool, str)) else True
+        self.verify_ssl: bool | str = parse_verify_ssl(verify_opt, default=True)
         self.poll_interval = float(opts.get("poll_interval", 0.2))
         self._custom_http_client = http_client
         self.client: PveHttpClient | None = None
@@ -136,7 +138,8 @@ class PveTransport(GuestAgentTransportBase):
         timeout: float,
     ) -> Result:
         """Обработать управляющие команды гипервизора ``pve power ...``, ``pve snapshot ...``, ``pve status``."""
-        assert self.client is not None
+        if self.client is None:
+            raise ConnectionError("PVE transport is not connected", host=self.config.host)
         started = time.perf_counter()
         host_label = self.config.host or "pve"
         sub = tokens[1].lower() if len(tokens) > 1 else "status"
@@ -237,11 +240,10 @@ class PveTransport(GuestAgentTransportBase):
     async def _read_file_via_exec_fallback(self, remote_path: str) -> bytes:
         """Прочитать большой или усечённый файл через ``agent_exec`` (base64)."""
         if self._is_windows:
-            ps_path = "'" + remote_path.replace("'", "''") + "'"
-            cmd = (
-                f'powershell -NoProfile -NonInteractive -Command "'
-                f'[Convert]::ToBase64String([IO.File]::ReadAllBytes({ps_path}))"'
-            )
+            from ...core._shell_quoting import ps_encoded_command, ps_quote
+
+            ps_script = f"[Convert]::ToBase64String([IO.File]::ReadAllBytes({ps_quote(remote_path)}))"
+            cmd = ps_encoded_command(ps_script)
         else:
             cmd = f"base64 {shlex.quote(remote_path)}"
         res = await self.run(cmd, timeout=self.exec_timeout)

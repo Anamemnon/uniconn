@@ -4,11 +4,40 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextvars import ContextVar
 from typing import Any, Self, cast
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, computed_field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationInfo, computed_field, model_validator
 
 from .secrets import SecretResolver
+
+_RESOLVE_SECRETS_VAR: ContextVar[bool] = ContextVar("_uniconn_resolve_secrets", default=True)
+_SECRET_TOP_LEVEL_FIELDS: frozenset[str] = frozenset({"password", "passphrase"})
+_SECRET_OPTION_KEYS: frozenset[str] = frozenset(
+    {
+        "password",
+        "passphrase",
+        "sudo_password",
+        "enable_password",
+        "token",
+        "token_secret",
+        "auth_token",
+        "api_token",
+        "api_key",
+        "secret",
+        "client_secret",
+        "private_key",
+        "key_passphrase",
+        "proxy_password",
+    }
+)
+
+
+def _is_secret_option_key(key: str) -> bool:
+    norm = key.strip().lower()
+    if norm in _SECRET_OPTION_KEYS:
+        return True
+    return norm.endswith(("_password", "_passphrase", "_secret", "_token", "_api_key"))
 
 
 class ConnectionConfig(BaseModel):
@@ -29,11 +58,32 @@ class ConnectionConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _resolve_secret_references(cls, data: Any) -> Any:
-        """Разрешить ссылки ``env://`` и ``file://`` во всех полях конфигурации."""
-        if isinstance(data, Mapping):
-            return SecretResolver.resolve_mapping(data)
-        return data
+    def _resolve_secret_references(cls, data: Any, info: ValidationInfo) -> Any:
+        """Разрешить ссылки ``env://`` и ``file://`` только в секретных полях конфигурации."""
+        if not isinstance(data, Mapping):
+            return data
+        ctx = info.context if isinstance(info.context, Mapping) else {}
+        if ctx.get("resolve_secrets", _RESOLVE_SECRETS_VAR.get()) is False:
+            return data
+        base_dir = ctx.get("secret_base_dir")
+        resolved: dict[str, Any] = dict(data)
+        for field_name in _SECRET_TOP_LEVEL_FIELDS:
+            if field_name in resolved:
+                resolved[field_name] = SecretResolver.resolve_value(
+                    resolved[field_name],
+                    base_dir=base_dir,
+                )
+        raw_opts = resolved.get("options")
+        if isinstance(raw_opts, Mapping):
+            new_opts: dict[str, Any] = {}
+            for opt_key, opt_val in raw_opts.items():
+                k_str = str(opt_key)
+                if _is_secret_option_key(k_str):
+                    new_opts[k_str] = SecretResolver.resolve_value(opt_val, base_dir=base_dir)
+                else:
+                    new_opts[k_str] = opt_val
+            resolved["options"] = new_opts
+        return resolved
 
     @computed_field
     @property
@@ -61,11 +111,11 @@ class ConnectionConfig(BaseModel):
         return f"{self.transport}://{user_prefix}{self.host}{port_suffix}"
 
     @classmethod
-    def from_uri(cls, uri: str) -> Self:
+    def from_uri(cls, uri: str, *, resolve_secrets: bool = True) -> Self:
         """Парсинг URI в конфигурацию."""
         from .uri import URIParser
 
-        return cast(Self, URIParser.parse(uri))
+        return cast(Self, URIParser.parse(uri, resolve_secrets=resolve_secrets))
 
 
 __all__ = ["ConnectionConfig"]

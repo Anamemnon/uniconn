@@ -145,6 +145,12 @@ class OpenSSHConfigParser:
                 current_matches = pos_match and not neg_match
                 continue
 
+            if key_lower == "match":
+                # Условные блоки Match не поддерживаются парсером напрямую — сбрасываем контекст Host,
+                # чтобы директивы внутри Match не просачивались в предыдущий Host-блок.
+                current_matches = False
+                continue
+
             if not current_matches:
                 continue
 

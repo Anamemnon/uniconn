@@ -46,8 +46,11 @@ class TestASTClassifierConsolidation:
         etc_write = ActionRiskClassifier.classify_command("echo evil >> /etc/hosts")
         assert etc_write.risk_tier == ActionRiskTier.TIER_2_DESTRUCTIVE
 
-        tee_etc = ActionRiskClassifier.classify_command("echo 'ALL ALL=(ALL) ALL' | tee /etc/sudoers.d/pwn")
+        tee_etc = ActionRiskClassifier.classify_command("echo 'worker_processes 2;' | tee /etc/nginx/nginx.conf")
         assert tee_etc.risk_tier == ActionRiskTier.TIER_2_DESTRUCTIVE
+
+        tee_sudoers = ActionRiskClassifier.classify_command("echo 'ALL ALL=(ALL) ALL' | tee /etc/sudoers.d/pwn")
+        assert tee_sudoers.risk_tier == ActionRiskTier.TIER_3_FORBIDDEN
 
     def test_equivalence_between_ast_and_risk_classifier_on_obfuscation(self) -> None:
         for cmd in (

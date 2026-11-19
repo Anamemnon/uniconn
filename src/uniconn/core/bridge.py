@@ -162,30 +162,40 @@ class _SharedLoopManager:
                 self._thread = thread
                 self._pid = os.getpid()
 
-            assert self._loop is not None
-            assert self._thread is not None
+            if self._loop is None or self._thread is None:
+                raise RuntimeError("EventLoopPortal failed to initialize background event loop")
             return self._loop, self._thread
 
     def shutdown(self, timeout: float = 3.0) -> None:
         with self._lock:
-            if self._loop is not None and not self._loop.is_closed():
-                try:
-                    for task in asyncio.all_tasks(self._loop):
-                        task.cancel()
-                except Exception:
-                    pass
-                self._loop.call_soon_threadsafe(self._loop.stop)
+            loop = self._loop
+            thread = self._thread
+            if loop is not None and not loop.is_closed():
+                if loop.is_running() and threading.current_thread() is not thread:
+                    async def _cancel_all_tasks() -> None:
+                        current = asyncio.current_task()
+                        pending = [t for t in asyncio.all_tasks() if t is not current and not t.done()]
+                        for task in pending:
+                            task.cancel()
+                        if pending:
+                            await asyncio.gather(*pending, return_exceptions=True)
+
+                    with contextlib.suppress(Exception):
+                        fut = asyncio.run_coroutine_threadsafe(_cancel_all_tasks(), loop)
+                        fut.result(timeout=min(float(timeout), 1.0))
+                with contextlib.suppress(Exception):
+                    loop.call_soon_threadsafe(loop.stop)
 
             if (
-                self._thread is not None
-                and self._thread.is_alive()
-                and threading.current_thread() is not self._thread
+                thread is not None
+                and thread.is_alive()
+                and threading.current_thread() is not thread
             ):
-                self._thread.join(timeout=timeout)
+                thread.join(timeout=timeout)
 
-            if self._loop is not None and not self._loop.is_closed():
+            if loop is not None and not loop.is_closed():
                 with contextlib.suppress(Exception):
-                    self._loop.close()
+                    loop.close()
 
             self._loop = None
             self._thread = None

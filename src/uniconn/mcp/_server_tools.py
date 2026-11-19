@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import shlex
 import uuid
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -320,6 +321,43 @@ class MCPServerToolsMixin(MCPServerGatesMixin):
         limit = max(1, min(req_max, self.policy.max_read_bytes))
 
         async with self.registry.create_connection(entry) as conn:
+            st: Any = None
+            with contextlib.suppress(Exception):
+                st = await conn.files.stat(path)
+
+            file_size: int | None = None
+            if st is not None:
+                if st.get("is_dir"):
+                    raise IsADirectoryError(f"Path {path!r} is a directory, not a regular file")
+                if not st.get("is_file", True) and not st.get("is_symlink", False):
+                    raise PermissionError(f"Reading non-regular file or device {path!r} is forbidden")
+                raw_sz = st.get("size")
+                if isinstance(raw_sz, int) and raw_sz >= 0:
+                    file_size = raw_sz
+
+            max_preload_bytes = max(limit * 4, self.policy.max_read_bytes)
+            if file_size is not None and file_size > max_preload_bytes:
+                if entry.transport != "winrm":
+                    head_res = await conn.run(
+                        f"head -c {limit + 1} -- {shlex.quote(path)}",
+                        raise_on_error=False,
+                    )
+                    if head_res.ok:
+                        encoded = head_res.stdout.encode("utf-8", errors="replace")
+                        truncated = len(encoded) > limit or file_size > limit
+                        sliced = encoded[:limit]
+                        text = sliced.decode("utf-8", errors="replace")
+                        return {
+                            "target": entry.name,
+                            "path": path,
+                            "content": SecretMaskingFilter._mask_string(text),
+                            "total_bytes": file_size,
+                            "truncated": truncated,
+                        }
+                raise PermissionError(
+                    f"File {path!r} ({file_size} bytes) exceeds safe read limit ({max_preload_bytes} bytes)"
+                )
+
             raw_content = await conn.files.read_file(path, encoding=None)
             encoded = (
                 raw_content
@@ -346,13 +384,51 @@ class MCPServerToolsMixin(MCPServerGatesMixin):
         if not isinstance(path, str) or not path.strip():
             raise ValueError("Parameter 'path' is required")
 
-        async with self.registry.create_connection(target) as conn:
+        entry = self.registry.get_entry(target)
+        is_prod = entry.is_production(self.policy.hitl.prod_groups)
+        assessment = ActionRiskClassifier.classify_file_read(
+            path,
+            is_production=is_prod,
+            policy=self.policy.hitl,
+        )
+        self._assert_not_forbidden(assessment, f"Inspecting {path!r} on host {entry.name!r}")
+
+        raw_agent_id = arguments.get("agent_id")
+        _, policy_eval = await self._evaluate_policy_gate(
+            entry=entry,
+            tool_name="uniconn_stat_path",
+            action_type="file_read",
+            risk_tier=assessment.risk_tier,
+            risk_reasons=assessment.reasons,
+            path=path,
+            agent_id=str(raw_agent_id) if raw_agent_id else None,
+            enforce_deny=True,
+        )
+        if policy_eval.decision == PolicyDecision.REQUIRE_APPROVAL:
+            approval_id = arguments.get("approval_id")
+            wait_for_appr = bool(arguments.get("wait_for_approval", self.policy.hitl.wait_for_approval))
+            merged_reasons = self._merge_reasons(assessment.reasons, policy_eval.reasons)
+            _, pending_payload = await self._resolve_hitl_gate(
+                entry=entry,
+                tool_name="uniconn_stat_path",
+                risk_tier=assessment.risk_tier,
+                risk_reasons=tuple(merged_reasons),
+                requires_approval=True,
+                approval_id=str(approval_id) if approval_id is not None else None,
+                wait_for_approval=wait_for_appr,
+                parameters={"path": path},
+                agent_id=str(raw_agent_id) if raw_agent_id else None,
+            )
+            if pending_payload is not None:
+                return pending_payload
+
+        async with self.registry.create_connection(entry) as conn:
             exists = await conn.files.exists(path)
             if not exists:
-                return {"target": target, "path": path, "exists": False, "stat": None}
+                return {"target": entry.name, "path": path, "exists": False, "stat": None}
             st = await conn.files.stat(path)
             return {
-                "target": target,
+                "target": entry.name,
                 "path": path,
                 "exists": True,
                 "stat": _sanitize_json_value(dict(st)),
@@ -377,6 +453,44 @@ class MCPServerToolsMixin(MCPServerGatesMixin):
             raise ValueError(f"Unsupported checksum algorithm: {raw_algo!r}")
 
         entries = self.registry.resolve_targets(raw_targets)
+        is_prod = any(e.is_production(self.policy.hitl.prod_groups) for e in entries)
+        assessment = ActionRiskClassifier.classify_file_read(
+            path,
+            is_production=is_prod,
+            policy=self.policy.hitl,
+        )
+        self._assert_not_forbidden(assessment, f"Hashing {path!r}")
+
+        raw_agent_id = arguments.get("agent_id")
+        _, policy_eval = await self._evaluate_policy_gate(
+            entries=entries,
+            tool_name="uniconn_checksum",
+            action_type="file_read",
+            risk_tier=assessment.risk_tier,
+            risk_reasons=assessment.reasons,
+            path=path,
+            agent_id=str(raw_agent_id) if raw_agent_id else None,
+            enforce_deny=True,
+        )
+        if policy_eval.decision == PolicyDecision.REQUIRE_APPROVAL:
+            approval_id = arguments.get("approval_id")
+            wait_for_appr = bool(arguments.get("wait_for_approval", self.policy.hitl.wait_for_approval))
+            merged_reasons = self._merge_reasons(assessment.reasons, policy_eval.reasons)
+            target_label = entries[0].name if len(entries) == 1 else ",".join(e.name for e in entries)
+            _, pending_payload = await self._resolve_hitl_gate(
+                entry=entries[0],
+                target_host=target_label,
+                tool_name="uniconn_checksum",
+                risk_tier=assessment.risk_tier,
+                risk_reasons=tuple(merged_reasons),
+                requires_approval=True,
+                approval_id=str(approval_id) if approval_id is not None else None,
+                wait_for_approval=wait_for_appr,
+                parameters={"path": path, "algorithm": algo},
+                agent_id=str(raw_agent_id) if raw_agent_id else None,
+            )
+            if pending_payload is not None:
+                return pending_payload
 
         async def _hash_one(entry: MCPHostEntry) -> tuple[str, str | None]:
             async with self.registry.create_connection(entry) as conn:
@@ -763,6 +877,7 @@ class MCPServerToolsMixin(MCPServerGatesMixin):
                 path=path,
                 agent_id=agent_val,
                 role=role_val,
+                allow_role_override=True,
                 enforce_deny=False,
             )
             return self._build_policy_eval_response(assessment, policy_eval, auth_ctx)
@@ -787,6 +902,7 @@ class MCPServerToolsMixin(MCPServerGatesMixin):
                 flow_tasks=tuple(flow_obj.tasks.keys()),
                 agent_id=agent_val,
                 role=role_val,
+                allow_role_override=True,
                 enforce_deny=False,
             )
             return self._build_policy_eval_response(
@@ -823,6 +939,7 @@ class MCPServerToolsMixin(MCPServerGatesMixin):
             cwd=cwd_str,
             agent_id=agent_val,
             role=role_val,
+            allow_role_override=True,
             enforce_deny=False,
         )
         return self._build_policy_eval_response(

@@ -101,8 +101,13 @@ def test_registry_dynamic_uri_guardrail() -> None:
 
     dyn_policy = MCPSecurityPolicy(allow_dynamic_uri=True)
     dyn_reg = MCPHostRegistry.from_sources(include_local=True, policy=dyn_policy)
-    entry = dyn_reg.get_entry("local://?timeout=10")
-    assert entry.transport == "local"
+    entry = dyn_reg.get_entry("ssh://ops@10.0.0.99?timeout=10")
+    assert entry.transport == "ssh"
+    assert entry.host == "10.0.0.99"
+
+    with pytest.raises(PermissionError, match="forbidden by security policy"):
+        dyn_reg.get_entry("local://?timeout=10")
+    assert dyn_reg.get_entry("local").transport == "local"
 
 
 @pytest.mark.asyncio

@@ -5,9 +5,9 @@ import contextlib
 import json
 import logging
 import posixpath
+import re
 import shlex
 import signal
-import threading
 import time
 from collections.abc import Callable, Iterable
 from types import FrameType
@@ -18,6 +18,7 @@ from ._backends import WindowsJobBackend, is_windows_background_conn
 from ._session import BackgroundSession
 
 logger = logging.getLogger(__name__)
+_SAFE_POOL_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
 class BackgroundCleanupManager:
@@ -47,6 +48,7 @@ class BackgroundCleanupManager:
         self._signal_count = 0
         self._installed = False
         self._previous_handlers: dict[int, signal.Handlers | Callable | int | None] = {}
+        self._cleanup_tasks: set[asyncio.Task[Any]] = set()
 
     @property
     def stale_ttl_seconds(self) -> float | None:
@@ -161,33 +163,40 @@ class BackgroundCleanupManager:
 
     def cleanup_local(self, force: bool = False, timeout: float = 30.0) -> None:
         """Синхронная очистка всех сессий (вызывается из atexit/signal)."""
+        del timeout
         if not self._sessions:
             return
         try:
-            asyncio.get_running_loop()
-            has_running_loop = True
+            running_loop = asyncio.get_running_loop()
         except RuntimeError:
-            has_running_loop = False
+            running_loop = None
 
-        if not has_running_loop:
-            asyncio.run(self.cleanup_all(graceful=not force))
-            return
-
-        done = threading.Event()
-
-        def _run_in_thread() -> None:
+        if running_loop is None:
             try:
                 asyncio.run(self.cleanup_all(graceful=not force))
             except Exception as exc:
-                self._logger.warning(f"Ошибка cleanup из signal handler: {exc}")
-            finally:
-                done.set()
+                self._logger.warning(f"Ошибка cleanup при завершении процесса: {exc}")
+            return
 
-        threading.Thread(target=_run_in_thread, daemon=True).start()
-        if not done.wait(timeout):
-            self._logger.warning(
-                f"Cleanup не завершился за {timeout:.1f} с, завершение процесса"
-            )
+        # Планируем очистку на том же event loop, которому принадлежат транспорты сессий,
+        # избегая cross-loop вызовов и блокировки текущего потока из обработчика сигнала.
+        def _schedule_cleanup() -> None:
+            if running_loop.is_closed():
+                return
+            task = running_loop.create_task(self.cleanup_all(graceful=not force))
+            self._cleanup_tasks.add(task)
+
+            def _on_done(done_task: asyncio.Task[Any]) -> None:
+                self._cleanup_tasks.discard(done_task)
+                with contextlib.suppress(asyncio.CancelledError):
+                    exc = done_task.exception()
+                    if exc is not None:
+                        self._logger.warning(f"Ошибка асинхронного cleanup: {exc}")
+
+            task.add_done_callback(_on_done)
+
+        with contextlib.suppress(RuntimeError):
+            running_loop.call_soon_threadsafe(_schedule_cleanup)
 
     async def cleanup_all(self, graceful: bool = True) -> None:
         """Асинхронная остановка всех зарегистрированных сессий."""
@@ -213,8 +222,10 @@ class BackgroundCleanupManager:
         art_dir = self._runtime_dir or "/tmp"
         q_art_dir = shlex.quote(art_dir)
 
+        q_pool_id = shlex.quote(self._pool_id)
+
         script = f"""#!/bin/sh
-POOL_ID="{self._pool_id}"
+POOL_ID={q_pool_id}
 ART_DIR={q_art_dir}
 if command -v tmux >/dev/null 2>&1; then
     for s in $(tmux list-sessions -F '#{{session_name}}' 2>/dev/null | grep "^uniconn_${{POOL_ID}}_"); do
@@ -353,7 +364,12 @@ if [ "$ART_DIR" != "/tmp" ]; then rmdir "$ART_DIR" 2>/dev/null || true; fi
                 fname = path_part.rsplit("/", 1)[-1]
                 if fname.startswith("uniconn_") and fname.endswith(".active"):
                     pool_id = fname[len("uniconn_") : -len(".active")]
-            if not pool_id or pool_id == self._pool_id:
+            if (
+                not pool_id
+                or pool_id == self._pool_id
+                or ".." in pool_id
+                or not _SAFE_POOL_ID_RE.fullmatch(pool_id)
+            ):
                 continue
 
             created_at = data.get("created_at")

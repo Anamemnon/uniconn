@@ -10,6 +10,7 @@ import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
+from ....core._shell_quoting import parse_bool, parse_verify_ssl
 from ....exceptions import (
     AuthenticationError,
     BMCCapabilityError,
@@ -78,17 +79,17 @@ class RedfishTransport(BaseTransport):
         if ca_file:
             self._verify: bool | str = str(ca_file)
         elif "verify_ssl" in opts:
-            self._verify = bool(opts["verify_ssl"])
+            self._verify = parse_verify_ssl(opts["verify_ssl"], default=True)
         elif "verify_tls" in opts:
-            self._verify = bool(opts["verify_tls"])
+            self._verify = parse_bool(opts["verify_tls"], default=True)
         elif "insecure" in opts:
-            self._verify = not bool(opts["insecure"])
+            self._verify = not parse_bool(opts["insecure"], default=False)
         else:
             self._verify = True
 
-        self._multiplexed: bool = bool(opts.get("multiplexed", True))
+        self._multiplexed: bool = parse_bool(opts.get("multiplexed"), default=True)
         self._auth_pref: str = str(opts.get("auth", "auto")).lower()
-        self._wait_for_tasks: bool = bool(opts.get("wait_for_tasks", True))
+        self._wait_for_tasks: bool = parse_bool(opts.get("wait_for_tasks"), default=True)
         poll_interval = float(opts.get("task_poll_interval", 0.05))
 
         self._http = RedfishHttpClient(
@@ -328,7 +329,8 @@ class RedfishTransport(BaseTransport):
         """Выполнить HTTP-запрос через ``RedfishHttpClient`` и вернуть ``(status, json_dict)``."""
         if not self._connected or self._session is None:
             await self.connect()
-        assert self._session is not None
+        if self._session is None:
+            raise ConnectionError("Redfish HTTP session is not initialized", host=self.config.host)
 
         status, data, _ = await self._http.request_json(
             self._session,
@@ -368,7 +370,8 @@ class RedfishTransport(BaseTransport):
 
         if not self._connected or self._session is None:
             await self.connect()
-        assert self._session is not None
+        if self._session is None:
+            raise ConnectionError("Redfish HTTP session is not initialized", host=self.config.host)
 
         status, data, resp_headers = await self._http.request_json(
             self._session,

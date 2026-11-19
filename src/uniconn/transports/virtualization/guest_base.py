@@ -1,4 +1,4 @@
-# src/uniconn/transports/virtualization/_base.py
+# src/uniconn/transports/virtualization/guest_base.py
 """Общая база для гостевых транспортов виртуализации (QEMU Guest Agent и Proxmox VE)."""
 
 from __future__ import annotations
@@ -10,6 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from ...config.models import ConnectionConfig
+from ...core._shell_quoting import (
+    has_cmd_metacharacters,
+    ps_encoded_command,
+    ps_quote,
+    validate_env_key,
+)
 from ...exceptions import FileTransferError
 from ..base import BaseTransport, FileStat
 
@@ -96,21 +102,43 @@ class GuestAgentTransportBase(BaseTransport):
         """Обернуть команду в переходы ``cd`` и экспорт переменных окружения (для ``conn.cd`` / ``conn.env``)."""
         effective = command
         if self._is_windows:
-            prefixes: list[str] = []
+            use_ps_wrapper = False
+            validated_env: list[tuple[str, str]] = []
             if inject_env_in_shell and env:
                 for k, v in env.items():
-                    safe_v = str(v).replace('"', '\\"')
-                    prefixes.append(f'set "{k}={safe_v}"')
-            if cwd:
-                safe_cwd = str(cwd).replace('"', '\\"')
-                prefixes.append(f'cd /d "{safe_cwd}"')
+                    vk = validate_env_key(k)
+                    sv = str(v)
+                    if has_cmd_metacharacters(sv):
+                        use_ps_wrapper = True
+                    validated_env.append((vk, sv))
+            cwd_str = str(cwd) if cwd else None
+            if cwd_str and has_cmd_metacharacters(cwd_str):
+                use_ps_wrapper = True
+
+            if use_ps_wrapper:
+                ps_lines: list[str] = []
+                for vk, sv in validated_env:
+                    ps_lines.append(f"$env:{vk} = {ps_quote(sv)}")
+                if cwd_str:
+                    ps_lines.append(f"Set-Location -LiteralPath {ps_quote(cwd_str)}")
+                ps_lines.append(f"cmd.exe /d /s /c {ps_quote(effective)}")
+                ps_lines.append("exit $LASTEXITCODE")
+                return ps_encoded_command("; ".join(ps_lines))
+
+            prefixes: list[str] = []
+            for vk, sv in validated_env:
+                prefixes.append(f'set "{vk}={sv}"')
+            if cwd_str:
+                prefixes.append(f'cd /d "{cwd_str}"')
             if prefixes:
                 effective = " && ".join([*prefixes, effective])
             return effective
 
         posix_prefixes: list[str] = []
         if inject_env_in_shell and env:
-            exports = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in env.items())
+            exports = " ".join(
+                f"{validate_env_key(k)}={shlex.quote(str(v))}" for k, v in env.items()
+            )
             posix_prefixes.append(f"export {exports};")
         if cwd:
             posix_prefixes.append(f"cd {shlex.quote(str(cwd))} &&")
@@ -170,16 +198,15 @@ class GuestAgentTransportBase(BaseTransport):
     async def stat(self, remote_path: str) -> FileStat:
         """Получить метаданные файла или директории в гостевой ВМ (POSIX и Windows)."""
         if self._is_windows:
-            ps_path = "'" + remote_path.replace("'", "''") + "'"
-            ps_cmd = (
-                f'powershell -NoProfile -NonInteractive -Command "'
+            ps_path = ps_quote(remote_path)
+            ps_script = (
                 f"$i = Get-Item -LiteralPath {ps_path} -Force -ErrorAction Stop; "
                 f"$isDir = [bool]$i.PSIsContainer; "
                 f"$sz = if ($isDir) {{ 0 }} else {{ [int64]$i.Length }}; "
                 f"$mt = [int64]([DateTimeOffset]$i.LastWriteTimeUtc).ToUnixTimeSeconds(); "
-                f'Write-Output \\"$sz|$mt|$isDir\\""'
+                f'Write-Output "$sz|$mt|$isDir"'
             )
-            res = await self.run(ps_cmd)
+            res = await self.run(ps_encoded_command(ps_script))
             if not res.ok or not res.stdout.strip():
                 raise FileNotFoundError(f"Remote path does not exist: {remote_path}")
             parts = res.stdout.strip().splitlines()[0].split("|")
@@ -228,12 +255,8 @@ class GuestAgentTransportBase(BaseTransport):
     async def listdir(self, remote_path: str = ".") -> list[str]:
         """Получить список элементов директории в гостевой ВМ (POSIX и Windows)."""
         if self._is_windows:
-            ps_path = "'" + remote_path.replace("'", "''") + "'"
-            ps_cmd = (
-                f'powershell -NoProfile -NonInteractive -Command "'
-                f'Get-ChildItem -LiteralPath {ps_path} -Force -Name -ErrorAction Stop"'
-            )
-            res = await self.run(ps_cmd)
+            ps_script = f"Get-ChildItem -LiteralPath {ps_quote(remote_path)} -Force -Name -ErrorAction Stop"
+            res = await self.run(ps_encoded_command(ps_script))
             if not res.ok:
                 raise FileTransferError(
                     f"listdir failed on {remote_path!r}: {res.stderr or res.stdout}",
@@ -252,12 +275,8 @@ class GuestAgentTransportBase(BaseTransport):
     async def remove_file(self, remote_path: str) -> None:
         """Удалить файл в гостевой ВМ (POSIX и Windows)."""
         if self._is_windows:
-            ps_path = "'" + remote_path.replace("'", "''") + "'"
-            ps_cmd = (
-                f'powershell -NoProfile -NonInteractive -Command "'
-                f'Remove-Item -LiteralPath {ps_path} -Force -ErrorAction SilentlyContinue"'
-            )
-            res = await self.run(ps_cmd)
+            ps_script = f"Remove-Item -LiteralPath {ps_quote(remote_path)} -Force -ErrorAction SilentlyContinue"
+            res = await self.run(ps_encoded_command(ps_script))
         else:
             res = await self.run(f"rm -f {shlex.quote(remote_path)}")
         if not res.ok:
@@ -269,12 +288,8 @@ class GuestAgentTransportBase(BaseTransport):
     async def exists(self, remote_path: str) -> bool:
         """Проверить существование файла или директории в гостевой ВМ (POSIX и Windows)."""
         if self._is_windows:
-            ps_path = "'" + remote_path.replace("'", "''") + "'"
-            ps_cmd = (
-                f'powershell -NoProfile -NonInteractive -Command "'
-                f'if (Test-Path -LiteralPath {ps_path}) {{ exit 0 }} else {{ exit 1 }}"'
-            )
-            res = await self.run(ps_cmd)
+            ps_script = f"if (Test-Path -LiteralPath {ps_quote(remote_path)}) {{ exit 0 }} else {{ exit 1 }}"
+            res = await self.run(ps_encoded_command(ps_script))
             return res.ok
         return await super().exists(remote_path)
 
@@ -288,12 +303,8 @@ class GuestAgentTransportBase(BaseTransport):
         """Создать директорию в гостевой ВМ (POSIX и Windows)."""
         if self._is_windows:
             _ = (parents, exist_ok, mode)
-            ps_path = "'" + remote_path.replace("'", "''") + "'"
-            ps_cmd = (
-                f'powershell -NoProfile -NonInteractive -Command "'
-                f'New-Item -ItemType Directory -Path {ps_path} -Force | Out-Null"'
-            )
-            res = await self.run(ps_cmd)
+            ps_script = f"New-Item -ItemType Directory -Path {ps_quote(remote_path)} -Force | Out-Null"
+            res = await self.run(ps_encoded_command(ps_script))
             res.raise_for_status()
             return
         await super().mkdir(remote_path, parents=parents, exist_ok=exist_ok, mode=mode)

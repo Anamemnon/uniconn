@@ -7,7 +7,7 @@ import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from .._logging import SecretMaskingFilter
 from ..config.inventory import InventoryLoader
@@ -26,6 +26,44 @@ _QUERY_SECRET_RE = re.compile(
     r"((?:password|passphrase|sudo_password|token_secret|token|secret|key)=)([^&\s]+)",
     re.IGNORECASE,
 )
+_FORBIDDEN_DYNAMIC_URI_OPTIONS: frozenset[str] = frozenset(
+    {
+        "proxy_command",
+        "runtime",
+        "allow_custom_runtime",
+        "kubectl_bin",
+        "allow_custom_bin",
+        "ssh_config",
+        "kubeconfig",
+        "python_interpreter",
+        "key_file",
+        "known_hosts",
+        "ca_trust_path",
+        "ca_file",
+        "cert",
+        "cert_file",
+        "cert_pem",
+        "cert_key_pem",
+        "cassette",
+        "socket",
+        "socks_proxy",
+    }
+)
+_FORBIDDEN_DYNAMIC_URI_TRANSPORTS: frozenset[str] = frozenset({"local", "replay", "serial", "uart"})
+_SECRET_REF_RE = re.compile(r"(?:env|file)://", re.IGNORECASE)
+
+
+def _contains_secret_reference(value: str) -> bool:
+    """Проверить строку (включая percent-decoded варианты) на ссылки ``env://`` или ``file://``."""
+    cur = value
+    for _ in range(3):
+        if _SECRET_REF_RE.search(cur):
+            return True
+        decoded = unquote(cur)
+        if decoded == cur:
+            break
+        cur = decoded
+    return False
 
 
 def mask_uri_secrets(uri: str) -> str:
@@ -200,7 +238,38 @@ class MCPHostRegistry:
                     f"Target URI {mask_uri_secrets(key)!r} is not registered in MCP host registry "
                     "and dynamic URIs are disabled (use --allow-dynamic-uri to permit)."
                 )
-            cfg = URIParser.parse(key)
+            if _contains_secret_reference(key):
+                raise PermissionError(
+                    "Dynamic MCP URIs cannot reference controller secrets via env:// or file://"
+                )
+            cfg = URIParser.parse(key, resolve_secrets=False)
+            secret_candidates: list[str] = []
+            if cfg.password is not None:
+                secret_candidates.append(cfg.password.get_secret_value())
+            if cfg.passphrase is not None:
+                secret_candidates.append(cfg.passphrase.get_secret_value())
+            for opt_val in cfg.options.values():
+                if isinstance(opt_val, str):
+                    secret_candidates.append(opt_val)
+            if any(_contains_secret_reference(val) for val in secret_candidates):
+                raise PermissionError(
+                    "Dynamic MCP URIs cannot reference controller secrets via env:// or file://"
+                )
+            if cfg.transport in _FORBIDDEN_DYNAMIC_URI_TRANSPORTS:
+                raise PermissionError(
+                    f"Dynamic MCP URI transport {cfg.transport!r} is forbidden by security policy"
+                )
+            bad_opts = sorted(
+                k for k in cfg.options if str(k).strip().lower() in _FORBIDDEN_DYNAMIC_URI_OPTIONS
+            )
+            if cfg.ssh_config is not None and "ssh_config" not in bad_opts:
+                bad_opts.append("ssh_config")
+            if cfg.key_file is not None and "key_file" not in bad_opts:
+                bad_opts.append("key_file")
+            if bad_opts:
+                raise PermissionError(
+                    f"Dynamic MCP URI contains forbidden controller-side options: {', '.join(bad_opts)}"
+                )
             return MCPHostEntry(
                 name=cfg.host or cfg.transport,
                 uri=key,
@@ -208,7 +277,7 @@ class MCPHostRegistry:
                 transport=cfg.transport,
                 host=cfg.host,
                 groups=(),
-                raw_config={"uri": key},
+                raw_config={"uri": key, "_dynamic_uri": True},
             )
 
         available = ", ".join(sorted(self._entries.keys())) or "none"
@@ -269,7 +338,16 @@ class MCPHostRegistry:
             raw["auto_diagnostics"] = bool(auto_diagnostics)
         if entry.transport == "local" and entry.name:
             raw["host"] = entry.name
-        conn = Connection.from_dict(raw, dry_run=eff_dry_run)
+        is_dynamic = bool(raw.pop("_dynamic_uri", False))
+        if is_dynamic and isinstance(raw.get("uri"), str):
+            cfg = URIParser.parse(str(raw["uri"]), resolve_secrets=False)
+            conn = Connection.from_config(
+                cfg,
+                dry_run=eff_dry_run,
+                auto_diagnostics=auto_diagnostics,
+            )
+        else:
+            conn = Connection.from_dict(raw, dry_run=eff_dry_run)
         self._attach_security_hooks(conn)
         return conn
 

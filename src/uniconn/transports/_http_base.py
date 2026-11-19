@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import builtins
-import contextlib
 import json
 import logging
 import sys
@@ -195,18 +194,7 @@ class BaseAsyncHttpClient:
             raise UniconnTimeoutError(
                 f"{self._error_prefix} {method_upper} {target} timed out after {eff_timeout}s"
             ) from exc
-        except (OSError, RuntimeError, ValueError, TypeError) as exc:
-            raise UniconnConnectionError(
-                f"{self._error_prefix} {method_upper} {target} failed: {exc}"
-            ) from exc
         except Exception as exc:
-            with contextlib.suppress(ImportError):
-                niq = self._get_niquests()
-                niq_exc = getattr(getattr(niq, "exceptions", None), "RequestException", None)
-                if niq_exc is not None and isinstance(exc, niq_exc):
-                    raise UniconnConnectionError(
-                        f"{self._error_prefix} {method_upper} {target} failed: {exc}"
-                    ) from exc
             raise UniconnConnectionError(
                 f"{self._error_prefix} {method_upper} {target} failed: {exc}"
             ) from exc

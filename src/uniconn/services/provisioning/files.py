@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Literal
 from ..._logging import get_logger
 from ...exceptions import UniconnError
 from ...result import EnsureResult
+from ...security.regex_safety import validate_safe_regex
 from ._plan import ChangePlan, _parse_mode
 
 _logger = get_logger("uniconn.services.provisioning.files")
@@ -153,7 +154,7 @@ async def ensure_line(
         original_text = raw_content if isinstance(raw_content, str) else raw_content.decode(encoding)
         existing_lines = original_text.splitlines()
 
-    pattern = re.compile(regex) if regex is not None else None
+    pattern = validate_safe_regex(regex) if regex is not None else None
     if state == "present":
         new_lines, changed, details = transform_lines_present(
             existing_lines, clean_line, pattern, path_str=path_str, file_exists=file_exists
@@ -196,7 +197,19 @@ async def ensure_line(
         )
 
     if backup and file_exists:
-        await svc._conn.files.write_file(f"{path_str}.bak", original_text, encoding=encoding)
+        backup_mode: int | None = None
+        try:
+            st = await svc._conn.files.stat(path_str)
+            extracted = svc._extract_stat_mode(st)
+            if extracted >= 0:
+                backup_mode = extracted
+        except (OSError, UniconnError, ValueError) as exc:
+            _logger.debug("Unable to stat mode before backup for %s: %s", path_str, exc)
+        if backup_mode is None:
+            backup_mode = mode
+        await svc._conn.files.write_file(
+            f"{path_str}.bak", original_text, mode=backup_mode, encoding=encoding
+        )
     await svc._conn.files.write_file(path_str, new_content, mode=mode, encoding=encoding)
     return EnsureResult(
         target=path_str,

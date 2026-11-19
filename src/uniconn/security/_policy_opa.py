@@ -11,7 +11,7 @@ import urllib.request
 from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Any, cast
 
-from ..exceptions import PolicyEngineUnavailableError
+from ..exceptions import ConfigurationError, PolicyEngineUnavailableError
 from ._policy_rules import _PolicyTTLCache
 from .models import AuthContext, PolicyDecision, PolicyEvaluationResult, PolicyViolation
 from .url_validation import build_ssrf_safe_opener, validate_outbound_url
@@ -32,7 +32,7 @@ class OPAPolicyEngine:
         timeout_seconds: float = 3.0,
         timeout: float | None = None,
         fail_closed: bool = True,
-        allow_safe_on_failure: bool = True,
+        allow_safe_on_failure: bool = False,
         allow_private_network: bool = True,
         cache_ttl_seconds: float = 5.0,
         fallback_embedded: EmbeddedPolicyEngine | None = None,
@@ -105,6 +105,8 @@ class OPAPolicyEngine:
                     self.timeout_seconds,
                     allow_private_network=self.allow_private_network,
                 )
+        except ConfigurationError:
+            raise
         except Exception as exc:
             return self._handle_opa_unavailable(context, exc, t0)
 
@@ -132,6 +134,8 @@ class OPAPolicyEngine:
                     self.timeout_seconds,
                     allow_private_network=self.allow_private_network,
                 )
+        except ConfigurationError:
+            raise
         except Exception as exc:
             return self._handle_opa_unavailable(context, exc, t0)
 
@@ -180,6 +184,7 @@ class OPAPolicyEngine:
         timeout: float,
         *,
         allow_private_network: bool = True,
+        max_response_bytes: int = 262_144,
     ) -> dict[str, Any]:
         safe_url = validate_outbound_url(
             url,
@@ -193,9 +198,15 @@ class OPAPolicyEngine:
             headers={"Content-Type": "application/json; charset=utf-8"},
             method="POST",
         )
-        opener = build_ssrf_safe_opener(allow_private_network=allow_private_network)
+        opener = build_ssrf_safe_opener(
+            allow_private_network=allow_private_network,
+            allow_redirects=False,
+        )
         with opener.open(req, timeout=timeout) as resp:
-            resp_body = resp.read(65536).decode("utf-8", errors="replace")
+            raw_resp = resp.read(max_response_bytes + 1)
+            if len(raw_resp) > max_response_bytes:
+                raise ValueError(f"OPA response exceeded maximum allowed size of {max_response_bytes} bytes")
+            resp_body = raw_resp.decode("utf-8", errors="replace")
             parsed = json.loads(resp_body) if resp_body.strip() else {}
             if not isinstance(parsed, dict):
                 return {"result": parsed}
