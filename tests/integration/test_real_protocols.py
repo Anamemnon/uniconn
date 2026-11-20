@@ -73,7 +73,7 @@ class TestRealOpenSSHProtocol:
             await conn.files.download(remote_file, local_dl)
             assert local_dl.read_text(encoding="utf-8") == payload
 
-            async with conn.open_shell() as shell:
+            async with await conn.open_shell() as shell:
                 out = await shell.execute("echo shell-marker-ok")
                 assert "shell-marker-ok" in out.stdout
 

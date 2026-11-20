@@ -376,23 +376,27 @@ class TestEventLoopPortalStabilityAndResilience:
         from uniconn.core.bridge import _SHARED_LOOP_MANAGER
 
         EventLoopPortal.shutdown_all(timeout=2.0)
-        monkeypatch.setenv("UNICONN_PORTAL_START_TIMEOUT", "0.05")
+        monkeypatch.setenv("UNICONN_PORTAL_START_TIMEOUT", "0.1")
 
         orig_new_event_loop = asyncio.new_event_loop
         call_count = 0
+        release_flaky = _threading.Event()
 
         def _flaky_new_loop():
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                time.sleep(0.15)
+                release_flaky.wait(timeout=2.0)
                 raise OSError("Simulated loopback socketpair exhaustion")
             return orig_new_event_loop()
 
         monkeypatch.setattr(asyncio, "new_event_loop", _flaky_new_loop)
 
-        with pytest.raises(RuntimeError, match="EventLoopPortal failed to start"):
-            _SHARED_LOOP_MANAGER.get_or_create_loop()
+        try:
+            with pytest.raises(RuntimeError, match="EventLoopPortal failed to start"):
+                _SHARED_LOOP_MANAGER.get_or_create_loop()
+        finally:
+            release_flaky.set()
 
         # Блокировка не зависла: повторный вызов с рабочим new_event_loop успешно поднимает цикл
         assert _SHARED_LOOP_MANAGER._lock.acquire(timeout=0.5)
