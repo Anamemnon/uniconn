@@ -976,6 +976,7 @@ class ConnectionPool:
         mode: Literal["barrier", "independent"] | None = None,
         batch_size: int | None = None,
         max_fail_ratio: float | None = None,
+        connection_window: int | None = None,
     ) -> Any:
         """Выполнить сценарий ``Flow`` (или задачу ``@task`` / список задач) на всём пуле хостов."""
         from ..orchestration.scheduler import run_pool_flow
@@ -990,6 +991,7 @@ class ConnectionPool:
             mode=mode,
             batch_size=batch_size,
             max_fail_ratio=max_fail_ratio,
+            connection_window=connection_window,
         )
 
     def to_sync(self) -> SyncConnectionPool:

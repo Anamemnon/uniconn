@@ -12,9 +12,10 @@ We provide security updates and patches for the following versions:
 
 | Version | Supported          | Status |
 | :------ | :----------------: | :----- |
-| `0.20.x`| :white_check_mark: | Current active release branch |
+| `0.21.x`| :white_check_mark: | Current active release branch |
+| `0.20.x`| :white_check_mark: | Security maintenance branch |
 | `main`  | :white_check_mark: | Development branch |
-| `< 0.20`| :x:                | End of life; please upgrade to `>= 0.20.0` |
+| `< 0.20`| :x:                | End of life; please upgrade to `>= 0.21.0` |
 
 ---
 
@@ -50,7 +51,9 @@ If you believe you have found a security vulnerability in `uniconn`:
    - `sudo` passwords are transmitted strictly through interactive `stdin` buffers and are never passed via command-line arguments (preventing visibility in `/proc` or `ps aux`). File operations never silently escalate to `sudo=True` unless explicitly requested.
 4. **Injection-Safe Command Execution & Quoting**:
    - Passing commands as sequences of strings (`["systemctl", "status", service_name]`) uses safe argument serialization (`shlex.join`) or `execve`-based execution to avoid shell injection vectors; PowerShell quoting escapes all Unicode single-quote delimiters.
-5. **SSRF Protection with DNS Pinning & HITL Key Isolation**:
+5. **Grammar-Based Shell & PowerShell AST Verification (`uniconn[security]`)**:
+   - `CommandASTParser` supports optional `tree-sitter-bash` grammar parsing with automatic fallback, built-in cross-platform PowerShell AST analysis (including UTF-16LE `-EncodedCommand` decoding and backtick deobfuscation), and strict *fail-closed* syntax error enforcement unified with `ActionRiskClassifier` and `EmbeddedPolicyEngine`/`OPAPolicyEngine`.
+6. **SSRF Protection with DNS Pinning & HITL Key Isolation**:
    - Outbound HTTP calls (OPA policies, HITL approval webhooks) validate and pin resolved IP addresses against private/metadata ranges, disable untrusted redirects, isolate internal HITL HMAC keys from webhook secrets, and require signed synchronous webhook decisions.
-6. **Cassette Sanitization**:
+7. **Cassette Sanitization**:
    - When using record/replay cassettes for testing, `uniconn cassette sanitize` strips private tokens, passwords, and IP addresses before committing cassettes to version control.

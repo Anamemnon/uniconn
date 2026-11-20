@@ -1,465 +1,55 @@
 # src/uniconn/mcp/risk_classifier.py
 """Детерминированный классификатор рисков команд и файловых операций (ActionRiskClassifier).
 
-Выделен из ``uniconn.mcp.hitl`` для модульности и переиспользует примитивы
-синтаксического разбора и нормализации путей из ``uniconn.security.ast_parser``.
+Выделен из ``uniconn.mcp.hitl`` для модульности и работает поверх единого
+``ParsedCommandAST`` (POSIX + PowerShell) из ``uniconn.security.ast_parser``.
 """
 
 from __future__ import annotations
 
-import difflib
-import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .._logging import SecretMaskingFilter
-from ..hooks import DEFAULT_BLOCKED_PATTERNS
 from ..security.ast_parser import (
     _SHELL_BINARIES,
     CommandASTParser,
     normalize_target_path,
 )
-from .models import (
-    ActionRiskTier,
-    HITLPolicy,
-    RiskAssessment,
+from ._risk_rules import (
+    _ALL_PS_DISPATCH_BINARIES,
+    _AWK_BINARIES,
+    _AWK_EXEC_OR_WRITE_RE,
+    _CONTAINER_RO_SUBCOMMANDS,
+    _DESTRUCTIVE_PATTERNS,
+    _DESTRUCTIVE_PKG_VERBS,
+    _FIND_MUTATING_FLAGS,
+    _FORBIDDEN_FILE_PREFIXES,
+    _FORBIDDEN_PATTERNS,
+    _FORBIDDEN_READ_EXACT,
+    _GIT_RO_SUBCOMMANDS,
+    _MUTATING_EXECUTABLES,
+    _MUTATING_PATTERNS,
+    _MUTATING_PKG_VERBS,
+    _NO_FILE_READ_COMMANDS,
+    _OUTPUT_REDIRECT_TARGET_RE,
+    _PACKAGE_MANAGERS,
+    _PROTECTED_PATH_PREFIXES,
+    _PS_CARRIER_BINARIES,
+    _PS_CRITICAL_ROOT_RE,
+    _PS_DESTRUCTIVE_CMDLETS,
+    _PS_FORBIDDEN_CMDLETS,
+    _PS_MUTATING_CMDLETS,
+    _PS_SAFE_CMDLETS,
+    _SAFE_COMMANDS,
+    _SYSTEMCTL_RO_SUBCOMMANDS,
+    _collect_atom_candidate_paths,
+    _extract_first_subcommand,
+    _match_forbidden_read_path,
+    _resolve_normalized_write_path,
+    _split_shell_segments,
+    build_unified_diff,
 )
-
-# ─── Паттерны классификации рисков ──────────────────────────────────────────
-
-_FORBIDDEN_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    *[
-        (re.compile(pat, re.IGNORECASE), f"Matched forbidden blocklist pattern: {pat}")
-        for pat in DEFAULT_BLOCKED_PATTERNS
-    ],
-    (
-        re.compile(r"\brm\b.*--no-preserve-root", re.IGNORECASE),
-        "Root filesystem deletion (--no-preserve-root) is strictly forbidden",
-    ),
-    (
-        re.compile(r"\brm\s+-[a-zA-Z]*(?:rf|fr)[a-zA-Z]*\s+/(?:\*|$|\s|['\";|&)])", re.IGNORECASE),
-        "Recursive deletion of root filesystem (/ or /*) is strictly forbidden",
-    ),
-    (
-        re.compile(r"\b(?:wipefs|fdisk|parted|sfdisk|gdisk)\b\s+/dev/", re.IGNORECASE),
-        "Direct partition table manipulation on block device is forbidden",
-    ),
-    (
-        re.compile(r"\bdd\b.*\bof=/dev/(?:sd[a-z]|vd[a-z]|nvme\d+n\d+|xvd[a-z])\b", re.IGNORECASE),
-        "Raw block device overwrite via dd is strictly forbidden",
-    ),
-    (
-        re.compile(r">\s*/dev/(?:sd[a-z]|vd[a-z]|nvme\d+n\d+)\b", re.IGNORECASE),
-        "Direct shell redirection into raw block device is forbidden",
-    ),
-    (
-        re.compile(
-            r"\b(?:curl|wget)\b[^|;\n]*\|\s*(?:sudo\s+|doas\s+)?(?:sh|bash|zsh|dash|ksh|python\d*|perl|ruby)\b",
-            re.IGNORECASE,
-        ),
-        "Piping remote script download directly into shell interpreter is forbidden",
-    ),
-)
-
-_DESTRUCTIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (
-        re.compile(r"\b(?:rm|rmdir|unlink|shred|truncate)\b"),
-        "File or directory deletion/truncation command",
-    ),
-    (
-        re.compile(r"\bfind\b.*\s-(?:delete|exec\s+rm\b)"),
-        "Recursive file deletion via find",
-    ),
-    (
-        re.compile(r"\bxargs\b.*\brm\b"),
-        "Piped batch deletion via xargs rm",
-    ),
-    (
-        re.compile(
-            r"\bsystemctl\b(?:\s+-[a-zA-Z0-9_-]+)*\s+(?:stop|disable|mask|kill|poweroff|reboot|halt)\b"
-        ),
-        "Stopping, disabling, or masking a system service via systemctl",
-    ),
-    (
-        re.compile(r"\bservice\s+\S+\s+(?:stop|force-reload)\b"),
-        "Stopping a system service",
-    ),
-    (
-        re.compile(r"\b(?:kill|pkill|killall)\b"),
-        "Terminating running system processes",
-    ),
-    (
-        re.compile(
-            r"\b(?:iptables|ip6tables)\s+(?:-[a-zA-Z]*[FXZ]|--flush|--delete-chain)\b"
-            r"|\bufw\s+(?:disable|reset|delete|deny|reject)\b"
-            r"|\bnft\s+flush\b"
-        ),
-        "Destructive firewall rule modification or flush",
-    ),
-    (
-        re.compile(
-            r"\b(?:apt|apt-get|dpkg|yum|dnf|apk|pacman|zypper|helm|pip)\b.*"
-            r"\b(?:remove|purge|erase|autoremove|uninstall|-R)\b"
-        ),
-        "Removing or purging installed packages",
-    ),
-    (
-        re.compile(r"\b(?:userdel|groupdel|passwd\s+-l|chage)\b"),
-        "Deleting or locking system user/group accounts",
-    ),
-    (
-        re.compile(r"\bcrontab\s+-r\b"),
-        "Removing scheduled cron jobs",
-    ),
-    (
-        re.compile(r"\b(?:reboot|init\s+[06]|telinit\s+[06])\b"),
-        "System reboot or runlevel change",
-    ),
-    (
-        re.compile(
-            r"\b(?:docker|podman)\s+(?:rm|rmi|stop|kill|system\s+prune|volume\s+rm)\b"
-            r"|\bkubectl\s+(?:delete|drain|cordon)\b"
-        ),
-        "Destructive container or Kubernetes workload operation",
-    ),
-    (
-        re.compile(r"\b(?:DROP\s+(?:DATABASE|TABLE|SCHEMA)|TRUNCATE\s+TABLE|DELETE\s+FROM)\b", re.IGNORECASE),
-        "Destructive SQL database statement",
-    ),
-    (
-        re.compile(r"(?:>>?|(?:\|\s*tee\b))\s*(?:/etc/|/boot/|/usr/|/var/lib/|/root/|/proc/sys/)"),
-        "Overwriting or appending to protected system configuration path",
-    ),
-)
-
-_MUTATING_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (
-        re.compile(r"\b(?:mkdir|touch|cp|mv|ln|install|chmod|chown|chgrp|chattr|setfacl)\b"),
-        "Filesystem creation, move, or permission modification",
-    ),
-    (
-        re.compile(r"\bsystemctl\b(?:\s+-[a-zA-Z0-9_-]+)*\s+(?:start|restart|reload|enable|daemon-reload)\b"),
-        "Starting, restarting, or enabling a system service",
-    ),
-    (
-        re.compile(r"\bservice\s+\S+\s+(?:start|restart|reload)\b"),
-        "Starting or restarting a system service",
-    ),
-    (
-        re.compile(
-            r"\b(?:apt|apt-get|dpkg|yum|dnf|apk|pacman|zypper|pip|uv|npm)\b.*"
-            r"\b(?:install|update|upgrade|add|sync)\b"
-        ),
-        "Installing or updating packages",
-    ),
-    (
-        re.compile(r"\b(?:useradd|adduser|usermod|groupadd|sysctl\s+-w)\b"),
-        "Modifying system users, groups, or kernel parameters",
-    ),
-    (
-        re.compile(r"\bsed\b.*\s-i\b|\bpatch\b"),
-        "In-place file editing",
-    ),
-    (
-        re.compile(r"\bgit\s+(?:commit|push|checkout|merge|rebase|reset|clean|stash|pull)\b"),
-        "Mutating Git repository state",
-    ),
-    (
-        re.compile(
-            r"\b(?:docker|podman)\s+(?:run|start|restart|exec|build|pull)\b"
-            r"|\bkubectl\s+(?:apply|create|patch|scale|rollout)\b"
-        ),
-        "Mutating container or Kubernetes workload state",
-    ),
-    (
-        re.compile(r"(?:>>?|\|\s*tee\b)\s*(?!/dev/null\b)\S+"),
-        "Shell output redirection to file",
-    ),
-)
-
-_SAFE_COMMANDS: frozenset[str] = frozenset(
-    {
-        "ls",
-        "dir",
-        "cat",
-        "head",
-        "tail",
-        "less",
-        "more",
-        "grep",
-        "egrep",
-        "fgrep",
-        "rg",
-        "wc",
-        "sort",
-        "uniq",
-        "cut",
-        "tr",
-        "df",
-        "du",
-        "free",
-        "uptime",
-        "uname",
-        "hostname",
-        "hostnamectl",
-        "whoami",
-        "id",
-        "groups",
-        "w",
-        "who",
-        "last",
-        "ps",
-        "pgrep",
-        "pidof",
-        "lsof",
-        "lsblk",
-        "lscpu",
-        "lspci",
-        "lsusb",
-        "lsmod",
-        "blkid",
-        "mount",
-        "findmnt",
-        "stat",
-        "file",
-        "readlink",
-        "realpath",
-        "dirname",
-        "basename",
-        "which",
-        "whereis",
-        "type",
-        "pwd",
-        "date",
-        "timedatectl",
-        "locale",
-        "env",
-        "printenv",
-        "echo",
-        "printf",
-        "true",
-        "false",
-        "test",
-        "[",
-        "md5sum",
-        "sha1sum",
-        "sha256sum",
-        "sha512sum",
-        "cksum",
-        "ping",
-        "ping6",
-        "traceroute",
-        "tracepath",
-        "mtr",
-        "dig",
-        "nslookup",
-        "host",
-        "whois",
-        "ss",
-        "netstat",
-        "ip",
-        "ifconfig",
-        "route",
-        "arp",
-        "ethtool",
-        "journalctl",
-        "dmesg",
-        "vmstat",
-        "iostat",
-        "mpstat",
-        "sar",
-        "nproc",
-        "getent",
-        "getconf",
-        "sysctl",
-    }
-)
-
-_PROTECTED_PATH_PREFIXES: tuple[str, ...] = (
-    "/etc/",
-    "/boot/",
-    "/usr/",
-    "/var/lib/",
-    "/root/",
-    "/sbin/",
-    "/bin/",
-    "/lib/",
-    "/lib64/",
-    "/proc/sys/",
-    "/sys/",
-)
-
-_FORBIDDEN_FILE_PREFIXES: tuple[str, ...] = (
-    "/dev/sd",
-    "/dev/vd",
-    "/dev/nvme",
-    "/dev/xvd",
-    "/proc/sysrq-trigger",
-    "/proc/kcore",
-)
-
-_FORBIDDEN_READ_EXACT: frozenset[str] = frozenset(
-    {
-        "/etc/shadow",
-        "/etc/gshadow",
-        "/etc/sudoers",
-        "/etc/master.passwd",
-        "/etc/security/opasswd",
-        "/dev/mem",
-        "/dev/kmem",
-        "/dev/port",
-        "/proc/kcore",
-        "/proc/kmem",
-    }
-)
-
-_FORBIDDEN_READ_PREFIXES: tuple[str, ...] = (
-    *_FORBIDDEN_FILE_PREFIXES,
-    "/etc/sudoers.d/",
-    "/var/run/secrets/",
-    "/run/secrets/",
-)
-
-_FORBIDDEN_READ_REGEXES: tuple[re.Pattern[str], ...] = (
-    re.compile(r"^/proc/(?:\d+|self|thread-self)/(?:environ|mem)$"),
-    re.compile(r"/\.ssh/id_[^/]+(?<!\.pub)$", re.IGNORECASE),
-    re.compile(r"^/etc/ssh/ssh_host_[^/]+_key$"),
-    re.compile(r"/\.(?:aws/credentials|kube/config)$", re.IGNORECASE),
-    re.compile(
-        r"(?:^|/|[a-z]:/?)windows/(?:system32/config|repair)/(?:sam|security|system|default)$",
-        re.IGNORECASE,
-    ),
-)
-
-
-def _extract_first_subcommand(args: list[str], opts_with_arg: frozenset[str]) -> str | None:
-    """Извлечь первую позиционную подкоманду, пропуская флаги и их аргументы."""
-    idx = 0
-    n = len(args)
-    while idx < n:
-        tok = args[idx]
-        if tok == "--":
-            return args[idx + 1] if idx + 1 < n else None
-        if tok.startswith("-"):
-            if "=" in tok:
-                idx += 1
-                continue
-            if tok in opts_with_arg:
-                idx += 2
-                continue
-            idx += 1
-            continue
-        return tok
-    return None
-
-
-def build_unified_diff(
-    path: str,
-    old_content: str | None,
-    new_content: str,
-    *,
-    max_lines: int = 120,
-) -> str:
-    """Сформировать человекочитаемый unified diff с автоматическим маскированием секретов."""
-    safe_old = SecretMaskingFilter._mask_string(old_content or "")
-    safe_new = SecretMaskingFilter._mask_string(new_content)
-    old_lines = safe_old.splitlines(keepends=True) if old_content is not None else []
-    new_lines = safe_new.splitlines(keepends=True)
-    from_file = "/dev/null" if old_content is None else f"a/{path.lstrip('/')}"
-    to_file = f"b/{path.lstrip('/')}"
-
-    diff_lines = list(
-        difflib.unified_diff(
-            old_lines,
-            new_lines,
-            fromfile=from_file,
-            tofile=to_file,
-            lineterm="",
-        )
-    )
-    if not diff_lines:
-        return f"--- {from_file}\n+++ {to_file}\n@@ (no textual changes) @@"
-    if len(diff_lines) > max_lines:
-        truncated = diff_lines[:max_lines]
-        truncated.append(f"... [diff truncated: {len(diff_lines) - max_lines} more lines]")
-        diff_lines = truncated
-    return "\n".join(line.rstrip("\r\n") for line in diff_lines)
-
-
-def _split_shell_segments(command: str) -> list[str]:
-    r"""Разбить составную shell-команду по операторам и извлечь подстановки через CommandASTParser."""
-    segments, _, _ = CommandASTParser._tokenize_top_level_segments(command)
-    probe_str = re.sub(r"\$\(\(.*?\)\)", "0", command)
-    for sub_cmd, _depth in CommandASTParser._extract_subshell_commands(probe_str):
-        if sub_cmd and sub_cmd not in segments:
-            segments.append(sub_cmd)
-    return segments
-
-
-def _resolve_normalized_write_path(raw_path: str) -> str:
-    """Нормализовать целевой путь и раскрыть попытки path traversal."""
-    return normalize_target_path(raw_path) or "/"
-
-
-_MUTATING_EXECUTABLES: frozenset[str] = frozenset(
-    {
-        "mkdir",
-        "touch",
-        "cp",
-        "mv",
-        "ln",
-        "install",
-        "chmod",
-        "chown",
-        "chgrp",
-        "chattr",
-        "setfacl",
-        "useradd",
-        "adduser",
-        "usermod",
-        "groupadd",
-        "patch",
-    }
-)
-_PACKAGE_MANAGERS: frozenset[str] = frozenset(
-    {"apt", "apt-get", "dpkg", "yum", "dnf", "apk", "pacman", "zypper", "helm", "pip", "uv", "npm"}
-)
-_DESTRUCTIVE_PKG_VERBS: frozenset[str] = frozenset({"remove", "purge", "erase", "autoremove", "uninstall", "del"})
-_MUTATING_PKG_VERBS: frozenset[str] = frozenset({"install", "update", "upgrade", "add", "sync"})
-_OUTPUT_REDIRECT_TARGET_RE = re.compile(r"^(?:\d*>>?|&>>?)\s*(\S+)")
-_AWK_BINARIES: frozenset[str] = frozenset({"awk", "gawk", "mawk", "nawk"})
-_AWK_EXEC_OR_WRITE_RE = re.compile(
-    r"\bsystem\s*\(|\bgetline\b|\|\s*&?\s*['\"]|(?<![<>!=])>{1,2}\s*['\"$A-Za-z/]",
-    re.IGNORECASE,
-)
-_NO_FILE_READ_COMMANDS: frozenset[str] = frozenset({"echo", "printf", "true", "false"})
-_SYSTEMCTL_RO_SUBCOMMANDS: frozenset[str] = frozenset(
-    {"status", "is-active", "is-enabled", "is-failed", "show", "list-units", "list-unit-files", "cat"}
-)
-_GIT_RO_SUBCOMMANDS: frozenset[str] = frozenset(
-    {"status", "log", "diff", "show", "branch", "remote", "rev-parse", "describe", "ls-files"}
-)
-_CONTAINER_RO_SUBCOMMANDS: frozenset[str] = frozenset(
-    {"ps", "images", "inspect", "logs", "version", "info", "stats", "top", "get", "describe", "cluster-info"}
-)
-_FIND_MUTATING_FLAGS: frozenset[str] = frozenset(
-    {"-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf", "-fls"}
-)
-
-
-def _match_forbidden_read_path(raw_path: str) -> str | None:
-    """Вернуть нормализованный путь, если он указывает на запрещённый секрет, ключ или устройство."""
-    if not raw_path or raw_path.startswith("-"):
-        return None
-    norm_path = _resolve_normalized_write_path(raw_path)
-    norm_lower = norm_path.lower()
-    if (
-        norm_path in _FORBIDDEN_READ_EXACT
-        or norm_path.startswith(_FORBIDDEN_READ_PREFIXES)
-        or any(pat.search(norm_lower) for pat in _FORBIDDEN_READ_REGEXES)
-    ):
-        return norm_path
-    return None
+from .models import ActionRiskTier, HITLPolicy, RiskAssessment
 
 
 class ActionRiskClassifier:
@@ -477,7 +67,7 @@ class ActionRiskClassifier:
         _depth: int = 0,
         _preparsed_ast: Any = None,
     ) -> RiskAssessment:
-        """Оценить уровень риска shell-команды на базе единого AST ``CommandASTParser``."""
+        """Оценить уровень риска shell/PowerShell-команды на базе единого AST ``CommandASTParser``."""
         del _depth
         cmd_stripped = command.strip()
         if not cmd_stripped:
@@ -498,7 +88,6 @@ class ActionRiskClassifier:
             if msg and msg not in reasons:
                 reasons.append(msg)
 
-        # 1. Глобальная проверка цельной строки на FORBIDDEN (включая fork-бомбу и raw-device редиректы)
         for regex, reason in _FORBIDDEN_PATTERNS:
             if regex.search(cmd_stripped):
                 return RiskAssessment(
@@ -508,25 +97,32 @@ class ActionRiskClassifier:
                     requires_approval=False,
                 )
 
-        # 2. Единый глубокий AST-разбор через CommandASTParser (без дублирования развёртки обёрток)
         ast_obj = ast if ast is not None else _preparsed_ast
         if ast_obj is None:
             ast_obj = CommandASTParser.parse(cmd_stripped, sudo=sudo)
 
+        syntax_errors = tuple(getattr(ast_obj, "syntax_errors", ()) or ())
         if getattr(ast_obj, "is_obfuscated", False):
-            obf_reasons = tuple(
-                getattr(ast_obj, "obfuscation_reasons", ()) or ("Obfuscated command syntax detected",)
-            )
+            obf_reasons: list[str] = [
+                str(r)
+                for r in (
+                    getattr(ast_obj, "obfuscation_reasons", ()) or ("Obfuscated command syntax detected",)
+                )
+            ]
+            if syntax_errors and not any("syntax" in r.lower() for r in obf_reasons):
+                obf_reasons.append(
+                    f"Malformed shell/PowerShell syntax detected (fail-closed): {'; '.join(syntax_errors)}"
+                )
             return RiskAssessment(
                 risk_tier=ActionRiskTier.TIER_3_FORBIDDEN,
-                reasons=obf_reasons,
+                reasons=tuple(obf_reasons),
                 is_production=is_production,
                 requires_approval=False,
             )
 
+        ast_dialect = str(getattr(ast_obj, "dialect", "posix") or "posix").lower()
         atomic_commands = tuple(getattr(ast_obj, "atomic_commands", ()) or ())
         for idx, atom in enumerate(atomic_commands):
-            # Если shell (bash -c '...') уже распакован в дочерние AtomicCommand, саму обёртку пропускаем
             is_unwrapped_shell_carrier = (
                 atom.executable in _SHELL_BINARIES
                 and any(flag in atom.flags for flag in ("-c", "-lc", "-ic"))
@@ -536,17 +132,34 @@ class ActionRiskClassifier:
                     for w in getattr(child, "wrappers", ())
                 )
             )
-            if is_unwrapped_shell_carrier:
+            is_unwrapped_ps_carrier = (
+                atom.executable in _PS_CARRIER_BINARIES
+                and any(
+                    any(tag in w for tag in ("powershell", "pwsh"))
+                    for child in atomic_commands[idx + 1 :]
+                    for w in getattr(child, "wrappers", ())
+                )
+            )
+            if is_unwrapped_shell_carrier or is_unwrapped_ps_carrier:
                 continue
 
-            atom_tier, atom_reasons = cls._classify_atomic_command(atom, inherited_sudo=sudo)
+            if ast_dialect == "powershell" or atom.executable in _ALL_PS_DISPATCH_BINARIES:
+                atom_tier, atom_reasons = cls._classify_powershell_atomic(atom, inherited_sudo=sudo)
+            else:
+                atom_tier, atom_reasons = cls._classify_atomic_command(atom, inherited_sudo=sudo)
+
             for msg in atom_reasons:
                 _elevate(atom_tier, msg)
             if not atom_reasons:
                 _elevate(atom_tier)
 
-        # 3. Агрегированные признаки AST (деструктивные SQL-выражения и превышение лимитов сложности)
         dest_sev = ActionRiskTier.TIER_2_DESTRUCTIVE.severity
+        if syntax_errors:
+            syntax_msg = f"Malformed shell/PowerShell syntax detected (fail-closed): {'; '.join(syntax_errors)}"
+            if max_tier.severity < dest_sev:
+                _elevate(ActionRiskTier.TIER_2_DESTRUCTIVE, syntax_msg)
+            elif not any("syntax" in r.lower() for r in reasons):
+                reasons.append(syntax_msg)
         if getattr(ast_obj, "has_destructive_verbs", False) and max_tier.severity < dest_sev:
             ast_execs = ", ".join(getattr(ast_obj, "executables", ()))
             _elevate(
@@ -584,6 +197,109 @@ class ActionRiskClassifier:
         )
 
     @classmethod
+    def _classify_powershell_atomic(
+        cls,
+        atom: Any,
+        *,
+        inherited_sudo: bool = False,
+    ) -> tuple[ActionRiskTier, list[str]]:
+        """Классифицировать атомарный PowerShell cmdlet / Windows-утилиту."""
+        best_tier, reasons = cls._classify_redirect_or_tee(atom)
+        base_bin = str(atom.executable or "").lower()
+        sub_raw = atom.subcommand or (atom.arguments[0] if atom.arguments else None)
+        sub = str(sub_raw).lower() if sub_raw else None
+        args_lower = [str(a).lower() for a in atom.arguments]
+        flags_lower = {k.lower(): v for k, v in atom.flags.items()}
+
+        def _pick(tier: ActionRiskTier, msg: str) -> tuple[ActionRiskTier, list[str]]:
+            if best_tier.severity > tier.severity:
+                return best_tier, reasons
+            return tier, [msg] if msg else reasons
+
+        if base_bin in _PS_FORBIDDEN_CMDLETS:
+            return _pick(
+                ActionRiskTier.TIER_3_FORBIDDEN,
+                f"Critical PowerShell operation ({base_bin}) is strictly forbidden",
+            )
+
+        if base_bin in ("vssadmin", "vssadmin.exe") and sub == "delete" and any("shadow" in a for a in args_lower):
+            return _pick(
+                ActionRiskTier.TIER_3_FORBIDDEN,
+                "Deleting Volume Shadow Copies via vssadmin is strictly forbidden",
+            )
+
+        if base_bin == "remove-item":
+            has_recurse = "-recurse" in flags_lower or "-r" in flags_lower
+            candidates = list(atom.arguments) + [
+                str(v) for k, v in flags_lower.items() if k in ("-path", "-literalpath") and isinstance(v, str)
+            ]
+            if has_recurse and any(_PS_CRITICAL_ROOT_RE.match(str(c).strip()) for c in candidates):
+                return _pick(
+                    ActionRiskTier.TIER_3_FORBIDDEN,
+                    "Recursive Remove-Item against system root or Windows directory is forbidden",
+                )
+
+        if base_bin not in _NO_FILE_READ_COMMANDS:
+            for candidate in _collect_atom_candidate_paths(atom):
+                forbidden_path = _match_forbidden_read_path(candidate)
+                if forbidden_path is not None:
+                    return _pick(
+                        ActionRiskTier.TIER_3_FORBIDDEN,
+                        f"Accessing sensitive credential, key, or device path {forbidden_path!r} is forbidden",
+                    )
+
+        if base_bin in ("bcdedit", "bcdedit.exe", "diskpart", "diskpart.exe"):
+            return _pick(
+                ActionRiskTier.TIER_2_DESTRUCTIVE,
+                f"Destructive Windows boot/disk utility ({base_bin})",
+            )
+
+        if base_bin in ("del", "erase"):
+            return _pick(
+                ActionRiskTier.TIER_2_DESTRUCTIVE,
+                f"Destructive Windows file deletion ({base_bin})",
+            )
+
+        if base_bin in _PS_DESTRUCTIVE_CMDLETS or CommandASTParser._is_atomic_destructive(atom):
+            return _pick(
+                ActionRiskTier.TIER_2_DESTRUCTIVE,
+                f"Destructive PowerShell/Windows operation ({base_bin}{f' {sub}' if sub else ''})",
+            )
+
+        if base_bin in ("reg", "reg.exe") and sub in ("delete", "import", "restore"):
+            return _pick(ActionRiskTier.TIER_2_DESTRUCTIVE, f"Destructive registry modification (reg {sub})")
+        if base_bin in ("reg", "reg.exe") and sub in ("add", "copy", "save"):
+            return _pick(ActionRiskTier.TIER_1_MUTATING, f"Registry modification (reg {sub})")
+        if base_bin in ("reg", "reg.exe") and sub in ("query", "compare"):
+            return _pick(ActionRiskTier.TIER_0_SAFE, "Read-only registry query")
+
+        if base_bin in ("sc", "sc.exe") and sub in ("delete", "stop", "failure"):
+            return _pick(ActionRiskTier.TIER_2_DESTRUCTIVE, f"Destructive Windows service operation (sc {sub})")
+        if base_bin in ("sc", "sc.exe") and sub in ("query", "qc", "queryex"):
+            return _pick(ActionRiskTier.TIER_0_SAFE, "Read-only Windows service query")
+
+        if base_bin in ("net", "net.exe") and sub in ("user", "localgroup") and any(
+            a in ("/delete", "/add", "/active:no") for a in args_lower
+        ):
+            return _pick(ActionRiskTier.TIER_2_DESTRUCTIVE, f"Modifying Windows accounts via net {sub}")
+
+        if base_bin in _PS_MUTATING_CMDLETS:
+            return _pick(ActionRiskTier.TIER_1_MUTATING, f"Mutating PowerShell cmdlet ({base_bin})")
+
+        if base_bin in _PS_SAFE_CMDLETS or base_bin in _SAFE_COMMANDS:
+            return _pick(ActionRiskTier.TIER_0_SAFE, f"Safe read-only PowerShell command ({base_bin})")
+
+        if bool(atom.is_sudo or inherited_sudo):
+            return _pick(
+                ActionRiskTier.TIER_2_DESTRUCTIVE,
+                f"Unrecognized PowerShell command ({base_bin!r}) with elevated privileges",
+            )
+        return _pick(
+            ActionRiskTier.TIER_1_MUTATING,
+            f"Unrecognized or potentially mutating PowerShell command ({base_bin!r})",
+        )
+
+    @classmethod
     def _classify_redirect_or_tee(cls, atom: Any) -> tuple[ActionRiskTier, list[str]]:
         """Оценить риск перенаправлений вывода (``>``, ``>>``) и записи через ``tee``."""
         tier = ActionRiskTier.TIER_0_SAFE
@@ -614,9 +330,7 @@ class ActionRiskClassifier:
 
     @staticmethod
     def _classify_package_manager(
-        sub: str | None,
-        args_lower: list[str],
-        flags_dict: Mapping[str, Any],
+        sub: str | None, args_lower: list[str], flags_dict: Mapping[str, Any]
     ) -> tuple[ActionRiskTier, str] | None:
         verb = sub or (args_lower[0] if args_lower else None)
         if verb in _DESTRUCTIVE_PKG_VERBS or any(k.startswith("-R") for k in flags_dict):
@@ -627,9 +341,7 @@ class ActionRiskClassifier:
 
     @staticmethod
     def _classify_container_cli(
-        base_bin: str,
-        sub: str | None,
-        args_lower: list[str],
+        base_bin: str, sub: str | None, args_lower: list[str]
     ) -> tuple[ActionRiskTier, str]:
         if (
             base_bin in ("docker", "podman")
@@ -710,12 +422,9 @@ class ActionRiskClassifier:
 
     @classmethod
     def _classify_atomic_command(
-        cls,
-        atom: Any,
-        *,
-        inherited_sudo: bool = False,
+        cls, atom: Any, *, inherited_sudo: bool = False
     ) -> tuple[ActionRiskTier, list[str]]:
-        """Классифицировать одиночный ``AtomicCommand``, уже очищенный от обёрток парсером AST."""
+        """Классифицировать одиночный POSIX ``AtomicCommand``, уже очищенный от обёрток парсером AST."""
         best_tier, reasons = cls._classify_redirect_or_tee(atom)
         base_bin = str(atom.executable or "").lower()
         sub = atom.subcommand.lower() if atom.subcommand else None
@@ -728,7 +437,6 @@ class ActionRiskClassifier:
                 return best_tier, reasons
             return tier, [msg] if msg else reasons
 
-        # Проверка критически запрещённых атомарных операций (после раскрытия обёрток/подстановок)
         if base_bin == "rm":
             has_recursive = any(k in flags_dict for k in ("-r", "-R", "--recursive"))
             targets_root = any(
@@ -741,29 +449,10 @@ class ActionRiskClassifier:
                     "Recursive deletion of root filesystem (/ or /*) is strictly forbidden",
                 )
         if base_bin == "mkfs" or base_bin.startswith("mkfs."):
-            return _pick(
-                ActionRiskTier.TIER_3_FORBIDDEN,
-                f"Formatting filesystem ({base_bin}) is strictly forbidden",
-            )
+            return _pick(ActionRiskTier.TIER_3_FORBIDDEN, f"Formatting filesystem ({base_bin}) is strictly forbidden")
 
-        # Запрет чтения/доступа к критическим секретным файлам и raw-устройствам через shell-команды
         if base_bin not in _NO_FILE_READ_COMMANDS:
-            candidate_paths: list[str] = []
-            for raw_arg in atom.arguments:
-                arg_str = str(raw_arg)
-                candidate_paths.append(arg_str)
-                if "=" in arg_str:
-                    _, rhs = arg_str.split("=", 1)
-                    if rhs:
-                        candidate_paths.append(rhs)
-            for flag_val in flags_dict.values():
-                if isinstance(flag_val, str) and flag_val:
-                    candidate_paths.append(flag_val)
-            for redir in atom.redirects:
-                redir_target = re.sub(r"^(?:\d*>>?|\d*<|&>>?|>&\d+)\s*", "", str(redir)).strip().strip("'\"")
-                if redir_target:
-                    candidate_paths.append(redir_target)
-            for candidate in candidate_paths:
+            for candidate in _collect_atom_candidate_paths(atom):
                 forbidden_path = _match_forbidden_read_path(candidate)
                 if forbidden_path is not None:
                     return _pick(
@@ -771,7 +460,6 @@ class ActionRiskClassifier:
                         f"Accessing sensitive credential, key, or device path {forbidden_path!r} is forbidden",
                     )
 
-        # Проверка опасных перенаправлений в сырых устройствах/защищённых файлах в аргументах
         if CommandASTParser._is_atomic_destructive(atom):
             return _pick(
                 ActionRiskTier.TIER_2_DESTRUCTIVE,
@@ -834,10 +522,7 @@ class ActionRiskClassifier:
 
         tier = ActionRiskTier.TIER_1_MUTATING
         if (
-            any(
-                norm_path == prefix.rstrip("/") or norm_path.startswith(prefix)
-                for prefix in _PROTECTED_PATH_PREFIXES
-            )
+            any(norm_path == prefix.rstrip("/") or norm_path.startswith(prefix) for prefix in _PROTECTED_PATH_PREFIXES)
             or "/.ssh/" in norm_path
             or norm_path.endswith("/.ssh")
         ):
@@ -901,26 +586,22 @@ class ActionRiskClassifier:
     ) -> RiskAssessment:
         """Классифицировать любой вызов MCP-инструмента по имени и аргументам."""
         if tool_name == "uniconn_run":
-            cmd = str(arguments.get("command") or "")
-            sudo = bool(arguments.get("sudo", False))
             return cls.classify_command(
-                cmd,
-                sudo=sudo,
+                str(arguments.get("command") or ""),
+                sudo=bool(arguments.get("sudo", False)),
                 is_production=is_production,
                 policy=policy,
             )
         if tool_name == "uniconn_write_file":
-            path = str(arguments.get("path") or "")
             return cls.classify_file_write(
-                path,
+                str(arguments.get("path") or ""),
                 file_exists=file_exists,
                 is_production=is_production,
                 policy=policy,
             )
         if tool_name == "uniconn_read_file":
-            path = str(arguments.get("path") or "")
             return cls.classify_file_read(
-                path,
+                str(arguments.get("path") or ""),
                 is_production=is_production,
                 policy=policy,
             )

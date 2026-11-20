@@ -39,6 +39,7 @@ class Flow:
         fail_fast: bool = True,
         max_fail_ratio: float = 0.0,
         batch_size: int | None = None,
+        connection_window: int | None = None,
         batch_notifications: bool = True,
         description: str | None = None,
         params_model: Any | None = None,
@@ -56,12 +57,15 @@ class Flow:
             )
         if batch_size is not None and batch_size <= 0:
             raise ConfigurationError(f"batch_size must be > 0, got {batch_size}")
+        if connection_window is not None and connection_window < 1:
+            raise ConfigurationError(f"connection_window must be >= 1, got {connection_window}")
 
         self.name = name
         self.mode: Literal["barrier", "independent"] = mode
         self.fail_fast = fail_fast
         self.max_fail_ratio = max_fail_ratio
         self.batch_size = batch_size
+        self.connection_window = connection_window
         self.batch_notifications = batch_notifications
         self.description = description.strip() if isinstance(description, str) and description.strip() else None
         self.params_model = params_model
@@ -222,6 +226,7 @@ class Flow:
         dry_run: bool | None = None,
         batch_size: int | None = None,
         max_fail_ratio: float | None = None,
+        connection_window: int | None = None,
         completed_tasks_by_host: (
             Mapping[str, AbstractSet[str] | Sequence[str] | Mapping[str, Any]] | None
         ) = None,
@@ -239,6 +244,7 @@ class Flow:
             dry_run=dry_run,
             batch_size=batch_size,
             max_fail_ratio=max_fail_ratio,
+            connection_window=connection_window,
             completed_tasks_by_host=completed_tasks_by_host,
             checkpoint_outputs_by_host=checkpoint_outputs_by_host,
             run_id=run_id,
@@ -303,6 +309,11 @@ class SyncFlow(SyncProxyMixin):
     def mode(self) -> Literal["barrier", "independent"]:
         """Режим раскатки сценария."""
         return self._async_flow.mode
+
+    @property
+    def connection_window(self) -> int | None:
+        """Ограничение одновременно открытых соединений в барьерном режиме (если задано)."""
+        return self._async_flow.connection_window
 
     @property
     def description(self) -> str | None:
@@ -383,6 +394,7 @@ class SyncFlow(SyncProxyMixin):
         dry_run: bool | None = None,
         batch_size: int | None = None,
         max_fail_ratio: float | None = None,
+        connection_window: int | None = None,
         completed_tasks_by_host: (
             Mapping[str, AbstractSet[str] | Sequence[str] | Mapping[str, Any]] | None
         ) = None,
@@ -406,6 +418,7 @@ class SyncFlow(SyncProxyMixin):
                 dry_run=dry_run,
                 batch_size=batch_size,
                 max_fail_ratio=max_fail_ratio,
+                connection_window=connection_window,
                 completed_tasks_by_host=completed_tasks_by_host,
                 checkpoint_outputs_by_host=checkpoint_outputs_by_host,
                 run_id=run_id,

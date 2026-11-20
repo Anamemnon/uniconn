@@ -9,7 +9,7 @@
 - Re-run failed unit tests with traceback: `uv run pytest -m "not integration" -q --tb=short --lf | tail -n 30`
 - Run latency & overhead benchmarks: `python -m benchmarks.overhead_bench --check-thresholds`
 - Lint & typecheck: `uv run ruff check src/` and `uv run pyright` (or `uv run poe check`)
-- Task runner: `uv run poe check`, `uv run poe bench`, `uv run poe test`
+- Task runner: `uv run poe check`, `uv run poe bench`, `uv run poe test`, `uv run poe test-fuzz`
 - Preview dashboard server: `uv run python main.py --serve` (listens on `0.0.0.0:3000`)
 - Documentation & Feature Matrix: `AGENTS.md` (architecture & rules), `FEATURES.md` (full catalog of implemented features — consult on-demand only)
 
@@ -597,10 +597,13 @@ from uniconn import (
     create_policy_engine,
 )
 
-# 1. Deep AST decomposition, indirect wrapper unwrapping & obfuscation detection:
-ast = CommandASTParser.parse("echo cm0gLXJmIC8= | base64 -d | sh")
+# 1. Deep AST decomposition (optional `tree-sitter-bash` via `uniconn[security]` + built-in PowerShell AST):
+ast = CommandASTParser.parse("echo cm0gLXJmIC8= | base64 -d | sh", dialect="auto", backend="auto")
 assert ast.is_obfuscated is True
 assert "rm" in ast.verbs
+# Supports `dialect="auto"|"posix"|"powershell"`, `backend="auto"|"tree-sitter"|"builtin"`,
+# and fail-closed `ast.has_syntax_errors` / `ast.syntax_errors` inspection.
+ps_ast = CommandASTParser.parse("Remove-Item -Recurse -Force C:\\", dialect="powershell")
 
 # 2. Evaluate against Embedded Policy Engine (presets: default, prod-guard, least-privilege, strict) or OPA:
 cfg = PolicyGuardrailConfig(enabled=True, preset="prod-guard", default_role="operator")
@@ -678,8 +681,13 @@ flow = Flow(
     expose_as_tool=True,             # dynamically exports as MCP tool `flow_prod_deploy`
 )
 
-# 1. Direct execution on Connection or ConnectionPool:
-report = await pool.run_flow(flow, vars={"version": "1.4.2", "port": 9090}, tags=["deploy"])
+# 1. Direct execution on Connection or ConnectionPool (with optional bounded LRU `connection_window`):
+report = await pool.run_flow(
+    flow,
+    vars={"version": "1.4.2", "port": 9090},
+    tags=["deploy"],
+    connection_window=32,            # limits concurrently open host connections in barrier mode
+)
 report.raise_for_status()            # raises FlowExecutionError if report.ok is False
 
 # 2. Export Flow as typed MCP Tool (`flow_prod_deploy`) + `uniconn_run_flow` / `uniconn_resume_flow`:

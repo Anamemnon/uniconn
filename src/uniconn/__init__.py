@@ -419,7 +419,7 @@ if TYPE_CHECKING:
         parse_qga_network_interfaces,
     )
 
-__version__ = "0.20.0"
+__version__ = "0.21.0"
 
 _LAZY_MODULE_GROUPS: dict[str, tuple[str, ...]] = {
     "._logging": (

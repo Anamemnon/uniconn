@@ -1,11 +1,12 @@
 # src/uniconn/security/ast_parser.py
-"""Синтаксический анализатор shell-команд (CommandASTParser) и детектор обфускации.
+"""Синтаксический анализатор shell- и PowerShell-команд (CommandASTParser).
 
-Выполняет глубокую декомпозицию командных строк в дерево атомарных вызовов
-(AtomicCommand / ParsedCommandAST), раскрывает косвенные обёртки (sudo, env,
-timeout, sh -c, find -exec, xargs, docker/kubectl exec), инспектирует
-инлайн-скрипты (python -c, perl -e, ruby -e, node -e, awk) и выявляет техники
-обхода регулярных выражений (base64, hex/octal printf, eval, склейка переменных).
+Поддерживает:
+- грамматический разбор POSIX/Bash через опциональный ``tree-sitter-bash`` (extra ``uniconn[security]``)
+  с автоматическим fallback на встроенный детерминированный парсер;
+- встроенный кроссплатформенный Python-парсер PowerShell AST (включая ``-EncodedCommand``,
+  нормализацию алиасов и детекцию бэктик-обфускации);
+- fail-closed фиксацию синтаксических ошибок (``syntax_errors``) и обфускации.
 """
 
 from __future__ import annotations
@@ -13,9 +14,17 @@ from __future__ import annotations
 import os
 import re
 import shlex
-from dataclasses import dataclass, field
-from typing import Any
+from typing import Literal
 
+from ._ast_models import AtomicCommand, ParsedCommandAST
+from ._ast_posix_scan import (
+    _detect_builtin_syntax_errors,
+    _unwrap_grouped_segment,
+    extract_builtin_heredocs,
+    extract_subshell_commands,
+    tokenize_top_level_segments,
+)
+from ._ast_powershell import PowerShellASTParser, is_powershell_command
 from ._ast_rules import (
     _DESTRUCTIVE_EXECUTABLES,
     _DESTRUCTIVE_SUBCOMMANDS,
@@ -45,197 +54,14 @@ from ._ast_rules import (
     extract_base64_payloads,
     normalize_target_path,
 )
+from ._ast_treesitter import extract_bash_grammar, is_treesitter_available
 
-
-@dataclass(frozen=True, slots=True)
-class AtomicCommand:
-    """Атомарная команда внутри конвейера, цепочки или косвенной обёртки."""
-
-    executable: str
-    raw_executable: str = ""
-    subcommand: str | None = None
-    arguments: tuple[str, ...] = ()
-    flags: dict[str, str | bool] = field(default_factory=dict)
-    env_assignments: dict[str, str] = field(default_factory=dict)
-    redirects: tuple[str, ...] = ()
-    wrappers: tuple[str, ...] = ()
-    is_sudo: bool = False
-    is_obfuscated: bool = False
-    subshell_depth: int = 0
-
-    @property
-    def args(self) -> tuple[str, ...]:
-        """Алиас позиционных аргументов команды."""
-        return self.arguments
-
-    def to_dict(self) -> dict[str, Any]:
-        """Сериализовать атомарную команду в JSON-совместимый словарь."""
-        return {
-            "executable": self.executable,
-            "raw_executable": self.raw_executable or self.executable,
-            "subcommand": self.subcommand,
-            "arguments": list(self.arguments),
-            "args": list(self.arguments),
-            "flags": dict(self.flags),
-            "env_assignments": dict(self.env_assignments),
-            "redirects": list(self.redirects),
-            "wrappers": list(self.wrappers),
-            "is_sudo": self.is_sudo,
-            "is_obfuscated": self.is_obfuscated,
-            "subshell_depth": self.subshell_depth,
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ParsedCommandAST:
-    """Синтаксическое дерево (AST) разобранной shell-команды."""
-
-    raw_command: str
-    atomic_commands: tuple[AtomicCommand, ...] = ()
-    executables: tuple[str, ...] = ()
-    subcommands: tuple[str, ...] = ()
-    target_paths: tuple[str, ...] = ()
-    has_pipes: bool = False
-    has_subshells: bool = False
-    has_background_ops: bool = False
-    has_inline_script: bool = False
-    has_destructive_verbs: bool = False
-    is_obfuscated: bool = False
-    obfuscation_reasons: tuple[str, ...] = ()
-    complexity_exceeded: bool = False
-    max_depth: int = 0
-
-    @property
-    def commands(self) -> tuple[AtomicCommand, ...]:
-        """Алиас списка атомарных команд ``atomic_commands``."""
-        return self.atomic_commands
-
-    @property
-    def verbs(self) -> tuple[str, ...]:
-        """Алиас списка исполняемых бинарников ``executables``."""
-        return self.executables
-
-    @property
-    def pipeline_length(self) -> int:
-        """Общее число атомарных команд в цепочке или пайплайне."""
-        return len(self.atomic_commands)
-
-    def to_dict(self) -> dict[str, Any]:
-        """Сериализовать дерево команды в формат контекстного документа авторизации."""
-        serialized_cmds = [cmd.to_dict() for cmd in self.atomic_commands]
-        return {
-            "raw_command": self.raw_command,
-            "executables": list(self.executables),
-            "verbs": list(self.executables),
-            "subcommands": list(self.subcommands),
-            "targets": list(self.target_paths),
-            "target_paths": list(self.target_paths),
-            "has_pipes": self.has_pipes,
-            "has_subshells": self.has_subshells,
-            "has_background_ops": self.has_background_ops,
-            "has_inline_script": self.has_inline_script,
-            "has_destructive_verbs": self.has_destructive_verbs,
-            "is_obfuscated": self.is_obfuscated,
-            "obfuscation_reasons": list(self.obfuscation_reasons),
-            "complexity_exceeded": self.complexity_exceeded,
-            "pipeline_length": len(self.atomic_commands),
-            "max_depth": self.max_depth,
-            "atomic_commands": serialized_cmds,
-            "commands": serialized_cmds,
-        }
-
-
-def _scan_paren_inner(text: str, start: int) -> tuple[str, int]:
-    """Просканировать содержимое ``$(...)`` или ``<(...)`` / ``>(...)`` с учётом баланса скобок."""
-    n = len(text)
-    p_depth = 1
-    j = start
-    sub_single = False
-    sub_double = False
-    sub_esc = False
-    while j < n and p_depth > 0:
-        c2 = text[j]
-        if sub_esc:
-            sub_esc = False
-        elif c2 == "\\" and not sub_single:
-            sub_esc = True
-        elif c2 == "'" and not sub_double:
-            sub_single = not sub_single
-        elif c2 == '"' and not sub_single:
-            sub_double = not sub_double
-        elif not sub_single and not sub_double:
-            if c2 == "(":
-                p_depth += 1
-            elif c2 == ")":
-                p_depth -= 1
-        j += 1
-    inner = text[start : j - 1].strip() if p_depth == 0 else text[start:].strip()
-    return inner, j
-
-
-def _scan_arith_inner(text: str, start: int) -> tuple[str, int]:
-    """Просканировать содержимое арифметической подстановки ``$((...))`` до балансного ``))``."""
-    n = len(text)
-    p_depth = 2
-    j = start
-    sub_single = False
-    sub_double = False
-    sub_esc = False
-    while j < n and p_depth > 0:
-        c2 = text[j]
-        if sub_esc:
-            sub_esc = False
-        elif c2 == "\\" and not sub_single:
-            sub_esc = True
-        elif c2 == "'" and not sub_double:
-            sub_single = not sub_single
-        elif c2 == '"' and not sub_single:
-            sub_double = not sub_double
-        elif not sub_single and not sub_double:
-            if c2 == "(":
-                p_depth += 1
-            elif c2 == ")":
-                p_depth -= 1
-        j += 1
-    inner = text[start : max(start, j - 2)].strip() if p_depth == 0 else text[start:].strip()
-    return inner, j
-
-
-def _unwrap_grouped_segment(seg_clean: str) -> tuple[str | None, str | None]:
-    """Раскрыть внешнюю группировку subshell ``(cmd)`` или ``{ cmd; }`` (включая редиректы после неё)."""
-    if seg_clean.startswith("("):
-        inner, end_idx = _scan_paren_inner(seg_clean, 1)
-        if inner and end_idx <= len(seg_clean):
-            trailing = seg_clean[end_idx:].strip()
-            if not trailing or trailing.startswith((">", "<", "2>", "1>", "&>")):
-                return inner, "subshell"
-    if seg_clean.startswith("{") and len(seg_clean) > 1 and seg_clean[1].isspace():
-        body = seg_clean[1:].strip()
-        if body.endswith("}"):
-            body = body[:-1].strip().rstrip(";").strip()
-        if body:
-            return body, "group"
-    return None, None
-
-
-def _scan_backtick_inner(text: str, start: int) -> tuple[str, int]:
-    """Просканировать содержимое в обратных кавычках `` `...` ``."""
-    n = len(text)
-    j = start
-    sub_esc = False
-    while j < n:
-        if sub_esc:
-            sub_esc = False
-        elif text[j] == "\\":
-            sub_esc = True
-        elif text[j] == "`":
-            break
-        j += 1
-    return text[start:j].strip(), j + 1
+ASTDialectOption = Literal["auto", "posix", "powershell"]
+ASTBackendOption = Literal["auto", "tree-sitter", "builtin"]
 
 
 class CommandASTParser:
-    """Детерминированный синтаксический анализатор shell-команд для Policy-as-Code Guardrails."""
+    """Детерминированный синтаксический анализатор shell- и PowerShell-команд для Policy-as-Code."""
 
     MAX_COMMAND_LENGTH: int = 4096
     MAX_SEGMENTS: int = 64
@@ -250,29 +76,95 @@ class CommandASTParser:
         command: str,
         *,
         sudo: bool = False,
+        dialect: ASTDialectOption = "auto",
+        backend: ASTBackendOption = "auto",
         max_depth: int | None = None,
         max_pipeline_length: int | None = None,
     ) -> ParsedCommandAST:
-        """Разобрать shell-строку в иерархическую структуру ``ParsedCommandAST``."""
+        """Разобрать shell- или PowerShell-строку в иерархическую структуру ``ParsedCommandAST``."""
         raw = command.strip()
         if not raw:
-            return ParsedCommandAST(raw_command="")
+            eff_dialect: Literal["posix", "powershell"] = "powershell" if dialect == "powershell" else "posix"
+            eff_backend = "powershell-ast" if eff_dialect == "powershell" else (
+                "tree-sitter-bash" if backend != "builtin" and is_treesitter_available() else "builtin"
+            )
+            return ParsedCommandAST(raw_command="", dialect=eff_dialect, parser_backend=eff_backend)
 
+        if dialect == "powershell" or (dialect == "auto" and is_powershell_command(raw)):
+            return PowerShellASTParser.parse(
+                raw,
+                sudo=sudo,
+                max_depth=max_depth,
+                max_pipeline_length=max_pipeline_length,
+            )
+
+        return cls._parse_posix(
+            raw,
+            sudo=sudo,
+            backend=backend,
+            max_depth=max_depth,
+            max_pipeline_length=max_pipeline_length,
+        )
+
+    @classmethod
+    def _parse_posix(
+        cls,
+        raw: str,
+        *,
+        sudo: bool,
+        backend: ASTBackendOption,
+        max_depth: int | None,
+        max_pipeline_length: int | None,
+    ) -> ParsedCommandAST:
+        """Разобрать POSIX/Bash команду (через ``tree-sitter-bash`` при наличии или встроенный fallback)."""
         eff_max_depth = max_depth if max_depth is not None else cls.MAX_RECURSION_DEPTH
         eff_max_segments = max_pipeline_length if max_pipeline_length is not None else cls.MAX_SEGMENTS
 
         complexity_exceeded = len(raw) > cls.MAX_COMMAND_LENGTH or raw.count("\n") > 50
         obfuscation_reasons: list[str] = []
+        syntax_errors: list[str] = []
         atomic_list: list[AtomicCommand] = []
         has_inline_script = False
 
-        segments, has_pipes, has_bg = cls._tokenize_top_level_segments(raw)
-        if len(segments) > eff_max_segments:
-            complexity_exceeded = True
-            segments = segments[:eff_max_segments]
+        ts_result = (
+            extract_bash_grammar(raw, max_depth=eff_max_depth)
+            if backend in ("auto", "tree-sitter")
+            else None
+        )
 
-        sub_cmds_with_depth = cls._extract_subshell_commands(raw)
-        has_subshells = bool(sub_cmds_with_depth)
+        work_queue: list[tuple[str, tuple[str, ...], bool, int]] = []
+        heredoc_payloads: list[str] = []
+        if ts_result is not None:
+            parser_backend = "tree-sitter-bash"
+            has_pipes = ts_result.has_pipes
+            has_bg = ts_result.has_background_ops
+            has_subshells = ts_result.has_subshells
+            syntax_errors.extend(ts_result.syntax_errors)
+            heredoc_payloads.extend(ts_result.heredoc_payloads)
+            ts_segs = list(ts_result.segments)
+            if len(ts_segs) > eff_max_segments:
+                complexity_exceeded = True
+                ts_segs = ts_segs[:eff_max_segments]
+            for seg_txt, seg_wraps, seg_depth in ts_segs:
+                work_queue.append((seg_txt, seg_wraps, sudo, seg_depth))
+            sub_cmds_with_depth = list(ts_result.subshell_commands)
+            # Дополнительно проверяем вложенные подстановки, которые могли быть внутри строк/арифметики
+            for extra_sub, extra_depth in cls._extract_subshell_commands(raw):
+                if all(existing != extra_sub for existing, _ in sub_cmds_with_depth):
+                    sub_cmds_with_depth.append((extra_sub, extra_depth))
+                    has_subshells = True
+        else:
+            parser_backend = "builtin"
+            syntax_errors.extend(_detect_builtin_syntax_errors(raw))
+            heredoc_payloads.extend(extract_builtin_heredocs(raw))
+            segments, has_pipes, has_bg = cls._tokenize_top_level_segments(raw)
+            if len(segments) > eff_max_segments:
+                complexity_exceeded = True
+                segments = segments[:eff_max_segments]
+            for seg in segments:
+                work_queue.append((seg, (), sudo, 0))
+            sub_cmds_with_depth = cls._extract_subshell_commands(raw)
+            has_subshells = bool(sub_cmds_with_depth)
 
         detect_global_obfuscation(raw, obfuscation_reasons)
 
@@ -281,10 +173,6 @@ class CommandASTParser:
             reason = f"Base64-encoded command payload detected ({dec_cmd!r})"
             if reason not in obfuscation_reasons:
                 obfuscation_reasons.append(reason)
-
-        var_table: dict[str, str] = {}
-        work_queue: list[tuple[str, tuple[str, ...], bool, int]] = [(seg, (), sudo, 0) for seg in segments]
-        for dec_cmd in decoded_payloads:
             work_queue.append((dec_cmd, ("base64 -d",), sudo, 1))
 
         for sub_c, sub_depth in sub_cmds_with_depth:
@@ -299,6 +187,7 @@ class CommandASTParser:
             for s_item in sub_segs:
                 work_queue.append((s_item, ("subshell",), sudo, sub_depth))
 
+        var_table: dict[str, str] = {}
         observed_max_depth = 0
         idx = 0
         while idx < len(work_queue):
@@ -321,11 +210,51 @@ class CommandASTParser:
                 has_inline_script = True
             atomic_list.extend(parsed_atoms)
             for nested_cmd_str, nested_wrap, nested_sudo in nested_cmds:
+                if ts_result is not None:
+                    nested_ts = extract_bash_grammar(nested_cmd_str, max_depth=max(1, eff_max_depth - depth))
+                    if nested_ts is not None:
+                        has_pipes = has_pipes or nested_ts.has_pipes
+                        has_bg = has_bg or nested_ts.has_background_ops
+                        has_subshells = has_subshells or nested_ts.has_subshells
+                        for err_msg in nested_ts.syntax_errors:
+                            if err_msg not in syntax_errors:
+                                syntax_errors.append(err_msg)
+                        for n_seg, n_wraps, n_dep in nested_ts.segments:
+                            work_queue.append((n_seg, (*nested_wrap, *n_wraps), nested_sudo, depth + 1 + n_dep))
+                        for n_sub, n_sdep in nested_ts.subshell_commands:
+                            work_queue.append((n_sub, (*nested_wrap, "subshell"), nested_sudo, depth + 1 + n_sdep))
+                        continue
                 sub_segs, sub_pipes, sub_bg = cls._tokenize_top_level_segments(nested_cmd_str)
                 has_pipes = has_pipes or sub_pipes
                 has_bg = has_bg or sub_bg
                 for s_item in sub_segs:
                     work_queue.append((s_item, nested_wrap, nested_sudo, depth + 1))
+
+        # Если в команде есть интерпретатор (sh/bash/python/perl/ruby/...) и heredoc-тело,
+        # разбираем содержимое heredoc как исполняемый вложенный код (закрывает `bash << 'EOF'`).
+        if heredoc_payloads and any(_is_interpreter_binary(a.executable) for a in atomic_list):
+            has_inline_script = True
+            heredoc_sudo = sudo or any(a.is_sudo for a in atomic_list if _is_interpreter_binary(a.executable))
+            for hd_body in heredoc_payloads:
+                if _INLINE_DESTRUCTIVE_RE.search(hd_body):
+                    hd_msg = "Inline destructive script payload inside interpreter heredoc detected"
+                    if hd_msg not in obfuscation_reasons:
+                        obfuscation_reasons.append(hd_msg)
+                hd_segs, hd_p, hd_b = cls._tokenize_top_level_segments(hd_body)
+                has_pipes = has_pipes or hd_p
+                has_bg = has_bg or hd_b
+                for hd_seg in hd_segs[:eff_max_segments]:
+                    hd_atoms, _, hd_inl = cls._parse_single_segment(
+                        hd_seg,
+                        inherited_wrappers=("heredoc",),
+                        inherited_sudo=heredoc_sudo,
+                        var_table=var_table,
+                        obfuscation_reasons=obfuscation_reasons,
+                        subshell_depth=1,
+                    )
+                    if hd_inl:
+                        has_inline_script = True
+                    atomic_list.extend(hd_atoms)
 
         if len(atomic_list) > eff_max_segments:
             complexity_exceeded = True
@@ -364,6 +293,9 @@ class CommandASTParser:
             obfuscation_reasons=tuple(obfuscation_reasons),
             complexity_exceeded=complexity_exceeded,
             max_depth=observed_max_depth,
+            dialect="posix",
+            parser_backend=parser_backend,
+            syntax_errors=tuple(syntax_errors),
         )
 
     @staticmethod
@@ -391,127 +323,16 @@ class CommandASTParser:
     @classmethod
     def _tokenize_top_level_segments(cls, command: str) -> tuple[list[str], bool, bool]:
         r"""Разбить командную строку по операторам (; && || | & \n) с учётом кавычек и скобок."""
-        segments: list[str] = []
-        buf: list[str] = []
-        in_single = False
-        in_double = False
-        escape = False
-        paren_depth = 0
-        has_pipes = False
-        has_bg = False
-        i = 0
-        n = len(command)
-
-        while i < n:
-            ch = command[i]
-            if escape:
-                buf.append(ch)
-                escape = False
-                i += 1
-                continue
-            if ch == "\\" and not in_single:
-                escape = True
-                buf.append(ch)
-                i += 1
-                continue
-            if ch == "'" and not in_double:
-                in_single = not in_single
-                buf.append(ch)
-                i += 1
-                continue
-            if ch == '"' and not in_single:
-                in_double = not in_double
-                buf.append(ch)
-                i += 1
-                continue
-
-            if not in_single and not in_double:
-                if ch == "(":
-                    paren_depth += 1
-                elif ch == ")" and paren_depth > 0:
-                    paren_depth -= 1
-                elif paren_depth == 0:
-                    if ch in (";", "\n"):
-                        if seg := "".join(buf).strip():
-                            segments.append(seg)
-                        buf.clear()
-                        i += 1
-                        continue
-                    if ch in ("&", "|"):
-                        prev_ch = command[i - 1] if i > 0 else ""
-                        next_ch = command[i + 1] if i + 1 < n else ""
-                        if not (ch == "&" and (prev_ch == ">" or next_ch == ">")):
-                            if seg := "".join(buf).strip():
-                                segments.append(seg)
-                            buf.clear()
-                            has_pipes = has_pipes or (ch == "|" and next_ch != "|")
-                            has_bg = has_bg or (ch == "&" and next_ch != "&")
-                            i += 2 if next_ch == ch else 1
-                            continue
-
-            buf.append(ch)
-            i += 1
-
-        if tail := "".join(buf).strip():
-            segments.append(tail)
-        return segments, has_pipes, has_bg
+        return tokenize_top_level_segments(command)
 
     @classmethod
     def _extract_subshell_commands(cls, probe_str: str, base_depth: int = 1) -> list[tuple[str, int]]:
         """Извлечь вложенные команды из $(...) и обратных кавычек `...` с учётом баланса скобок."""
-        extracted: list[tuple[str, int]] = []
-        seen: set[str] = set()
-
-        def _scan(text: str, current_depth: int) -> None:
-            if current_depth > cls.MAX_RECURSION_DEPTH + 1:
-                return
-            i = 0
-            n = len(text)
-            in_single = False
-            escape = False
-            while i < n:
-                ch = text[i]
-                if escape:
-                    escape = False
-                    i += 1
-                    continue
-                if ch == "\\" and not in_single:
-                    escape = True
-                    i += 1
-                    continue
-                if ch == "'":
-                    in_single = not in_single
-                    i += 1
-                    continue
-                if not in_single:
-                    if (
-                        ch in ("$", "<", ">")
-                        and i + 1 < n
-                        and text[i + 1] == "("
-                        and (ch == "$" or i == 0 or text[i - 1] not in ("<", ">"))
-                    ):
-                        if ch == "$" and i + 2 < n and text[i + 2] == "(":
-                            arith_inner, i = _scan_arith_inner(text, i + 3)
-                            if arith_inner:
-                                _scan(arith_inner, current_depth)
-                            continue
-                        inner, i = _scan_paren_inner(text, i + 2)
-                        if inner and inner not in seen:
-                            seen.add(inner)
-                            extracted.append((inner, current_depth))
-                            _scan(inner, current_depth + 1)
-                        continue
-                    if ch == "`":
-                        inner, i = _scan_backtick_inner(text, i + 1)
-                        if inner and inner not in seen:
-                            seen.add(inner)
-                            extracted.append((inner, current_depth))
-                            _scan(inner, current_depth + 1)
-                        continue
-                i += 1
-
-        _scan(probe_str, base_depth)
-        return extracted
+        return extract_subshell_commands(
+            probe_str,
+            base_depth=base_depth,
+            max_recursion_depth=cls.MAX_RECURSION_DEPTH,
+        )
 
     @staticmethod
     def _consume_su_wrapper(
@@ -576,14 +397,7 @@ class CommandASTParser:
         inherited_sudo: bool,
         var_table: dict[str, str],
         obfuscation_reasons: list[str],
-    ) -> tuple[
-        int,
-        dict[str, str],
-        list[str],
-        bool,
-        bool,
-        tuple[str, tuple[str, ...], bool] | None,
-    ]:
+    ) -> tuple[int, dict[str, str], list[str], bool, bool, tuple[str, tuple[str, ...], bool] | None]:
         env_assignments: dict[str, str] = {}
         wrappers: list[str] = list(inherited_wrappers)
         effective_sudo = inherited_sudo
@@ -645,8 +459,13 @@ class CommandASTParser:
                     tokens, idx, wrappers, env_assignments, var_table
                 )
                 if is_split and env_nested is not None:
-                    return idx, env_assignments, wrappers, effective_sudo, segment_obf, (
-                        env_nested[0], env_nested[1], effective_sudo
+                    return (
+                        idx,
+                        env_assignments,
+                        wrappers,
+                        effective_sudo,
+                        segment_obf,
+                        (env_nested[0], env_nested[1], effective_sudo),
                     )
                 continue
 
@@ -667,7 +486,6 @@ class CommandASTParser:
                 continue
 
             if base_tok == "command":
-                # ``command -v foo`` / ``command -V foo`` — безопасная проверка наличия бинарника
                 look_idx = idx + 1
                 is_lookup_only = False
                 while look_idx < n and tokens[look_idx].startswith("-"):
@@ -802,15 +620,15 @@ class CommandASTParser:
         if exec_name == "find":
             for i, arg in enumerate(rest):
                 if arg in ("-exec", "-execdir", "-ok") and i + 1 < len(rest):
-                    exec_tokens: list[str] = []
-                    for sub_tok in rest[i + 1 :]:
+                    exec_tokens = [t for t in rest[i + 1 :] if t != "{}"]
+                    trimmed: list[str] = []
+                    for sub_tok in exec_tokens:
                         if sub_tok in (";", r"\;", "+"):
                             break
-                        if sub_tok != "{}":
-                            exec_tokens.append(sub_tok)
-                    if exec_tokens:
+                        trimmed.append(sub_tok)
+                    if trimmed:
                         nested_commands.append(
-                            (shlex.join(exec_tokens), (*wrappers, f"find {arg}"), effective_sudo)
+                            (shlex.join(trimmed), (*wrappers, f"find {arg}"), effective_sudo)
                         )
 
         if exec_name == "xargs":
@@ -822,9 +640,7 @@ class CommandASTParser:
                     continue
                 break
             if rest[x_idx:]:
-                nested_commands.append(
-                    (shlex.join(rest[x_idx:]), (*wrappers, "xargs"), effective_sudo)
-                )
+                nested_commands.append((shlex.join(rest[x_idx:]), (*wrappers, "xargs"), effective_sudo))
 
         if exec_name in ("docker", "podman") and subcmd == "exec" and "exec" in rest:
             after_exec = rest[rest.index("exec") + 1 :]
@@ -865,9 +681,7 @@ class CommandASTParser:
         if grouped_inner is not None and grouped_kind is not None:
             return [], [(grouped_inner, (*inherited_wrappers, grouped_kind), inherited_sudo)], False
 
-        redirects = [
-            m.group(0).strip() for m in _REDIRECT_RE.finditer(seg_clean) if m.group(0).strip()
-        ]
+        redirects = [m.group(0).strip() for m in _REDIRECT_RE.finditer(seg_clean) if m.group(0).strip()]
         herestring_payloads: list[str] = []
         for hs_match in _HERESTRING_RE.finditer(seg_clean):
             hs_val = next((g for g in hs_match.groups() if g is not None), "")
@@ -910,8 +724,7 @@ class CommandASTParser:
             return [], [], False
 
         if remaining[0].startswith("(") and remaining[-1].endswith(")"):
-            rejoined = " ".join(remaining)
-            sub_inner, sub_kind = _unwrap_grouped_segment(rejoined)
+            sub_inner, sub_kind = _unwrap_grouped_segment(" ".join(remaining))
             if sub_inner is not None and sub_kind is not None:
                 return [], [(sub_inner, (*wrappers, sub_kind), effective_sudo)], False
 
@@ -999,10 +812,7 @@ class CommandASTParser:
         return [atom], nested_commands, has_inline
 
     @staticmethod
-    def _parse_flags_and_args(
-        executable: str,
-        tokens: list[str],
-    ) -> tuple[dict[str, str | bool], list[str]]:
+    def _parse_flags_and_args(executable: str, tokens: list[str]) -> tuple[dict[str, str | bool], list[str]]:
         """Отделить флаги (короткие и длинные) от позиционных аргументов."""
         flags: dict[str, str | bool] = {}
         pos_args: list[str] = []
@@ -1048,21 +858,8 @@ class CommandASTParser:
     def _extract_subcommand(executable: str, tokens: list[str]) -> str | None:
         """Извлечь первую позиционную подкоманду для инструментов вроде systemctl, git, docker, kubectl."""
         subcmd_bins = {
-            "systemctl",
-            "git",
-            "docker",
-            "podman",
-            "kubectl",
-            "ip",
-            "apt",
-            "apt-get",
-            "dnf",
-            "yum",
-            "apk",
-            "zypper",
-            "ufw",
-            "nft",
-            "helm",
+            "systemctl", "git", "docker", "podman", "kubectl", "ip", "apt",
+            "apt-get", "dnf", "yum", "apk", "zypper", "ufw", "nft", "helm",
         }
         if executable == "service":
             pos = [t for t in tokens if not t.startswith("-")]
@@ -1078,10 +875,7 @@ class CommandASTParser:
             if tok == "--":
                 return tokens[idx + 1].lower() if idx + 1 < n else None
             if tok.startswith("-"):
-                if "=" not in tok and (tok in opts_with_arg or tok.lower() in opts_with_arg):
-                    idx += 2
-                else:
-                    idx += 1
+                idx += 2 if ("=" not in tok and (tok in opts_with_arg or tok.lower() in opts_with_arg)) else 1
                 continue
             return tok.lower()
         return None
@@ -1140,8 +934,13 @@ class CommandASTParser:
 
 
 __all__ = [
+    "ASTBackendOption",
+    "ASTDialectOption",
     "AtomicCommand",
     "CommandASTParser",
     "ParsedCommandAST",
+    "PowerShellASTParser",
+    "is_powershell_command",
+    "is_treesitter_available",
     "normalize_target_path",
 ]

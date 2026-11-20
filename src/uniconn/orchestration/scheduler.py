@@ -5,16 +5,16 @@ from __future__ import annotations
 
 import asyncio
 import builtins
-import contextlib
 import time
 from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from graphlib import TopologicalSorter
 from typing import TYPE_CHECKING, Any
 
-from ..exceptions import BatchAbortedError
+from ..exceptions import BatchAbortedError, ConfigurationError
 from ..exceptions import TimeoutError as UniconnTimeoutError
 from ..services.provisioning._notify import NotificationBatch
+from ._barrier_window import _BarrierConnectionWindow, _WindowedHostConn
 from .context import FlowContext, normalize_host_id
 from .models import (
     FlowReport,
@@ -591,8 +591,12 @@ async def run_barrier_fleet(
     *,
     batch_size: int | None = None,
     max_fail_ratio: float | None = None,
+    connection_window: int | None = None,
 ) -> tuple[dict[str, list[TaskResult]], dict[str, list[str]]]:
-    """Исполнить DAG в барьерном режиме (по топологическим слоям и батчам хостов)."""
+    """Исполнить DAG в барьерном режиме (по топологическим слоям и батчам хостов) с LRU-окном соединений."""
+    if connection_window is not None and connection_window < 1:
+        raise ConfigurationError(f"connection_window must be >= 1, got {connection_window}")
+
     uris = pool.targets
     results_by_host: dict[str, list[TaskResult]] = {
         pool.target_key(t): [] for t in uris
@@ -612,111 +616,114 @@ async def run_barrier_fleet(
     batches = _slice_into_batches(uris, eff_batch)
     layers = flow.get_layers()
 
-    host_conns: dict[int, Connection] = {}
-    host_batches: dict[str, tuple[Connection, NotificationBatch]] = {}
+    resolved_window = connection_window if connection_window is not None else flow.connection_window
+    if resolved_window is not None:
+        if resolved_window < 1:
+            raise ConfigurationError(f"connection_window must be >= 1, got {resolved_window}")
+        eff_window = resolved_window
+    elif eff_batch is not None and eff_batch > 0:
+        eff_window = eff_batch
+    else:
+        pool_limit = getattr(pool, "max_concurrent", None)
+        eff_window = int(pool_limit) if isinstance(pool_limit, int) and pool_limit > 0 else len(uris)
 
-    async with contextlib.AsyncExitStack() as conn_stack:
-        try:
-            async def _acquire_host_conn(idx: int, target: Any, key: str) -> Connection:
-                if idx not in host_conns:
-                    conn = await conn_stack.enter_async_context(
-                        pool.use_target_connection(idx, target, with_defaults=True)
-                    )
-                    host_conns[idx] = conn
-                    if flow.batch_notifications:
-                        nb = conn.state.batch_notifications()
-                        await nb.__aenter__()
-                        host_batches[key] = (conn, nb)
-                return host_conns[idx]
+    conn_window = _BarrierConnectionWindow(
+        pool,
+        max_open=eff_window,
+        batch_notifications=flow.batch_notifications,
+    )
 
-            async def _run_layer_on_host(
-                idx: int,
-                target: Any,
-                layer_tasks: list[Task[Any, Any]],
-                is_last_layer: bool,
-            ) -> tuple[str, list[TaskResult], BaseException | None]:
-                key = pool.target_key(target)
-                async with pool.semaphore:
-                    try:
-                        conn = await _acquire_host_conn(idx, target, key)
-                        coros = [
-                            engine.execute_task_on_host(
-                                t_obj,
-                                key,
-                                conn,
-                                host_task_maps[key],
-                                host_aborted[key],
+    try:
+        async def _run_layer_on_host(
+            idx: int,
+            target: Any,
+            layer_tasks: list[Task[Any, Any]],
+            is_last_layer: bool,
+        ) -> tuple[str, list[TaskResult], BaseException | None]:
+            key = pool.target_key(target)
+            async with pool.semaphore:
+                entry: _WindowedHostConn | None = None
+                try:
+                    entry = await conn_window.acquire(idx, target, key)
+                    conn = entry.conn
+                    coros = [
+                        engine.execute_task_on_host(
+                            t_obj,
+                            key,
+                            conn,
+                            host_task_maps[key],
+                            host_aborted[key],
+                        )
+                        for t_obj in layer_tasks
+                    ]
+                    layer_res = list(await asyncio.gather(*coros))
+                    for r in layer_res:
+                        host_task_maps[key][r.task_name] = r
+                        results_by_host[key].append(r)
+                        if not r.ok and flow.fail_fast:
+                            host_aborted[key] = True
+
+                    if is_last_layer and entry.batch is not None:
+                        nb = entry.batch
+                        entry.batch = None
+                        try:
+                            notif_list = await _flush_host_notifications(
+                                nb, key, results_by_host[key]
                             )
-                            for t_obj in layer_tasks
-                        ]
-                        layer_res = list(await asyncio.gather(*coros))
-                        for r in layer_res:
-                            host_task_maps[key][r.task_name] = r
-                            results_by_host[key].append(r)
-                            if not r.ok and flow.fail_fast:
-                                host_aborted[key] = True
+                            if notif_list:
+                                notified_by_host[key] = notif_list
+                        finally:
+                            conn.state.discard_batch(nb)
 
-                        if is_last_layer and key in host_batches:
-                            c_obj, nb = host_batches.pop(key)
-                            try:
-                                notif_list = await _flush_host_notifications(
-                                    nb, key, results_by_host[key]
-                                )
-                                if notif_list:
-                                    notified_by_host[key] = notif_list
-                            finally:
-                                c_obj.state.discard_batch(nb)
-
-                        return key, layer_res, None
-                    except Exception as exc:
-                        err_res = TaskResult(
-                            task_name=(
-                                layer_tasks[0].name if layer_tasks else "<connect>"
-                            ),
-                            host=key,
-                            status="failed",
-                            exception=exc,
-                            error=str(exc),
-                            diagnostic=extract_task_diagnostic(None, exc),
-                        )
-                        results_by_host[key].append(err_res)
-                        host_aborted[key] = True
-                        return key, [err_res], exc
-
-            for layer_idx, layer_tasks in enumerate(layers):
-                is_last = layer_idx == len(layers) - 1
-                for batch_idx, batch_items in enumerate(batches):
-                    outcomes = await asyncio.gather(
-                        *(
-                            _run_layer_on_host(idx, target, layer_tasks, is_last)
-                            for idx, target in batch_items
-                        )
+                    return key, layer_res, None
+                except Exception as exc:
+                    err_res = TaskResult(
+                        task_name=(
+                            layer_tasks[0].name if layer_tasks else "<connect>"
+                        ),
+                        host=key,
+                        status="failed",
+                        exception=exc,
+                        error=str(exc),
+                        diagnostic=extract_task_diagnostic(None, exc),
                     )
-                    batch_failures: dict[str, Any] = {}
-                    for key, layer_res, exc in outcomes:
-                        if exc is not None:
-                            batch_failures[key] = exc
-                        elif any(not r.ok for r in layer_res):
-                            batch_failures[key] = [
-                                r for r in layer_res if not r.ok
-                            ]
+                    results_by_host[key].append(err_res)
+                    host_aborted[key] = True
+                    return key, [err_res], exc
+                finally:
+                    if entry is not None:
+                        await conn_window.release(entry, close_now=is_last_layer)
 
-                    if enforce_ratio:
-                        _check_batch_fail_ratio(
-                            flow.name,
-                            batch_idx,
-                            batch_items,
-                            batch_failures,
-                            eff_ratio,
-                            results_by_host,
-                            layer_idx=layer_idx,
-                        )
-        finally:
-            # Гарантированно очищаем стек батчей на всех соединениях при раннем выходе/BatchAbortedError
-            for c_obj, nb in list(host_batches.values()):
-                with contextlib.suppress(Exception):
-                    c_obj.state.discard_batch(nb)
-            host_batches.clear()
+        for layer_idx, layer_tasks in enumerate(layers):
+            is_last = layer_idx == len(layers) - 1
+            for batch_idx, batch_items in enumerate(batches):
+                outcomes = await asyncio.gather(
+                    *(
+                        _run_layer_on_host(idx, target, layer_tasks, is_last)
+                        for idx, target in batch_items
+                    )
+                )
+                batch_failures: dict[str, Any] = {}
+                for key, layer_res, exc in outcomes:
+                    if exc is not None:
+                        batch_failures[key] = exc
+                    elif any(not r.ok for r in layer_res):
+                        batch_failures[key] = [
+                            r for r in layer_res if not r.ok
+                        ]
+
+                if enforce_ratio:
+                    _check_batch_fail_ratio(
+                        flow.name,
+                        batch_idx,
+                        batch_items,
+                        batch_failures,
+                        eff_ratio,
+                        results_by_host,
+                        layer_idx=layer_idx,
+                    )
+    finally:
+        await conn_window.close_all()
 
     return results_by_host, notified_by_host
 
@@ -731,6 +738,7 @@ async def execute_flow(
     dry_run: bool | None = None,
     batch_size: int | None = None,
     max_fail_ratio: float | None = None,
+    connection_window: int | None = None,
     completed_tasks_by_host: (
         Mapping[str, AbstractSet[str] | Sequence[str] | Mapping[str, Any]] | None
     ) = None,
@@ -774,6 +782,7 @@ async def execute_flow(
                 engine,
                 batch_size=batch_size,
                 max_fail_ratio=max_fail_ratio,
+                connection_window=connection_window,
             )
             mode_label = "barrier"
     else:
@@ -840,6 +849,7 @@ def coerce_to_flow(
             fail_fast=flow_obj.fail_fast,
             max_fail_ratio=flow_obj.max_fail_ratio,
             batch_size=flow_obj.batch_size,
+            connection_window=flow_obj.connection_window,
             batch_notifications=flow_obj.batch_notifications,
             description=flow_obj.description,
             params_model=flow_obj.params_model,
@@ -880,6 +890,7 @@ async def run_pool_flow(
     mode: str | None = None,
     batch_size: int | None = None,
     max_fail_ratio: float | None = None,
+    connection_window: int | None = None,
 ) -> FlowReport:
     """Выполнить сценарий ``Flow`` (или ``@task`` / список задач) на пуле ``ConnectionPool``."""
     flow_obj = coerce_to_flow(flow, mode=mode)
@@ -891,6 +902,7 @@ async def run_pool_flow(
         dry_run=dry_run,
         batch_size=batch_size,
         max_fail_ratio=max_fail_ratio,
+        connection_window=connection_window,
     )
 
 

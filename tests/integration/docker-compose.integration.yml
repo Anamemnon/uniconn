@@ -1,0 +1,124 @@
+services:
+  openssh:
+    image: lscr.io/linuxserver/openssh-server:latest
+    container_name: uniconn-test-openssh
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - USER_NAME=testuser
+      - USER_PASSWORD=testpass
+      - PASSWORD_ACCESS=true
+      - SUDO_ACCESS=false
+    ports:
+      - "2222:2222"
+    volumes:
+      - ./ssh/sshd_config:/config/sshd/sshd_config:ro
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 2222 || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  opa:
+    image: openpolicyagent/opa:latest
+    container_name: uniconn-test-opa
+    command:
+      - "run"
+      - "--server"
+      - "--addr=0.0.0.0:8181"
+      - "--log-level=error"
+      - "/policies/policy.rego"
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./opa/policy.rego:/policies/policy.rego:ro
+    healthcheck:
+      test: ["CMD", "/opa", "eval", "-i", "/dev/null", "1 == 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  netconf:
+    image: python:3.11-slim
+    container_name: uniconn-test-netconf
+    working_dir: /workspace
+    volumes:
+      - ../../:/workspace:ro
+    environment:
+      - PYTHONPATH=/workspace/src
+    command:
+      - "sh"
+      - "-c"
+      - |
+        pip install --no-cache-dir -q asyncssh pydantic && python -c "
+        import asyncio, signal
+        from uniconn.mock.netconf_server import MockNetconfServer
+
+        async def main():
+            srv = MockNetconfServer(host='0.0.0.0', port=8300, username='netconf', password='secret')
+            await srv.start()
+            stop = asyncio.Event()
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, stop.set)
+            await stop.wait()
+            await srv.stop()
+
+        asyncio.run(main())
+        "
+    ports:
+      - "8300:8300"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import socket; s = socket.create_connection(('127.0.0.1', 8300), 2); s.close()",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  gnmi:
+    image: python:3.11-slim
+    container_name: uniconn-test-gnmi
+    working_dir: /workspace
+    volumes:
+      - ../../:/workspace:ro
+    environment:
+      - PYTHONPATH=/workspace/src
+    command:
+      - "sh"
+      - "-c"
+      - |
+        pip install --no-cache-dir -q pydantic && python -c "
+        import asyncio, signal
+        from uniconn.mock.gnmi_server import MockGnmiServer
+
+        async def main():
+            srv = MockGnmiServer(host='0.0.0.0', port=57400, username='gnmi', password='secret')
+            await srv.start()
+            stop = asyncio.Event()
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, stop.set)
+            await stop.wait()
+            await srv.stop()
+
+        asyncio.run(main())
+        "
+    ports:
+      - "57400:57400"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import socket; s = socket.create_connection(('127.0.0.1', 57400), 2); s.close()",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 30

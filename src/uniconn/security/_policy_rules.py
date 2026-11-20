@@ -86,7 +86,16 @@ def rule_no_forbidden_risk_tier(ctx: AuthContext) -> PolicyRuleResult | None:
 
 
 def rule_opaque_complexity_guard(ctx: AuthContext) -> PolicyRuleResult | None:
-    """Правило 3: Скрипты, превышающие порог сложности AST, требуют согласования оператора."""
+    """Правило 3: Скрипты с превышением сложности AST или синтаксическими ошибками требуют согласования."""
+    if ctx.action.ast.get("syntax_errors") or ctx.action.ast.get("has_syntax_errors"):
+        errs = "; ".join(str(e) for e in (ctx.action.ast.get("syntax_errors") or ()))
+        return PolicyRuleResult(
+            decision=PolicyDecision.REQUIRE_APPROVAL,
+            rule_id="opaque_complexity_guard",
+            rule_name="AST Syntax Anomaly Guard (Fail-Closed)",
+            message=f"Command contains malformed shell/PowerShell syntax and requires review: {errs}",
+            remediation_hint="Fix quoting/syntax errors so static AST analysis can safely inspect the command.",
+        )
     if ctx.action.ast.get("complexity_exceeded"):
         return PolicyRuleResult(
             decision=PolicyDecision.REQUIRE_APPROVAL,
@@ -264,6 +273,8 @@ _TOP_LEVEL_CONDITION_KEYS: frozenset[str] = frozenset(
         "tool_names",
         "flow_name",
         "flow_names",
+        "dialect",
+        "has_syntax_errors",
     }
 )
 
@@ -285,6 +296,8 @@ _VALID_CONDITION_KEYS: frozenset[str] = _TOP_LEVEL_CONDITION_KEYS | frozenset(
         "ast.targets",
         "ast.is_obfuscated",
         "ast.has_destructive_verbs",
+        "ast.dialect",
+        "ast.has_syntax_errors",
         "environment.is_maintenance_window",
     }
 )
@@ -466,6 +479,8 @@ class DeclarativePolicyRule:
             return bool(_to_norm_set(expected) & subs)
         if key in ("target_prefixes", "targets", "ast.targets"):
             return _match_target_prefixes(expected, ctx, ast_data)
+        if key in ("dialect", "ast.dialect"):
+            return str(ast_data.get("dialect", "posix")).lower() in _to_norm_set(expected)
 
         bool_checks: dict[str, bool] = {
             "sudo": bool(ctx.action.sudo),
@@ -474,6 +489,8 @@ class DeclarativePolicyRule:
             "ast.is_obfuscated": bool(ast_data.get("is_obfuscated", False)),
             "has_destructive_verbs": bool(ast_data.get("has_destructive_verbs", False)),
             "ast.has_destructive_verbs": bool(ast_data.get("has_destructive_verbs", False)),
+            "has_syntax_errors": bool(ast_data.get("has_syntax_errors") or ast_data.get("syntax_errors")),
+            "ast.has_syntax_errors": bool(ast_data.get("has_syntax_errors") or ast_data.get("syntax_errors")),
             "is_maintenance_window": bool(ctx.environment.is_maintenance_window),
             "environment.is_maintenance_window": bool(ctx.environment.is_maintenance_window),
         }

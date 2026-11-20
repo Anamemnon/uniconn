@@ -3,6 +3,7 @@
 .uv/
 .pytest_cache/
 .ruff_cache/
+.hypothesis/
 .aistudio
 **/__pycache__
 .python-version

@@ -299,6 +299,26 @@ class NotificationBatch:
             # повышаем статус записи до реального выполнения.
             self._pending[dedup_key] = (label, fn, conn, result)
 
+    def drain_pending_specs(
+        self,
+    ) -> list[tuple[Hashable, str, NotifyCallable, EnsureResult]]:
+        """Извлечь и очистить отложенные обработчики без привязки к объекту ``Connection``."""
+        specs = [
+            (dedup_key, label, fn, res)
+            for dedup_key, (label, fn, _conn, res) in self._pending.items()
+        ]
+        self._pending.clear()
+        return specs
+
+    def restore_pending_specs(
+        self,
+        specs: Sequence[tuple[Hashable, str, NotifyCallable, EnsureResult]],
+        conn: Connection,
+    ) -> None:
+        """Восстановить ранее извлечённые обработчики, перепривязав их к новому ``Connection``."""
+        for dedup_key, label, fn, res in specs:
+            self.enqueue(dedup_key, label, fn, conn, res)
+
     async def flush(self) -> list[Any]:
         """Выполнить все накопленные обработчики в порядке первого срабатывания и очистить очередь."""
         if not self._pending:

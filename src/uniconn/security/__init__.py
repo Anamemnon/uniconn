@@ -3,7 +3,14 @@
 
 from __future__ import annotations
 
-from .ast_parser import AtomicCommand, CommandASTParser, ParsedCommandAST
+from .ast_parser import (
+    AtomicCommand,
+    CommandASTParser,
+    ParsedCommandAST,
+    PowerShellASTParser,
+    is_powershell_command,
+    is_treesitter_available,
+)
 from .engine import (
     BUILTIN_POLICY_PRESETS,
     DeclarativePolicyRule,
@@ -62,11 +69,14 @@ __all__ = [
     "PolicyRuleCallable",
     "PolicyRuleResult",
     "PolicyViolation",
+    "PowerShellASTParser",
     "ResourceContext",
     "SubjectContext",
     "build_auth_context",
     "build_ssrf_safe_opener",
     "create_policy_engine",
+    "is_powershell_command",
+    "is_treesitter_available",
     "is_within_maintenance_windows",
     "load_declarative_rules",
     "rule_least_privilege_system_paths",

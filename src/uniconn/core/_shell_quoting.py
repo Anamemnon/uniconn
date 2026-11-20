@@ -35,7 +35,11 @@ def ps_encoded_command(script: str) -> str:
     """Сформировать инъекционно-безопасную команду ``powershell -NoProfile -NonInteractive -EncodedCommand ...``."""
     if "\x00" in script:
         raise ValueError("NUL byte is not allowed in PowerShell script")
-    encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+    try:
+        raw_utf16 = script.encode("utf-16le")
+    except UnicodeEncodeError as exc:
+        raise ValueError("Lone Unicode surrogate is not allowed in PowerShell script") from exc
+    encoded = base64.b64encode(raw_utf16).decode("ascii")
     return f"powershell -NoProfile -NonInteractive -EncodedCommand {encoded}"
 
 

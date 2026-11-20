@@ -71,8 +71,9 @@ parsing = [
     "ntc-templates>=7.0.0",
 ]
 otel = ["opentelemetry-api>=1.25"]
+security = ["tree-sitter>=0.23", "tree-sitter-bash>=0.23"]
 all = [
-    "uniconn[bmc,pve,restconf,netconf,gnmi,serial,telnet,winrm,cli,templates,parsing,otel]",
+    "uniconn[bmc,pve,restconf,netconf,gnmi,serial,telnet,winrm,cli,templates,parsing,otel,security]",
 ]
 dev = [
     "uniconn[all]",
@@ -81,6 +82,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-mock>=3.14",
     "pytest-cov>=5.0",
+    "hypothesis>=6.100",
     "pyright>=1.1.380",
     "ruff>=0.8",
     "sphinx>=7.0",
@@ -140,6 +142,7 @@ filterwarnings = [
 markers = [
     "integration: marks tests as integration tests",
     "slow: marks tests as slow running",
+    "fuzz: marks property-based Hypothesis security fuzz tests",
     "posix_only: marks tests requiring POSIX filesystem or environment capabilities",
     "windows_only: marks tests requiring Windows environment capabilities",
 ]
@@ -203,5 +206,6 @@ test-orchestration = "pytest tests/unit/orchestration -m 'not integration' -q"
 test-parsing = "pytest tests/unit/parsing -m 'not integration' -q"
 test-cli = "pytest tests/unit/cli -m 'not integration' -q"
 test-security = "pytest tests/unit/security -m 'not integration' -q"
+test-fuzz = "pytest tests/unit/security -m fuzz -q"
 test-arch = "pytest tests/unit/architecture -m 'not integration' -q"
 check = ["lint", "typecheck", "test-arch"]

@@ -1,6 +1,6 @@
 # Реализованные возможности и архитектура библиотеки uniconn
 
-> **Версия**: v0.20.0 | **915+ unit-тестов** | 16+ транспортов (`ssh`, `winrm`/`wsman`, `netconf`, `restconf`, `gnmi`, `qga`/`qemu-ga`, `pve`, `docker`, `podman`, `kubectl`, `telnet`, `serial`/`uart`, `ipmi`, `redfish`, `replay`, `local`) | Модульный CLI (`cyclopts` + `rich`) | Встроенный MCP-сервер (`uniconn mcp`) | Интерактивная веб-панель (`examples/dashboard/`) | PEP 561 (`py.typed`) + PEP 562 Lazy Exports
+> **Версия**: v0.21.0 | **1 320+ unit- и fuzz-тестов** | 16+ транспортов (`ssh`, `winrm`/`wsman`, `netconf`, `restconf`, `gnmi`, `qga`/`qemu-ga`, `pve`, `docker`, `podman`, `kubectl`, `telnet`, `serial`/`uart`, `ipmi`, `redfish`, `replay`, `local`) | Модульный CLI (`cyclopts` + `rich`) | Встроенный MCP-сервер (`uniconn mcp`) | Интерактивная веб-панель (`examples/dashboard/`) | PEP 561 (`py.typed`) + PEP 562 Lazy Exports
 >
 > **Для ИИ-агентов**: этот файл (`FEATURES.md`) является полным каталогом реализованных фич и архитектурных решений библиотеки `uniconn`. **Не загружайте его в контекст при каждом запросе** — используйте `llms.txt` для быстрого обзора сигнатур API, а к `FEATURES.md` обращайтесь только по требованию (on-demand), когда нужно сверить наличие конкретной функциональности или обновить список возможностей после релиза.
 >
@@ -13,21 +13,21 @@
 | Транспорты | ✅ 16+ | SSH (`~/.ssh/config`, `SSHJumpChainManager`, `ProxyCommand`), WinRM/WSMan (`winrm://`, `pywinrm`), NETCONF (`netconf://`), RESTCONF (`restconf://`), gNMI (`gnmi://`), QEMU Guest Agent (`qga://`), Proxmox VE (`pve://`), Docker (`docker://`), Podman (`podman://`), Kubernetes (`kubectl://`), Telnet, Serial/UART (X/Y/ZMODEM), Local, IPMI (`ipmi://`), Redfish BMC (`redfish://` на `niquests`), Replay (`replay://`) |
 | Протоколы ISP | ✅ `transports.base` | `CommandTransport`, `FileCapableTransport`, `ShellCapableTransport`, `TunnelCapableTransport`, `StructuredNetworkTransport`, `require_capability()` |
 | Конвейер команд | ✅ `CommandPipeline` | Цепочка `CommandMiddleware`: `Context`, `HITLApproval`, `PolicyGuardrail`, `Sudo`, `Hook`, `DryRun`, `Observability`, `AutoDiagnostic`, `CircuitBreaker`, `RateLimit`, `Retry` (`conn.pipeline`) |
-| Отказоустойчивость и раскатка | ✅ `CircuitBreaker` + `RateLimiter` + Waves | Состояния `CLOSED` → `OPEN` → `HALF_OPEN` (`CircuitOpenError`), Token Bucket `RateLimiter`, волновая раскатка `batch_size` / `max_fail_ratio` (`BatchAbortedError`) |
+| Отказоустойчивость и раскатка | ✅ `CircuitBreaker` + `RateLimiter` + Waves | Состояния `CLOSED` → `OPEN` → `HALF_OPEN` (`CircuitOpenError`), Token Bucket `RateLimiter`, волновая раскатка `batch_size` / `max_fail_ratio` (`BatchAbortedError`), bounded LRU `connection_window` в `run_barrier_fleet` |
 | Доменные сервисы | ✅ `conn.files` / `path` / `state` / `tunnels` / `net` | `FileOperationsService`, `RemotePath` (`pathlib.Path` API), `DirectorySynchronizer`, `StateManagementService`, `NetworkOperationsService`, `FactCollector`, `TunnelService`, `TemplateEngine` |
 | Zero-Fork Python RPC (`v0.18.0`) | ✅ `RemotePythonWorker` | `conn.run_python()` / `pool.run_python()` — постоянный Python-воркер по `stdin`/`stdout` с временем вызова `< 2 мс` |
-| DAG-оркестрация задач (`v0.18.0`) | ✅ `uniconn.orchestration` | Декларативные графы `@task(depends_on=..., post=..., when=...)`, `Flow` / `SyncFlow`, режимы `barrier` и `independent`, экспорт `Flow` как MCP Tool |
+| DAG-оркестрация задач (`v0.18.0`–`v0.21.0`) | ✅ `uniconn.orchestration` | Декларативные графы `@task(depends_on=..., post=..., when=...)`, `Flow` / `SyncFlow`, режимы `barrier` (с bounded LRU `connection_window` и сохранением `NotificationBatch`) и `independent`, экспорт `Flow` как MCP Tool |
 | Семантический парсинг (`v0.17.0`) | ✅ `uniconn.parsing` | `conn.run(..., parse="auto" | "df" | "jc:..." | "textfsm:..." | "ttp:...")`, `Result.parse()`, `Result.parsed`, валидация через Pydantic-модели |
-| Policy-as-Code & AST (`v0.19.0`) | ✅ `uniconn.security` | Глубокий AST-анализ команд (`CommandASTParser`, детектор обфускации `base64`/`eval`) и оценка политик (`EmbeddedPolicyEngine`, `OPAPolicyEngine`) |
-| MCP Server & HITL (`v0.16.0`–`v0.19.0`) | ✅ `uniconn.mcp` | JSON-RPC 2.0 `stdio` сервер (`uniconn mcp`), классификатор риска (`ActionRiskClassifier`), криптографически подписанные HITL-аппрувы (`uniconn approval *`) |
+| Policy-as-Code & Grammar/PowerShell AST (`v0.19.0`–`v0.21.0`) | ✅ `uniconn.security` | Опциональный грамматический бэкенд `tree-sitter-bash` (`uniconn[security]`) с fallback, встроенный кроссплатформенный `PowerShellASTParser` (декодирование `-EncodedCommand`, backtick-деобфускация, cmdlet-алиасы), fail-closed на синтаксических ошибках и унификация с `ActionRiskClassifier`, `EmbeddedPolicyEngine`, `OPAPolicyEngine` |
+| MCP Server & HITL (`v0.16.0`–`v0.21.0`) | ✅ `uniconn.mcp` | JSON-RPC 2.0 `stdio` сервер (`uniconn mcp`), единый AST-классификатор риска (`ActionRiskClassifier` для POSIX и PowerShell/Windows), криптографически подписанные HITL-аппрувы (`uniconn approval *`) |
 | Фоновые сессии и диагностика | ✅ `BackgroundPool` + `DiagnosticSession` | Бэкенды `TmuxBackend`, `ScreenBackend`, `NohupBackend`, `WindowsJobBackend`, реактивный `LogPipeline` с `LogWatchRule` и `AutoDiagnosticMiddleware` |
 | PTY Shell & Expect | ✅ `ShellSession` + `expect()` | Stateful сессии (`open_shell`, `execute`, `SyncShellSession`) и декларативный `expect()` на уровне `Connection`, `ShellSession` и `ConnectionPool` |
 | Инспекция и сравнение | ✅ `gather_facts()` + `diff_facts()` | `FactCollector` → `HostFacts` (Linux + Windows PowerShell) + детектор конфигурационного дрейфа `diff_facts()` (`FactsDiffReport`) |
 | Идемпотентность (`v0.12.0`–`v0.18.0`) | ✅ `ensure_*` (`EnsureResult` + `notify`) | Пакеты (`apt`/`apk`/`dnf`/`yum`/`pacman`/`zypper`/`winget`/`choco`/`scoop`), сервисы (`systemd`/`openrc`/`sysv`/Windows Services), `ensure_file`, `ensure_directory`, `ensure_line`, `ensure_user`, `ensure_authorized_key`, `ensure_systemd_unit`, `ensure_sysctl`, `ensure_registry_key`, `ensure_windows_feature`, `ensure_yang`, дедупликация `batch_notifications()` |
 | Запись/реплей кассет и Mock-серверы | ✅ `Cassette` + `uniconn.mock` | `conn.use_cassette()`, `pool.use_cassette()`, `Cassette.diff()`, `uniconn.pytest_plugin`, сокетные серверы `MockSSHServer`, `MockNetconfServer`, `MockRestconfServer`, `MockGnmiServer`, `MockQgaServer`, `MockPveServer` |
 | API (Async + Sync) и Lazy Loading | ✅ Полный паритет + PEP 562 | `Connection` ↔ `SyncConnection`, `ConnectionPool` ↔ `SyncConnectionPool`, `Flow` ↔ `SyncFlow` на базе `EventLoopPortal` и ленивая загрузка `__getattr__` в `uniconn/__init__.py` |
-| Пул подключений (`v0.20.0`) | ✅ `ConnectionPool` | `from_file(..., dry_run, auto_diagnostics)`, `select()`, `use_cassette`, `map`, `map_safe`, `ping`, `wait_for_*`, `run_script`, `run_python`, `expect`, `run_flow`, `stream`, `.files`, `.state`, `.net`, `apply` |
-| Тесты и качество кода | ✅ 915+ unit-тестов | `tests/unit/`, 0 failed, 0 warnings (`error::RuntimeWarning`), `ruff` (120 символов, 0 ошибок), `pyright` (`standard`, 0 ошибок), CI матрица в `.github/workflows/ci.yml` |
+| Пул подключений (`v0.20.0`–`v0.21.0`) | ✅ `ConnectionPool` + `SSHSessionPool` | `from_file(..., dry_run, auto_diagnostics)`, `select()`, `use_cassette`, `map`, `map_safe`, `ping`, `wait_for_*`, `run_script`, `run_python`, `expect`, `run_flow(..., connection_window=...)`, `stream`, `.files`, `.state`, `.net`, `apply`; атомарная инициализация слотов в `SSHSessionPool` |
+| Тесты и качество кода | ✅ 1 320+ unit/fuzz + Real Protocol CI | `tests/unit/` + Hypothesis fuzzing (`poe test-fuzz`), реальный Docker Compose стек интеграционных тестов (OpenSSH `MaxSessions=2`, OPA, NETCONF, gNMI) в `.github/workflows/ci.yml`, `ruff` (120 символов, 0 ошибок), `pyright` (`standard`, 0 ошибок) |
 
 ---
 
@@ -213,8 +213,9 @@
 | `PosixMarkerProtocol` и `ExpectStateMachine` (`shell/`) | Разделение маркерной синхронизации команд `__UNICONN_{uuid}__{exit_code}` и автомата интерактивных диалогов `expect()` |
 | Модульный CLI на `cyclopts` (`src/uniconn/cli/`) | Декларативный CLI на стандартных аннотациях `typing.Annotated` без избыточных зависимостей |
 | Структурированные логи (`structlog` + `contextvars`) | Единый пайплайн `ProcessorFormatter` для `structlog` и `stdlib logging`, JSONL/Console и авто-редакция секретов |
-| Модульная группировка `tests/unit/` | 914+ unit-тестов в доменных пакетах: `core/`, `services/`, `transports/`, `pools/`, `background/`, `mcp/`, `mock/`, `orchestration/`, `parsing/`, `security/`, `cli/`, `architecture/` |
+| Модульная группировка `tests/unit/` | 1 320+ unit-, concurrency- и Hypothesis fuzz-тестов в доменных пакетах: `core/`, `services/`, `transports/`, `pools/`, `background/`, `mcp/`, `mock/`, `orchestration/`, `parsing/`, `security/`, `cli/`, `architecture/` + Docker Compose стек реальных протоколов (`tests/integration/`) |
 | `CircuitBreaker` и `RateLimiter` (`core/resilience.py`) | Защита инфраструктуры на уровне `CommandPipeline` (`CircuitBreakerMiddleware`, `RateLimitMiddleware`) и пулов (`ConnectionPool`, `SSHSessionPool`) |
+| Декомпозиция крупных модулей (`v0.21.0`) | Топ-7 модулей > 1 000 LOC (`mcp/flows.py`, `mcp/_server_tools.py`, `transports/replay/proxy.py`, `transports/_serial.py`, `cli/cmd_ops.py`, `background/_log_pipeline.py`, `core/auto_diagnostics.py`) разделены на компактные подмодули `< 750 LOC` с полными реэкспортами |
 
 ---
 
@@ -237,9 +238,10 @@
 | Компонент | Зависимость |
 |-----------|-------------|
 | Core & Config | `pydantic>=2.7`, `tenacity>=8.2`, `pyyaml>=6.0`, `structlog>=24.1`, `jinja2>=3.1` (extra) |
+| Security Grammar AST | `tree-sitter>=0.23`, `tree-sitter-bash>=0.23` (optional extra `security`, с авто-fallback на встроенный парсер) |
 | SSH & SFTP | `asyncssh>=2.14` |
 | Telnet | `telnetlib3>=2.0` |
 | Serial / UART | `pyserial-asyncio>=0.6` |
 | BMC (IPMI & Redfish) | `pyghmi>=1.5`, `niquests>=3.5` |
 | CLI | `cyclopts>=3.0`, `rich>=13.7` |
-| Dev & QA | `pytest>=8.0`, `pytest-asyncio>=0.24`, `pytest-mock>=3.14`, `pytest-cov>=5.0`, `pyright>=1.1.380`, `ruff>=0.8`, `testcontainers>=4.8` |
+| Dev & QA | `pytest>=8.0`, `pytest-asyncio>=0.24`, `pytest-mock>=3.14`, `pytest-cov>=5.0`, `hypothesis>=6.100`, `pyright>=1.1.380`, `ruff>=0.8`, `testcontainers>=4.8` |

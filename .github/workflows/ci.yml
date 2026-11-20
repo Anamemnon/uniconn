@@ -38,3 +38,25 @@ jobs:
         run: uv run poe check
       - name: Run Unit Tests
         run: uv run pytest -m "not integration and not slow" -q --tb=short
+      - name: Core Overhead SLA Check
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        run: uv run python -m benchmarks.overhead_bench -n 100 -w 10 --check-thresholds
+
+  integration:
+    name: Real Protocol Integration (OpenSSH, OPA, NETCONF, gNMI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+      - name: Start Real Protocol Stack
+        run: docker compose -f tests/integration/docker-compose.integration.yml up -d --wait
+      - name: Run Real Protocol Integration Tests
+        run: uv run pytest tests/integration/test_real_protocols.py -m integration -v --tb=short
+      - name: Tear Down Real Protocol Stack
+        if: always()
+        run: docker compose -f tests/integration/docker-compose.integration.yml down -v
+

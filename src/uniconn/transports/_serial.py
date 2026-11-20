@@ -29,9 +29,7 @@ import logging
 import re
 import sys
 import time
-from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
-from pathlib import Path
+from collections.abc import AsyncIterator
 from typing import Any
 
 from ..exceptions import (
@@ -43,16 +41,16 @@ from ..exceptions import (
     TimeoutError as UniconnTimeoutError,
 )
 from ..result import Result
-from .base import BaseTransport
-from .serial_protocols import (
-    AsyncXmodemReceiver,
-    AsyncXmodemSender,
-    AsyncYmodemReceiver,
-    AsyncYmodemSender,
-    ModemProtocolError,
-    XmodemMode,
-    ZmodemSubprocessAdapter,
+from ._serial_models import (
+    SerialPortInfo,
+    _parse_vid_pid,
+    _SerialShellProcess,
+    _SerialShellStdin,
+    _SerialShellStdout,
+    list_serial_ports,
 )
+from ._serial_transfer import _SerialTransferMixin
+from .base import BaseTransport
 
 # Импорт опциональный (extra dependency)
 try:
@@ -61,87 +59,13 @@ except ImportError:
     serial_asyncio = None  # type: ignore
 
 
-@dataclass(frozen=True)
-class SerialPortInfo:
-    """Информация об обнаруженном последовательном порте."""
-
-    device: str
-    name: str = ""
-    description: str = ""
-    hwid: str = ""
-    vid: int | None = None
-    pid: int | None = None
-    serial_number: str | None = None
-    manufacturer: str | None = None
-    product: str | None = None
-    interface: str | None = None
-
-    @property
-    def vid_pid_hex(self) -> str | None:
-        """Строковое представление VID:PID в формате '10C4:EA60'."""
-        if self.vid is not None and self.pid is not None:
-            return f"{self.vid:04X}:{self.pid:04X}"
-        return None
-
-
-def list_serial_ports() -> list[SerialPortInfo]:
-    """Получить список доступных в системе последовательных портов."""
-    try:
-        import serial.tools.list_ports
-
-        comports_iter = serial.tools.list_ports.comports()
-    except Exception:
-        return []
-
-    results: list[SerialPortInfo] = []
-    for p in comports_iter:
-        results.append(
-            SerialPortInfo(
-                device=p.device or "",
-                name=getattr(p, "name", "") or "",
-                description=getattr(p, "description", "") or "",
-                hwid=getattr(p, "hwid", "") or "",
-                vid=getattr(p, "vid", None),
-                pid=getattr(p, "pid", None),
-                serial_number=getattr(p, "serial_number", None),
-                manufacturer=getattr(p, "manufacturer", None),
-                product=getattr(p, "product", None),
-                interface=getattr(p, "interface", None),
-            )
-        )
-    return results
-
-
-def _parse_vid_pid(val: Any) -> int | None:
-    """Безопасный парсинг VID/PID из строки (hex '10c4', '0x10c4' или dec '4292') или int."""
-    if val is None:
-        return None
-    if isinstance(val, int):
-        return val
-    s = str(val).strip()
-    if not s:
-        return None
-    if s.lower().startswith("0x"):
-        with contextlib.suppress(ValueError):
-            return int(s, 16)
-    if any(c in "abcdefABCDEF" for c in s) or (len(s) == 4 and all(c in "0123456789abcdefABCDEF" for c in s)):
-        with contextlib.suppress(ValueError):
-            return int(s, 16)
-    with contextlib.suppress(ValueError):
-        return int(s, 10)
-    with contextlib.suppress(ValueError):
-        return int(s, 16)
-    return None
-
-
-class SerialTransport(BaseTransport):
+class SerialTransport(_SerialTransferMixin, BaseTransport):
     """Serial транспорт для работы с UART/последовательными портами.
 
     Поддерживает схемы serial:// и uart://, автоматическое определение устройства,
     управление линиями DTR/RTS/BREAK и адаптивное кадрирование.
     """
 
-    # Значения по умолчанию
     DEFAULT_BAUDRATE = 9600
     DEFAULT_TIMEOUT = 30.0
     DEFAULT_INTER_BYTE_TIMEOUT = 0.05
@@ -197,15 +121,12 @@ class SerialTransport(BaseTransport):
         """Получить путь к устройству из конфигурации или обнаружить по VID/PID."""
         opts = getattr(self.config, "options", {})
 
-        # 1. Проверяем опцию device
         if opts.get("device"):
             return str(opts["device"])
 
-        # 2. Проверяем host
         if getattr(self.config, "host", None):
             return str(self.config.host)
 
-        # 3. Авто-поиск по USB VID/PID или паттерну
         target_vid_raw = opts.get("vid")
         target_pid_raw = opts.get("pid")
         if "vid_pid" in opts and ":" in str(opts["vid_pid"]):
@@ -217,7 +138,11 @@ class SerialTransport(BaseTransport):
         target_pid = _parse_vid_pid(target_pid_raw)
         target_pattern = opts.get("pattern") or opts.get("vendor")
 
-        has_filter = (target_vid_raw is not None) or (target_pid_raw is not None) or (target_pattern is not None)
+        has_filter = (
+            (target_vid_raw is not None)
+            or (target_pid_raw is not None)
+            or (target_pattern is not None)
+        )
         if has_filter:
             available = list_serial_ports()
             for port_info in available:
@@ -227,7 +152,9 @@ class SerialTransport(BaseTransport):
                     continue
                 if target_pattern is not None:
                     pat_str = str(target_pattern).lower()
-                    haystack = f"{port_info.description} {port_info.manufacturer} {port_info.hwid}".lower()
+                    haystack = (
+                        f"{port_info.description} {port_info.manufacturer} {port_info.hwid}"
+                    ).lower()
                     if pat_str not in haystack:
                         continue
                 return port_info.device
@@ -238,7 +165,6 @@ class SerialTransport(BaseTransport):
                 host="serial",
             )
 
-        # 4. Дефолтное устройство по платформе
         if sys.platform == "win32":
             return "COM1"
         return "/dev/ttyUSB0"
@@ -253,21 +179,21 @@ class SerialTransport(BaseTransport):
         except (ValueError, TypeError) as e:
             raise ConfigurationError(f"Invalid serial baudrate: {baud_val!r}") from e
 
-        timeout_val = opts.get("timeout", getattr(self.config, "timeout", None) or self.DEFAULT_TIMEOUT)
+        timeout_val = opts.get(
+            "timeout", getattr(self.config, "timeout", None) or self.DEFAULT_TIMEOUT
+        )
 
         kwargs: dict[str, Any] = {
             "baudrate": baudrate,
             "timeout": float(timeout_val),
         }
 
-        # Размер байта
         if "bytesize" in opts:
             try:
                 kwargs["bytesize"] = int(opts["bytesize"])
             except (ValueError, TypeError) as e:
                 raise ConfigurationError(f"Invalid serial bytesize: {opts['bytesize']!r}") from e
 
-        # Четность
         if "parity" in opts:
             parity = opts["parity"]
             if isinstance(parity, str):
@@ -295,7 +221,6 @@ class SerialTransport(BaseTransport):
             else:
                 kwargs["parity"] = parity
 
-        # Стоп-биты
         if "stopbits" in opts:
             stopbits = opts["stopbits"]
             import serial as pser
@@ -404,12 +329,7 @@ class SerialTransport(BaseTransport):
                 s.reset_input_buffer()
 
     async def connect(self) -> None:
-        """Открыть serial порт.
-
-        Raises:
-            ConnectionError: При ошибке открытия порта
-
-        """
+        """Открыть serial порт."""
         try:
             self._device = self._get_device()
             kwargs = self._get_serial_kwargs()
@@ -504,6 +424,26 @@ class SerialTransport(BaseTransport):
             return bool(s.is_open)
         return self._connected
 
+    async def _read_chunk(self, chunk_size: int, timeout: float | None) -> bytes | None:
+        """Прочитать очередную порцию байт из reader с учётом StreamReader/mock-интерфейса."""
+        reader: Any = self._reader
+        if reader is None:
+            return None
+        chunk: bytes | None = None
+        if isinstance(reader, asyncio.StreamReader):
+            res = await asyncio.wait_for(reader.read(chunk_size), timeout=timeout)
+            if isinstance(res, bytes | bytearray):
+                chunk = bytes(res)
+        elif hasattr(reader, "readline"):
+            res = await asyncio.wait_for(reader.readline(), timeout=timeout)
+            if isinstance(res, bytes | bytearray):
+                chunk = bytes(res)
+        if chunk is None and hasattr(reader, "read"):
+            res = await asyncio.wait_for(reader.read(chunk_size), timeout=timeout)
+            if isinstance(res, bytes | bytearray):
+                chunk = bytes(res)
+        return chunk
+
     async def _read_response_bytes(
         self,
         cmd_timeout: float,
@@ -545,7 +485,6 @@ class SerialTransport(BaseTransport):
                     )
                 break
 
-            # Если стоп-условие уже удовлетворено
             if read_until is not None and read_until in accumulated:
                 break
             if prompt_regex is not None:
@@ -555,7 +494,6 @@ class SerialTransport(BaseTransport):
             if read_lines is not None and received_lines >= read_lines:
                 break
 
-            # Определение времени ожидания следующей порции
             waiting_for_specific = (
                 read_until is not None
                 or prompt_regex is not None
@@ -569,34 +507,17 @@ class SerialTransport(BaseTransport):
                 chunk_timeout = time_left
 
             try:
-                chunk: bytes | None = None
-                if isinstance(self._reader, asyncio.StreamReader):
-                    res = await asyncio.wait_for(self._reader.read(4096), timeout=chunk_timeout)
-                    if isinstance(res, bytes | bytearray):
-                        chunk = bytes(res)
-                elif hasattr(self._reader, "readline"):
-                    res = await asyncio.wait_for(self._reader.readline(), timeout=chunk_timeout)
-                    if isinstance(res, bytes | bytearray):
-                        chunk = bytes(res)
-                if chunk is None and hasattr(self._reader, "read"):
-                    res = await asyncio.wait_for(self._reader.read(4096), timeout=chunk_timeout)
-                    if isinstance(res, bytes | bytearray):
-                        chunk = bytes(res)
-
+                chunk = await self._read_chunk(4096, chunk_timeout)
                 if not chunk:
-                    # EOF достигнут
                     break
                 accumulated.extend(chunk)
                 if read_lines is not None:
                     received_lines = accumulated.count(b"\n")
             except TimeoutError:
-                # Если мы ждали специфичное условие, таймаут обрабатывается на следующей итерации
                 if waiting_for_specific:
                     continue
-                # Если данные уже поступали, пауза означает окончание пакета
                 if accumulated:
                     break
-                # Если данных еще не было вовсе, выходим по истечении общего времени
                 if time.monotonic() - read_start >= cmd_timeout:
                     break
 
@@ -608,24 +529,7 @@ class SerialTransport(BaseTransport):
         timeout: float | None = None,
         **kwargs: Any,
     ) -> Result:
-        r"""Отправить данные в serial порт и прочитать ответ.
-
-        Args:
-            command: Данные для отправки
-            timeout: Общий таймаут ожидания ответа
-            **kwargs: Дополнительные аргументы:
-                - line_ending: Перевод строки (\n, \r\n, \r, '')
-                - read_until: Стоп-строка для остановки чтения
-                - prompt_pattern: Regex-паттерн остановки чтения
-                - read_lines: Количество строк для чтения
-                - inter_byte_timeout: Межсимвольный таймаут (по умолчанию 0.05 с)
-                - flush_before_write: Очистить буфер перед отправкой (по умолчанию True)
-                - encoding: Кодировка текста (по умолчанию 'utf-8')
-
-        Returns:
-            Result объект с ответом от устройства
-
-        """
+        r"""Отправить данные в serial порт и прочитать ответ."""
         if not self._reader or not self._writer:
             raise ConnectionError("Not connected", host=self._device)
 
@@ -656,7 +560,9 @@ class SerialTransport(BaseTransport):
             self._writer.write(full_command.encode(encoding, errors="replace"))
             await self._writer.drain()
 
-            read_until_bytes = read_until_str.encode(encoding, errors="replace") if read_until_str else None
+            read_until_bytes = (
+                read_until_str.encode(encoding, errors="replace") if read_until_str else None
+            )
 
             raw_bytes = await self._read_response_bytes(
                 cmd_timeout=cmd_timeout,
@@ -733,10 +639,7 @@ class SerialTransport(BaseTransport):
         timeout: float | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[str]:
-        """Потоковая отправка/получение данных через serial порт (включая режим мониторинга).
-
-        Если command is None, транспорт работает в пассивном режиме прослушивания.
-        """
+        """Потоковая отправка/получение данных через serial порт (включая режим мониторинга)."""
         if not self._reader or not self._writer:
             raise ConnectionError("Not connected", host=self._device)
 
@@ -756,24 +659,10 @@ class SerialTransport(BaseTransport):
             except Exception as e:
                 self._handle_comm_error(e, command)
 
-        # Потоковое построчное чтение
         buffer = ""
         while True:
             try:
-                chunk: bytes | None = None
-                if isinstance(self._reader, asyncio.StreamReader):
-                    res = await asyncio.wait_for(self._reader.read(4096), timeout=cmd_timeout)
-                    if isinstance(res, bytes | bytearray):
-                        chunk = bytes(res)
-                elif hasattr(self._reader, "readline"):
-                    res = await asyncio.wait_for(self._reader.readline(), timeout=cmd_timeout)
-                    if isinstance(res, bytes | bytearray):
-                        chunk = bytes(res)
-                if chunk is None and hasattr(self._reader, "read"):
-                    res = await asyncio.wait_for(self._reader.read(4096), timeout=cmd_timeout)
-                    if isinstance(res, bytes | bytearray):
-                        chunk = bytes(res)
-
+                chunk = await self._read_chunk(4096, cmd_timeout)
                 if not chunk:
                     if buffer:
                         yield buffer.rstrip("\r\n")
@@ -818,20 +707,7 @@ class SerialTransport(BaseTransport):
 
         while True:
             try:
-                chunk: bytes | None = None
-                if isinstance(self._reader, asyncio.StreamReader):
-                    res = await asyncio.wait_for(self._reader.read(chunk_size), timeout=cmd_timeout)
-                    if isinstance(res, bytes | bytearray):
-                        chunk = bytes(res)
-                elif hasattr(self._reader, "readline"):
-                    res = await asyncio.wait_for(self._reader.readline(), timeout=cmd_timeout)
-                    if isinstance(res, bytes | bytearray):
-                        chunk = bytes(res)
-                if chunk is None and hasattr(self._reader, "read"):
-                    res = await asyncio.wait_for(self._reader.read(chunk_size), timeout=cmd_timeout)
-                    if isinstance(res, bytes | bytearray):
-                        chunk = bytes(res)
-
+                chunk = await self._read_chunk(chunk_size, cmd_timeout)
                 if not chunk:
                     break
                 yield chunk
@@ -839,282 +715,6 @@ class SerialTransport(BaseTransport):
                 break
             except Exception as e:
                 self._handle_comm_error(e, str(command or "stream_bytes"))
-
-    async def _prepare_modem_transfer(
-        self,
-        trigger_command: str | None = None,
-        trigger_delay: float = 0.5,
-    ) -> None:
-        """Сбросить входной буфер порта и опционально отправить команду инициализации загрузчика."""
-        if not self._connected or not self._reader or not self._writer:
-            raise ConnectionError("Serial transport is not connected", host=self._device)
-
-        self._flush_input_buffer()
-
-        if trigger_command:
-            cmd_str = trigger_command
-            if not cmd_str.endswith(("\r", "\n")):
-                cmd_str += "\r"
-            encoding = self.config.options.get("encoding", "utf-8")
-            self._writer.write(cmd_str.encode(encoding, errors="replace"))
-            drain_fn = getattr(self._writer, "drain", None)
-            if callable(drain_fn):
-                res = drain_fn()
-                if inspect.isawaitable(res):
-                    await res
-            if trigger_delay > 0:
-                await asyncio.sleep(trigger_delay)
-
-    async def upload_xmodem(
-        self,
-        local_path: str | Path,
-        *,
-        mode: XmodemMode = "1k",
-        trigger_command: str | None = None,
-        trigger_delay: float = 0.5,
-        progress_callback: Callable[[int, int], None] | None = None,
-        timeout: float = 60.0,
-        max_retries: int = 10,
-        packet_timeout: float = 10.0,
-        cancel_event: asyncio.Event | None = None,
-    ) -> int:
-        """Загрузить файл на устройство по протоколу XMODEM (checksum, crc или 1k)."""
-        await self._prepare_modem_transfer(trigger_command, trigger_delay=trigger_delay)
-        if self._reader is None or self._writer is None:
-            raise ConnectionError("Serial transport is not connected", host=self._device)
-
-        path = Path(local_path)
-        if not path.is_file():
-            raise FileNotFoundError(f"Local file does not exist: {path}")
-
-        total_size = int(path.stat().st_size)
-        sender = AsyncXmodemSender(
-            self._reader,
-            self._writer,
-            max_retries=max_retries,
-            packet_timeout=packet_timeout,
-            handshake_timeout=timeout,
-        )
-        with path.open("rb") as fp:
-            return await sender.send(
-                fp,
-                total_size=total_size,
-                mode=mode,
-                progress_callback=progress_callback,
-                cancel_event=cancel_event,
-            )
-
-    async def upload_ymodem(
-        self,
-        local_path: str | Path,
-        *,
-        trigger_command: str | None = None,
-        trigger_delay: float = 0.5,
-        progress_callback: Callable[[int, int], None] | None = None,
-        timeout: float = 60.0,
-        max_retries: int = 10,
-        packet_timeout: float = 10.0,
-        cancel_event: asyncio.Event | None = None,
-    ) -> int:
-        """Загрузить файл на устройство по протоколу YMODEM (с сохранением имени и точного размера)."""
-        await self._prepare_modem_transfer(trigger_command, trigger_delay=trigger_delay)
-        if self._reader is None or self._writer is None:
-            raise ConnectionError("Serial transport is not connected", host=self._device)
-
-        sender = AsyncYmodemSender(
-            self._reader,
-            self._writer,
-            max_retries=max_retries,
-            packet_timeout=packet_timeout,
-            handshake_timeout=timeout,
-        )
-        return await sender.send_file(
-            local_path,
-            progress_callback=progress_callback,
-            cancel_event=cancel_event,
-        )
-
-    async def download_xmodem(
-        self,
-        local_path: str | Path,
-        *,
-        mode: XmodemMode = "crc",
-        trigger_command: str | None = None,
-        trigger_delay: float = 0.5,
-        progress_callback: Callable[[int, int], None] | None = None,
-        timeout: float = 60.0,
-        max_retries: int = 10,
-        strip_padding: bool = True,
-        cancel_event: asyncio.Event | None = None,
-    ) -> int:
-        """Скачать файл с устройства по протоколу XMODEM."""
-        await self._prepare_modem_transfer(trigger_command, trigger_delay=trigger_delay)
-        if self._reader is None or self._writer is None:
-            raise ConnectionError("Serial transport is not connected", host=self._device)
-
-        path = Path(local_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        receiver = AsyncXmodemReceiver(
-            self._reader,
-            self._writer,
-            max_retries=max_retries,
-            packet_timeout=min(timeout, 10.0),
-        )
-        with path.open("wb") as fp:
-            return await receiver.receive(
-                fp,
-                mode=mode,
-                strip_padding=strip_padding,
-                progress_callback=progress_callback,
-                cancel_event=cancel_event,
-            )
-
-    async def download_ymodem(
-        self,
-        destination_dir: str | Path,
-        *,
-        trigger_command: str | None = None,
-        trigger_delay: float = 0.5,
-        progress_callback: Callable[[int, int, str], None] | None = None,
-        timeout: float = 60.0,
-        max_retries: int = 10,
-        cancel_event: asyncio.Event | None = None,
-    ) -> list[Path]:
-        """Скачать файлы с устройства по протоколу YMODEM-Batch в целевую директорию."""
-        await self._prepare_modem_transfer(trigger_command, trigger_delay=trigger_delay)
-        if self._reader is None or self._writer is None:
-            raise ConnectionError("Serial transport is not connected", host=self._device)
-
-        receiver = AsyncYmodemReceiver(
-            self._reader,
-            self._writer,
-            max_retries=max_retries,
-            packet_timeout=min(timeout, 10.0),
-        )
-        return await receiver.receive_batch(
-            destination_dir,
-            progress_callback=progress_callback,
-            cancel_event=cancel_event,
-        )
-
-    async def upload(
-        self,
-        local_path: str,
-        remote_path: str = "",
-        *,
-        protocol: str = "auto",
-        trigger_command: str | None = None,
-        **kwargs: Any,
-    ) -> None:
-        """Универсальная загрузка файла по Serial/UART (по умолчанию YMODEM)."""
-        _ = remote_path
-        kwargs.pop("recurse", None)
-        xmodem_mode: XmodemMode = kwargs.pop("xmodem_mode", kwargs.pop("mode", "1k"))
-        proto = (protocol or "auto").lower().strip()
-
-        if proto in ("auto", "ymodem"):
-            await self.upload_ymodem(
-                local_path,
-                trigger_command=trigger_command,
-                **kwargs,
-            )
-            return
-        if proto == "xmodem":
-            await self.upload_xmodem(
-                local_path,
-                mode=xmodem_mode,
-                trigger_command=trigger_command,
-                **kwargs,
-            )
-            return
-        if proto == "zmodem":
-            await self._prepare_modem_transfer(
-                trigger_command,
-                trigger_delay=float(kwargs.get("trigger_delay", 0.5)),
-            )
-            baud = int(self.config.options.get("baudrate", self.DEFAULT_BAUDRATE))
-            ser = self.serial_instance
-            fd = ser.fileno() if ser is not None and hasattr(ser, "fileno") else None
-            await ZmodemSubprocessAdapter.send_file(
-                self._device,
-                baud,
-                local_path,
-                trigger_command=trigger_command,
-                serial_fd=fd,
-                timeout=float(kwargs.get("timeout", 120.0)),
-            )
-            return
-
-        raise ModemProtocolError(
-            f"Unsupported serial file transfer protocol: {protocol!r}. "
-            "Expected 'auto', 'ymodem', 'xmodem', or 'zmodem'."
-        )
-
-    async def download(
-        self,
-        remote_path: str,
-        local_path: str,
-        *,
-        protocol: str = "auto",
-        trigger_command: str | None = None,
-        **kwargs: Any,
-    ) -> None:
-        """Универсальное скачивание файла по Serial/UART."""
-        _ = remote_path
-        kwargs.pop("recurse", None)
-        xmodem_mode: XmodemMode = kwargs.pop("xmodem_mode", kwargs.pop("mode", "crc"))
-        proto = (protocol or "auto").lower().strip()
-
-        if proto in ("auto", "ymodem"):
-            dest_p = Path(local_path)
-            target_dir = dest_p if dest_p.is_dir() else (dest_p.parent or Path("."))
-            cb = kwargs.pop("progress_callback", None)
-
-            def _wrap_cb(sent: int, total: int, _name: str) -> None:
-                if cb is not None:
-                    cb(sent, total)
-
-            files = await self.download_ymodem(
-                target_dir,
-                trigger_command=trigger_command,
-                progress_callback=_wrap_cb if cb is not None else None,
-                **kwargs,
-            )
-            if files and not dest_p.is_dir() and files[0] != dest_p:
-                files[0].replace(dest_p)
-            return
-        if proto == "xmodem":
-            await self.download_xmodem(
-                local_path,
-                mode=xmodem_mode,
-                trigger_command=trigger_command,
-                **kwargs,
-            )
-            return
-        if proto == "zmodem":
-            await self._prepare_modem_transfer(
-                trigger_command,
-                trigger_delay=float(kwargs.get("trigger_delay", 0.5)),
-            )
-            baud = int(self.config.options.get("baudrate", self.DEFAULT_BAUDRATE))
-            ser = self.serial_instance
-            fd = ser.fileno() if ser is not None and hasattr(ser, "fileno") else None
-            dest_p = Path(local_path)
-            target_dir = dest_p if dest_p.is_dir() else (dest_p.parent or Path("."))
-            await ZmodemSubprocessAdapter.receive_files(
-                self._device,
-                baud,
-                target_dir,
-                trigger_command=trigger_command,
-                serial_fd=fd,
-                timeout=float(kwargs.get("timeout", 120.0)),
-            )
-            return
-
-        raise ModemProtocolError(
-            f"Unsupported serial file transfer protocol: {protocol!r}. "
-            "Expected 'auto', 'ymodem', 'xmodem', or 'zmodem'."
-        )
 
     async def open_shell(
         self,
@@ -1135,85 +735,12 @@ class SerialTransport(BaseTransport):
         )
 
 
-class _SerialShellStdin:
-    """Адаптер текстовой записи поверх байтового StreamWriter для SerialTransport."""
-
-    def __init__(self, writer: Any) -> None:
-        self._writer = writer
-
-    def write(self, text: str | bytes) -> None:
-        data = text.encode("utf-8") if isinstance(text, str) else bytes(text)
-        self._writer.write(data)
-
-    async def drain(self) -> None:
-        drain_fn = getattr(self._writer, "drain", None)
-        if callable(drain_fn):
-            res = drain_fn()
-            if inspect.isawaitable(res):
-                await res
-
-
-class _SerialShellStdout:
-    """Адаптер текстового чтения поверх байтового StreamReader для SerialTransport."""
-
-    def __init__(self, reader: Any) -> None:
-        self._reader = reader
-
-    async def read(self, n: int = 4096) -> str:
-        chunk = await self._reader.read(n)
-        if isinstance(chunk, bytes):
-            return chunk.decode("utf-8", errors="replace")
-        return chunk or ""
-
-
-class _SerialShellProcess:
-    """Адаптер Serial reader/writer для работы с ``ShellSession`` и ``expect()``."""
-
-    def __init__(
-        self,
-        reader: Any,
-        writer: Any,
-        term_size: tuple[int, int] = (80, 24),
-    ) -> None:
-        self._reader = reader
-        self._writer = writer
-        self.stdin = _SerialShellStdin(writer)
-        self.stdout = _SerialShellStdout(reader)
-        self.term_size = term_size
-        self.returncode: int | None = None
-        self.terminated = False
-        self.closed = False
-
-    def change_terminal_size(self, width: int = 80, height: int = 24, **kwargs: Any) -> None:
-        w = kwargs.get("cols", width)
-        h = kwargs.get("rows", height)
-        self.term_size = (w, h)
-
-    def terminate(self) -> None:
-        self.terminated = True
-        self.returncode = 0
-
-    def close(self) -> None:
-        self.closed = True
-        self.returncode = 0
-
-    def is_closing(self) -> bool:
-        """Проверить, закрывается ли процесс оболочки (ShellProcessProtocol)."""
-        if self.closed or self.terminated:
-            return True
-        is_closing_fn = getattr(self._writer, "is_closing", None)
-        if callable(is_closing_fn) and type(is_closing_fn).__name__ != "AsyncMock":
-            try:
-                res = is_closing_fn()
-                if not inspect.isawaitable(res):
-                    return bool(res)
-            except Exception:
-                pass
-        return False
-
-
 __all__ = [
     "SerialPortInfo",
     "SerialTransport",
+    "_SerialShellProcess",
+    "_SerialShellStdin",
+    "_SerialShellStdout",
+    "_parse_vid_pid",
     "list_serial_ports",
 ]

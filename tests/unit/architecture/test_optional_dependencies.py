@@ -62,9 +62,13 @@ def test_optional_dependencies_contain_required_extras() -> None:
     assert any("ttp" in dep for dep in extras["parsing"])
     assert any("textfsm" in dep for dep in extras["parsing"])
 
+    assert "security" in extras
+    assert any("tree-sitter" in dep for dep in extras["security"])
+    assert any("tree-sitter-bash" in dep for dep in extras["security"])
+
     assert "all" in extras
     assert extras["all"] == [
-        "uniconn[bmc,pve,restconf,netconf,gnmi,serial,telnet,winrm,cli,templates,parsing,otel]"
+        "uniconn[bmc,pve,restconf,netconf,gnmi,serial,telnet,winrm,cli,templates,parsing,otel,security]"
     ]
 
 

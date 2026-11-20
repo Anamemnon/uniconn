@@ -43,6 +43,7 @@ class _PooledConnectionSlot:
     conn: Connection
     in_flight: int = 0
     opening_or_running: int = 0
+    connecting: bool = False
     draining: bool = False
     closed: bool = False
     ever_succeeded: bool = False
@@ -95,7 +96,6 @@ class SSHSessionPool:
             self._circuit_breaker = None
 
         self._slots: list[_PooledConnectionSlot] = []
-        self._semaphores: list[asyncio.Semaphore] = []
         self._condition = asyncio.Condition()
         self._scale_down_events = 0
 
@@ -234,12 +234,26 @@ class SSHSessionPool:
             while True:
                 for slot in self._slots:
                     if (
-                        not slot.draining
+                        not slot.connecting
+                        and not slot.draining
                         and not slot.closed
                         and slot.in_flight < self._max_sessions
                     ):
                         slot.in_flight += 1
                         return slot, False
+
+                # Если есть инициализирующийся слот со свободной ёмкостью каналов,
+                # ждём завершения его handshake вместо открытия дублирующего соединения.
+                has_connecting_capacity = any(
+                    s.connecting
+                    and not s.draining
+                    and not s.closed
+                    and s.in_flight < self._max_sessions
+                    for s in self._slots
+                )
+                if has_connecting_capacity:
+                    await self._condition.wait()
+                    continue
 
                 active_count = sum(
                     1 for s in self._slots if not s.draining and not s.closed
@@ -253,9 +267,12 @@ class SSHSessionPool:
                         retry_attempts=self._retry_attempts,
                         logger=self._logger,
                     )
-                    new_slot = _PooledConnectionSlot(conn=conn, in_flight=1)
+                    new_slot = _PooledConnectionSlot(
+                        conn=conn,
+                        in_flight=1,
+                        connecting=True,
+                    )
                     self._slots.append(new_slot)
-                    self._condition.notify_all()
                     return new_slot, True
 
                 await self._condition.wait()
@@ -265,6 +282,8 @@ class SSHSessionPool:
         conn_to_close: Connection | None = None
         async with self._condition:
             slot.in_flight = max(0, slot.in_flight - 1)
+            if slot.in_flight == 0 and slot.connecting:
+                slot.connecting = False
             if slot.draining and slot.in_flight == 0 and not slot.closed:
                 slot.closed = True
                 if slot in self._slots:
@@ -360,10 +379,43 @@ class SSHSessionPool:
 
         return False
 
+    @staticmethod
+    def _is_slot_connected(conn: Connection) -> bool:
+        """Единообразно проверить, установлено ли соединение слота."""
+        is_connected = getattr(conn, "is_connected", None)
+        if isinstance(is_connected, bool):
+            return is_connected
+        transport = getattr(conn, "transport", None) or getattr(conn, "_transport", None)
+        t_conn = getattr(transport, "is_connected", True)
+        return bool(t_conn)
+
+    async def _ensure_slot_initialized(self, slot: _PooledConnectionSlot) -> None:
+        """Атомарно выполнить начальный connect() для свежесозданного слота до его шаринга."""
+        if not slot.connecting:
+            return
+        try:
+            connect_fn = getattr(slot.conn, "connect", None)
+            if not self._is_slot_connected(slot.conn) and callable(connect_fn):
+                res = connect_fn()
+                if asyncio.iscoroutine(res):
+                    await res
+        except BaseException:
+            async with self._condition:
+                slot.connecting = False
+                slot.draining = True
+                self._condition.notify_all()
+            raise
+        else:
+            async with self._condition:
+                slot.connecting = False
+                self._condition.notify_all()
+
     async def _run_on_slot(
         self,
         slot: _PooledConnectionSlot,
         command: str,
+        *,
+        is_creator: bool = False,
         **kwargs: Any,
     ) -> tuple[Result | None, bool]:
         """Выполнить команду в выделенном слоте."""
@@ -375,13 +427,11 @@ class SSHSessionPool:
         slot.opening_or_running += 1
         channel_idx = slot.opening_or_running
         try:
-            transport = getattr(slot.conn, "transport", None) or getattr(
-                slot.conn, "_transport", None
-            )
-            is_connected = getattr(transport, "is_connected", True)
+            if is_creator and slot.connecting:
+                await self._ensure_slot_initialized(slot)
             if (
                 self._health_check
-                and is_connected
+                and self._is_slot_connected(slot.conn)
                 and not await slot.conn.is_alive()
             ):
                 self._logger.debug(
@@ -402,12 +452,16 @@ class SSHSessionPool:
                 self._circuit_breaker.record_success()
             return res, False
         finally:
+            if slot.connecting:
+                async with self._condition:
+                    slot.connecting = False
+                    self._condition.notify_all()
             slot.opening_or_running = max(0, slot.opening_or_running - 1)
 
     async def check_health(self, timeout: float | None = None) -> int:
         """Проверить живость всех соединений пула и удалить оборванные."""
         async with self._condition:
-            candidates = [s for s in self._slots if not s.closed]
+            candidates = [s for s in self._slots if not s.closed and not s.connecting]
 
         probe_results = await asyncio.gather(
             *(slot.conn.is_alive(timeout=timeout) for slot in candidates),
@@ -439,19 +493,21 @@ class SSHSessionPool:
         """Выполнить команду через доступный слот с поддержкой адаптивного повтора."""
         max_adaptive_attempts = 8
         for _ in range(max_adaptive_attempts):
-            slot, _ = await self._acquire_slot()
+            slot, is_creator = await self._acquire_slot()
             try:
                 res, retry_adaptively = await self._run_on_slot(
-                    slot, command, **kwargs
+                    slot, command, is_creator=is_creator, **kwargs
                 )
                 if not retry_adaptively and res is not None:
                     return res
             finally:
                 await self._release_slot(slot)
 
-        slot, _ = await self._acquire_slot()
+        slot, is_creator = await self._acquire_slot()
         try:
-            res, _ = await self._run_on_slot(slot, command, **kwargs)
+            res, _ = await self._run_on_slot(
+                slot, command, is_creator=is_creator, **kwargs
+            )
             if res is None:
                 raise ConnectionError(
                     f"SSHSessionPool exhausted adaptive recovery attempts for {self._uri_safe}",

@@ -1,0 +1,22 @@
+# Real OpenSSH server configuration for uniconn integration tests
+# Deliberately restricts MaxSessions=2 to exercise SSHSessionPool adaptive limit scale-down.
+
+Port 2222
+ListenAddress 0.0.0.0
+Protocol 2
+
+HostKey /config/ssh_host_ed25519_key
+HostKey /config/ssh_host_rsa_key
+
+PasswordAuthentication yes
+PubkeyAuthentication yes
+KbdInteractiveAuthentication no
+PermitRootLogin no
+UseDNS no
+AllowTcpForwarding yes
+GatewayPorts no
+
+MaxSessions 2
+MaxStartups 4:50:8
+
+Subsystem sftp internal-sftp
