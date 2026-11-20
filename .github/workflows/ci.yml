@@ -53,9 +53,14 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras --dev
       - name: Start Real Protocol Stack
-        run: docker compose -f tests/integration/docker-compose.integration.yml up -d --wait
+        run: docker compose -f tests/integration/docker-compose.integration.yml up -d --build --wait
       - name: Run Real Protocol Integration Tests
         run: uv run pytest tests/integration/test_real_protocols.py -m integration -v --tb=short
+      - name: Dump Container Logs on Failure
+        if: failure()
+        run: |
+          docker compose -f tests/integration/docker-compose.integration.yml ps -a
+          docker compose -f tests/integration/docker-compose.integration.yml logs --no-color
       - name: Tear Down Real Protocol Stack
         if: always()
         run: docker compose -f tests/integration/docker-compose.integration.yml down -v

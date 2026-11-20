@@ -27,11 +27,11 @@ OPA_URL = os.environ.get(
 )
 NETCONF_URI = os.environ.get(
     "UNICONN_TEST_NETCONF_URI",
-    "netconf://netconf:secret@127.0.0.1:8300",
+    "netconf://netconf:secret@127.0.0.1:8300?known_hosts=none",
 )
 GNMI_URI = os.environ.get(
     "UNICONN_TEST_GNMI_URI",
-    "gnmi://gnmi:secret@127.0.0.1:57400",
+    "gnmi://gnmi:secret@127.0.0.1:57400?tls=false",
 )
 
 
