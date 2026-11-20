@@ -1145,7 +1145,7 @@ class MCPServerToolsMixin(MCPServerGatesMixin):
             flow_tasks=tuple(flow_obj.tasks.keys()),
             agent_id=str(raw_agent_id) if raw_agent_id else None,
             role=str(raw_role) if raw_role else None,
-            enforce_deny=not eff_dry_run,
+            enforce_deny=True,
         )
 
         approval_id = arguments.get("approval_id")

@@ -973,7 +973,7 @@ class FlowCheckpointStore:
             for h, out_dict in prior_outputs.items():
                 if isinstance(out_dict, Mapping):
                     outputs_map[str(h)] = {
-                        str(k): _to_checkpoint_json_safe(v)
+                        str(k): _mask_nested_value(_to_checkpoint_json_safe(v))
                         for k, v in out_dict.items()
                     }
 
@@ -986,8 +986,8 @@ class FlowCheckpointStore:
                     if r.task_name not in host_done:
                         host_done.append(r.task_name)
                     if r.return_value is not None:
-                        host_outputs[r.task_name] = _to_checkpoint_json_safe(
-                            r.return_value
+                        host_outputs[r.task_name] = _mask_nested_value(
+                            _to_checkpoint_json_safe(r.return_value)
                         )
                 elif not r.ok:
                     fail_entry: dict[str, Any] = {

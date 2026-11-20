@@ -290,7 +290,11 @@ class NetconfTransport(BaseTransport):
         )
         start_ts = time.perf_counter()
         async with self._rpc_lock:
-            assert self._process is not None
+            if self._process is None:
+                raise UniconnConnectionError(
+                    "NETCONF SSH subsystem process is not connected",
+                    host=self.config.host,
+                )
             try:
                 self._process.stdin.write(encoded_frame)
                 if hasattr(self._process.stdin, "drain"):

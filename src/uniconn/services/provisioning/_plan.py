@@ -231,7 +231,8 @@ async def apply_owner_group(
     elif owner is not None:
         cmd = f"chown {flag_str}{shlex.quote(owner)} {shlex.quote(path_str)}"
     else:
-        assert group is not None
+        if group is None:
+            raise ValueError("Either owner or group must be specified")
         cmd = f"chgrp {flag_str}{shlex.quote(group)} {shlex.quote(path_str)}"
     await conn.run(cmd, sudo=sudo, raise_on_error=True, dry_run=False)
 

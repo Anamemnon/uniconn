@@ -694,6 +694,14 @@ class ActionRiskClassifier:
             return ActionRiskTier.TIER_1_MUTATING, f"Git operation: {sub}"
         if base_bin in ("docker", "podman", "kubectl"):
             return cls._classify_container_cli(base_bin, sub, args_lower)
+        if base_bin == "command":
+            is_lookup_flag = any(
+                k.startswith("-") and not k.startswith("--") and ("v" in k[1:] or "V" in k[1:])
+                for k in flags_dict
+            )
+            if is_lookup_flag:
+                return ActionRiskTier.TIER_0_SAFE, "Safe read-only command lookup (command -v/-V)"
+            return ActionRiskTier.TIER_1_MUTATING, "Command builtin execution"
         if base_bin == "sed" and (
             "-i" in flags_dict or "--in-place" in flags_dict or any(k.startswith("-i") for k in flags_dict)
         ):

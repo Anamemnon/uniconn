@@ -10,6 +10,7 @@ import sys
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
+from ...core._shell_quoting import ps_quote as _hardened_ps_quote
 from ...result import EnsureResult
 from ..facts import _is_windows_remote_connection
 
@@ -61,7 +62,7 @@ _REBOOT_EXIT_CODES: frozenset[int] = frozenset({3010, 1641})
 
 def ps_quote(value: str) -> str:
     """Экранировать строку для безопасной подстановки в одинарные кавычки PowerShell."""
-    return "'" + str(value).replace("'", "''") + "'"
+    return _hardened_ps_quote(str(value))
 
 
 def is_windows_connection(conn: Connection) -> bool:

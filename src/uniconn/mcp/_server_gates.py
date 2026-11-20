@@ -168,7 +168,8 @@ class MCPServerGatesMixin:
             env_name = "prod" if is_prod else "default"
 
         parsed_ast = ast
-        if parsed_ast is None and command and not command.startswith("flow:"):
+        is_flow_action = bool(flow_name) or action_type == "flow_execution"
+        if parsed_ast is None and command and not is_flow_action:
             parsed_ast = CommandASTParser.parse(
                 command,
                 max_depth=guardrails.max_ast_depth,

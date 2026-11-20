@@ -30,9 +30,28 @@ _WRAPPER_BINARIES: frozenset[str] = frozenset(
         "taskset",
         "setsid",
         "busybox",
+        "exec",
+        "builtin",
+        "command",
     }
 )
+_SHELL_CONTROL_PREFIX_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "{",
+        "!",
+        "if",
+        "then",
+        "elif",
+        "else",
+        "do",
+        "while",
+        "until",
+        "coproc",
+    }
+)
+_SHELL_CONTROL_SKIP_KEYWORDS: frozenset[str] = frozenset({"}", "fi", "done", "esac"})
 _SHELL_BINARIES: frozenset[str] = frozenset({"sh", "bash", "zsh", "dash", "ksh", "ash", "csh", "tcsh"})
+_SHELL_COMBINED_C_FLAG_RE = re.compile(r"^-[a-zA-Z]*c[a-zA-Z]*$")
 _INLINE_SCRIPT_BINS: dict[str, tuple[str, ...]] = {
     "python": ("-c",),
     "python2": ("-c",),
@@ -44,6 +63,31 @@ _INLINE_SCRIPT_BINS: dict[str, tuple[str, ...]] = {
     "php": ("-r",),
     "lua": ("-e",),
 }
+_VERSIONED_INTERPRETER_FLAGS: tuple[tuple[re.Pattern[str], tuple[str, ...]], ...] = (
+    (re.compile(r"^python\d*(?:\.\d+)*$"), ("-c",)),
+    (re.compile(r"^perl\d*(?:\.\d+)*$"), ("-e", "-E")),
+    (re.compile(r"^ruby\d*(?:\.\d+)*$"), ("-e",)),
+    (re.compile(r"^php\d*(?:\.\d+)*$"), ("-r",)),
+    (re.compile(r"^lua\d*(?:\.\d+)*$"), ("-e",)),
+    (re.compile(r"^node(?:js)?\d*(?:\.\d+)*$"), ("-e", "--eval", "-p", "--print")),
+)
+
+
+def _get_inline_script_flags(exec_name: str) -> tuple[str, ...] | None:
+    """Вернуть флаги инлайн-выполнения для интерпретатора (включая версионированные ``python3.11``)."""
+    direct = _INLINE_SCRIPT_BINS.get(exec_name)
+    if direct is not None:
+        return direct
+    for pattern, flags in _VERSIONED_INTERPRETER_FLAGS:
+        if pattern.fullmatch(exec_name):
+            return flags
+    return None
+
+
+def _is_interpreter_binary(exec_name: str) -> bool:
+    """Проверить, является ли бинарник POSIX-оболочкой или скриптовым интерпретатором."""
+    return exec_name in _SHELL_BINARIES or _get_inline_script_flags(exec_name) is not None
+
 
 _SUDO_OPTS_WITH_ARG: frozenset[str] = frozenset(
     {"-u", "-g", "-C", "-D", "-R", "-T", "-U", "-h", "-p", "-r", "-t", "-L", "--user"}
@@ -57,6 +101,7 @@ _WRAPPER_OPTS_WITH_ARG: dict[str, frozenset[str]] = {
     "strace": frozenset({"-e", "-o", "-p", "-s", "-u", "-E"}),
     "ltrace": frozenset({"-e", "-o", "-p", "-s", "-u", "-l"}),
     "nsenter": frozenset({"-t", "--target", "-F"}),
+    "exec": frozenset({"-a"}),
 }
 _XARGS_OPTS_WITH_ARG: frozenset[str] = frozenset(
     {"-a", "--arg-file", "-d", "--delimiter", "-E", "-e", "-I", "-i", "-L", "-l", "-n", "-P", "-s"}
@@ -195,6 +240,7 @@ _DESTRUCTIVE_SUBCOMMANDS: dict[str, frozenset[str]] = {
 
 _SUBSHELL_RE = re.compile(r"(?<!\$)\$\((?!\()([^()]+)\)|`([^`]+)`")
 _REDIRECT_RE = re.compile(r"(?:\d*>>?|\d*<(?!<<)|&>>?|>&\d+)\s*(\S+)?")
+_HERESTRING_RE = re.compile(r"<<<\s*(?:'([^']*)'|\"((?:\\.|[^\"\\])*)\"|(\S+))")
 _BASE64_PIPE_RE = re.compile(
     r"(?:echo|printf)\s+(?:-[eEn]+\s+)*(['\"]?)([A-Za-z0-9+/=]{6,})\1\s*\|\s*"
     r"(?:base64\s+(?:-[A-Za-z]+\s+)*(?:-d|--decode|-D)|openssl\s+enc\s+-d\s+-base64)",

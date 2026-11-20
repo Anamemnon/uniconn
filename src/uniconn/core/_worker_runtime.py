@@ -391,12 +391,26 @@ def _op_sync_scan(req):
         return any(exclude_re.match(part) for part in rel_p.split("/"))
 
     base_path = pathlib.Path(base)
+    base_resolved = base_path.resolve()
+
+    def _safe_under_base(rel_item):
+        rel_str = str(rel_item)
+        p_rel = pathlib.Path(rel_str)
+        if p_rel.is_absolute():
+            raise ValueError(f"Absolute path not allowed in sync_scan: {rel_str!r}")
+        candidate = (base_path / p_rel).resolve()
+        try:
+            candidate.relative_to(base_resolved)
+        except ValueError as err:
+            raise ValueError(f"Path traversal blocked in sync_scan: {rel_str!r}") from err
+        return base_path / p_rel
+
     for rel_d in mkdirs:
-        target_d = base_path / rel_d if rel_d else base_path
+        target_d = _safe_under_base(rel_d) if rel_d else base_path
         target_d.mkdir(parents=True, exist_ok=True)
     deleted = []
     for rel_del in delete_paths:
-        target_f = base_path / rel_del
+        target_f = _safe_under_base(rel_del)
         try:
             target_f.unlink()
             deleted.append(rel_del)

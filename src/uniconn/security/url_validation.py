@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import re
 import socket
+import ssl
 import urllib.request
 from typing import Any
 from urllib.parse import urlparse
@@ -122,28 +124,14 @@ def _validate_ip_address(
         )
 
 
-def validate_outbound_url(
+def _resolve_and_validate(
     url: str,
     *,
     allow_private_network: bool = False,
     resolve_dns: bool = False,
     allow_metadata: bool = False,
-) -> str:
-    """Проверить исходящий URL (HTTP/HTTPS) на соответствие политике защиты от SSRF.
-
-    Args:
-        url: Целевой URL.
-        allow_private_network: Разрешить loopback (``127.0.0.1``, ``localhost``) и RFC1918 адреса.
-        resolve_dns: Разрешать ли DNS-имя через ``socket.getaddrinfo`` для защиты от DNS-rebinding.
-        allow_metadata: Разрешить ли link-local / cloud metadata адреса (по умолчанию запрещены всегда).
-
-    Returns:
-        Нормализованный исходный URL (stripped).
-
-    Raises:
-        ConfigurationError: При недопустимой схеме, некорректном хосте/порте или запрещённом IP.
-
-    """
+) -> tuple[str, str, str | None]:
+    """Провалидировать URL и при ``resolve_dns=True`` вернуть ``(cleaned_url, hostname, pinned_ip)``."""
     if not isinstance(url, str) or not url.strip():
         raise ConfigurationError("Outbound URL must be a non-empty string")
     cleaned = url.strip()
@@ -175,6 +163,7 @@ def validate_outbound_url(
     except ValueError:
         literal_ip = _parse_nonstandard_ipv4(hostname)
 
+    pinned_ip: str | None = None
     if literal_ip is not None:
         _validate_ip_address(
             literal_ip,
@@ -182,6 +171,7 @@ def validate_outbound_url(
             allow_metadata=allow_metadata,
             context_host=hostname,
         )
+        pinned_ip = str(literal_ip)
     elif resolve_dns:
         eff_port = port if port is not None else (443 if scheme == "https" else 80)
         try:
@@ -192,7 +182,7 @@ def validate_outbound_url(
             ) from exc
         if not addr_infos:
             raise ConfigurationError(f"Outbound URL hostname {hostname!r} resolved to no IP addresses")
-        validated_any = False
+        validated_ips: list[str] = []
         for _fam, _kind, _proto, _canon, sockaddr in addr_infos:
             if not sockaddr:
                 continue
@@ -207,11 +197,134 @@ def validate_outbound_url(
                 allow_metadata=allow_metadata,
                 context_host=hostname,
             )
-            validated_any = True
-        if not validated_any:
+            validated_ips.append(str(resolved_ip))
+        if not validated_ips:
             raise ConfigurationError(f"Outbound URL hostname {hostname!r} resolved to no valid IP addresses")
+        pinned_ip = validated_ips[0]
 
+    return cleaned, hostname, pinned_ip
+
+
+def validate_outbound_url(
+    url: str,
+    *,
+    allow_private_network: bool = False,
+    resolve_dns: bool = False,
+    allow_metadata: bool = False,
+) -> str:
+    """Проверить исходящий URL (HTTP/HTTPS) на соответствие политике защиты от SSRF.
+
+    Args:
+        url: Целевой URL.
+        allow_private_network: Разрешить loopback (``127.0.0.1``, ``localhost``) и RFC1918 адреса.
+        resolve_dns: Разрешать ли DNS-имя через ``socket.getaddrinfo`` для защиты от DNS-rebinding.
+        allow_metadata: Разрешить ли link-local / cloud metadata адреса (по умолчанию запрещены всегда).
+
+    Returns:
+        Нормализованный исходный URL (stripped).
+
+    Raises:
+        ConfigurationError: При недопустимой схеме, некорректном хосте/порте или запрещённом IP.
+
+    """
+    cleaned, _, _ = _resolve_and_validate(
+        url,
+        allow_private_network=allow_private_network,
+        resolve_dns=resolve_dns,
+        allow_metadata=allow_metadata,
+    )
     return cleaned
+
+
+def resolve_and_validate_outbound_url(
+    url: str,
+    *,
+    allow_private_network: bool = False,
+    allow_metadata: bool = False,
+) -> tuple[str, str, str]:
+    """Провалидировать URL с DNS-резолвом и вернуть ``(url, hostname, pinned_ip)`` для защиты от TOCTOU."""
+    cleaned, hostname, pinned_ip = _resolve_and_validate(
+        url,
+        allow_private_network=allow_private_network,
+        resolve_dns=True,
+        allow_metadata=allow_metadata,
+    )
+    if not pinned_ip:
+        raise ConfigurationError(f"Outbound URL hostname {hostname!r} resolved to no valid IP addresses")
+    return cleaned, hostname, pinned_ip
+
+
+def _open_pinned_socket(
+    conn: http.client.HTTPConnection,
+    pinned_ips: dict[str, str],
+    scheme_label: str,
+) -> socket.socket:
+    """Открыть TCP-сокет строго к провалидированному IP-адресу из карты ``pinned_ips``."""
+    norm_host = (conn.host or "").strip().strip("[]").lower().rstrip(".")
+    target_ip = pinned_ips.get(norm_host)
+    if target_ip is None:
+        raise ConfigurationError(f"Refusing unpinned {scheme_label} connection to {conn.host!r}")
+    source_addr: tuple[str, int] | None = getattr(conn, "source_address", None)
+    return socket.create_connection((target_ip, conn.port), conn.timeout, source_addr)
+
+
+def _make_pinned_http_connection_cls(pinned_ips: dict[str, str]) -> type[http.client.HTTPConnection]:
+    """Создать класс ``HTTPConnection``, подключающийся строго к провалидированному IP-адресу."""
+
+    class _PinnedHTTPConnection(http.client.HTTPConnection):
+        def connect(self) -> None:
+            self.sock = _open_pinned_socket(self, pinned_ips, "HTTP")
+            tunnel_host = getattr(self, "_tunnel_host", None)
+            if tunnel_host:
+                tunnel_fn = getattr(self, "_tunnel", None)
+                if callable(tunnel_fn):
+                    tunnel_fn()
+
+    return _PinnedHTTPConnection
+
+
+def _make_pinned_https_connection_cls(pinned_ips: dict[str, str]) -> type[http.client.HTTPSConnection]:
+    """Создать класс ``HTTPSConnection`` с привязкой TCP к провалидированному IP и TLS SNI по исходному имени."""
+
+    class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+        def connect(self) -> None:
+            sock = _open_pinned_socket(self, pinned_ips, "HTTPS")
+            tunnel_host: str | None = getattr(self, "_tunnel_host", None)
+            if tunnel_host:
+                self.sock = sock
+                tunnel_fn = getattr(self, "_tunnel", None)
+                if callable(tunnel_fn):
+                    tunnel_fn()
+                server_hostname = tunnel_host
+            else:
+                server_hostname = self.host
+            ctx: ssl.SSLContext = getattr(self, "_context", None) or ssl.create_default_context()
+            self.sock = ctx.wrap_socket(sock, server_hostname=server_hostname)
+
+    return _PinnedHTTPSConnection
+
+
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    """HTTPHandler с привязкой TCP-сокета к провалидированным IP-адресам."""
+
+    def __init__(self, pinned_ips: dict[str, str]) -> None:
+        super().__init__()
+        self._conn_cls = _make_pinned_http_connection_cls(pinned_ips)
+
+    def http_open(self, req: urllib.request.Request) -> Any:
+        return self.do_open(self._conn_cls, req)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    """HTTPSHandler с привязкой TCP-сокета к провалидированным IP и сохранением TLS SNI."""
+
+    def __init__(self, pinned_ips: dict[str, str]) -> None:
+        super().__init__()
+        self._conn_cls = _make_pinned_https_connection_cls(pinned_ips)
+
+    def https_open(self, req: urllib.request.Request) -> Any:
+        ctx = getattr(self, "_context", None)
+        return self.do_open(self._conn_cls, req, context=ctx)
 
 
 class _SSRFValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -223,10 +336,12 @@ class _SSRFValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
         allow_private_network: bool,
         allow_metadata: bool,
         allow_redirects: bool = True,
+        pinned_ips: dict[str, str] | None = None,
     ) -> None:
         self._allow_private_network = allow_private_network
         self._allow_metadata = allow_metadata
         self._allow_redirects = allow_redirects
+        self._pinned_ips = pinned_ips
 
     def redirect_request(
         self,
@@ -239,12 +354,13 @@ class _SSRFValidatingRedirectHandler(urllib.request.HTTPRedirectHandler):
     ) -> urllib.request.Request | None:
         if not self._allow_redirects:
             raise ConfigurationError(f"HTTP redirect ({code}) to {newurl!r} is blocked by SSRF policy")
-        validate_outbound_url(
+        _, new_host, new_ip = resolve_and_validate_outbound_url(
             newurl,
             allow_private_network=self._allow_private_network,
-            resolve_dns=True,
             allow_metadata=self._allow_metadata,
         )
+        if self._pinned_ips is not None:
+            self._pinned_ips[new_host] = new_ip
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -253,18 +369,50 @@ def build_ssrf_safe_opener(
     allow_private_network: bool = False,
     allow_metadata: bool = False,
     allow_redirects: bool = True,
+    pinned_ips: dict[str, str] | None = None,
 ) -> urllib.request.OpenerDirector:
-    """Создать ``OpenerDirector`` для ``urllib.request``, проверяющий или запрещающий редиректы."""
-    return urllib.request.build_opener(
+    """Создать ``OpenerDirector`` для ``urllib.request``, проверяющий редиректы и (опционально) пиннингующий IP."""
+    handlers: list[Any] = [
         _SSRFValidatingRedirectHandler(
             allow_private_network=allow_private_network,
             allow_metadata=allow_metadata,
             allow_redirects=allow_redirects,
+            pinned_ips=pinned_ips,
         )
+    ]
+    if pinned_ips is not None:
+        handlers.append(_PinnedHTTPHandler(pinned_ips))
+        handlers.append(_PinnedHTTPSHandler(pinned_ips))
+    return urllib.request.build_opener(*handlers)
+
+
+def open_ssrf_safe_url(
+    req: urllib.request.Request,
+    *,
+    timeout: float,
+    allow_private_network: bool = False,
+    allow_metadata: bool = False,
+    allow_redirects: bool = False,
+) -> Any:
+    """Выполнить HTTP/HTTPS-запрос с однократным DNS-резолвом и жёсткой привязкой сокета к IP (anti-TOCTOU)."""
+    _, hostname, pinned_ip = resolve_and_validate_outbound_url(
+        req.full_url,
+        allow_private_network=allow_private_network,
+        allow_metadata=allow_metadata,
     )
+    pinned_map: dict[str, str] = {hostname: pinned_ip}
+    opener = build_ssrf_safe_opener(
+        allow_private_network=allow_private_network,
+        allow_metadata=allow_metadata,
+        allow_redirects=allow_redirects,
+        pinned_ips=pinned_map,
+    )
+    return opener.open(req, timeout=timeout)
 
 
 __all__ = [
     "build_ssrf_safe_opener",
+    "open_ssrf_safe_url",
+    "resolve_and_validate_outbound_url",
     "validate_outbound_url",
 ]

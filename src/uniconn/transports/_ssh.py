@@ -206,7 +206,8 @@ class SSHTransport(BaseTransport):
 
     async def connect(self) -> None:
         """Установить SSH подключение."""
-        assert asyncssh is not None
+        if asyncssh is None:
+            raise ImportError("asyncssh is required for SSHTransport")
         try:
             connect_kwargs: dict[str, Any] = {
                 "host": self.config.host,

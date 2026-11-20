@@ -34,7 +34,7 @@ from ..exceptions import (
     ApprovalTamperingError,
     ConfigurationError,
 )
-from ..security.url_validation import build_ssrf_safe_opener, validate_outbound_url
+from ..security.url_validation import open_ssrf_safe_url, validate_outbound_url
 from .models import (
     ActionRiskTier,
     ApprovalRequest,
@@ -164,6 +164,20 @@ class TerminalApprovalChannel:
         return None
 
 
+def _compute_webhook_signature(secret: str, body: bytes) -> str:
+    """Вычислить заголовок подписи HMAC-SHA256 в формате ``sha256=<hex>``."""
+    digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return f"sha256={digest}"
+
+
+def _verify_webhook_signature(secret: str, body: bytes, signature_header: str | None) -> bool:
+    """Проверить подпись ``X-Uniconn-Response-Signature`` за константное время."""
+    if not secret or not signature_header:
+        return False
+    expected = _compute_webhook_signature(secret, body)
+    return hmac.compare_digest(expected, signature_header.strip())
+
+
 class WebhookApprovalChannel:
     """Канал отправки запросов согласования во внешний Webhook (Slack/Telegram/Custom API) с HMAC-SHA256."""
 
@@ -174,10 +188,12 @@ class WebhookApprovalChannel:
         secret: str | None = None,
         timeout: float = 5.0,
         allow_private_network: bool = False,
+        require_signed_response: bool = True,
         sender: Callable[[str, bytes, dict[str, str], float], dict[str, Any] | None] | None = None,
     ) -> None:
         """Инициализировать Webhook-канал с URL, защитой от SSRF и опциональным секретом подписи."""
         self.allow_private_network = bool(allow_private_network)
+        self.require_signed_response = bool(require_signed_response)
         self.url = validate_outbound_url(
             url,
             allow_private_network=self.allow_private_network,
@@ -189,8 +205,11 @@ class WebhookApprovalChannel:
 
     def sign_payload(self, body: bytes) -> str:
         """Вычислить заголовок подписи X-Uniconn-Signature (sha256=<hex>)."""
-        digest = hmac.new(self.secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-        return f"sha256={digest}"
+        return _compute_webhook_signature(self.secret, body)
+
+    def verify_response_signature(self, body: bytes, signature_header: str | None) -> bool:
+        """Проверить HMAC-SHA256 подпись синхронного ответа вебхука (X-Uniconn-Response-Signature)."""
+        return _verify_webhook_signature(self.secret, body, signature_header)
 
     async def notify(self, request: ApprovalRequest) -> dict[str, Any] | None:
         """Отправить подписанный JSON-запрос на корпоративный вебхук."""
@@ -213,6 +232,8 @@ class WebhookApprovalChannel:
             headers,
             self.timeout,
             allow_private_network=self.allow_private_network,
+            secret=self.secret,
+            require_signed_response=self.require_signed_response,
         )
 
     @staticmethod
@@ -223,28 +244,34 @@ class WebhookApprovalChannel:
         timeout: float,
         *,
         allow_private_network: bool = False,
+        secret: str = "",
+        require_signed_response: bool = True,
     ) -> dict[str, Any] | None:
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         try:
-            safe_url = validate_outbound_url(
-                url,
+            with open_ssrf_safe_url(
+                req,
+                timeout=timeout,
                 allow_private_network=allow_private_network,
-                resolve_dns=True,
-            )
-        except ConfigurationError as exc:
-            _LOGGER.warning("Blocked webhook delivery to unsafe URL %r: %s", url, exc)
-            return None
-
-        req = urllib.request.Request(safe_url, data=body, headers=headers, method="POST")
-        opener = build_ssrf_safe_opener(allow_private_network=allow_private_network)
-        try:
-            with opener.open(req, timeout=timeout) as resp:
+                allow_redirects=False,
+            ) as resp:
                 resp_bytes = resp.read(16384)
                 if resp_bytes:
                     data = json.loads(resp_bytes.decode("utf-8", errors="replace"))
                     if isinstance(data, dict):
+                        if "decision" in data and require_signed_response:
+                            sig_hdr = resp.headers.get("X-Uniconn-Response-Signature") if resp.headers else None
+                            if not _verify_webhook_signature(secret, resp_bytes, sig_hdr):
+                                _LOGGER.warning(
+                                    "Rejected synchronous webhook decision with missing/invalid HMAC from %r",
+                                    url,
+                                )
+                                return None
                         return data
-        except (OSError, urllib.error.URLError, ValueError, ConfigurationError) as exc:
-            _LOGGER.debug("Webhook approval delivery failed for %r: %s", safe_url, exc)
+        except ConfigurationError as exc:
+            _LOGGER.warning("Blocked webhook delivery to unsafe URL %r: %s", url, exc)
+        except (OSError, urllib.error.URLError, ValueError) as exc:
+            _LOGGER.debug("Webhook approval delivery failed for %r: %s", url, exc)
         return None
 
 
@@ -316,7 +343,8 @@ class ApprovalManager:
         self._events: dict[str, asyncio.Event] = {}
 
         env_secret = os.environ.get("UNICONN_HITL_SECRET")
-        self._secret: str = secret or self.policy.webhook_secret or env_secret or ""
+        # Внутренний HMAC-ключ заявок изолирован от webhook_secret (защита от утечки ключа)
+        self._secret: str = secret or env_secret or ""
         with self._store_file_lock():
             if not self._secret and self.store_path is not None:
                 self._secret = self._load_key_file_sync()
@@ -415,10 +443,19 @@ class ApprovalManager:
         if "terminal" in chan_set:
             built.append(TerminalApprovalChannel(interactive_tty=False))
         if "webhook" in chan_set and self.policy.webhook_url:
+            webhook_secret = (
+                self.policy.webhook_secret
+                or os.environ.get("UNICONN_WEBHOOK_SECRET")
+                or hmac.new(
+                    self._secret.encode("utf-8"),
+                    b"uniconn:webhook-signing:v1",
+                    hashlib.sha256,
+                ).hexdigest()
+            )
             built.append(
                 WebhookApprovalChannel(
                     self.policy.webhook_url,
-                    secret=self.policy.webhook_secret or self._secret,
+                    secret=webhook_secret,
                 )
             )
         return built

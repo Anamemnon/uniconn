@@ -388,18 +388,28 @@ class FileOperationsService:
         *,
         sudo: bool = True,
     ) -> None:
-        """Записать файл через временную директорию хоста и переместить с ``sudo mv -f``."""
+        """Записать файл через staging и атомарно переместить в целевую ФС с ``sudo``."""
         async with self._conn.temp_dir() as tmp_dir:
             tmp_name = f".uniconn_tmp_{uuid.uuid4().hex[:12]}"
             staged_tmp = f"{str(tmp_dir).rstrip('/')}/{tmp_name}"
             await self._conn.transport.write_file(staged_tmp, data, mode=mode)
-            chmod_cmd = (
-                f"chmod {oct(mode)[2:]} {shlex.quote(staged_tmp)} && "
-                if mode is not None
-                else ""
+            parent_dir = posixpath.dirname(effective_path.rstrip("/")) or "."
+            same_fs_name = f".uniconn_sudo_tmp_{uuid.uuid4().hex[:12]}"
+            same_fs_tmp = (
+                f"/{same_fs_name}" if parent_dir == "/" else f"{parent_dir}/{same_fs_name}"
+            )
+            q_staged = shlex.quote(staged_tmp)
+            q_same_fs = shlex.quote(same_fs_tmp)
+            q_target = shlex.quote(effective_path)
+            chmod_step = f"chmod {oct(mode)[2:]} {q_same_fs} && " if mode is not None else ""
+            chown_step = f"chown 0:0 {q_same_fs} && " if sudo else ""
+            cmd = (
+                f"(umask 077 && cp -- {q_staged} {q_same_fs} && {chmod_step}{chown_step}"
+                f"mv -f {q_same_fs} {q_target}) || "
+                f"{{ rm -f {q_same_fs}; exit 1; }}"
             )
             await self._conn.run(
-                f"{chmod_cmd}mv -f {shlex.quote(staged_tmp)} {shlex.quote(effective_path)}",
+                cmd,
                 sudo=sudo,
                 raise_on_error=True,
                 dry_run=False,
@@ -499,17 +509,8 @@ class FileOperationsService:
                 raise_on_error=True,
                 dry_run=False,
             )
-        except Exception as exc:
+        except Exception:
             await self._cleanup_staged_remote(staged_remote)
-            if _is_permission_error(exc):
-                has_sudo_cfg = bool(
-                    sudo
-                    or self._conn.config.password is not None
-                    or self._conn.config.options.get("sudo_password") is not None
-                )
-                if has_sudo_cfg:
-                    await self._stage_and_sudo_move(effective_path, data, mode, sudo=True)
-                    return
             raise
 
     async def write_file(

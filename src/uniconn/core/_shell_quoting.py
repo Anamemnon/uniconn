@@ -13,11 +13,22 @@ _TRUE_STRINGS = frozenset({"1", "true", "yes", "on", "y"})
 _FALSE_STRINGS = frozenset({"0", "false", "no", "off", "n", ""})
 
 
+_PS_SINGLE_QUOTES: tuple[str, ...] = ("'", "\u2018", "\u2019", "\u201a", "\u201b")
+
+
 def ps_quote(value: str) -> str:
-    """Экранировать строку как безопасный литерал PowerShell в одинарных кавычках."""
-    if "\x00" in value:
+    """Экранировать строку как безопасный литерал PowerShell в одинарных кавычках.
+
+    Удваивает ASCII-апостроф и все Unicode-варианты одинарных кавычек, которые парсер
+    PowerShell интерпретирует как закрывающий делимитер строкового литерала.
+    """
+    text = str(value)
+    if "\x00" in text:
         raise ValueError("NUL byte is not allowed in PowerShell string literal")
-    return "'" + value.replace("'", "''") + "'"
+    for q in _PS_SINGLE_QUOTES:
+        if q in text:
+            text = text.replace(q, q + q)
+    return "'" + text + "'"
 
 
 def ps_encoded_command(script: str) -> str:
@@ -46,7 +57,13 @@ def validate_windows_interpreter(interpreter: str) -> str:
     cleaned = interpreter.strip()
     if not cleaned:
         raise ValueError("Empty python_interpreter is not allowed")
-    if any(ch in cleaned for ch in ('"', "'", "`", "$", ";", "|", "&", "<", ">", "\r", "\n", "\x00")):
+    if any(
+        ch in cleaned
+        for ch in (
+            '"', "'", "\u2018", "\u2019", "\u201a", "\u201b",
+            "`", "$", ";", "|", "&", "<", ">", "\r", "\n", "\x00",
+        )
+    ):
         raise ValueError(f"Unsafe characters in python_interpreter: {interpreter!r}")
     return cleaned
 

@@ -227,9 +227,9 @@ class TestQgaTransportAndMockServer:
         assert mock_qga._processes[1000]["exitcode"] == 137
 
     async def test_qga_virsh_channel_and_ssh_socket_channel(self) -> None:
-        # 1. Тест VirshCommandChannel через локальный subprocess mock
+        # 1. Тест VirshCommandChannel через локальный subprocess exec mock (без shell)
         virsh_ch = VirshCommandChannel(domain="vm-prod-01")
-        with patch("asyncio.create_subprocess_shell") as mock_subproc:
+        with patch("asyncio.create_subprocess_exec") as mock_subproc:
             proc_mock = MagicMock()
             proc_mock.returncode = 0
             proc_mock.communicate = AsyncMock(return_value=(b'{"return":{}}\n', b""))
@@ -237,6 +237,8 @@ class TestQgaTransportAndMockServer:
 
             await virsh_ch.open(timeout=5.0)
             assert virsh_ch.is_open is True
+            args = mock_subproc.call_args.args
+            assert args[:5] == ("virsh", "-c", "qemu:///system", "qemu-agent-command", "vm-prod-01")
             await virsh_ch.close()
 
         # 2. Тест SshUnixSocketChannel с автоопределением сокета

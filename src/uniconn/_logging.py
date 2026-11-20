@@ -46,35 +46,39 @@ SENSITIVE_KEYS: frozenset[str] = frozenset(
 class SecretMaskingFilter(logging.Filter):
     """Фильтр для маскирования чувствительных данных в записях стандартного logging."""
 
-    PATTERNS = [
-        (re.compile(r"sudo_password[=:]\S+", re.IGNORECASE), "sudo_password=***"),
-        (re.compile(r"passphrase[=:]\S+", re.IGNORECASE), "passphrase=***"),
-        (re.compile(r"password[=:]\S+", re.IGNORECASE), "password=***"),
-        (re.compile(r"pass[=:]\S+", re.IGNORECASE), "pass=***"),
-        (re.compile(r"secret[=:]\S+", re.IGNORECASE), "secret=***"),
-        (re.compile(r"token[=:]\S+", re.IGNORECASE), "token=***"),
-        (re.compile(r"://[^:]+:[^@]+@", re.IGNORECASE), "://***:***@"),
+    _MASK_RULES: tuple[tuple[str, str, str], ...] = (
+        (
+            "pem_key",
+            r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
+            "***REDACTED_PRIVATE_KEY***",
+        ),
+        ("auth_bearer", r"Authorization:\s*Bearer\s+\S+", "Authorization: Bearer ***"),
+        ("bearer", r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}", "Bearer ***"),
+        ("pve_token", r"PVEAPIToken=\S+", "PVEAPIToken=***"),
+        ("aws_secret", r"aws_secret_access_key(?:\s*=\s*|:\s*)\S+", "aws_secret_access_key=***"),
+        ("private_key", r"private[_-]?key(?:\s*=\s*|:\s*)\S+", "private_key=***"),
+        ("api_key", r"api[_-]?key(?:\s*=\s*|:\s*)\S+", "api_key=***"),
+        ("sudo_password", r"sudo_password(?:\s*=\s*|:\s*)\S+", "sudo_password=***"),
+        ("passphrase", r"passphrase(?:\s*=\s*|:\s*)\S+", "passphrase=***"),
+        ("password", r"password(?:\s*=\s*|:\s*)\S+", "password=***"),
+        ("pass_short", r"pass[=:]\S+", "pass=***"),
+        ("secret", r"secret(?:\s*=\s*|:\s*)\S+", "secret=***"),
+        ("token", r"token(?:\s*=\s*|:\s*)\S+", "token=***"),
+        ("uri", r"://[^:\s]+:[^@\s]+@", "://***:***@"),
+    )
+
+    PATTERNS: list[tuple[re.Pattern[str], str]] = [
+        (re.compile(pattern, re.IGNORECASE), replacement)
+        for _, pattern, replacement in _MASK_RULES
     ]
 
-    _MASTER_PATTERN = re.compile(
-        r"(?P<sudo_password>sudo_password[=:]\S+)"
-        r"|(?P<passphrase>passphrase[=:]\S+)"
-        r"|(?P<password>password[=:]\S+)"
-        r"|(?P<pass_short>pass[=:]\S+)"
-        r"|(?P<secret>secret[=:]\S+)"
-        r"|(?P<token>token[=:]\S+)"
-        r"|(?P<uri>://[^:\s]+:[^@\s]+@)",
+    _MASTER_PATTERN: re.Pattern[str] = re.compile(
+        "|".join(f"(?P<{name}>{pattern})" for name, pattern, _ in _MASK_RULES),
         re.IGNORECASE,
     )
 
     _MASK_REPLACEMENTS: dict[str, str] = {
-        "sudo_password": "sudo_password=***",
-        "passphrase": "passphrase=***",
-        "password": "password=***",
-        "pass_short": "pass=***",
-        "secret": "secret=***",
-        "token": "token=***",
-        "uri": "://***:***@",
+        name: replacement for name, _, replacement in _MASK_RULES
     }
 
     def __init__(self, name: str = "") -> None:
@@ -109,7 +113,15 @@ class SecretMaskingFilter(logging.Filter):
 
     @classmethod
     def _mask_string(cls, value: str) -> str:
-        if not value or ("=" not in value and ":" not in value and "@" not in value):
+        if not value or (
+            "=" not in value
+            and ":" not in value
+            and "@" not in value
+            and "-----" not in value
+            and "Bearer" not in value
+            and "bearer" not in value
+            and "BEARER" not in value
+        ):
             return value
         return cls._MASTER_PATTERN.sub(cls._replace_match, value)
 

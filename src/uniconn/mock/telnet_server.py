@@ -176,7 +176,8 @@ class MockTelnetServer:
 
     async def start(self) -> Self:
         """Запустить Telnet-сервер на сконфигурированном хосте и порту."""
-        assert telnetlib3 is not None
+        if telnetlib3 is None:
+            raise ImportError("telnetlib3 is required to start MockTelnetServer")
         self._server = await telnetlib3.create_server(
             host=self.config.host,
             port=self.config.port,

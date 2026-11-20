@@ -678,7 +678,8 @@ class IPMITransport(BaseTransport):
         loop = asyncio.get_running_loop()
 
         def _execute() -> Any:
-            assert ipmi_cmd is not None
+            if ipmi_cmd is None:
+                raise ImportError("pyghmi is required for IPMITransport")
             cmd = ipmi_cmd.Command(
                 bmc=self.config.host,
                 userid=self.config.username,

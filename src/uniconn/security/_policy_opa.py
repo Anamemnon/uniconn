@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, cast
 from ..exceptions import ConfigurationError, PolicyEngineUnavailableError
 from ._policy_rules import _PolicyTTLCache
 from .models import AuthContext, PolicyDecision, PolicyEvaluationResult, PolicyViolation
-from .url_validation import build_ssrf_safe_opener, validate_outbound_url
+from .url_validation import open_ssrf_safe_url, validate_outbound_url
 
 if TYPE_CHECKING:
     from .engine import EmbeddedPolicyEngine
@@ -189,7 +189,7 @@ class OPAPolicyEngine:
         safe_url = validate_outbound_url(
             url,
             allow_private_network=allow_private_network,
-            resolve_dns=True,
+            resolve_dns=False,
         )
         raw_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
@@ -198,11 +198,12 @@ class OPAPolicyEngine:
             headers={"Content-Type": "application/json; charset=utf-8"},
             method="POST",
         )
-        opener = build_ssrf_safe_opener(
+        with open_ssrf_safe_url(
+            req,
+            timeout=timeout,
             allow_private_network=allow_private_network,
             allow_redirects=False,
-        )
-        with opener.open(req, timeout=timeout) as resp:
+        ) as resp:
             raw_resp = resp.read(max_response_bytes + 1)
             if len(raw_resp) > max_response_bytes:
                 raise ValueError(f"OPA response exceeded maximum allowed size of {max_response_bytes} bytes")

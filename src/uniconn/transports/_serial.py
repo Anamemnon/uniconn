@@ -418,7 +418,8 @@ class SerialTransport(BaseTransport):
                 "Serial — незашифрованное соединение: данные передаются в открытом виде."
             )
 
-            assert serial_asyncio is not None
+            if serial_asyncio is None:
+                raise ImportError("pyserial-asyncio is required for SerialTransport")
             loop = asyncio.get_running_loop()
             self._reader, self._writer = await serial_asyncio.open_serial_connection(
                 url=self._device,
@@ -879,7 +880,8 @@ class SerialTransport(BaseTransport):
     ) -> int:
         """Загрузить файл на устройство по протоколу XMODEM (checksum, crc или 1k)."""
         await self._prepare_modem_transfer(trigger_command, trigger_delay=trigger_delay)
-        assert self._reader is not None and self._writer is not None
+        if self._reader is None or self._writer is None:
+            raise ConnectionError("Serial transport is not connected", host=self._device)
 
         path = Path(local_path)
         if not path.is_file():
@@ -916,7 +918,8 @@ class SerialTransport(BaseTransport):
     ) -> int:
         """Загрузить файл на устройство по протоколу YMODEM (с сохранением имени и точного размера)."""
         await self._prepare_modem_transfer(trigger_command, trigger_delay=trigger_delay)
-        assert self._reader is not None and self._writer is not None
+        if self._reader is None or self._writer is None:
+            raise ConnectionError("Serial transport is not connected", host=self._device)
 
         sender = AsyncYmodemSender(
             self._reader,
@@ -946,7 +949,8 @@ class SerialTransport(BaseTransport):
     ) -> int:
         """Скачать файл с устройства по протоколу XMODEM."""
         await self._prepare_modem_transfer(trigger_command, trigger_delay=trigger_delay)
-        assert self._reader is not None and self._writer is not None
+        if self._reader is None or self._writer is None:
+            raise ConnectionError("Serial transport is not connected", host=self._device)
 
         path = Path(local_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -978,7 +982,8 @@ class SerialTransport(BaseTransport):
     ) -> list[Path]:
         """Скачать файлы с устройства по протоколу YMODEM-Batch в целевую директорию."""
         await self._prepare_modem_transfer(trigger_command, trigger_delay=trigger_delay)
-        assert self._reader is not None and self._writer is not None
+        if self._reader is None or self._writer is None:
+            raise ConnectionError("Serial transport is not connected", host=self._device)
 
         receiver = AsyncYmodemReceiver(
             self._reader,

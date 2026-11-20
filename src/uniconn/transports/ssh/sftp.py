@@ -29,7 +29,8 @@ class SFTPClientAdapter:
         self._sftp_lock_loop: asyncio.AbstractEventLoop | None = None
 
     def _require_conn(self, asyncssh_mod: Any) -> Any:
-        assert asyncssh_mod is not None
+        if asyncssh_mod is None:
+            raise ImportError("asyncssh is required for SFTP operations")
         if not self._transport._connected or not self._transport._conn:
             raise ConnectionError("Not connected", host=self._transport.config.host)
         return self._transport._conn

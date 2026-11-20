@@ -12,9 +12,9 @@ We provide security updates and patches for the following versions:
 
 | Version | Supported          | Status |
 | :------ | :----------------: | :----- |
-| `0.18.x`| :white_check_mark: | Current active release branch |
+| `0.20.x`| :white_check_mark: | Current active release branch |
 | `main`  | :white_check_mark: | Development branch |
-| `< 0.18`| :x:                | End of life; please upgrade to `>= 0.18.0` |
+| `< 0.20`| :x:                | End of life; please upgrade to `>= 0.20.0` |
 
 ---
 
@@ -44,11 +44,13 @@ If you believe you have found a security vulnerability in `uniconn`:
 
 1. **Automatic Secret Resolution (`SecretResolver`)**:
    - Secrets are loaded dynamically via `env://VAR_NAME` or `file:///path/to/secret` syntax rather than being committed to inventory files or hardcoded in scripts.
-2. **Output & Telemetry Masking (`sensitive=True`)**:
-   - Passwords, keys, and commands flagged with `sensitive=True` are automatically redacted in `repr(Result)`, `to_dict()`, `structlog` JSONL logs, and OpenTelemetry spans.
-3. **Safe Privilege Escalation (`sudo`)**:
-   - `sudo` passwords are transmitted strictly through interactive `stdin` buffers and are never passed via command-line arguments (preventing visibility in `/proc` or `ps aux`).
-4. **Injection-Safe Command Execution**:
-   - Passing commands as sequences of strings (`["systemctl", "status", service_name]`) uses safe argument serialization (`shlex.join`) to avoid shell injection vectors.
-5. **Cassette Sanitization**:
+2. **Output & Telemetry Masking (`sensitive=True`, `SecretMaskingFilter`)**:
+   - Passwords, API keys, Bearer/PVE tokens, PEM private keys, and commands flagged with `sensitive=True` are automatically redacted in `repr(Result)`, `to_dict()`, `structlog` JSONL logs, OpenTelemetry spans, and MCP Flow checkpoints.
+3. **Explicit Privilege Escalation (`sudo`)**:
+   - `sudo` passwords are transmitted strictly through interactive `stdin` buffers and are never passed via command-line arguments (preventing visibility in `/proc` or `ps aux`). File operations never silently escalate to `sudo=True` unless explicitly requested.
+4. **Injection-Safe Command Execution & Quoting**:
+   - Passing commands as sequences of strings (`["systemctl", "status", service_name]`) uses safe argument serialization (`shlex.join`) or `execve`-based execution to avoid shell injection vectors; PowerShell quoting escapes all Unicode single-quote delimiters.
+5. **SSRF Protection with DNS Pinning & HITL Key Isolation**:
+   - Outbound HTTP calls (OPA policies, HITL approval webhooks) validate and pin resolved IP addresses against private/metadata ranges, disable untrusted redirects, isolate internal HITL HMAC keys from webhook secrets, and require signed synchronous webhook decisions.
+6. **Cassette Sanitization**:
    - When using record/replay cassettes for testing, `uniconn cassette sanitize` strips private tokens, passwords, and IP addresses before committing cassettes to version control.

@@ -155,12 +155,12 @@
 - ✅ Локальный проброс порта `conn.forward_local_port(remote_host, remote_port, local_host="127.0.0.1", local_port=0)` (`ssh -L`) в async и sync режимах
 - ✅ Удалённый проброс порта `conn.forward_remote_port(remote_host, remote_port, local_host="127.0.0.1", local_port=8000)` (`ssh -R`) в async и sync режимах
 
-### 19. Пакетное выполнение и фоновые screen-сессии (`ScreenPool`)
+### 19. Пакетное выполнение и фоновые сессии (`BackgroundPool`)
 - ✅ `run_commands(commands, stop_on_error=True)` — последовательное пакетное выполнение списка команд (async и sync)
-- ✅ `ScreenPool` — запуск долгоживущих фоновых задач в detached GNU screen сессиях через SSH
-- ✅ Управление квотами `max_screens` (`ScreenPoolFullError`) и `max_monitors`
-- ✅ `LogPipeline` и `ScreenLogCollector` со стратегиями сбора логов (`realtime`, `periodic`, `on_finish`), санитизацией путей и фильтрацией по регулярным выражениям
-- ✅ Многоуровневый cleanup: обработчики `atexit`/сигналов, sentinel-файл, фоновый cleanup-скрипт и загрузка из YAML/JSON (`ScreenPoolConfig.from_file`)
+- ✅ `BackgroundPool` — запуск долгоживущих фоновых задач в detached сессиях (`tmux`, `screen`, `nohup`, Windows Job) через `Connection`
+- ✅ Управление квотами `max_sessions` и `max_monitors`
+- ✅ `LogPipeline` и `DiagnosticSession` со стратегиями сбора логов (`realtime`, `periodic`, `on_finish`), санитизацией путей и фильтрацией по регулярным выражениям
+- ✅ Многоуровневый cleanup: обработчики `atexit`/сигналов, sentinel-файл, фоновый cleanup-скрипт и загрузка из YAML/JSON (`BackgroundPoolConfig.from_file`)
 
 ### 20. Документация, примеры и интерактивная веб-панель (`examples/dashboard/`)
 - ✅ Документация Sphinx с RTD theme (`docs/index.rst`, `docs/api.rst`, `docs/transports.rst`, `docs/examples.rst`)
@@ -213,7 +213,7 @@
 | `PosixMarkerProtocol` и `ExpectStateMachine` (`shell/`) | Разделение маркерной синхронизации команд `__UNICONN_{uuid}__{exit_code}` и автомата интерактивных диалогов `expect()` |
 | Модульный CLI на `cyclopts` (`src/uniconn/cli/`) | Декларативный CLI на стандартных аннотациях `typing.Annotated` без избыточных зависимостей |
 | Структурированные логи (`structlog` + `contextvars`) | Единый пайплайн `ProcessorFormatter` для `structlog` и `stdlib logging`, JSONL/Console и авто-редакция секретов |
-| Модульная группировка `tests/unit/` | 34 тестовых модуля (475 тестов) в 6 пакетах: `core/`, `transports/`, `pools/`, `screen/`, `cli/`, `releases/` |
+| Модульная группировка `tests/unit/` | 914+ unit-тестов в доменных пакетах: `core/`, `services/`, `transports/`, `pools/`, `background/`, `mcp/`, `mock/`, `orchestration/`, `parsing/`, `security/`, `cli/`, `architecture/` |
 | `CircuitBreaker` и `RateLimiter` (`core/resilience.py`) | Защита инфраструктуры на уровне `CommandPipeline` (`CircuitBreakerMiddleware`, `RateLimitMiddleware`) и пулов (`ConnectionPool`, `SSHSessionPool`) |
 
 ---
@@ -236,10 +236,10 @@
 
 | Компонент | Зависимость |
 |-----------|-------------|
-| Core & Config | `pydantic>=2.14`, `tenacity>=9.2`, `pyyaml>=6.0`, `jinja2>=3.1`, `structlog>=26.1` |
-| SSH & SFTP | `asyncssh>=2.24` |
-| Telnet | `telnetlib3>=5.0` |
+| Core & Config | `pydantic>=2.7`, `tenacity>=8.2`, `pyyaml>=6.0`, `structlog>=24.1`, `jinja2>=3.1` (extra) |
+| SSH & SFTP | `asyncssh>=2.14` |
+| Telnet | `telnetlib3>=2.0` |
 | Serial / UART | `pyserial-asyncio>=0.6` |
-| BMC (IPMI & Redfish) | `pyghmi>=1.6`, `niquests>=3.10` |
-| CLI | `cyclopts>=5.0`, `rich>=15.0` |
-| Dev & QA | `pytest>=8.0`, `pytest-asyncio>=1.0`, `pytest-mock>=3.14`, `pytest-cov>=6.0`, `pyright>=1.1.400`, `ruff>=0.15`, `testcontainers>=4.10` |
+| BMC (IPMI & Redfish) | `pyghmi>=1.5`, `niquests>=3.5` |
+| CLI | `cyclopts>=3.0`, `rich>=13.7` |
+| Dev & QA | `pytest>=8.0`, `pytest-asyncio>=0.24`, `pytest-mock>=3.14`, `pytest-cov>=5.0`, `pyright>=1.1.380`, `ruff>=0.8`, `testcontainers>=4.8` |

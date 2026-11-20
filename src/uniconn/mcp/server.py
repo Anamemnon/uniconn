@@ -309,7 +309,8 @@ class MCPServer(MCPServerToolsMixin):
             if handler is not None:
                 payload = await handler(arguments)
             else:
-                assert dynamic_flow is not None
+                if dynamic_flow is None:
+                    raise RuntimeError(f"Dynamic flow handler missing for tool {name!r}")
                 payload = await self._execute_flow_by_object(
                     dynamic_flow,
                     tool_name=self.flow_registry.get_tool_name(dynamic_flow.name),

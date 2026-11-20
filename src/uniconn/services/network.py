@@ -111,7 +111,8 @@ class NetworkOperationsService:
                     if not can_record or real_tr is None:
                         raise
 
-            assert real_tr is not None
+            if real_tr is None:
+                raise RuntimeError("No structured network transport available")
             await self._ensure_connected(real_tr)
             net_res: NetResult = await coro_factory(real_tr)
             from ..transports.replay.models import RecordedExecInteraction
@@ -131,7 +132,8 @@ class NetworkOperationsService:
                 cassette_proxy.mark_dirty()
             return net_res
 
-        assert real_tr is not None
+        if real_tr is None:
+            raise RuntimeError("No structured network transport available")
         await self._ensure_connected(real_tr)
         return await coro_factory(real_tr)
 
@@ -363,7 +365,8 @@ class NetworkOperationsService:
                 if replayed or not can_record or real_tr is None:
                     return
 
-            assert real_tr is not None
+            if real_tr is None:
+                raise RuntimeError("No structured network transport available")
             await self._ensure_connected(real_tr)
             from ..transports.replay.models import RecordedStreamInteraction
 
@@ -392,7 +395,8 @@ class NetworkOperationsService:
                     cassette_proxy.mark_dirty()
             return
 
-        assert real_tr is not None
+        if real_tr is None:
+            raise RuntimeError("No structured network transport available")
         await self._ensure_connected(real_tr)
         async for sample in real_tr.net_subscribe(
             path_list,

@@ -912,10 +912,10 @@ class TestV100AuditStabilization:
         conn._create_temp_dir = AsyncMock(return_value="/tmp/stage-dir")  # type: ignore[method-assign]
         conn._remove_temp_dir = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
-        # 1. Nested PermissionError inside ConnectionError -> cleans staging & falls back to sudo move
+        # 1. PermissionError при sudo=False -> очищает staging и пробрасывает ошибку БЕЗ скрытого sudo
         async def fail_mv_perm(cmd: str, **kwargs):
             moved_cmds.append((cmd, bool(kwargs.get("sudo"))))
-            if not kwargs.get("sudo") and cmd.startswith("mv -f"):
+            if cmd.startswith("mv -f"):
                 raise ExecutionError(
                     "mv failed",
                     command=cmd,
@@ -927,11 +927,12 @@ class TestV100AuditStabilization:
         conn._transport.write_file = AsyncMock(return_value=None)  # type: ignore[method-assign]
         conn.run = AsyncMock(side_effect=fail_mv_perm)  # type: ignore[method-assign]
 
-        await conn.files.write_file("/etc/test.conf", "hello", atomic=True)
+        with pytest.raises(ExecutionError, match="mv failed"):
+            await conn.files.write_file("/etc/test.conf", "hello", atomic=True)
         assert len(removed_paths) == 1
-        assert any(is_sudo for _, is_sudo in moved_cmds)
+        assert not any(is_sudo for _, is_sudo in moved_cmds)
 
-        # 2. Non-permission ExecutionError ("No space left on device") -> cleans staging, NO sudo fallback
+        # 2. Не-permission ExecutionError ("No space left on device") -> очищает staging, без sudo
         removed_paths.clear()
         moved_cmds.clear()
 
@@ -950,7 +951,7 @@ class TestV100AuditStabilization:
         assert len(removed_paths) == 1
         assert not any(is_sudo for _, is_sudo in moved_cmds)
 
-        # 3. Direct chained PermissionError inside transport ConnectionError triggers sudo fallback
+        # 3. Цепочечный PermissionError при sudo=False -> НЕ эскалирует в sudo, пробрасывает ошибку
         removed_paths.clear()
         moved_cmds.clear()
 
@@ -964,8 +965,17 @@ class TestV100AuditStabilization:
 
         conn._transport.write_file = AsyncMock(side_effect=write_with_chained_perm)  # type: ignore[method-assign]
         conn.run = AsyncMock(side_effect=ok_run)  # type: ignore[method-assign]
-        await conn.files.write_file("/etc/test.conf", "hello", atomic=True)
-        assert any(is_sudo and "mv -f" in cmd for cmd, is_sudo in moved_cmds)
+        with pytest.raises(UniconnConnectionError, match="SFTP write failed"):
+            await conn.files.write_file("/etc/test.conf", "hello", atomic=True)
+        assert not any(is_sudo for _, is_sudo in moved_cmds)
+
+        # 4. Явный sudo=True -> staging на целевой ФС с chown 0:0 и атомарным mv -f
+        moved_cmds.clear()
+        await conn.files.write_file("/etc/test.conf", "hello", atomic=True, sudo=True)
+        assert any(
+            is_sudo and "umask 077" in cmd and "cp --" in cmd and "chown 0:0" in cmd and "mv -f" in cmd
+            for cmd, is_sudo in moved_cmds
+        )
 
     @pytest.mark.asyncio
     async def test_sync_dir_walk_remote_skips_symlink_directory_recursion(self, tmp_path: Path) -> None:

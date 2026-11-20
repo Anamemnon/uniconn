@@ -100,7 +100,8 @@ class CommandPipeline:
 
     async def _terminal_dispatch(self, request: CommandRequest) -> Result:
         """Финальное звено пайплайна — вызов ``transport.run()`` или ``transport.run_bytes()``."""
-        assert self._conn is not None
+        if self._conn is None:
+            raise RuntimeError("CommandPipeline is not bound to a Connection")
         if request.output_format == "bytes":
             t0 = time.monotonic()
             raw = await self._conn.transport.run_bytes(
@@ -241,7 +242,8 @@ class CommandPipeline:
         transport_kwargs: dict[str, Any],
     ) -> AsyncIterator[str]:
         """Открыть поток транспорта, маскируя секреты и корректно фиксируя успех/сбой в CircuitBreaker."""
-        assert self._conn is not None
+        if self._conn is None:
+            raise RuntimeError("CommandPipeline is not bound to a Connection")
         from .._logging import SecretMaskingFilter
 
         raw_cb = self._conn.circuit_breaker
@@ -287,7 +289,8 @@ class CommandPipeline:
         **kwargs: Any,
     ) -> AsyncIterator[str]:
         """Подготовить и запустить потоковое чтение ``stream()`` через ``CommandPipeline``."""
-        assert self._conn is not None
+        if self._conn is None:
+            raise RuntimeError("CommandPipeline is not bound to a Connection")
         effective_dry = self._conn.dry_run if dry_run is None else dry_run
         if command is None:
             if effective_dry:

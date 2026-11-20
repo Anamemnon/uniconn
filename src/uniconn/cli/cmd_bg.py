@@ -71,7 +71,8 @@ def register_bg_commands(app: Any, console: Any, renderer: CLIOutputRenderer) ->
                 if config is not None:
                     pool = BackgroundPool.from_file(config, logger=logger)
                 else:
-                    assert uri is not None
+                    if uri is None:
+                        raise ValueError("URI argument or --config option is required")
                     pool = BackgroundPool(
                         uri,
                         backend=cast(BackgroundBackendType, backend),

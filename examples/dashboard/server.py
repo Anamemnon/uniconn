@@ -12,7 +12,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from examples.dashboard.handlers import (
     _dispatch_endpoint,
@@ -60,15 +60,21 @@ class _ReusableThreadingHTTPServer(ThreadingHTTPServer):
     allow_reuse_address = True
 
 
-def serve_dev_dashboard(port: int = 3000, host: str | None = None) -> None:
-    """Запустить HTTP-сервер предпросмотра и тестирования uniconn (по умолчанию 127.0.0.1:3000)."""
-    bind_host = (host or os.environ.get("UNICONN_DASHBOARD_HOST") or "127.0.0.1").strip()
-    is_loopback_bind = bind_host in ("127.0.0.1", "localhost", "::1")
+def create_dashboard_handler(bind_host: str = "127.0.0.1") -> type[BaseHTTPRequestHandler]:
+    """Создать класс HTTP-обработчика дашборда с защитой от DNS rebinding, CSRF и path traversal."""
+    normalized_host = (bind_host or "127.0.0.1").strip()
+    is_loopback_bind = normalized_host in ("127.0.0.1", "localhost", "::1")
+    extra_allowed_hosts = {
+        h.strip().lower()
+        for h in (os.environ.get("UNICONN_DASHBOARD_ALLOWED_HOSTS") or "").split(",")
+        if h.strip()
+    }
+    trusted_hosts: set[str] = {"127.0.0.1", "localhost", "::1"} | extra_allowed_hosts
+    if normalized_host and normalized_host not in ("0.0.0.0", "::"):
+        trusted_hosts.add(normalized_host.lower().strip("[]"))
+    enforce_host_allowlist = is_loopback_bind or bool(extra_allowed_hosts)
     shell_state, metrics_state, screen_state = create_default_dashboard_states()
     dashboard_token = os.environ.get("UNICONN_DASHBOARD_TOKEN") or secrets.token_urlsafe(24)
-
-    if not _can_import_uniconn_in_proc():
-        threading.Thread(target=_ensure_uv_env, daemon=True).start()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:
@@ -98,7 +104,22 @@ def serve_dev_dashboard(port: int = 3000, host: str | None = None) -> None:
             except (json.JSONDecodeError, ValueError):
                 return {}
 
+        def _extract_host_header_hostname(self) -> str:
+            raw_host = (self.headers.get("Host") or "").strip()
+            if not raw_host:
+                return ""
+            parsed_host = urlparse(f"http://{raw_host}")
+            return (parsed_host.hostname or "").strip().lower()
+
+        def _is_valid_host_header(self) -> bool:
+            if not enforce_host_allowlist:
+                return True
+            host_name = self._extract_host_header_hostname()
+            return bool(host_name) and host_name in trusted_hosts
+
         def _is_cross_site_request(self) -> bool:
+            if not self._is_valid_host_header():
+                return True
             sec_fetch_site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
             if sec_fetch_site == "cross-site":
                 return True
@@ -108,9 +129,7 @@ def serve_dev_dashboard(port: int = 3000, host: str | None = None) -> None:
                     return True
                 parsed_origin = urlparse(origin)
                 origin_host = (parsed_origin.hostname or "").lower()
-                host_header = (self.headers.get("Host") or "").split(":", 1)[0].strip().lower()
-                allowed_hosts = {h for h in (host_header, "localhost", "127.0.0.1") if h}
-                if not origin_host or origin_host not in allowed_hosts:
+                if not origin_host or origin_host not in trusted_hosts:
                     return True
             return False
 
@@ -122,7 +141,36 @@ def serve_dev_dashboard(port: int = 3000, host: str | None = None) -> None:
         def _local_exec_enabled() -> bool:
             return os.environ.get("UNICONN_DASHBOARD_ALLOW_LOCAL_EXEC") == "1"
 
+        @staticmethod
+        def _resolve_safe_static_file(decoded_path: str) -> Path | None:
+            if "\x00" in decoded_path or "\\" in decoded_path:
+                return None
+            root_resolved = Path(ROOT_DIR).resolve()
+            docs_resolved = (root_resolved / "docs").resolve()
+            dashboard_resolved = Path(DASHBOARD_DIR).resolve()
+            safe_rel = decoded_path.lstrip("/")
+            static_file = (root_resolved / safe_rel).resolve()
+
+            allowed_roots: tuple[Path, ...]
+            if decoded_path.startswith("/docs/"):
+                allowed_roots = (docs_resolved,)
+            elif static_file.suffix.lower() in (".svg", ".png", ".jpg", ".ico"):
+                allowed_roots = (docs_resolved, dashboard_resolved)
+            else:
+                return None
+
+            for allowed_root in allowed_roots:
+                if static_file.is_relative_to(allowed_root):
+                    rel_parts = static_file.relative_to(allowed_root).parts
+                    if any(part.startswith(".") for part in rel_parts):
+                        return None
+                    return static_file if static_file.is_file() else None
+            return None
+
         def do_OPTIONS(self) -> None:
+            if not self._is_valid_host_header():
+                self._send_json({"error": "Invalid Host header (DNS rebinding guard)"}, status=403)
+                return
             self.send_response(204)
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Uniconn-Token")
@@ -130,6 +178,9 @@ def serve_dev_dashboard(port: int = 3000, host: str | None = None) -> None:
 
         def do_GET(self) -> None:
             try:
+                if not self._is_valid_host_header():
+                    self._send_json({"error": "Invalid Host header (DNS rebinding guard)"}, status=403)
+                    return
                 parsed = urlparse(self.path)
                 if parsed.path.startswith("/api/") and self._is_cross_site_request():
                     self._send_json(
@@ -200,14 +251,13 @@ def serve_dev_dashboard(port: int = 3000, host: str | None = None) -> None:
                     self._send_json({"error": "Not found"}, status=404)
                     return
 
-                if parsed.path.startswith("/docs/") or parsed.path.endswith((".svg", ".png", ".jpg", ".ico")):
-                    root_resolved = Path(ROOT_DIR).resolve()
-                    safe_rel = parsed.path.lstrip("/")
-                    static_file = (root_resolved / safe_rel).resolve()
-                    if static_file.is_file() and static_file.is_relative_to(root_resolved):
+                decoded_path = unquote(parsed.path)
+                if decoded_path.startswith("/docs/") or decoded_path.endswith((".svg", ".png", ".jpg", ".ico")):
+                    static_file = self._resolve_safe_static_file(decoded_path)
+                    if static_file is not None:
                         ctype = (
                             "image/svg+xml; charset=utf-8"
-                            if static_file.suffix == ".svg"
+                            if static_file.suffix.lower() == ".svg"
                             else "application/octet-stream"
                         )
                         data = static_file.read_bytes()
@@ -217,6 +267,9 @@ def serve_dev_dashboard(port: int = 3000, host: str | None = None) -> None:
                         self.send_header("X-Content-Type-Options", "nosniff")
                         self.end_headers()
                         self.wfile.write(data)
+                        return
+                    if decoded_path.startswith("/docs/"):
+                        self._send_json({"error": "Not found"}, status=404)
                         return
 
                 raw_html = HTML_TEMPLATE_PATH.read_text(encoding="utf-8")
@@ -240,6 +293,9 @@ def serve_dev_dashboard(port: int = 3000, host: str | None = None) -> None:
 
         def do_POST(self) -> None:
             try:
+                if not self._is_valid_host_header():
+                    self._send_json({"error": "Invalid Host header (DNS rebinding guard)"}, status=403)
+                    return
                 parsed = urlparse(self.path)
                 if parsed.path.startswith("/api/") and self._is_cross_site_request():
                     self._send_json(
@@ -323,7 +379,16 @@ def serve_dev_dashboard(port: int = 3000, host: str | None = None) -> None:
             except Exception as exc:
                 self._send_json({"status": "error", "error": str(exc)}, status=500)
 
-    server = _ReusableThreadingHTTPServer((bind_host, port), Handler)
+    return Handler
+
+
+def serve_dev_dashboard(port: int = 3000, host: str | None = None) -> None:
+    """Запустить HTTP-сервер предпросмотра и тестирования uniconn (по умолчанию 127.0.0.1:3000)."""
+    bind_host = (host or os.environ.get("UNICONN_DASHBOARD_HOST") or "127.0.0.1").strip()
+    if not _can_import_uniconn_in_proc():
+        threading.Thread(target=_ensure_uv_env, daemon=True).start()
+    handler_cls = create_dashboard_handler(bind_host=bind_host)
+    server = _ReusableThreadingHTTPServer((bind_host, port), handler_cls)
     print(f"uniconn dev dashboard listening on http://{bind_host}:{port}", flush=True)
     server.serve_forever()
 
@@ -363,6 +428,7 @@ __all__ = [
     "_resolve_active_venv_dir",
     "_run_demo_status",
     "_serialize_result",
+    "create_dashboard_handler",
     "create_default_dashboard_states",
     "serve_dev_dashboard",
 ]

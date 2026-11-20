@@ -128,7 +128,7 @@ class GnmiTransport(BaseTransport):
         self._encoding = str(opts.get("encoding", "json_ietf")).lower()
         self._target = str(opts.get("target", ""))
         self._origin = str(opts.get("origin", ""))
-        self._tls_mode = opts.get("tls", False)
+        self._tls_mode = opts.get("tls", True)
         if "insecure" in opts:
             self._insecure = parse_bool(opts["insecure"], default=False)
         elif "verify_tls" in opts:
@@ -181,6 +181,14 @@ class GnmiTransport(BaseTransport):
         host = self.config.host or "127.0.0.1"
         port = self.config.port or 9339
         ssl_ctx = self._build_ssl_context()
+        if ssl_ctx is None and (self.config.username or self._auth_secret()):
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Connecting to gNMI endpoint %s:%s in cleartext (tls=false) with credentials",
+                host,
+                port,
+            )
         try:
             return await asyncio.wait_for(
                 asyncio.open_connection(host, port, ssl=ssl_ctx),

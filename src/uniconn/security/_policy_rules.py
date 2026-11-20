@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import posixpath
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -20,6 +21,10 @@ from .regex_safety import validate_safe_regex
 _SYSTEM_PROTECTED_PREFIXES: tuple[str, ...] = (
     "/etc",
     "/boot",
+    "/root",
+    "/dev",
+    "/var/spool/cron",
+    "~/.ssh",
     "/usr",
     "/lib",
     "/lib64",
@@ -126,9 +131,7 @@ def rule_least_privilege_system_paths(ctx: AuthContext) -> PolicyRuleResult | No
     if not is_mutating:
         return None
 
-    targets: list[str] = list(ctx.action.ast.get("targets") or [])
-    if ctx.resource.target_path and ctx.resource.target_path not in targets:
-        targets.append(ctx.resource.target_path)
+    targets = _extract_candidate_paths(ctx, ctx.action.ast)
 
     for target in targets:
         norm = normalize_target_path(target).rstrip("/") or "/"
@@ -265,6 +268,28 @@ _TOP_LEVEL_CONDITION_KEYS: frozenset[str] = frozenset(
 )
 
 
+_VALID_CONDITION_KEYS: frozenset[str] = _TOP_LEVEL_CONDITION_KEYS | frozenset(
+    {
+        "subject.role",
+        "subject.not_role",
+        "resource.environment",
+        "resource.host",
+        "resource.groups",
+        "action.type",
+        "action.tool_name",
+        "action.flow_name",
+        "action.risk_tier",
+        "action.sudo",
+        "ast.executables",
+        "ast.subcommands",
+        "ast.targets",
+        "ast.is_obfuscated",
+        "ast.has_destructive_verbs",
+        "environment.is_maintenance_window",
+    }
+)
+
+
 def _to_norm_set(expected: Any, *, upper: bool = False) -> set[str]:
     items = expected if isinstance(expected, list | tuple) else [expected]
     return {str(x).upper() if upper else str(x).lower() for x in items}
@@ -283,15 +308,30 @@ def _extract_candidate_paths(ctx: AuthContext, ast_data: Mapping[str, Any]) -> l
     raw_targets = [str(x) for x in (ast_data.get("targets") or ())]
     if ctx.resource.target_path:
         raw_targets.append(ctx.resource.target_path)
+    cwd = (ctx.action.cwd or "").strip()
+    if cwd:
+        # Также учитываем относительные аргументы команд (например, `rm passwd` при `cwd=/etc`)
+        for atom in ast_data.get("atomic_commands") or ():
+            if isinstance(atom, Mapping):
+                for arg in atom.get("arguments") or ():
+                    arg_s = str(arg).strip()
+                    if arg_s and not arg_s.startswith("-") and arg_s not in raw_targets:
+                        raw_targets.append(arg_s)
     candidates: list[str] = []
+
+    def _add(val: str) -> None:
+        if val and val not in candidates:
+            candidates.append(val)
+
     for raw in raw_targets:
         if not raw:
             continue
         norm = normalize_target_path(raw)
-        if norm not in candidates:
-            candidates.append(norm)
-        if raw not in candidates:
-            candidates.append(raw)
+        _add(norm)
+        _add(raw)
+        if cwd and not raw.startswith(("/", "~")) and not (len(raw) >= 2 and raw[1] == ":"):
+            joined = normalize_target_path(posixpath.join(cwd, raw))
+            _add(joined)
     return candidates
 
 
@@ -341,6 +381,11 @@ class DeclarativePolicyRule:
         for k in _TOP_LEVEL_CONDITION_KEYS:
             if k in data and k not in merged_when:
                 merged_when[k] = data[k]
+        unknown_keys = sorted(str(k) for k in merged_when if str(k) not in _VALID_CONDITION_KEYS)
+        if unknown_keys:
+            raise ConfigurationError(
+                f"Unknown policy condition key(s) {unknown_keys!r} in rule {rule_id!r} (fail-closed validation)"
+            )
         cmd_re = (
             validate_safe_regex(str(merged_when["command_regex"]))
             if "command_regex" in merged_when and merged_when["command_regex"] is not None

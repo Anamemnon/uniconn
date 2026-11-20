@@ -417,20 +417,25 @@ class VirshCommandChannel:
         if arguments is not None:
             req_obj["arguments"] = arguments
         json_str = json.dumps(req_obj, separators=(",", ":"))
-        cmd = (
-            f"virsh -c {shlex.quote(self.libvirt_uri)} "
-            f"qemu-agent-command {shlex.quote(self.domain)} {shlex.quote(json_str)}"
-        )
 
         try:
             if self._ssh_conn is not None:
+                cmd = (
+                    f"virsh -c {shlex.quote(self.libvirt_uri)} "
+                    f"qemu-agent-command {shlex.quote(self.domain)} {shlex.quote(json_str)}"
+                )
                 res = await asyncio.wait_for(self._ssh_conn.run(cmd), timeout=timeout)
                 exit_code = int(res.exit_status or 0)
                 stdout = str(res.stdout or "").strip()
                 stderr = str(res.stderr or "").strip()
             else:
-                proc = await asyncio.create_subprocess_shell(
-                    cmd,
+                proc = await asyncio.create_subprocess_exec(
+                    "virsh",
+                    "-c",
+                    self.libvirt_uri,
+                    "qemu-agent-command",
+                    self.domain,
+                    json_str,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -439,6 +444,12 @@ class VirshCommandChannel:
                     exit_code = int(proc.returncode or 0)
                     stdout = out_b.decode("utf-8", errors="replace").strip()
                     stderr = err_b.decode("utf-8", errors="replace").strip()
+                except builtins.TimeoutError:
+                    with contextlib.suppress(ProcessLookupError, OSError):
+                        proc.kill()
+                    with contextlib.suppress(Exception):
+                        await proc.wait()
+                    raise
                 finally:
                     proc_tr = getattr(proc, "_transport", None)
                     if proc_tr is not None:

@@ -556,7 +556,8 @@ class DiagnosticSession:
 
     async def _start_stream_source(self, spec: StreamSourceSpec) -> None:
         """Запустить потоковый источник в режиме ``stream`` или ``background`` (с автовыбором)."""
-        assert self._pipeline is not None
+        if self._pipeline is None:
+            raise RuntimeError("DiagnosticSession pipeline is not initialized")
         effective_command = spec.command
 
         if spec.mode == "background":
