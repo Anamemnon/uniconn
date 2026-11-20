@@ -122,6 +122,21 @@ class TestTreeSitterBashGrammar:
         d_ok = engine.evaluate_sync(build_auth_context(command="ls -la /tmp"))
         assert d_ok.decision == PolicyDecision.ALLOW
 
+    def test_build_auth_context_auto_classifies_risk_tier(self) -> None:
+        """build_auth_context автоматически классифицирует risk_tier, если он явно не задан."""
+        ctx_safe = build_auth_context(command="ls -la /tmp", environment="staging")
+        assert ctx_safe.action.risk_tier == "SAFE"
+
+        ctx_mut = build_auth_context(command="systemctl restart nginx", environment="production")
+        assert ctx_mut.action.risk_tier == "MUTATING"
+        assert ctx_mut.resource.environment == "production"
+
+        ctx_forbid = build_auth_context(command="cat /etc/shadow", environment="staging")
+        assert ctx_forbid.action.risk_tier == "FORBIDDEN"
+
+        ctx_override = build_auth_context(command="systemctl restart nginx", risk_tier="SAFE")
+        assert ctx_override.action.risk_tier == "SAFE"
+
     def test_treesitter_thread_safety_under_concurrent_parsing(self) -> None:
         """Thread-local tree-sitter.Parser стабильно разбирает команды из нескольких потоков."""
         commands = [

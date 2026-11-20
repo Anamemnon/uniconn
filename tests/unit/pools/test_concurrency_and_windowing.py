@@ -182,6 +182,87 @@ class TestSSHSessionPoolAtomicSlotInit:
         assert res.ok is True
         await spool.close()
 
+    @pytest.mark.asyncio
+    async def test_ssh_transport_channel_open_error_triggers_adaptive_scale_down_without_disconnect(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Реальный asyncssh.ChannelOpenError оборачивается в ConnectionError и снижает лимит без обрыва TCP."""
+        import asyncssh
+
+        from uniconn.transports._ssh import SSHTransport
+
+        disconnect_calls = 0
+
+        class _FakeProc:
+            def __init__(self, cmd: str, counter: dict[str, int]) -> None:
+                self._cmd = cmd
+                self._counter = counter
+                self.returncode = 0
+                self.stdout = MagicMock()
+                self.stderr = MagicMock()
+
+                async def _read_out() -> str:
+                    await asyncio.sleep(0.06)
+                    return f"ok:{cmd}\n"
+
+                async def _read_err() -> str:
+                    return ""
+
+                self.stdout.read = AsyncMock(side_effect=_read_out)
+                self.stderr.read = AsyncMock(side_effect=_read_err)
+                self.wait = AsyncMock(return_value=None)
+
+            async def __aenter__(self) -> _FakeProc:
+                if self._counter["active"] >= 2:
+                    raise asyncssh.ChannelOpenError(1, "open failed")
+                self._counter["active"] += 1
+                return self
+
+            async def __aexit__(self, *args: object) -> None:
+                self._counter["active"] = max(0, self._counter["active"] - 1)
+
+        def _make_ssh_conn(uri: str, **kwargs: object) -> Connection:
+            cfg = ConnectionConfig(transport="ssh", host="10.0.0.9")
+            transport = SSHTransport(cfg)
+            counter = {"active": 0}
+            fake_raw = MagicMock()
+            fake_raw.create_process = MagicMock(
+                side_effect=lambda cmd, **kw: _FakeProc(cmd, counter)
+            )
+            fake_raw.is_closed = MagicMock(return_value=False)
+
+            async def fake_connect() -> None:
+                transport._conn = fake_raw
+                transport._connected = True
+
+            async def fake_disconnect() -> None:
+                nonlocal disconnect_calls
+                disconnect_calls += 1
+                transport._connected = False
+                transport._conn = None
+
+            transport.connect = AsyncMock(side_effect=fake_connect)
+            transport.disconnect = AsyncMock(side_effect=fake_disconnect)
+            transport.is_alive = AsyncMock(return_value=True)
+            return Connection(transport=transport, config=cfg, retry_attempts=3)
+
+        monkeypatch.setattr("uniconn.pool.session_pool.Connection.from_uri", _make_ssh_conn)
+
+        async with SSHSessionPool(
+            "ssh://10.0.0.9:2222",
+            max_connections=4,
+            max_sessions_per_conn=6,
+        ) as spool:
+            results = await asyncio.wait_for(
+                asyncio.gather(*(spool.run(f"worker-{i}") for i in range(6))),
+                timeout=3.0,
+            )
+            assert len(results) == 6
+            assert all(r.ok for r in results)
+            assert spool.max_sessions_per_conn <= 2
+            # Во время работы пула ChannelOpenError не должен вызывать disconnect() на живом соединении!
+            assert disconnect_calls == 0
+
 
 class TestBarrierFleetConnectionWindowing:
     """Проверка bounded LRU connection_window и сохранности отложенных notifications в run_barrier_fleet."""

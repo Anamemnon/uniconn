@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 from pydantic import SecretStr
 from tenacity import (
     AsyncRetrying,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential_jitter,
 )
@@ -866,6 +866,19 @@ class RateLimitMiddleware:
         return await call_next(request)
 
 
+def _is_ssh_channel_limit_error(exc: BaseException) -> bool:
+    """Определить отказ открытия отдельного SSH-канала (MaxSessions) без обрыва TCP-соединения."""
+    cause = exc.__cause__
+    if cause is not None and type(cause).__name__ == "ChannelOpenError":
+        return True
+    msg = str(exc).lower()
+    return (
+        "channel open failed" in msg
+        or "administratively prohibited" in msg
+        or "maxsessions" in msg
+    )
+
+
 class RetryMiddleware:
     """Выполняет повторные попытки (Exponential Backoff + Jitter) с переподключением транспорта."""
 
@@ -888,13 +901,19 @@ class RetryMiddleware:
         log_cmd = "***SENSITIVE***" if request.sensitive else repr(request.command)
         result: Result | None = None
         max_attempts = self._conn.retry_attempts
+        is_adaptive_pool_conn = bool(
+            self._conn.config.options.get("_adaptive_session_pool", False)
+        )
+
+        def _should_retry_exc(exc: BaseException) -> bool:
+            if not isinstance(exc, (ConnectionError, TimeoutError, builtins.TimeoutError)):
+                return False
+            return not (is_adaptive_pool_conn and _is_ssh_channel_limit_error(exc))
 
         async for attempt in AsyncRetrying(
             stop=stop_after_attempt(max_attempts),
             wait=wait_fn(initial=1, max=10),
-            retry=retry_if_exception_type(
-                (ConnectionError, TimeoutError, builtins.TimeoutError)
-            ),
+            retry=retry_if_exception(_should_retry_exc),
             reraise=True,
         ):
             with attempt:
@@ -907,6 +926,8 @@ class RetryMiddleware:
                     TimeoutError,
                     builtins.TimeoutError,
                 ) as retry_exc:
+                    if is_adaptive_pool_conn and _is_ssh_channel_limit_error(retry_exc):
+                        raise
                     attempt_num = attempt.retry_state.attempt_number
                     log_event(
                         self._conn.logger,
@@ -934,16 +955,23 @@ class RetryMiddleware:
                                 ),
                             },
                         )
-                    try:
-                        await self._conn.transport.disconnect()
-                    except (OSError, ConnectionError, TimeoutError, builtins.TimeoutError, RuntimeError) as disc_exc:
-                        log_event(
-                            self._conn.logger,
-                            logging.DEBUG,
-                            "command.retry_disconnect_failed",
-                            f"Disconnect before retry failed: {disc_exc}",
-                            error=str(disc_exc),
-                        )
+                    if not _is_ssh_channel_limit_error(retry_exc):
+                        try:
+                            await self._conn.transport.disconnect()
+                        except (
+                            OSError,
+                            ConnectionError,
+                            TimeoutError,
+                            builtins.TimeoutError,
+                            RuntimeError,
+                        ) as disc_exc:
+                            log_event(
+                                self._conn.logger,
+                                logging.DEBUG,
+                                "command.retry_disconnect_failed",
+                                f"Disconnect before retry failed: {disc_exc}",
+                                error=str(disc_exc),
+                            )
                     raise
 
         if result is None:

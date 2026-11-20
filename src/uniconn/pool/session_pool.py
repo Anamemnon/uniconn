@@ -267,6 +267,11 @@ class SSHSessionPool:
                         retry_attempts=self._retry_attempts,
                         logger=self._logger,
                     )
+                    if self._adaptive:
+                        conn_cfg = getattr(conn, "config", None)
+                        conn_opts = getattr(conn_cfg, "options", None)
+                        if isinstance(conn_opts, dict):
+                            conn_opts["_adaptive_session_pool"] = True
                     new_slot = _PooledConnectionSlot(
                         conn=conn,
                         in_flight=1,

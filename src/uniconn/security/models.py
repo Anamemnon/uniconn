@@ -356,7 +356,7 @@ def build_auth_context(
     sudo: bool = False,
     dry_run: bool = False,
     cwd: str | None = None,
-    risk_tier: str = "SAFE",
+    risk_tier: str | None = None,
     risk_reasons: Sequence[str] = (),
     host: str = "localhost",
     host_name: str | None = None,
@@ -431,6 +431,29 @@ def build_auth_context(
     )
     ref_time = (now or datetime.now(UTC)).astimezone(UTC)
 
+    if risk_tier is None:
+        if cmd_str.strip():
+            from ..mcp.risk_classifier import ActionRiskClassifier
+
+            assessment = ActionRiskClassifier.classify_command(
+                cmd_str,
+                sudo=sudo or any(c.is_sudo for c in parsed_ast.atomic_commands),
+                is_production=(resolved_env == "production"),
+                ast=parsed_ast,
+            )
+            eff_risk_tier = assessment.risk_tier.value
+            eff_risk_reasons = (
+                tuple(str(r) for r in risk_reasons)
+                if risk_reasons
+                else assessment.reasons
+            )
+        else:
+            eff_risk_tier = "SAFE"
+            eff_risk_reasons = tuple(str(r) for r in risk_reasons)
+    else:
+        eff_risk_tier = risk_tier
+        eff_risk_reasons = tuple(str(r) for r in risk_reasons)
+
     return AuthContext(
         subject=SubjectContext(
             agent_id=(agent_id or "uniconn-agent").strip() or "uniconn-agent",
@@ -455,8 +478,8 @@ def build_auth_context(
             sudo=sudo or any(c.is_sudo for c in parsed_ast.atomic_commands),
             dry_run=dry_run,
             cwd=cwd,
-            risk_tier=risk_tier,
-            risk_reasons=tuple(str(r) for r in risk_reasons),
+            risk_tier=eff_risk_tier,
+            risk_reasons=eff_risk_reasons,
             ast=ast_dict,
             flow_name=flow_name,
             flow_tasks=tuple(str(t) for t in flow_tasks),

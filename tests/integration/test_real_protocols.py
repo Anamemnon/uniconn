@@ -135,7 +135,8 @@ class TestRealOPAPolicyEngine:
 
         # 4. Проверка middleware в конвейере Connection (local)
         mw = PolicyGuardrailMiddleware(engine=engine)
-        async with Connection.local(middlewares=[mw]) as conn:
+        async with Connection.local() as conn:
+            mw.attach(conn)
             ok_res = await conn.run("echo opa-middleware-ok")
             assert ok_res.ok is True
             assert "opa-middleware-ok" in ok_res.stdout

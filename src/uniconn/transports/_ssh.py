@@ -323,6 +323,32 @@ class SSHTransport(BaseTransport):
             return command
         return f"cd {shlex.quote(str(cwd))} && {command}"
 
+    def _maybe_wrap_asyncssh_error(
+        self,
+        exc: Exception,
+        *,
+        command: str,
+        default_prefix: str,
+    ) -> ConnectionError | None:
+        """Преобразовать исключение ``asyncssh.Error`` в ``ConnectionError`` с сохранением причины."""
+        err_cls = getattr(asyncssh, "Error", None) if asyncssh is not None else None
+        if not (isinstance(err_cls, type) and issubclass(err_cls, BaseException)):
+            return None
+        if not isinstance(exc, err_cls):
+            return None
+        ch_cls = getattr(asyncssh, "ChannelOpenError", None)
+        is_channel_err = (
+            isinstance(ch_cls, type)
+            and issubclass(ch_cls, BaseException)
+            and isinstance(exc, ch_cls)
+        )
+        prefix = "SSH channel open failed" if is_channel_err else default_prefix
+        return ConnectionError(
+            f"{prefix}: {exc}",
+            command=command,
+            host=self.config.host,
+        )
+
     async def run(
         self,
         command: str,
@@ -369,6 +395,15 @@ class SSHTransport(BaseTransport):
                 command=command,
                 host=self.config.host,
             ) from exc
+        except Exception as exc:
+            wrapped = self._maybe_wrap_asyncssh_error(
+                exc,
+                command=command,
+                default_prefix="SSH execution connection error",
+            )
+            if wrapped is not None:
+                raise wrapped from exc
+            raise
 
         duration = time.monotonic() - start_time
 
@@ -430,6 +465,15 @@ class SSHTransport(BaseTransport):
                 command=command,
                 host=self.config.host,
             ) from exc
+        except Exception as exc:
+            wrapped = self._maybe_wrap_asyncssh_error(
+                exc,
+                command=command,
+                default_prefix="SSH execution connection error",
+            )
+            if wrapped is not None:
+                raise wrapped from exc
+            raise
 
         raw_stdout = (
             stdout.encode("utf-8") if isinstance(stdout, str) else bytes(stdout or b"")
@@ -466,51 +510,61 @@ class SSHTransport(BaseTransport):
         input_data = kwargs.get("input")
         effective_cmd = self._wrap_cwd(command, cwd)
         deadline = (time.monotonic() + timeout) if timeout is not None else None
-        async with self._conn.create_process(effective_cmd, env=env) as proc:
-            if input_data is not None and getattr(proc, "stdin", None) is not None:
-                proc.stdin.write(input_data)
-                drain_fn = getattr(proc.stdin, "drain", None)
-                if callable(drain_fn):
-                    res_drain = drain_fn()
-                    if inspect.isawaitable(res_drain):
-                        await res_drain
-                write_eof = getattr(proc.stdin, "write_eof", None)
-                if callable(write_eof):
-                    write_eof()
-            if deadline is None:
-                async for line in proc.stdout:
-                    yield line.rstrip()
-                return
-            stdout_iter = aiter(proc.stdout)
-            try:
-                while True:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise builtins.TimeoutError
-                    try:
-                        line = await asyncio.wait_for(
-                            anext(stdout_iter),
-                            timeout=remaining,
-                        )
-                    except StopAsyncIteration:
-                        break
-                    yield line.rstrip()
-            except builtins.TimeoutError as exc:
-                aclose_fn = getattr(stdout_iter, "aclose", None)
-                if callable(aclose_fn):
-                    with contextlib.suppress(Exception):
-                        res_close = aclose_fn()
-                        if inspect.isawaitable(res_close):
-                            await res_close
-                terminate_fn = getattr(proc, "terminate", None)
-                if callable(terminate_fn):
-                    with contextlib.suppress(Exception):
-                        terminate_fn()
-                raise TimeoutError(
-                    f"SSH stream timed out after {timeout}s",
-                    command=command,
-                    host=self.config.host,
-                ) from exc
+        try:
+            async with self._conn.create_process(effective_cmd, env=env) as proc:
+                if input_data is not None and getattr(proc, "stdin", None) is not None:
+                    proc.stdin.write(input_data)
+                    drain_fn = getattr(proc.stdin, "drain", None)
+                    if callable(drain_fn):
+                        res_drain = drain_fn()
+                        if inspect.isawaitable(res_drain):
+                            await res_drain
+                    write_eof = getattr(proc.stdin, "write_eof", None)
+                    if callable(write_eof):
+                        write_eof()
+                if deadline is None:
+                    async for line in proc.stdout:
+                        yield line.rstrip()
+                    return
+                stdout_iter = aiter(proc.stdout)
+                try:
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise builtins.TimeoutError
+                        try:
+                            line = await asyncio.wait_for(
+                                anext(stdout_iter),
+                                timeout=remaining,
+                            )
+                        except StopAsyncIteration:
+                            break
+                        yield line.rstrip()
+                except builtins.TimeoutError as exc:
+                    aclose_fn = getattr(stdout_iter, "aclose", None)
+                    if callable(aclose_fn):
+                        with contextlib.suppress(Exception):
+                            res_close = aclose_fn()
+                            if inspect.isawaitable(res_close):
+                                await res_close
+                    terminate_fn = getattr(proc, "terminate", None)
+                    if callable(terminate_fn):
+                        with contextlib.suppress(Exception):
+                            terminate_fn()
+                    raise TimeoutError(
+                        f"SSH stream timed out after {timeout}s",
+                        command=command,
+                        host=self.config.host,
+                    ) from exc
+        except Exception as exc:
+            wrapped = self._maybe_wrap_asyncssh_error(
+                exc,
+                command=command,
+                default_prefix="SSH stream connection error",
+            )
+            if wrapped is not None:
+                raise wrapped from exc
+            raise
 
     async def upload(
         self,
