@@ -680,26 +680,29 @@ class TestPipelineAndChannels:
         assert nested.risk_tier == ActionRiskTier.TIER_2_DESTRUCTIVE
 
     async def test_deduplication_and_parameter_secret_masking(self, tmp_path: Path) -> None:
-        store_file = tmp_path / "approvals.json"
-        mgr = ApprovalManager(secret="dedup-secret", store_path=store_file)
+        store_file = tmp_path / "approvals.db"
+        async with ApprovalManager(secret="dedup-secret", store_path=store_file) as mgr:
+            req1 = await mgr.create_request(
+                target_host="prod-db",
+                tool_name="uniconn_run",
+                risk_tier=ActionRiskTier.TIER_1_MUTATING,
+                command="mysql -u root --password=supersecret_db_pass -e 'FLUSH PRIVILEGES'",
+                parameters={"command": "mysql -u root --password=supersecret_db_pass -e 'FLUSH PRIVILEGES'"},
+            )
+            req2 = await mgr.create_request(
+                target_host="prod-db",
+                tool_name="uniconn_run",
+                risk_tier=ActionRiskTier.TIER_1_MUTATING,
+                command="mysql -u root --password=supersecret_db_pass -e 'FLUSH PRIVILEGES'",
+                parameters={"command": "mysql -u root --password=supersecret_db_pass -e 'FLUSH PRIVILEGES'"},
+            )
+            assert req1.approval_id == req2.approval_id
 
-        req1 = await mgr.create_request(
-            target_host="prod-db",
-            tool_name="uniconn_run",
-            risk_tier=ActionRiskTier.TIER_1_MUTATING,
-            command="mysql -u root --password=supersecret_db_pass -e 'FLUSH PRIVILEGES'",
-            parameters={"command": "mysql -u root --password=supersecret_db_pass -e 'FLUSH PRIVILEGES'"},
-        )
-        req2 = await mgr.create_request(
-            target_host="prod-db",
-            tool_name="uniconn_run",
-            risk_tier=ActionRiskTier.TIER_1_MUTATING,
-            command="mysql -u root --password=supersecret_db_pass -e 'FLUSH PRIVILEGES'",
-            parameters={"command": "mysql -u root --password=supersecret_db_pass -e 'FLUSH PRIVILEGES'"},
-        )
-        assert req1.approval_id == req2.approval_id
-        raw_disk = store_file.read_text(encoding="utf-8")
-        assert "supersecret_db_pass" not in raw_disk
+        raw_disk = store_file.read_bytes()
+        wal_file = Path(f"{store_file}-wal")
+        if wal_file.exists():
+            raw_disk += wal_file.read_bytes()
+        assert b"supersecret_db_pass" not in raw_disk
 
     def test_dashboard_hitl_sandbox_endpoint(self, tmp_path: Path) -> None:
         from examples.dashboard.handlers.api import _execute_hitl_sandbox
