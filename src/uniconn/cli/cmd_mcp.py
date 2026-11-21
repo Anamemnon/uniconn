@@ -9,16 +9,20 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal, cast
 
 from ..mcp import (
     DEFAULT_APPROVAL_STORE_PATH,
     ActionRiskClassifier,
     ApprovalManager,
     HITLPolicy,
+    MCPAuthConfig,
     MCPHostRegistry,
+    MCPHttpConfig,
     MCPSecurityPolicy,
     MCPServer,
+    MTLSConfig,
+    OAuth2OIDCConfig,
 )
 from ..security import (
     CommandASTParser,
@@ -33,6 +37,126 @@ def _split_csv(value: str | None) -> tuple[str, ...]:
     if not value:
         return ()
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _parse_tenant_inventories(raw: str | None) -> dict[str, str]:
+    """Разобрать строку ``tenant=path,tenant2=path2`` в словарь путей к инвентарям."""
+    if not raw or not raw.strip():
+        return {}
+    result: dict[str, str] = {}
+    for item in raw.split(","):
+        token = item.strip()
+        if not token:
+            continue
+        if "=" not in token:
+            raise ValueError(
+                f"Invalid --tenant-inventory item {token!r}; expected 'tenant_id=/path/to/inventory.yaml'"
+            )
+        tenant_id, inv_path = token.split("=", 1)
+        tenant_id = tenant_id.strip()
+        inv_path = inv_path.strip()
+        if not tenant_id or not inv_path:
+            raise ValueError(f"Invalid --tenant-inventory item {token!r}; tenant_id and path must be non-empty")
+        result[tenant_id] = inv_path
+    return result
+
+
+def _build_network_auth_and_http_configs(
+    *,
+    bind: str,
+    port: int,
+    mcp_path: str,
+    allowed_origins: str | None,
+    allowed_hosts: str | None,
+    stateless: bool,
+    session_ttl: float,
+    max_sessions_per_tenant: int,
+    auth_mode: str,
+    oidc_issuer: str | None,
+    oidc_jwks_url: str | None,
+    oidc_audience: str | None,
+    role_claim: str,
+    tenant_claim: str,
+    agent_id_claim: str,
+    required_scopes: str | None,
+    resource_url: str | None,
+    oidc_allow_private_network: bool,
+    tls_cert: str | None,
+    tls_key: str | None,
+    tls_client_ca: str | None,
+    mtls_role_source: str,
+    mtls_tenant_source: str,
+    trusted_proxy_cidrs: str | None,
+    require_tenant: bool,
+    agent_role: str | None = None,
+) -> tuple[MCPAuthConfig, MCPHttpConfig]:
+    """Собрать fail-closed конфигурации ``MCPAuthConfig`` и ``MCPHttpConfig`` из флагов CLI."""
+    mode_norm = auth_mode.strip().lower()
+    if mode_norm not in ("oauth2", "mtls", "either", "both"):
+        raise ValueError(f"Unsupported --auth-mode {auth_mode!r}; expected one of: oauth2, mtls, either, both")
+
+    oauth2_cfg: OAuth2OIDCConfig | None = None
+    if mode_norm in ("oauth2", "both") or oidc_issuer or oidc_jwks_url:
+        aud_items = _split_csv(oidc_audience)
+        eff_audience: str | tuple[str, ...] | None = (
+            aud_items[0] if len(aud_items) == 1 else (aud_items if aud_items else None)
+        )
+        oauth2_cfg = OAuth2OIDCConfig(
+            issuer=oidc_issuer,
+            jwks_url=oidc_jwks_url,
+            audience=eff_audience,
+            role_claim=role_claim,
+            tenant_claim=tenant_claim,
+            agent_id_claim=agent_id_claim,
+            required_scopes=_split_csv(required_scopes),
+            resource_url=resource_url,
+            allow_private_network=oidc_allow_private_network,
+        )
+
+    mtls_cfg: MTLSConfig | None = None
+    proxy_cidrs = _split_csv(trusted_proxy_cidrs)
+    if mode_norm in ("mtls", "both") or tls_client_ca or proxy_cidrs:
+        valid_role_sources = ("ou", "san_uri", "cn", "static_map", "spiffe_sa")
+        valid_tenant_sources = ("o", "ou", "spiffe_ns", "san_dns", "cn", "static_map")
+        r_src = mtls_role_source.strip().lower()
+        t_src = mtls_tenant_source.strip().lower()
+        if r_src not in valid_role_sources:
+            raise ValueError(
+                f"Unsupported --mtls-role-source {mtls_role_source!r}; expected one of: {', '.join(valid_role_sources)}"
+            )
+        if t_src not in valid_tenant_sources:
+            raise ValueError(
+                f"Unsupported --mtls-tenant-source {mtls_tenant_source!r}; "
+                f"expected one of: {', '.join(valid_tenant_sources)}"
+            )
+        mtls_cfg = MTLSConfig(
+            ca_cert_path=tls_client_ca,
+            role_source=cast(Literal["ou", "san_uri", "cn", "static_map", "spiffe_sa"], r_src),
+            tenant_source=cast(Literal["o", "ou", "spiffe_ns", "san_dns", "cn", "static_map"], t_src),
+            trusted_proxy_cidrs=proxy_cidrs,
+        )
+
+    auth_cfg = MCPAuthConfig(
+        mode=cast(Literal["oauth2", "mtls", "either", "both"], mode_norm),
+        oauth2=oauth2_cfg,
+        mtls=mtls_cfg,
+        require_tenant=require_tenant,
+        default_role=agent_role,
+    )
+    http_cfg = MCPHttpConfig(
+        host=bind,
+        port=port,
+        mcp_path=mcp_path,
+        allowed_origins=_split_csv(allowed_origins),
+        allowed_hosts=_split_csv(allowed_hosts),
+        session_ttl_seconds=session_ttl,
+        max_sessions_per_tenant=max_sessions_per_tenant,
+        tls_cert_path=tls_cert,
+        tls_key_path=tls_key,
+        tls_client_ca_path=tls_client_ca if (tls_cert and tls_key) else None,
+        stateless_mode=stateless,
+    )
+    return auth_cfg, http_cfg
 
 
 def build_mcp_client_config(
@@ -61,8 +185,27 @@ def build_mcp_client_config(
     policy_file: str | None = None,
     opa_url: str | None = None,
     agent_role: str = "operator",
+    transport: str = "stdio",
+    bind: str = "127.0.0.1",
+    port: int = 8080,
+    mcp_path: str = "/mcp",
+    auth_mode: str = "oauth2",
+    resource_url: str | None = None,
+    tls_cert: str | None = None,
 ) -> dict[str, Any]:
     """Сформировать готовый JSON-конфиг ``mcpServers`` для Claude Desktop / Cursor."""
+    if transport.strip().lower() == "http":
+        scheme = "https" if tls_cert else "http"
+        norm_path = mcp_path if mcp_path.startswith("/") else f"/{mcp_path}"
+        url = resource_url or f"{scheme}://{bind}:{port}{norm_path}"
+        entry: dict[str, Any] = {
+            "type": "streamable-http",
+            "url": url,
+        }
+        if auth_mode.strip().lower() in ("oauth2", "either", "both"):
+            entry["headers"] = {"Authorization": "Bearer ${UNICONN_MCP_TOKEN}"}
+        return {"mcpServers": {"uniconn": entry}}
+
     args: list[str] = ["--from", "uniconn[cli]", "uniconn", "mcp"]
     if inventory:
         args.extend(["--inventory", str(Path(inventory).resolve())])
@@ -158,6 +301,10 @@ def _build_mcp_server_from_args(
     policy_file: str | None,
     opa_url: str | None,
     agent_role: str,
+    tenant_inventories: dict[str, str] | None = None,
+    allow_shared_hosts: bool = False,
+    auth_config: MCPAuthConfig | None = None,
+    http_config: MCPHttpConfig | None = None,
 ) -> MCPServer:
     allow_tuple = _split_csv(allowlist)
     block_tuple = _split_csv(blocklist) if blocklist else None
@@ -195,16 +342,33 @@ def _build_mcp_server_from_args(
         hitl=hitl_policy,
         guardrails=guardrails_cfg,
     )
+    has_tenant_regs = bool(tenant_inventories)
     registry = MCPHostRegistry.from_sources(
         inventory=inventory,
         uris=parsed_uris,
         group=group,
         host=host,
         include_local=local,
-        default_to_local=True,
+        default_to_local=not has_tenant_regs,
         policy=policy,
     )
-    return MCPServer(registry=registry, flow_specs=parsed_flows)
+    tenant_regs: dict[str, MCPHostRegistry] = {}
+    if tenant_inventories:
+        for tid, inv_path in tenant_inventories.items():
+            tenant_regs[tid] = MCPHostRegistry.from_sources(
+                inventory=inv_path,
+                include_local=False,
+                default_to_local=False,
+                policy=policy,
+            )
+    return MCPServer(
+        registry=registry,
+        tenant_registries=tenant_regs or None,
+        allow_shared_hosts=allow_shared_hosts,
+        auth_config=auth_config,
+        http_config=http_config,
+        flow_specs=parsed_flows,
+    )
 
 
 def _render_approval_list(console: Any, reqs: list[Any], output_format: str) -> None:
@@ -831,6 +995,205 @@ def register_mcp_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                 help="Default RBAC/ABAC role for AI agent calls (default: operator)",
             ),
         ] = "operator",
+        transport: Annotated[
+            str,
+            Parameter(
+                name=["--transport", "-t"],
+                help="MCP transport mode: 'stdio' (default) or 'http' (Streamable HTTP / SSE)",
+            ),
+        ] = "stdio",
+        bind: Annotated[
+            str,
+            Parameter(
+                name=["--bind"],
+                help="Bind host for --transport http (default: 127.0.0.1)",
+            ),
+        ] = "127.0.0.1",
+        port: Annotated[
+            int,
+            Parameter(
+                name=["--port", "-p"],
+                help="Bind port for --transport http (default: 8080)",
+            ),
+        ] = 8080,
+        mcp_path: Annotated[
+            str,
+            Parameter(
+                name=["--mcp-path"],
+                help="HTTP endpoint path for Streamable HTTP MCP (default: /mcp)",
+            ),
+        ] = "/mcp",
+        allowed_origins: Annotated[
+            str | None,
+            Parameter(
+                name=["--allowed-origins"],
+                help="Comma-separated allowed Origin headers for anti-DNS-rebinding",
+            ),
+        ] = None,
+        allowed_hosts: Annotated[
+            str | None,
+            Parameter(
+                name=["--allowed-hosts"],
+                help="Comma-separated allowed Host headers for anti-DNS-rebinding",
+            ),
+        ] = None,
+        stateless: Annotated[
+            bool,
+            Parameter(
+                name=["--stateless"],
+                negative="",
+                help="Run Streamable HTTP MCP in stateless mode without Mcp-Session-Id tracking",
+            ),
+        ] = False,
+        session_ttl: Annotated[
+            float,
+            Parameter(
+                name=["--session-ttl"],
+                help="Idle TTL in seconds for HTTP MCP sessions (default: 1800.0)",
+            ),
+        ] = 1800.0,
+        max_sessions_per_tenant: Annotated[
+            int,
+            Parameter(
+                name=["--max-sessions-per-tenant"],
+                help="Maximum concurrent HTTP MCP sessions per tenant (default: 100)",
+            ),
+        ] = 100,
+        auth_mode: Annotated[
+            str,
+            Parameter(
+                name=["--auth-mode"],
+                help="Network auth mode for --transport http: oauth2, mtls, either, both (default: oauth2)",
+            ),
+        ] = "oauth2",
+        oidc_issuer: Annotated[
+            str | None,
+            Parameter(
+                name=["--oidc-issuer"],
+                help="OAuth 2.1 / OIDC issuer URL for discovery and iss claim verification",
+            ),
+        ] = None,
+        oidc_jwks_url: Annotated[
+            str | None,
+            Parameter(
+                name=["--oidc-jwks-url"],
+                help="Explicit JWKS URL for JWT signature verification",
+            ),
+        ] = None,
+        oidc_audience: Annotated[
+            str | None,
+            Parameter(
+                name=["--oidc-audience"],
+                help="Expected JWT audience (comma-separated for multiple allowed audiences)",
+            ),
+        ] = None,
+        role_claim: Annotated[
+            str,
+            Parameter(
+                name=["--role-claim"],
+                help="JWT claim path for RBAC role extraction (default: role)",
+            ),
+        ] = "role",
+        tenant_claim: Annotated[
+            str,
+            Parameter(
+                name=["--tenant-claim"],
+                help="JWT claim path for tenant_id extraction (default: tenant_id)",
+            ),
+        ] = "tenant_id",
+        agent_id_claim: Annotated[
+            str,
+            Parameter(
+                name=["--agent-id-claim"],
+                help="JWT claim path for agent_id extraction (default: sub)",
+            ),
+        ] = "sub",
+        required_scopes: Annotated[
+            str | None,
+            Parameter(
+                name=["--required-scopes"],
+                help="Comma-separated OAuth 2.1 scopes required on every MCP request",
+            ),
+        ] = None,
+        resource_url: Annotated[
+            str | None,
+            Parameter(
+                name=["--resource-url"],
+                help="Canonical MCP Resource URL advertised in RFC 9728 Protected Resource Metadata",
+            ),
+        ] = None,
+        oidc_allow_private_network: Annotated[
+            bool,
+            Parameter(
+                name=["--oidc-allow-private-network"],
+                negative="",
+                help="Allow OIDC discovery / JWKS fetches to private/loopback networks",
+            ),
+        ] = False,
+        tls_cert: Annotated[
+            str | None,
+            Parameter(
+                name=["--tls-cert"],
+                help="Path to server TLS certificate PEM file",
+            ),
+        ] = None,
+        tls_key: Annotated[
+            str | None,
+            Parameter(
+                name=["--tls-key"],
+                help="Path to server TLS private key PEM file",
+            ),
+        ] = None,
+        tls_client_ca: Annotated[
+            str | None,
+            Parameter(
+                name=["--tls-client-ca"],
+                help="Path to CA bundle PEM file for verifying mTLS client certificates",
+            ),
+        ] = None,
+        mtls_role_source: Annotated[
+            str,
+            Parameter(
+                name=["--mtls-role-source"],
+                help="X.509 field for RBAC role: ou, san_uri, cn, static_map, spiffe_sa (default: ou)",
+            ),
+        ] = "ou",
+        mtls_tenant_source: Annotated[
+            str,
+            Parameter(
+                name=["--mtls-tenant-source"],
+                help="X.509 field for tenant_id: spiffe_ns, o, ou, san_dns, cn, static_map (default: spiffe_ns)",
+            ),
+        ] = "spiffe_ns",
+        trusted_proxy_cidrs: Annotated[
+            str | None,
+            Parameter(
+                name=["--trusted-proxy-cidrs"],
+                help="Comma-separated CIDRs of reverse proxies trusted to pass client certificate headers",
+            ),
+        ] = None,
+        tenant_inventory: Annotated[
+            str | None,
+            Parameter(
+                name=["--tenant-inventory"],
+                help="Comma-separated tenant=path pairs for isolated per-tenant registries",
+            ),
+        ] = None,
+        allow_shared_hosts: Annotated[
+            bool,
+            Parameter(
+                name=["--allow-shared-hosts"],
+                negative="",
+                help="Allow tenants to access untagged hosts in a shared inventory (default: false)",
+            ),
+        ] = False,
+        require_tenant: Annotated[
+            bool,
+            Parameter(
+                name=["--require-tenant"],
+                help="Require non-empty tenant_id on authenticated network MCP calls (default: true)",
+            ),
+        ] = True,
         print_config: Annotated[
             bool,
             Parameter(
@@ -840,9 +1203,13 @@ def register_mcp_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
             ),
         ] = False,
     ) -> None:
-        """Start the official uniconn Model Context Protocol (MCP) server over JSON-RPC 2.0 stdio."""
+        """Start the official uniconn Model Context Protocol (MCP) server (stdio or Streamable HTTP/SSE)."""
         parsed_uris = _split_csv(uri)
         parsed_flows = _split_csv(flows)
+        transport_norm = transport.strip().lower()
+        if transport_norm not in ("stdio", "http"):
+            sys.stderr.write(f"ERROR: Unsupported --transport {transport!r}; expected 'stdio' or 'http'\n")
+            sys.exit(1)
 
         if print_config:
             cfg_snippet = build_mcp_client_config(
@@ -870,6 +1237,13 @@ def register_mcp_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                 policy_file=policy_file,
                 opa_url=opa_url,
                 agent_role=agent_role,
+                transport=transport_norm,
+                bind=bind,
+                port=port,
+                mcp_path=mcp_path,
+                auth_mode=auth_mode,
+                resource_url=resource_url,
+                tls_cert=tls_cert,
             )
             sys.stdout.write(json.dumps(cfg_snippet, ensure_ascii=False, indent=2) + "\n")
             sys.stdout.flush()
@@ -880,6 +1254,43 @@ def register_mcp_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
             sys.exit(1)
 
         try:
+            parsed_tenant_invs = _parse_tenant_inventories(tenant_inventory)
+            for tid, inv_path in parsed_tenant_invs.items():
+                if not Path(inv_path).is_file():
+                    raise FileNotFoundError(f"Tenant {tid!r} inventory file not found: {inv_path}")
+
+            auth_cfg: MCPAuthConfig | None = None
+            http_cfg: MCPHttpConfig | None = None
+            if transport_norm == "http":
+                auth_cfg, http_cfg = _build_network_auth_and_http_configs(
+                    bind=bind,
+                    port=port,
+                    mcp_path=mcp_path,
+                    allowed_origins=allowed_origins,
+                    allowed_hosts=allowed_hosts,
+                    stateless=stateless,
+                    session_ttl=session_ttl,
+                    max_sessions_per_tenant=max_sessions_per_tenant,
+                    auth_mode=auth_mode,
+                    oidc_issuer=oidc_issuer,
+                    oidc_jwks_url=oidc_jwks_url,
+                    oidc_audience=oidc_audience,
+                    role_claim=role_claim,
+                    tenant_claim=tenant_claim,
+                    agent_id_claim=agent_id_claim,
+                    required_scopes=required_scopes,
+                    resource_url=resource_url,
+                    oidc_allow_private_network=oidc_allow_private_network,
+                    tls_cert=tls_cert,
+                    tls_key=tls_key,
+                    tls_client_ca=tls_client_ca,
+                    mtls_role_source=mtls_role_source,
+                    mtls_tenant_source=mtls_tenant_source,
+                    trusted_proxy_cidrs=trusted_proxy_cidrs,
+                    require_tenant=require_tenant,
+                    agent_role=None,
+                )
+
             server = _build_mcp_server_from_args(
                 inventory=inventory,
                 parsed_uris=parsed_uris,
@@ -905,13 +1316,20 @@ def register_mcp_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                 policy_file=policy_file,
                 opa_url=opa_url,
                 agent_role=agent_role,
+                tenant_inventories=parsed_tenant_invs,
+                allow_shared_hosts=allow_shared_hosts,
+                auth_config=auth_cfg,
+                http_config=http_cfg,
             )
         except Exception as exc:
             renderer.print_error_and_exit(exc, title="MCP Server Configuration Error")
             return
 
         with contextlib.suppress(KeyboardInterrupt):
-            asyncio.run(server.serve_stdio())
+            if transport_norm == "http":
+                asyncio.run(server.serve_http(auth_config=auth_cfg, http_config=http_cfg))
+            else:
+                asyncio.run(server.serve_stdio())
 
     _register_approval_subcommands(app, console, renderer)
     _register_policy_subcommands(app, console, renderer)

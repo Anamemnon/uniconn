@@ -21,7 +21,11 @@ class MCPServerToolsMixin(MCPHostToolsMixin, MCPFileToolsMixin, MCPGovernanceToo
         if uri == "uniconn://inventory/hosts":
             data = await self._tool_list_hosts({})
         elif uri == "uniconn://approvals/pending":
-            pending = await self.approval_manager.list_requests(status=ApprovalStatus.PENDING)
+            pending = await self.approval_manager.list_requests(
+                status=ApprovalStatus.PENDING,
+                tenant_id=self._active_tenant_id(),
+                strict_tenant=self._is_verified_caller(),
+            )
             data = {
                 "pending_approvals": [r.to_public_dict() for r in pending],
                 "count": len(pending),

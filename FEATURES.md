@@ -19,7 +19,7 @@
 | DAG-оркестрация задач (`v0.18.0`–`v0.21.0`) | ✅ `uniconn.orchestration` | Декларативные графы `@task(depends_on=..., post=..., when=...)`, `Flow` / `SyncFlow`, режимы `barrier` (с bounded LRU `connection_window` и сохранением `NotificationBatch`) и `independent`, экспорт `Flow` как MCP Tool |
 | Семантический парсинг (`v0.17.0`) | ✅ `uniconn.parsing` | `conn.run(..., parse="auto" | "df" | "jc:..." | "textfsm:..." | "ttp:...")`, `Result.parse()`, `Result.parsed`, валидация через Pydantic-модели |
 | Policy-as-Code & Grammar/PowerShell AST (`v0.19.0`–`v0.21.0`) | ✅ `uniconn.security` | Опциональный грамматический бэкенд `tree-sitter-bash` (`uniconn[security]`) с fallback, встроенный кроссплатформенный `PowerShellASTParser` (декодирование `-EncodedCommand`, backtick-деобфускация, cmdlet-алиасы), fail-closed на синтаксических ошибках и унификация с `ActionRiskClassifier`, `EmbeddedPolicyEngine`, `OPAPolicyEngine` |
-| MCP Server & HITL (`v0.16.0`–`v0.21.0`) | ✅ `uniconn.mcp` | JSON-RPC 2.0 `stdio` сервер (`uniconn mcp`), единый AST-классификатор риска (`ActionRiskClassifier` для POSIX и PowerShell/Windows), криптографически подписанные HITL-аппрувы (`uniconn approval *`) |
+| MCP Server, Remote HTTP/SSE & HITL (`v0.16.0`–`v0.21.0`) | ✅ `uniconn.mcp` | JSON-RPC 2.0 `stdio` и сетевой Streamable HTTP / SSE шлюз (`uniconn[mcp-http]`, `uniconn mcp --transport http`, `POST/GET/DELETE /mcp`, RFC 9728), fail-closed аутентификация OAuth 2.1/OIDC JWKS + mTLS X.509/SPIFFE + RFC 8705 `cnf.x5t#S256`, anti-spoofing RBAC, мульти-тенантная изоляция хостов/сессий/HITL/чекпоинтов, единый AST-классификатор риска (`ActionRiskClassifier`) и подписанные HITL-аппрувы (`uniconn approval *`) |
 | Фоновые сессии и диагностика | ✅ `BackgroundPool` + `DiagnosticSession` | Бэкенды `TmuxBackend`, `ScreenBackend`, `NohupBackend`, `WindowsJobBackend`, реактивный `LogPipeline` с `LogWatchRule` и `AutoDiagnosticMiddleware` |
 | PTY Shell & Expect | ✅ `ShellSession` + `expect()` | Stateful сессии (`open_shell`, `execute`, `SyncShellSession`) и декларативный `expect()` на уровне `Connection`, `ShellSession` и `ConnectionPool` |
 | Инспекция и сравнение | ✅ `gather_facts()` + `diff_facts()` | `FactCollector` → `HostFacts` (Linux + Windows PowerShell) + детектор конфигурационного дрейфа `diff_facts()` (`FactsDiffReport`) |
@@ -244,4 +244,5 @@
 | Serial / UART | `pyserial-asyncio>=0.6` |
 | BMC (IPMI & Redfish) | `pyghmi>=1.5`, `niquests>=3.5` |
 | CLI | `cyclopts>=3.0`, `rich>=13.7` |
-| Dev & QA | `pytest>=8.0`, `pytest-asyncio>=0.24`, `pytest-mock>=3.14`, `pytest-cov>=5.0`, `hypothesis>=6.100`, `pyright>=1.1.380`, `ruff>=0.8`, `testcontainers>=4.8` |
+| Remote Network MCP (`mcp-http`) | `starlette>=0.38`, `uvicorn>=0.30`, `pyjwt[crypto]>=2.9`, `cryptography>=42.0` (optional extra `mcp-http`) |
+| Dev & QA | `pytest>=8.0`, `pytest-asyncio>=0.24`, `pytest-mock>=3.14`, `pytest-cov>=5.0`, `httpx>=0.27`, `hypothesis>=6.100`, `pyright>=1.1.380`, `ruff>=0.8`, `testcontainers>=4.8` |

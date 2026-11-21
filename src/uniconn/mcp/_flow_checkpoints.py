@@ -211,6 +211,7 @@ class FlowCheckpointRecord:
     task_outputs_by_host: dict[str, dict[str, Any]] = field(default_factory=dict)
     failed_tasks: list[dict[str, Any]] = field(default_factory=list)
     ok: bool = False
+    tenant_id: str | None = None
     created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
 
@@ -228,6 +229,7 @@ class FlowCheckpointRecord:
             "task_outputs_by_host": {h: dict(outputs) for h, outputs in self.task_outputs_by_host.items()},
             "failed_tasks": list(self.failed_tasks),
             "ok": self.ok,
+            "tenant_id": self.tenant_id,
             "can_resume": not self.ok,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -280,6 +282,7 @@ class FlowCheckpointRecord:
             task_outputs_by_host=outputs_map,
             failed_tasks=failed_list,
             ok=bool(data.get("ok", False)),
+            tenant_id=str(data["tenant_id"]).strip() if data.get("tenant_id") else None,
             created_at=str(data.get("created_at") or datetime.now(UTC).isoformat()),
             updated_at=str(data.get("updated_at") or datetime.now(UTC).isoformat()),
         )
@@ -339,6 +342,7 @@ class FlowCheckpointStore:
         prior_completed: Mapping[str, Sequence[str]] | None = None,
         prior_outputs: Mapping[str, Mapping[str, Any]] | None = None,
         run_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> FlowCheckpointRecord:
         """Сохранить состояние выполнения ``FlowReport`` в чекпоинт и вернуть запись."""
         if self.store_path is not None:
@@ -402,6 +406,7 @@ class FlowCheckpointStore:
             task_outputs_by_host=outputs_map,
             failed_tasks=failed_tasks,
             ok=report.ok,
+            tenant_id=tenant_id.strip() if isinstance(tenant_id, str) and tenant_id.strip() else None,
             created_at=created_iso,
             updated_at=now_iso,
         )
@@ -409,20 +414,43 @@ class FlowCheckpointStore:
         self._save_to_disk()
         return record
 
-    def get(self, run_id: str) -> FlowCheckpointRecord:
-        """Получить чекпоинт по ``run_id`` или выбросить ``KeyError``."""
+    @staticmethod
+    def _normalize_tenant_id(tenant_id: str | None) -> str | None:
+        return tenant_id.strip() if isinstance(tenant_id, str) and tenant_id.strip() else None
+
+    def get(
+        self,
+        run_id: str,
+        *,
+        tenant_id: str | None = None,
+        strict_tenant: bool = False,
+    ) -> FlowCheckpointRecord:
+        """Получить чекпоинт по ``run_id`` (с проверкой изоляции ``tenant_id``) или выбросить ``KeyError``."""
         if self.store_path is not None:
             self._load_from_disk()
         key = run_id.strip()
-        if key not in self._records:
+        norm_tenant = self._normalize_tenant_id(tenant_id)
+        record = self._records.get(key)
+        if record is None:
             raise KeyError(f"Flow checkpoint run_id {key!r} not found")
-        return self._records[key]
+        if (strict_tenant or norm_tenant is not None) and record.tenant_id != norm_tenant:
+            raise KeyError(f"Flow checkpoint run_id {key!r} not found")
+        return record
 
-    def list_records(self, *, only_resumable: bool = False) -> list[FlowCheckpointRecord]:
-        """Вернуть список сохранённых чекпоинтов."""
+    def list_records(
+        self,
+        *,
+        only_resumable: bool = False,
+        tenant_id: str | None = None,
+        strict_tenant: bool = False,
+    ) -> list[FlowCheckpointRecord]:
+        """Вернуть список сохранённых чекпоинтов (с опциональной фильтрацией по ``tenant_id``)."""
         if self.store_path is not None:
             self._load_from_disk()
+        norm_tenant = self._normalize_tenant_id(tenant_id)
         items = list(self._records.values())
+        if strict_tenant or norm_tenant is not None:
+            items = [r for r in items if r.tenant_id == norm_tenant]
         if only_resumable:
             items = [r for r in items if not r.ok]
         return items

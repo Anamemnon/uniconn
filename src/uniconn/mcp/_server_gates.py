@@ -17,6 +17,7 @@ from ..security.models import (
     PolicyEvaluationResult,
     build_auth_context,
 )
+from .auth import CallerIdentity, get_current_caller
 from .models import (
     ActionRiskTier,
     ApprovalRequest,
@@ -92,6 +93,65 @@ class MCPServerGatesMixin:
         @property
         def policy(self) -> MCPSecurityPolicy: ...
 
+        def _active_registry(self) -> MCPHostRegistry: ...
+
+        def _active_policy_engine(self) -> PolicyEngine: ...
+
+    def _active_caller(self) -> CallerIdentity | None:
+        """Вернуть активную криптографическую ``CallerIdentity`` (или ``None`` в stdio-режиме)."""
+        return get_current_caller()
+
+    def _is_verified_caller(self) -> bool:
+        """Вернуть ``True``, если запрос выполняется от верифицированного сетевого субъекта."""
+        caller = self._active_caller()
+        return bool(caller is not None and caller.verified)
+
+    def _active_tenant_id(self) -> str | None:
+        """Вернуть активный ``tenant_id`` из верифицированного сетевого контекста."""
+        caller = self._active_caller()
+        if caller is not None and caller.verified:
+            return caller.tenant_id
+        return None
+
+    def _resolve_hitl_actor(self, arg_agent_id: Any = None) -> tuple[str | None, str | None]:
+        """Вернуть ``(eff_agent_id, eff_tenant_id)`` для HITL с антиспуфингом в сетевом режиме."""
+        caller = self._active_caller()
+        if caller is not None and caller.verified:
+            return caller.agent_id, caller.tenant_id
+        agent_str = str(arg_agent_id).strip() if arg_agent_id is not None and str(arg_agent_id).strip() else None
+        return agent_str, None
+
+    def _resolve_effective_subject(
+        self,
+        *,
+        arg_agent_id: Any = None,
+        arg_role: Any = None,
+        allow_role_override: bool = False,
+    ) -> tuple[str, str, str | None, str, tuple[str, ...], str | None]:
+        """Определить субъекта авторизации: в сетевом режиме аргументы role/agent_id строго игнорируются."""
+        caller = self._active_caller()
+        if caller is not None and caller.verified:
+            return (
+                caller.agent_id,
+                caller.role,
+                caller.tenant_id,
+                caller.auth_method,
+                caller.scopes,
+                caller.session_id,
+            )
+        guardrails = self.policy.guardrails
+        eff_agent_id = (
+            str(arg_agent_id).strip()
+            if isinstance(arg_agent_id, str) and str(arg_agent_id).strip()
+            else guardrails.default_agent_id
+        )
+        eff_role = (
+            str(arg_role).strip()
+            if allow_role_override and isinstance(arg_role, str) and str(arg_role).strip()
+            else guardrails.default_role
+        )
+        return (eff_agent_id, eff_role, None, "stdio", (), None)
+
     def _resolve_flow_targets_and_tags(
         self,
         arguments: dict[str, Any],
@@ -106,7 +166,7 @@ class MCPServerGatesMixin:
             raw_targets = [t.strip() for t in raw_targets.split(",") if t.strip()]
         raw_group = arguments.get("group") if "group" in arguments else default_group
         group_str = str(raw_group).strip() if raw_group else None
-        entries = self.registry.resolve_targets(raw_targets, group=group_str)
+        entries = self._active_registry().resolve_targets(raw_targets, group=group_str)
         raw_tags = arguments.get("tags") if "tags" in arguments else default_tags
         tags_list = _parse_tags_list(raw_tags)
         return entries, group_str, tags_list
@@ -176,19 +236,20 @@ class MCPServerGatesMixin:
                 max_pipeline_length=guardrails.max_pipeline_length,
             )
 
-        eff_agent_id = (
-            str(agent_id).strip()
-            if isinstance(agent_id, str) and str(agent_id).strip()
-            else guardrails.default_agent_id
-        )
-        eff_role = (
-            str(role).strip()
-            if allow_role_override and isinstance(role, str) and str(role).strip()
-            else guardrails.default_role
+        eff_agent_id, eff_role, eff_tenant_id, eff_auth_method, eff_scopes, eff_session_id = (
+            self._resolve_effective_subject(
+                arg_agent_id=agent_id,
+                arg_role=role,
+                allow_role_override=allow_role_override,
+            )
         )
         auth_ctx = build_auth_context(
             agent_id=eff_agent_id,
             role=eff_role,
+            session_id=eff_session_id,
+            tenant_id=eff_tenant_id,
+            auth_method=eff_auth_method,
+            scopes=eff_scopes,
             host_name=host_name,
             host_address=host_addr,
             transport=transport,
@@ -218,7 +279,7 @@ class MCPServerGatesMixin:
             )
             return auth_ctx, eval_res
 
-        eval_res = await self.policy_engine.evaluate(auth_ctx)
+        eval_res = await self._active_policy_engine().evaluate(auth_ctx)
         if enforce_deny and eval_res.decision == PolicyDecision.DENY:
             reasons_str = "; ".join(eval_res.reasons) or "Blocked by Policy-as-Code guardrail"
             raise PolicyViolationError(
@@ -253,12 +314,18 @@ class MCPServerGatesMixin:
     ) -> tuple[ApprovalRequest | None, dict[str, Any] | None]:
         """Выполнить проверку HITL-шлюза: вернуть (consumed_request, pending_payload)."""
         host_label = target_host or (entry.name if entry is not None else "fleet")
+        eff_agent_id, eff_tenant_id = self._resolve_hitl_actor(agent_id)
+        strict_tenant = self._is_verified_caller()
         if approval_id is not None and str(approval_id).strip():
             appr_key = str(approval_id).strip()
             effective_tool = tool_name
             if allowed_tool_names:
                 with contextlib.suppress(KeyError):
-                    existing_req = await self.approval_manager.get_request(appr_key)
+                    existing_req = await self.approval_manager.get_request(
+                        appr_key,
+                        tenant_id=eff_tenant_id,
+                        strict_tenant=strict_tenant,
+                    )
                     if existing_req.tool_name in allowed_tool_names:
                         effective_tool = existing_req.tool_name
             consumed = await self.approval_manager.verify_and_consume(
@@ -270,6 +337,8 @@ class MCPServerGatesMixin:
                 cwd=cwd,
                 parameters=parameters,
                 diff=diff,
+                tenant_id=eff_tenant_id,
+                strict_tenant=strict_tenant,
             )
             return consumed, None
 
@@ -286,7 +355,8 @@ class MCPServerGatesMixin:
             cwd=cwd,
             parameters=parameters,
             diff=diff,
-            agent_id=agent_id,
+            agent_id=eff_agent_id,
+            tenant_id=eff_tenant_id,
         )
         if req.status == ApprovalStatus.APPROVED:
             consumed = await self.approval_manager.verify_and_consume(
@@ -298,6 +368,8 @@ class MCPServerGatesMixin:
                 cwd=cwd,
                 parameters=parameters,
                 diff=diff,
+                tenant_id=eff_tenant_id,
+                strict_tenant=strict_tenant,
             )
             return consumed, None
         if req.status == ApprovalStatus.REJECTED:
@@ -316,6 +388,8 @@ class MCPServerGatesMixin:
             decided = await self.approval_manager.wait_for_decision(
                 req.approval_id,
                 timeout=self.policy.hitl.wait_timeout_seconds,
+                tenant_id=eff_tenant_id,
+                strict_tenant=strict_tenant,
             )
             if decided.status == ApprovalStatus.APPROVED:
                 consumed = await self.approval_manager.verify_and_consume(
@@ -327,6 +401,8 @@ class MCPServerGatesMixin:
                     cwd=cwd,
                     parameters=parameters,
                     diff=diff,
+                    tenant_id=eff_tenant_id,
+                    strict_tenant=strict_tenant,
                 )
                 return consumed, None
             if decided.status == ApprovalStatus.REJECTED:

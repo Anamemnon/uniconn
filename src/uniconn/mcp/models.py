@@ -70,6 +70,7 @@ class ApprovalRequest(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     expires_at: datetime
     agent_id: str | None = None
+    tenant_id: str | None = None
     target_host: str
     tool_name: str
     command: str | None = None
@@ -114,6 +115,7 @@ class ApprovalRequest(BaseModel):
             "risk_reasons": list(self.risk_reasons),
             "diff": self.diff,
             "agent_id": self.agent_id,
+            "tenant_id": self.tenant_id,
             "created_at": self.created_at.isoformat(),
             "expires_at": self.expires_at.isoformat(),
             "remaining_seconds": self.remaining_seconds(now),
@@ -227,6 +229,7 @@ class MCPHostEntry(BaseModel):
     transport: str
     host: str | None = None
     groups: tuple[str, ...] = ()
+    tenant: str | None = None
     raw_config: dict[str, Any] = Field(default_factory=dict, repr=False, exclude=True)
 
     def is_production(self, prod_groups: Sequence[str] = ("prod", "production", "prd", "critical")) -> bool:
@@ -239,13 +242,16 @@ class MCPHostEntry(BaseModel):
 
     def to_public_dict(self) -> dict[str, Any]:
         """Сериализовать запись хоста без раскрытия секретов и паролей."""
-        return {
+        data: dict[str, Any] = {
             "name": self.name,
             "uri": self.masked_uri,
             "transport": self.transport,
             "host": self.host,
             "groups": list(self.groups),
         }
+        if self.tenant is not None:
+            data["tenant"] = self.tenant
+        return data
 
 
 class MCPToolDefinition(BaseModel):

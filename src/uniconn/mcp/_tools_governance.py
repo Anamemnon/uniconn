@@ -88,6 +88,7 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
             "mode": eff_mode,
         }
         merged_reasons = self._merge_reasons(assessment.reasons, policy_eval.reasons)
+        eff_agent_id, eff_tenant_id = self._resolve_hitl_actor(agent_id)
         req = await self.approval_manager.create_request(
             target_host=host_label,
             tool_name=eff_tool,
@@ -96,7 +97,8 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
             command=f"flow:{flow_obj.name}",
             parameters=hmac_params,
             diff=plan_preview,
-            agent_id=str(agent_id) if agent_id else None,
+            agent_id=eff_agent_id,
+            tenant_id=eff_tenant_id,
         )
         return {
             "assessment": assessment.to_dict(),
@@ -112,10 +114,11 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
 
         agent_id = arguments.get("agent_id")
         raw_role = arguments.get("role")
+        eff_agent_id, eff_tenant_id = self._resolve_hitl_actor(agent_id)
         target = arguments.get("target")
         if not isinstance(target, str) or not target.strip():
             raise ValueError("Parameter 'target' is required")
-        entry = self.registry.get_entry(target)
+        entry = self._active_registry().get_entry(target)
         is_prod = entry.is_production(self.policy.hitl.prod_groups)
 
         if tool_name == "uniconn_read_file":
@@ -146,7 +149,8 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
                 risk_tier=assessment.risk_tier,
                 risk_reasons=tuple(merged_reasons),
                 parameters={"path": path},
-                agent_id=str(agent_id) if agent_id else None,
+                agent_id=eff_agent_id,
+                tenant_id=eff_tenant_id,
             )
             return {
                 "assessment": assessment.to_dict(),
@@ -187,7 +191,8 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
                 risk_reasons=tuple(merged_reasons),
                 parameters={"path": path, "content": content, "atomic": atomic},
                 diff=diff_str,
-                agent_id=str(agent_id) if agent_id else None,
+                agent_id=eff_agent_id,
+                tenant_id=eff_tenant_id,
             )
             return {
                 "assessment": assessment.to_dict(),
@@ -237,7 +242,8 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
             sudo=sudo,
             cwd=cwd_str,
             parameters={"command": command, "sudo": sudo, "cwd": cwd_str or ""},
-            agent_id=str(agent_id) if agent_id else None,
+            agent_id=eff_agent_id,
+            tenant_id=eff_tenant_id,
         )
         return {
             "assessment": assessment.to_dict(),
@@ -251,10 +257,11 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
         tool_name = str(arguments.get("tool_name") or "uniconn_run").strip()
         raw_target = arguments.get("target")
         target_str = raw_target.strip() if isinstance(raw_target, str) and raw_target.strip() else None
+        reg = self._active_registry()
         entry: MCPHostEntry | None = None
         if target_str:
             with contextlib.suppress(KeyError):
-                entry = self.registry.get_entry(target_str)
+                entry = reg.get_entry(target_str)
         is_prod = (
             entry.is_production(self.policy.hitl.prod_groups)
             if entry is not None
@@ -295,7 +302,7 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
         if tool_name == "uniconn_run_flow" or tool_name.startswith("flow_"):
             flow_key = str(arguments.get("flow_name") or tool_name).strip()
             flow_obj = self.flow_registry.get_flow(flow_key)
-            entries = [entry] if entry is not None else self.registry.list_entries()
+            entries = [entry] if entry is not None else reg.list_entries()
             assessment, plan_preview = FlowRiskEvaluator.evaluate(
                 flow_obj,
                 entries=entries,
@@ -357,14 +364,22 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
         )
 
     async def _tool_check_approval(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        tenant_id = self._active_tenant_id()
+        strict_tenant = self._is_verified_caller()
         approval_id = arguments.get("approval_id")
         if isinstance(approval_id, str) and approval_id.strip():
-            req = await self.approval_manager.get_request(approval_id.strip())
+            req = await self.approval_manager.get_request(
+                approval_id.strip(),
+                tenant_id=tenant_id,
+                strict_tenant=strict_tenant,
+            )
             return {"approval": req.to_public_dict()}
 
         status_filter = arguments.get("status")
         reqs = await self.approval_manager.list_requests(
-            status=str(status_filter) if status_filter else None
+            status=str(status_filter) if status_filter else None,
+            tenant_id=tenant_id,
+            strict_tenant=strict_tenant,
         )
         return {
             "approvals": [r.to_public_dict() for r in reqs],
@@ -376,7 +391,12 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
         if not isinstance(approval_id, str) or not approval_id.strip():
             raise ValueError("Parameter 'approval_id' is required")
         timeout = float(arguments.get("timeout", self.policy.hitl.wait_timeout_seconds))
-        req = await self.approval_manager.wait_for_decision(approval_id.strip(), timeout=timeout)
+        req = await self.approval_manager.wait_for_decision(
+            approval_id.strip(),
+            timeout=timeout,
+            tenant_id=self._active_tenant_id(),
+            strict_tenant=self._is_verified_caller(),
+        )
         return {
             "approval_id": req.approval_id,
             "status": req.status.value,
@@ -392,7 +412,11 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
             "count": len(flows_list),
         }
         if include_cp:
-            records = self.checkpoint_store.list_records(only_resumable=True)
+            records = self.checkpoint_store.list_records(
+                only_resumable=True,
+                tenant_id=self._active_tenant_id(),
+                strict_tenant=self._is_verified_caller(),
+            )
             out["resumable_checkpoints"] = [r.to_dict() for r in records]
         return out
 
@@ -403,13 +427,14 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
         flow_obj = self.flow_registry.get_flow(flow_name.strip())
         raw_targets = arguments.get("targets")
         group = arguments.get("group")
+        reg = self._active_registry()
         if raw_targets or group:
-            entries = self.registry.resolve_targets(
+            entries = reg.resolve_targets(
                 raw_targets,
                 group=str(group) if group else None,
             )
         else:
-            entries = self.registry.list_entries()
+            entries = reg.list_entries()
 
         tags_list = _parse_tags_list(arguments.get("tags"))
         raw_vars = arguments.get("vars")
@@ -452,7 +477,11 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
         run_id = arguments.get("run_id")
         if not isinstance(run_id, str) or not run_id.strip():
             raise ValueError("Parameter 'run_id' is required")
-        cp_record = self.checkpoint_store.get(run_id.strip())
+        cp_record = self.checkpoint_store.get(
+            run_id.strip(),
+            tenant_id=self._active_tenant_id(),
+            strict_tenant=self._is_verified_caller(),
+        )
         flow_obj = self.flow_registry.get_flow(cp_record.flow_name)
         merged_args: dict[str, Any] = {
             "resume_run_id": cp_record.run_id,
@@ -496,8 +525,13 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
         default_tags: list[str] | None = None
         default_mode: str | None = None
 
+        tenant_id = self._active_tenant_id()
         if resume_run_id is not None:
-            cp = self.checkpoint_store.get(resume_run_id)
+            cp = self.checkpoint_store.get(
+                resume_run_id,
+                tenant_id=tenant_id,
+                strict_tenant=self._is_verified_caller(),
+            )
             if cp.flow_name != flow_obj.name:
                 raise ValueError(
                     f"Checkpoint {resume_run_id!r} belongs to flow {cp.flow_name!r}, "
@@ -603,8 +637,9 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
         active_flow = coerce_to_flow(flow_obj, mode=eff_mode)
         run_id = resume_run_id or f"run_{uuid.uuid4().hex[:12]}"
 
+        reg = self._active_registry()
         if len(entries) == 1:
-            async with self.registry.create_connection(
+            async with reg.create_connection(
                 entries[0],
                 dry_run=eff_dry_run,
                 auto_diagnostics=True,
@@ -620,7 +655,7 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
                     resumed_from=resume_run_id,
                 )
         else:
-            pool = self.registry.create_pool(
+            pool = reg.create_pool(
                 entries,
                 dry_run=eff_dry_run,
                 auto_diagnostics=True,
@@ -647,6 +682,7 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
             prior_completed=prior_completed,
             prior_outputs=prior_outputs,
             run_id=run_id,
+            tenant_id=tenant_id,
         )
 
         report_dict = report.to_dict()

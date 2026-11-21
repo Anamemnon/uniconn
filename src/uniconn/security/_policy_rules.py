@@ -275,6 +275,13 @@ _TOP_LEVEL_CONDITION_KEYS: frozenset[str] = frozenset(
         "flow_names",
         "dialect",
         "has_syntax_errors",
+        "tenant",
+        "tenants",
+        "tenant_id",
+        "auth_method",
+        "auth_methods",
+        "scope",
+        "scopes",
     }
 )
 
@@ -283,6 +290,9 @@ _VALID_CONDITION_KEYS: frozenset[str] = _TOP_LEVEL_CONDITION_KEYS | frozenset(
     {
         "subject.role",
         "subject.not_role",
+        "subject.tenant_id",
+        "subject.auth_method",
+        "subject.scopes",
         "resource.environment",
         "resource.host",
         "resource.groups",
@@ -456,6 +466,12 @@ class DeclarativePolicyRule:
             return ctx.subject.role.lower() in _to_norm_set(expected)
         if key in ("not_role", "not_roles", "subject.not_role"):
             return ctx.subject.role.lower() not in _to_norm_set(expected)
+        if key in ("tenant", "tenants", "tenant_id", "subject.tenant_id"):
+            return bool(ctx.subject.tenant_id and ctx.subject.tenant_id.lower() in _to_norm_set(expected))
+        if key in ("auth_method", "auth_methods", "subject.auth_method"):
+            return ctx.subject.auth_method.lower() in _to_norm_set(expected)
+        if key in ("scope", "scopes", "subject.scopes"):
+            return bool(_to_norm_set(expected) & {s.lower() for s in ctx.subject.scopes})
         if key in ("environment", "environments", "resource.environment"):
             return _match_env_condition(expected, ctx)
         if key in ("host", "hosts", "resource.host"):

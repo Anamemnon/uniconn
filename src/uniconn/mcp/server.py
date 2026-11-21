@@ -8,7 +8,7 @@ import contextlib
 import json
 import os
 import sys
-from collections.abc import AsyncIterable, Callable, Coroutine, Sequence
+from collections.abc import AsyncIterable, Callable, Coroutine, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,7 @@ from ._server_gates import (
     _sanitize_json_value as _sanitize_json_value,
 )
 from ._server_tools import MCPServerToolsMixin
+from .auth import JsonFetcher, MCPAuthConfig, MCPHttpConfig
 from .flows import FlowCheckpointStore, MCPFlowRegistry
 from .hitl import ApprovalManager
 from .models import MCPSecurityPolicy
@@ -33,6 +34,7 @@ from .schemas import (
 )
 
 SUPPORTED_PROTOCOL_VERSION = "2024-11-05"
+SUPPORTED_PROTOCOL_VERSIONS: tuple[str, ...] = ("2025-03-26", "2024-11-05")
 
 # Коды ошибок JSON-RPC 2.0
 JSONRPC_PARSE_ERROR = -32700
@@ -49,6 +51,11 @@ class MCPServer(MCPServerToolsMixin):
         self,
         registry: MCPHostRegistry | None = None,
         *,
+        tenant_registries: Mapping[str, MCPHostRegistry] | None = None,
+        tenant_policy_engines: Mapping[str, PolicyEngine] | None = None,
+        allow_shared_hosts: bool = False,
+        auth_config: MCPAuthConfig | None = None,
+        http_config: MCPHttpConfig | None = None,
         approval_manager: ApprovalManager | None = None,
         policy_engine: PolicyEngine | None = None,
         flow_registry: MCPFlowRegistry | None = None,
@@ -58,10 +65,23 @@ class MCPServer(MCPServerToolsMixin):
         server_name: str = "uniconn-mcp",
         server_version: str | None = None,
     ) -> None:
-        """Создать экземпляр MCP-сервера с реестром хостов, сценариев Flow, политикой и HITL."""
+        """Создать экземпляр MCP-сервера с реестром хостов, тенантами, Flow, политикой и HITL."""
         from .. import __version__
 
         self.registry = registry or MCPHostRegistry.from_sources()
+        self._tenant_registries: dict[str, MCPHostRegistry] = (
+            {str(k).strip(): v for k, v in tenant_registries.items() if str(k).strip()}
+            if tenant_registries
+            else {}
+        )
+        self._tenant_policy_engines: dict[str, PolicyEngine] = (
+            {str(k).strip(): v for k, v in tenant_policy_engines.items() if str(k).strip()}
+            if tenant_policy_engines
+            else {}
+        )
+        self.allow_shared_hosts = bool(allow_shared_hosts)
+        self.auth_config = auth_config
+        self.http_config = http_config
         self.server_name = server_name
         self.server_version = server_version or __version__
         hitl_pol = self.registry.policy.hitl
@@ -121,10 +141,108 @@ class MCPServer(MCPServerToolsMixin):
         """Зарегистрировать сценарий ``Flow`` для динамического экспорта как MCP-инструмент."""
         return self.flow_registry.register(flow, tool_name=tool_name)
 
+    def register_tenant(
+        self,
+        tenant_id: str,
+        registry: MCPHostRegistry,
+        *,
+        policy_engine: PolicyEngine | None = None,
+    ) -> None:
+        """Зарегистрировать выделенный реестр хостов и политику безопасности для тенанта."""
+        key = tenant_id.strip()
+        if not key:
+            raise ValueError("tenant_id must not be empty")
+        self._tenant_registries[key] = registry
+        if policy_engine is not None:
+            self._tenant_policy_engines[key] = policy_engine
+        else:
+            self._tenant_policy_engines.pop(key, None)
+
+    def _active_registry(self) -> MCPHostRegistry:
+        """Вернуть реестр хостов, изолированный для активного верифицированного тенанта."""
+        caller = self._active_caller()
+        if caller is None or not caller.verified:
+            return self.registry
+        tenant_id = caller.tenant_id
+        if tenant_id is not None:
+            if tenant_id in self._tenant_registries:
+                return self._tenant_registries[tenant_id]
+            return self.registry.for_tenant(
+                tenant_id,
+                allow_shared_hosts=self.allow_shared_hosts,
+            )
+        if self._tenant_registries:
+            return MCPHostRegistry(
+                policy=self.registry.policy.model_copy(update={"allow_dynamic_uri": False}),
+                entries=(),
+            )
+        all_entries = self.registry.list_entries()
+        if any(entry.tenant is not None for entry in all_entries):
+            untagged = [entry for entry in all_entries if entry.tenant is None]
+            return MCPHostRegistry(
+                policy=self.registry.policy.model_copy(update={"allow_dynamic_uri": False}),
+                entries=untagged if self.allow_shared_hosts else (),
+            )
+        return self.registry
+
+    def _active_policy_engine(self) -> PolicyEngine:
+        """Вернуть движок Policy-as-Code для активного тенанта (или базовый движок сервера)."""
+        tenant_id = self._active_tenant_id()
+        if tenant_id is not None:
+            if tenant_id in self._tenant_policy_engines:
+                return self._tenant_policy_engines[tenant_id]
+            if tenant_id in self._tenant_registries:
+                engine = create_policy_engine(self._tenant_registries[tenant_id].policy.guardrails)
+                self._tenant_policy_engines[tenant_id] = engine
+                return engine
+        return self.policy_engine
+
     @property
     def policy(self) -> MCPSecurityPolicy:
-        """Активная политика безопасности сервера."""
-        return self.registry.policy
+        """Активная политика безопасности сервера (с учётом выделенной политики тенанта)."""
+        return self._active_registry().policy
+
+    def build_http_app(
+        self,
+        *,
+        auth_config: MCPAuthConfig | None = None,
+        http_config: MCPHttpConfig | None = None,
+        jwks_fetcher: JsonFetcher | None = None,
+    ) -> Any:
+        """Создать ASGI-приложение Starlette для сетевого MCP Streamable HTTP / SSE шлюза."""
+        from .http_transport import build_mcp_http_app
+
+        eff_auth = auth_config or self.auth_config
+        if eff_auth is None:
+            raise ValueError("MCPAuthConfig must be provided to build_http_app() (fail-closed)")
+        eff_http = http_config or self.http_config or MCPHttpConfig()
+        return build_mcp_http_app(
+            self,
+            auth_config=eff_auth,
+            http_config=eff_http,
+            jwks_fetcher=jwks_fetcher,
+        )
+
+    async def serve_http(
+        self,
+        *,
+        auth_config: MCPAuthConfig | None = None,
+        http_config: MCPHttpConfig | None = None,
+        jwks_fetcher: JsonFetcher | None = None,
+    ) -> None:
+        """Запустить сетевой MCP Streamable HTTP / SSE сервер поверх Uvicorn."""
+        from .http_transport import serve_mcp_http
+
+        eff_auth = auth_config or self.auth_config
+        if eff_auth is None:
+            raise ValueError("MCPAuthConfig must be provided to serve_http() (fail-closed)")
+        eff_http = http_config or self.http_config or MCPHttpConfig()
+        await serve_mcp_http(
+            self,
+            auth_config=eff_auth,
+            http_config=eff_http,
+            jwks_fetcher=jwks_fetcher,
+        )
 
     async def handle_message(self, message: Any) -> dict[str, Any] | list[dict[str, Any]] | None:
         """Обработать сообщение или батч JSON-RPC 2.0 и вернуть ответ (или ``None`` для уведомлений)."""
@@ -236,11 +354,15 @@ class MCPServer(MCPServerToolsMixin):
         """Маршрутизировать метод протокола MCP к соответствующему обработчику."""
         if method == "initialize":
             client_proto = params.get("protocolVersion")
-            proto_ver = (
-                str(client_proto)
-                if isinstance(client_proto, str) and client_proto
-                else SUPPORTED_PROTOCOL_VERSION
-            )
+            if isinstance(client_proto, str) and client_proto.strip():
+                norm_proto = client_proto.strip()
+                proto_ver = (
+                    norm_proto
+                    if norm_proto in SUPPORTED_PROTOCOL_VERSIONS
+                    else SUPPORTED_PROTOCOL_VERSIONS[0]
+                )
+            else:
+                proto_ver = SUPPORTED_PROTOCOL_VERSION
             return {
                 "protocolVersion": proto_ver,
                 "capabilities": {
@@ -257,7 +379,13 @@ class MCPServer(MCPServerToolsMixin):
             return {}
 
         if method == "tools/list":
-            all_tools = (*self._tools, *self.flow_registry.build_dynamic_tools())
+            active_pol = self.policy
+            base_tools = (
+                self._tools
+                if active_pol == self.registry.policy
+                else build_default_tools(active_pol)
+            )
+            all_tools = (*base_tools, *self.flow_registry.build_dynamic_tools())
             return {"tools": [t.to_mcp_dict() for t in all_tools]}
 
         if method == "tools/call":
@@ -373,5 +501,6 @@ __all__ = [
     "JSONRPC_METHOD_NOT_FOUND",
     "JSONRPC_PARSE_ERROR",
     "SUPPORTED_PROTOCOL_VERSION",
+    "SUPPORTED_PROTOCOL_VERSIONS",
     "MCPServer",
 ]

@@ -3,6 +3,19 @@
 
 from __future__ import annotations
 
+from .auth import (
+    CallerIdentity,
+    MCPAuthConfig,
+    MCPAuthenticator,
+    MCPAuthError,
+    MCPHttpConfig,
+    MTLSClientCertValidator,
+    MTLSConfig,
+    OAuth2JWTValidator,
+    OAuth2OIDCConfig,
+    caller_identity_context,
+    get_current_caller,
+)
 from .flows import (
     FlowCheckpointRecord,
     FlowCheckpointStore,
@@ -20,6 +33,7 @@ from .hitl import (
     WebhookApprovalChannel,
     build_unified_diff,
 )
+from .http_transport import build_mcp_http_app, serve_mcp_http
 from .models import (
     ActionRiskTier,
     ApprovalRequest,
@@ -33,35 +47,63 @@ from .models import (
     RiskAssessment,
 )
 from .registry import MCPHostRegistry, mask_uri_secrets
-from .server import SUPPORTED_PROTOCOL_VERSION, MCPServer
+from .server import SUPPORTED_PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS, MCPServer
+from .sessions import (
+    MCPSession,
+    MCPSessionError,
+    MCPSessionForbiddenError,
+    MCPSessionLimitError,
+    MCPSessionManager,
+    MCPSessionNotFoundError,
+)
 
 __all__ = [
     "DEFAULT_APPROVAL_STORE_PATH",
     "SUPPORTED_PROTOCOL_VERSION",
+    "SUPPORTED_PROTOCOL_VERSIONS",
     "ActionRiskClassifier",
     "ActionRiskTier",
     "ApprovalChannel",
     "ApprovalManager",
     "ApprovalRequest",
     "ApprovalStatus",
+    "CallerIdentity",
     "FlowCheckpointRecord",
     "FlowCheckpointStore",
     "FlowRiskEvaluator",
     "FlowSchemaGenerator",
     "HITLPolicy",
+    "MCPAuthConfig",
+    "MCPAuthError",
+    "MCPAuthenticator",
     "MCPFlowRegistry",
     "MCPHostEntry",
     "MCPHostRegistry",
+    "MCPHttpConfig",
     "MCPResourceDefinition",
     "MCPResourceTemplate",
     "MCPSecurityPolicy",
     "MCPServer",
+    "MCPSession",
+    "MCPSessionError",
+    "MCPSessionForbiddenError",
+    "MCPSessionLimitError",
+    "MCPSessionManager",
+    "MCPSessionNotFoundError",
     "MCPToolDefinition",
+    "MTLSClientCertValidator",
+    "MTLSConfig",
+    "OAuth2JWTValidator",
+    "OAuth2OIDCConfig",
     "RiskAssessment",
     "TerminalApprovalChannel",
     "WebhookApprovalChannel",
+    "build_mcp_http_app",
     "build_unified_diff",
+    "caller_identity_context",
+    "get_current_caller",
     "mask_uri_secrets",
     "normalize_flow_tool_name",
+    "serve_mcp_http",
 ]
 

@@ -32,11 +32,12 @@ class MCPHostToolsMixin(MCPServerGatesMixin):
         def policy(self) -> MCPSecurityPolicy: ...
 
     async def _tool_list_hosts(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        reg = self._active_registry()
         group = arguments.get("group")
-        entries = self.registry.list_entries(group=str(group) if group else None)
+        entries = reg.list_entries(group=str(group) if group else None)
         return {
             "hosts": [e.to_public_dict() for e in entries],
-            "groups": self.registry.list_groups(),
+            "groups": reg.list_groups(),
             "security_policy": self.policy.to_summary_dict(),
         }
 
@@ -45,11 +46,12 @@ class MCPHostToolsMixin(MCPServerGatesMixin):
         if not raw_targets:
             raise ValueError("Parameter 'targets' is required")
         timeout = float(arguments.get("timeout", 5.0))
-        entries = self.registry.resolve_targets(raw_targets)
+        reg = self._active_registry()
+        entries = reg.resolve_targets(raw_targets)
 
         async def _ping_one(entry: MCPHostEntry) -> tuple[str, dict[str, Any]]:
             try:
-                async with self.registry.create_connection(entry) as conn:
+                async with reg.create_connection(entry) as conn:
                     ping_res = await conn.ping(timeout=timeout)
                     return entry.name, {
                         "alive": ping_res.alive,
@@ -88,7 +90,8 @@ class MCPHostToolsMixin(MCPServerGatesMixin):
                 "(start server with --allow-sudo to enable)."
             )
 
-        entry = self.registry.get_entry(target)
+        reg = self._active_registry()
+        entry = reg.get_entry(target)
         is_prod = entry.is_production(self.policy.hitl.prod_groups)
         parsed_ast = CommandASTParser.parse(
             command,
@@ -165,7 +168,7 @@ class MCPHostToolsMixin(MCPServerGatesMixin):
         if cwd_str:
             run_kwargs["cwd"] = cwd_str
 
-        async with self.registry.create_connection(entry) as conn:
+        async with reg.create_connection(entry) as conn:
             res = await conn.run(
                 command,
                 timeout=timeout,
@@ -208,7 +211,8 @@ class MCPHostToolsMixin(MCPServerGatesMixin):
             raise ValueError("Parameter 'target' is required")
         timeout = float(arguments.get("timeout", 15.0))
 
-        async with self.registry.create_connection(target) as conn:
+        reg = self._active_registry()
+        async with reg.create_connection(target) as conn:
             facts = await conn.gather_facts(refresh=True, timeout=timeout)
             return {
                 "target": target,
@@ -218,7 +222,8 @@ class MCPHostToolsMixin(MCPServerGatesMixin):
     async def _tool_diff_facts(self, arguments: dict[str, Any]) -> dict[str, Any]:
         raw_targets = arguments.get("targets")
         group = arguments.get("group")
-        entries = self.registry.resolve_targets(
+        reg = self._active_registry()
+        entries = reg.resolve_targets(
             raw_targets,
             group=str(group) if group else None,
         )
@@ -226,7 +231,7 @@ class MCPHostToolsMixin(MCPServerGatesMixin):
             raise ValueError("uniconn_diff_facts requires at least 2 target hosts to compare")
 
         async def _gather_one(entry: MCPHostEntry) -> tuple[str, HostFacts]:
-            async with self.registry.create_connection(entry) as conn:
+            async with reg.create_connection(entry) as conn:
                 return entry.name, await conn.gather_facts(refresh=True)
 
         gathered_pairs = await asyncio.gather(*(_gather_one(e) for e in entries))

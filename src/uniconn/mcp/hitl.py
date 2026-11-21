@@ -472,6 +472,7 @@ class ApprovalManager:
         parameters: Mapping[str, Any] | None = None,
         diff: str | None = None,
         diff_sha256: str | None = None,
+        tenant_id: str | None = None,
     ) -> str:
         """Вычислить HMAC-SHA256 подпись канонического дайджеста исходных (немаскированных) параметров."""
         raw_cmd = (command or "").strip()
@@ -481,7 +482,7 @@ class ApprovalManager:
             if diff_sha256 is not None
             else hashlib.sha256((diff or "").encode("utf-8")).hexdigest()
         )
-        canonical_dict = {
+        canonical_dict: dict[str, Any] = {
             "approval_id": approval_id,
             "target_host": target_host.strip(),
             "tool_name": tool_name.strip(),
@@ -491,6 +492,8 @@ class ApprovalManager:
             "parameters": _canonicalize_parameters_for_hmac(parameters),
             "diff_sha256": effective_diff_sha256,
         }
+        if tenant_id is not None and tenant_id.strip():
+            canonical_dict["tenant_id"] = tenant_id.strip()
         canonical_json = json.dumps(
             canonical_dict,
             sort_keys=True,
@@ -514,8 +517,10 @@ class ApprovalManager:
         cwd: str | None = None,
         parameters: Mapping[str, Any] | None = None,
         diff: str | None = None,
+        tenant_id: str | None = None,
     ) -> bool:
         """Проверить неизменность исходных параметров операции относительно подписанной заявки."""
+        eff_tenant = tenant_id if tenant_id is not None else request.tenant_id
         expected = self.compute_hmac(
             approval_id=request.approval_id,
             target_host=target_host,
@@ -526,6 +531,7 @@ class ApprovalManager:
             parameters=parameters,
             diff=diff if diff is not None else request.diff,
             diff_sha256=None if diff is not None else request.diff_sha256,
+            tenant_id=eff_tenant,
         )
         return hmac.compare_digest(request.hmac_signature, expected)
 
@@ -587,6 +593,8 @@ class ApprovalManager:
             "event": event,
             "approval_id": request.approval_id,
             "status": request.status.value,
+            "agent_id": request.agent_id,
+            "tenant_id": request.tenant_id,
             "target_host": request.target_host,
             "tool_name": request.tool_name,
             "command": SecretMaskingFilter._mask_string(request.command) if request.command else None,
@@ -645,6 +653,21 @@ class ApprovalManager:
                 removed = True
         return removed
 
+    @staticmethod
+    def _normalize_tenant_id(tenant_id: str | None) -> str | None:
+        return tenant_id.strip() if isinstance(tenant_id, str) and tenant_id.strip() else None
+
+    @staticmethod
+    def _tenant_matches(
+        record_tenant: str | None,
+        query_tenant: str | None,
+        *,
+        strict_tenant: bool,
+    ) -> bool:
+        if strict_tenant or query_tenant is not None:
+            return record_tenant == query_tenant
+        return True
+
     async def create_request(
         self,
         *,
@@ -658,10 +681,12 @@ class ApprovalManager:
         parameters: Mapping[str, Any] | None = None,
         diff: str | None = None,
         agent_id: str | None = None,
+        tenant_id: str | None = None,
         timeout_seconds: float | None = None,
         deduplicate: bool = True,
     ) -> ApprovalRequest:
         """Создать новую заявку на согласование (или вернуть идентичную активную PENDING-заявку)."""
+        norm_tenant = self._normalize_tenant_id(tenant_id)
         async with self._lock:
             with self._store_file_lock():
                 self._load_from_disk_sync()
@@ -680,6 +705,7 @@ class ApprovalManager:
                         if (
                             existing.status == ApprovalStatus.PENDING
                             and not existing.is_expired()
+                            and existing.tenant_id == norm_tenant
                             and existing.target_host == norm_host
                             and existing.tool_name == norm_tool
                             and existing.sudo == bool(sudo)
@@ -695,6 +721,7 @@ class ApprovalManager:
                                 parameters=parameters,
                                 diff=diff,
                                 diff_sha256=diff_sha256,
+                                tenant_id=norm_tenant,
                             )
                             if hmac.compare_digest(existing.hmac_signature, expected_existing):
                                 return existing
@@ -714,6 +741,7 @@ class ApprovalManager:
                     parameters=parameters,
                     diff=diff,
                     diff_sha256=diff_sha256,
+                    tenant_id=norm_tenant,
                 )
 
                 req = ApprovalRequest(
@@ -721,6 +749,7 @@ class ApprovalManager:
                     created_at=now,
                     expires_at=expires_at,
                     agent_id=agent_id,
+                    tenant_id=norm_tenant,
                     target_host=norm_host,
                     tool_name=norm_tool,
                     command=masked_cmd,
@@ -760,11 +789,18 @@ class ApprovalManager:
                             reason=str(reason) if reason else None,
                         )
 
-        return await self.get_request(req.approval_id)
+        return await self.get_request(req.approval_id, tenant_id=norm_tenant)
 
-    async def get_request(self, approval_id: str) -> ApprovalRequest:
-        """Получить заявку по ID с актуализацией статуса истечения таймаута."""
+    async def get_request(
+        self,
+        approval_id: str,
+        *,
+        tenant_id: str | None = None,
+        strict_tenant: bool = False,
+    ) -> ApprovalRequest:
+        """Получить заявку по ID с проверкой ``tenant_id`` и актуализацией таймаута."""
         appr_key = approval_id.strip()
+        norm_tenant = self._normalize_tenant_id(tenant_id)
         async with self._lock:
             with self._store_file_lock():
                 self._load_from_disk_sync()
@@ -772,7 +808,9 @@ class ApprovalManager:
                 if changed:
                     self._save_to_disk_sync()
                 req = self._requests.get(appr_key)
-                if req is None:
+                if req is None or not self._tenant_matches(
+                    req.tenant_id, norm_tenant, strict_tenant=strict_tenant
+                ):
                     raise KeyError(f"Approval request {approval_id!r} not found")
                 return req
 
@@ -780,14 +818,19 @@ class ApprovalManager:
         self,
         *,
         status: ApprovalStatus | str | None = None,
+        tenant_id: str | None = None,
+        strict_tenant: bool = False,
     ) -> list[ApprovalRequest]:
-        """Вернуть список всех заявок (опционально отфильтрованный по статусу)."""
+        """Вернуть список всех заявок (опционально отфильтрованный по статусу и ``tenant_id``)."""
+        norm_tenant = self._normalize_tenant_id(tenant_id)
         async with self._lock:
             with self._store_file_lock():
                 self._load_from_disk_sync()
                 if self._expire_stale_unlocked():
                     self._save_to_disk_sync()
                 items = list(self._requests.values())
+                if strict_tenant or norm_tenant is not None:
+                    items = [r for r in items if r.tenant_id == norm_tenant]
                 if status is not None:
                     target_status = ApprovalStatus(str(status).upper())
                     items = [r for r in items if r.status == target_status]
@@ -881,10 +924,12 @@ class ApprovalManager:
         *,
         timeout: float | None = None,
         poll_interval: float = 0.1,
+        tenant_id: str | None = None,
+        strict_tenant: bool = False,
     ) -> ApprovalRequest:
         """Ожидать решения оператора (в памяти или через межпроцессный JSON-стор)."""
         appr_key = approval_id.strip()
-        req = await self.get_request(appr_key)
+        req = await self.get_request(appr_key, tenant_id=tenant_id, strict_tenant=strict_tenant)
         if req.status != ApprovalStatus.PENDING:
             return req
 
@@ -897,16 +942,16 @@ class ApprovalManager:
         ev = self._events.setdefault(appr_key, asyncio.Event())
 
         while time.monotonic() < deadline:
-            req = await self.get_request(appr_key)
+            req = await self.get_request(appr_key, tenant_id=tenant_id, strict_tenant=strict_tenant)
             if req.status != ApprovalStatus.PENDING:
                 return req
             step = min(poll_interval, max(0.01, deadline - time.monotonic()))
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(ev.wait(), timeout=step)
             if ev.is_set():
-                return await self.get_request(appr_key)
+                return await self.get_request(appr_key, tenant_id=tenant_id, strict_tenant=strict_tenant)
 
-        return await self.get_request(appr_key)
+        return await self.get_request(appr_key, tenant_id=tenant_id, strict_tenant=strict_tenant)
 
     async def verify_and_consume(
         self,
@@ -919,15 +964,20 @@ class ApprovalManager:
         cwd: str | None = None,
         parameters: Mapping[str, Any] | None = None,
         diff: str | None = None,
+        tenant_id: str | None = None,
+        strict_tenant: bool = False,
     ) -> ApprovalRequest:
-        """Проверить статус и HMAC-подпись одобренной заявки и атомарно погасить одноразовый токен."""
+        """Проверить статус, ``tenant_id`` и HMAC-подпись одобренной заявки и погасить токен."""
         appr_key = approval_id.strip()
+        norm_tenant = self._normalize_tenant_id(tenant_id)
         async with self._lock:
             with self._store_file_lock():
                 self._load_from_disk_sync()
                 self._expire_stale_unlocked()
                 req = self._requests.get(appr_key)
-                if req is None:
+                if req is None or not self._tenant_matches(
+                    req.tenant_id, norm_tenant, strict_tenant=strict_tenant
+                ):
                     raise KeyError(f"Approval request {approval_id!r} not found")
 
                 if req.status == ApprovalStatus.CONSUMED:
@@ -981,6 +1031,7 @@ class ApprovalManager:
                     cwd=cwd,
                     parameters=parameters,
                     diff=diff,
+                    tenant_id=norm_tenant if norm_tenant is not None else req.tenant_id,
                 ):
                     masked_cmd = SecretMaskingFilter._mask_string(command) if command is not None else None
                     self._write_audit_entry(

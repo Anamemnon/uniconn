@@ -54,6 +54,9 @@ class SubjectContext(BaseModel):
     role: str = "agent"
     authenticated: bool = True
     session_id: str | None = None
+    tenant_id: str | None = None
+    auth_method: str = "stdio"
+    scopes: tuple[str, ...] = ()
 
 
 class ResourceContext(BaseModel):
@@ -184,8 +187,10 @@ class AuthContext(BaseModel):
         action_dump["command"] = self.action.raw_command
         action_dump["risk_reasons"] = list(self.action.risk_reasons)
         action_dump["flow_tasks"] = list(self.action.flow_tasks)
+        subject_dump = self.subject.model_dump(mode="json")
+        subject_dump["scopes"] = list(self.subject.scopes)
         return {
-            "subject": self.subject.model_dump(mode="json"),
+            "subject": subject_dump,
             "resource": {
                 **self.resource.model_dump(mode="json"),
                 "groups": list(self.resource.groups),
@@ -374,6 +379,9 @@ def build_auth_context(
     agent_id: str | None = None,
     role: str | None = None,
     session_id: str | None = None,
+    tenant_id: str | None = None,
+    auth_method: str = "stdio",
+    scopes: Sequence[str] = (),
     is_maintenance_window: bool | None = None,
     maintenance_window_override: bool | None = None,
     maintenance_windows: Sequence[str] = (),
@@ -460,6 +468,9 @@ def build_auth_context(
             role=(role or "agent").strip() or "agent",
             authenticated=True,
             session_id=session_id,
+            tenant_id=tenant_id.strip() if isinstance(tenant_id, str) and tenant_id.strip() else None,
+            auth_method=(auth_method or "stdio").strip() or "stdio",
+            scopes=tuple(str(s).strip() for s in scopes if str(s).strip()),
         ),
         resource=ResourceContext(
             host=eff_host,

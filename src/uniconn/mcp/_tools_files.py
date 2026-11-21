@@ -45,7 +45,8 @@ class MCPFileToolsMixin(MCPServerGatesMixin):
         if not isinstance(path, str) or not path.strip():
             raise ValueError("Parameter 'path' is required")
 
-        entry = self.registry.get_entry(target)
+        reg = self._active_registry()
+        entry = reg.get_entry(target)
         is_prod = entry.is_production(self.policy.hitl.prod_groups)
         assessment = ActionRiskClassifier.classify_file_read(
             path,
@@ -94,7 +95,7 @@ class MCPFileToolsMixin(MCPServerGatesMixin):
         req_max = self.policy.max_read_bytes if raw_max is None else int(raw_max)
         limit = max(1, min(req_max, self.policy.max_read_bytes))
 
-        async with self.registry.create_connection(entry) as conn:
+        async with reg.create_connection(entry) as conn:
             st: Any = None
             with contextlib.suppress(Exception):
                 st = await conn.files.stat(path)
@@ -158,7 +159,8 @@ class MCPFileToolsMixin(MCPServerGatesMixin):
         if not isinstance(path, str) or not path.strip():
             raise ValueError("Parameter 'path' is required")
 
-        entry = self.registry.get_entry(target)
+        reg = self._active_registry()
+        entry = reg.get_entry(target)
         is_prod = entry.is_production(self.policy.hitl.prod_groups)
         assessment = ActionRiskClassifier.classify_file_read(
             path,
@@ -196,7 +198,7 @@ class MCPFileToolsMixin(MCPServerGatesMixin):
             if pending_payload is not None:
                 return pending_payload
 
-        async with self.registry.create_connection(entry) as conn:
+        async with reg.create_connection(entry) as conn:
             exists = await conn.files.exists(path)
             if not exists:
                 return {"target": entry.name, "path": path, "exists": False, "stat": None}
@@ -226,7 +228,8 @@ class MCPFileToolsMixin(MCPServerGatesMixin):
         else:
             raise ValueError(f"Unsupported checksum algorithm: {raw_algo!r}")
 
-        entries = self.registry.resolve_targets(raw_targets)
+        reg = self._active_registry()
+        entries = reg.resolve_targets(raw_targets)
         is_prod = any(e.is_production(self.policy.hitl.prod_groups) for e in entries)
         assessment = ActionRiskClassifier.classify_file_read(
             path,
@@ -267,7 +270,7 @@ class MCPFileToolsMixin(MCPServerGatesMixin):
                 return pending_payload
 
         async def _hash_one(entry: MCPHostEntry) -> tuple[str, str | None]:
-            async with self.registry.create_connection(entry) as conn:
+            async with reg.create_connection(entry) as conn:
                 return entry.name, await conn.files.checksum(path, algorithm=algo)
 
         pairs = await asyncio.gather(*(_hash_one(e) for e in entries))
@@ -291,7 +294,7 @@ class MCPFileToolsMixin(MCPServerGatesMixin):
         old_text: str | None = None
         exists = False
         try:
-            async with self.registry.create_connection(entry) as conn:
+            async with self._active_registry().create_connection(entry) as conn:
                 exists = await conn.files.exists(path)
                 if exists:
                     raw = await conn.files.read_file(path, encoding=None)
@@ -334,7 +337,8 @@ class MCPFileToolsMixin(MCPServerGatesMixin):
             raise ValueError("Parameter 'content' must be a string")
 
         atomic = bool(arguments.get("atomic", True))
-        entry = self.registry.get_entry(target)
+        reg = self._active_registry()
+        entry = reg.get_entry(target)
         is_prod = entry.is_production(self.policy.hitl.prod_groups)
 
         file_exists = False
@@ -390,7 +394,7 @@ class MCPFileToolsMixin(MCPServerGatesMixin):
         if pending_payload is not None:
             return pending_payload
 
-        async with self.registry.create_connection(entry) as conn:
+        async with reg.create_connection(entry) as conn:
             await conn.files.write_file(path, content, atomic=atomic)
             result_payload: dict[str, Any] = {
                 "target": entry.name,

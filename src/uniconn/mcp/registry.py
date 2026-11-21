@@ -157,6 +157,23 @@ class MCPHostRegistry:
 
         return cls(policy=policy, entries=entries)
 
+    @classmethod
+    def from_dict(
+        cls,
+        data: Any,
+        *,
+        host: str | None = None,
+        group: str | None = None,
+        policy: MCPSecurityPolicy | None = None,
+    ) -> MCPHostRegistry:
+        """Собрать реестр хостов из словаря или списка инвентаря в памяти."""
+        raw_entries = InventoryLoader.parse_data(data, host=host, group=group)
+        entries = [
+            cls._build_entry_from_dict(item, fallback_index=idx)
+            for idx, item in enumerate(raw_entries, start=1)
+        ]
+        return cls(policy=policy, entries=entries)
+
     @staticmethod
     def _build_entry_from_dict(data: dict[str, Any], *, fallback_index: int) -> MCPHostEntry:
         """Преобразовать нормализованную запись ``InventoryLoader`` в ``MCPHostEntry``."""
@@ -169,6 +186,13 @@ class MCPHostRegistry:
         else:
             groups = ()
 
+        raw_tenant = raw_copy.get("tenant") or raw_copy.get("tenant_id")
+        tenant_val = (
+            str(raw_tenant).strip()
+            if raw_tenant is not None and str(raw_tenant).strip()
+            else None
+        )
+
         uri_val = raw_copy.get("uri")
         if isinstance(uri_val, str) and uri_val.strip():
             cfg = URIParser.parse(uri_val)
@@ -180,6 +204,7 @@ class MCPHostRegistry:
                 transport=cfg.transport,
                 host=cfg.host or name,
                 groups=groups,
+                tenant=tenant_val,
                 raw_config=raw_copy,
             )
 
@@ -201,8 +226,28 @@ class MCPHostRegistry:
             transport=transport,
             host=str(host_val) if host_val is not None else name,
             groups=groups,
+            tenant=tenant_val,
             raw_config=raw_copy,
         )
+
+    def for_tenant(
+        self,
+        tenant_id: str,
+        *,
+        allow_shared_hosts: bool = False,
+        allow_dynamic_uri: bool = False,
+    ) -> MCPHostRegistry:
+        """Вернуть изолированную fail-closed проекцию реестра для заданного ``tenant_id``."""
+        norm_tenant = tenant_id.strip()
+        scoped_entries = [
+            entry
+            for entry in self._entries.values()
+            if entry.tenant == norm_tenant or (allow_shared_hosts and entry.tenant is None)
+        ]
+        scoped_policy = self.policy.model_copy(
+            update={"allow_dynamic_uri": bool(self.policy.allow_dynamic_uri and allow_dynamic_uri)}
+        )
+        return MCPHostRegistry(policy=scoped_policy, entries=scoped_entries)
 
     def list_entries(self, *, group: str | None = None) -> list[MCPHostEntry]:
         """Вернуть список зарегистрированных хостов (опционально отфильтрованный по группе)."""

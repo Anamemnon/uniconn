@@ -66,9 +66,15 @@ def test_optional_dependencies_contain_required_extras() -> None:
     assert any("tree-sitter" in dep for dep in extras["security"])
     assert any("tree-sitter-bash" in dep for dep in extras["security"])
 
+    assert "mcp-http" in extras
+    assert any("starlette" in dep for dep in extras["mcp-http"])
+    assert any("uvicorn" in dep for dep in extras["mcp-http"])
+    assert any("pyjwt" in dep for dep in extras["mcp-http"])
+    assert any("cryptography" in dep for dep in extras["mcp-http"])
+
     assert "all" in extras
     assert extras["all"] == [
-        "uniconn[bmc,pve,restconf,netconf,gnmi,serial,telnet,winrm,cli,templates,parsing,otel,security]"
+        "uniconn[bmc,pve,restconf,netconf,gnmi,serial,telnet,winrm,cli,templates,parsing,otel,security,mcp-http]"
     ]
 
 
@@ -139,3 +145,19 @@ def test_cli_missing_dependencies_exit(capsys: pytest.CaptureFixture[str]) -> No
         assert exc_info.value.code == 1
         captured = capsys.readouterr()
         assert "uniconn[cli]" in captured.err
+
+
+def test_mcp_http_missing_dependencies_hint() -> None:
+    """При отсутствии starlette/uvicorn или PyJWT выдаётся OptionalDependencyError с uniconn[mcp-http]."""
+    from uniconn.exceptions import OptionalDependencyError
+    from uniconn.mcp.auth import _require_jwt_crypto
+    from uniconn.mcp.http_transport import _require_http_transport_deps
+
+    with patch.dict("sys.modules", {"starlette": None, "starlette.applications": None}):
+        with pytest.raises(OptionalDependencyError, match=r"uniconn\[mcp-http\]"):
+            _require_http_transport_deps()
+
+    with patch.dict("sys.modules", {"jwt": None}):
+        with pytest.raises(OptionalDependencyError, match=r"uniconn\[mcp-http\]"):
+            _require_jwt_crypto()
+
