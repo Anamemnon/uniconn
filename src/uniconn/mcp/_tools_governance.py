@@ -13,6 +13,7 @@ from ..security.ast_parser import CommandASTParser
 from ..security.models import PolicyDecision
 from ._server_gates import MCPServerGatesMixin, _parse_tags_list
 from .flows import (
+    FlowCheckpointRecord,
     FlowCheckpointStore,
     FlowRiskEvaluator,
     FlowSchemaGenerator,
@@ -412,7 +413,7 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
             "count": len(flows_list),
         }
         if include_cp:
-            records = self.checkpoint_store.list_records(
+            records = await self.checkpoint_store.list_records(
                 only_resumable=True,
                 tenant_id=self._active_tenant_id(),
                 strict_tenant=self._is_verified_caller(),
@@ -474,14 +475,27 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
         )
 
     async def _tool_resume_flow(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        run_id = arguments.get("run_id")
-        if not isinstance(run_id, str) or not run_id.strip():
-            raise ValueError("Parameter 'run_id' is required")
-        cp_record = self.checkpoint_store.get(
-            run_id.strip(),
-            tenant_id=self._active_tenant_id(),
-            strict_tenant=self._is_verified_caller(),
-        )
+        raw_token = arguments.get("checkpoint_token")
+        raw_run_id = arguments.get("run_id")
+        tenant_id = self._active_tenant_id()
+        strict_tenant = self._is_verified_caller()
+
+        if isinstance(raw_token, str) and raw_token.strip():
+            await self.checkpoint_store.ensure_ready()
+            cp_record = self.checkpoint_store.decode_token(
+                raw_token.strip(),
+                tenant_id=tenant_id,
+                strict_tenant=strict_tenant,
+            )
+        elif isinstance(raw_run_id, str) and raw_run_id.strip():
+            cp_record = await self.checkpoint_store.get(
+                raw_run_id.strip(),
+                tenant_id=tenant_id,
+                strict_tenant=strict_tenant,
+            )
+        else:
+            raise ValueError("Either 'run_id' or 'checkpoint_token' is required")
+
         flow_obj = self.flow_registry.get_flow(cp_record.flow_name)
         merged_args: dict[str, Any] = {
             "resume_run_id": cp_record.run_id,
@@ -501,6 +515,7 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
             flow_obj,
             tool_name=self.flow_registry.get_tool_name(flow_obj.name),
             arguments=merged_args,
+            checkpoint_record=cp_record,
         )
 
     async def _execute_flow_by_object(
@@ -509,12 +524,19 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
         *,
         tool_name: str,
         arguments: dict[str, Any],
+        checkpoint_record: FlowCheckpointRecord | None = None,
     ) -> dict[str, Any]:
         """Единый конвейер запуска ``Flow`` с поддержкой HITL 4.2, диагностики 4.1 и чекпоинтов."""
         resume_id_raw = arguments.get("resume_run_id") or arguments.get("run_id")
         resume_run_id = (
             str(resume_id_raw).strip()
             if isinstance(resume_id_raw, str) and str(resume_id_raw).strip()
+            else None
+        )
+        raw_cp_token = arguments.get("checkpoint_token")
+        cp_token_arg = (
+            raw_cp_token.strip()
+            if isinstance(raw_cp_token, str) and raw_cp_token.strip()
             else None
         )
         prior_completed: dict[str, list[str]] = {}
@@ -526,12 +548,25 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
         default_mode: str | None = None
 
         tenant_id = self._active_tenant_id()
-        if resume_run_id is not None:
-            cp = self.checkpoint_store.get(
+        strict_tenant = self._is_verified_caller()
+        cp: FlowCheckpointRecord | None = checkpoint_record
+        if cp is None and cp_token_arg is not None:
+            await self.checkpoint_store.ensure_ready()
+            cp = self.checkpoint_store.decode_token(
+                cp_token_arg,
+                tenant_id=tenant_id,
+                strict_tenant=strict_tenant,
+            )
+            resume_run_id = cp.run_id
+        elif cp is None and resume_run_id is not None:
+            cp = await self.checkpoint_store.get(
                 resume_run_id,
                 tenant_id=tenant_id,
-                strict_tenant=self._is_verified_caller(),
+                strict_tenant=strict_tenant,
             )
+
+        if cp is not None:
+            resume_run_id = cp.run_id
             if cp.flow_name != flow_obj.name:
                 raise ValueError(
                     f"Checkpoint {resume_run_id!r} belongs to flow {cp.flow_name!r}, "
@@ -672,7 +707,7 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
                     resumed_from=resume_run_id,
                 )
 
-        cp_record = self.checkpoint_store.record_from_report(
+        cp_record = await self.checkpoint_store.record_from_report(
             report,
             targets=target_names,
             group=group_str,
@@ -711,6 +746,10 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
             "completed_by_host": cp_record.completed_by_host,
             "results": report_dict["results"],
         }
+        if not report.ok:
+            cp_token = self.checkpoint_store.try_encode_token(cp_record)
+            if cp_token is not None:
+                payload["checkpoint_token"] = cp_token
         if consumed_req is not None:
             payload["approval"] = self._serialize_approval(consumed_req)
         return payload

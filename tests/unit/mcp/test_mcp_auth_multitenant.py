@@ -1065,7 +1065,7 @@ async def test_untagged_verified_caller_cannot_access_tenant_approvals_or_checkp
 
         # Create a failed flow checkpoint owned by 'acme'
         await server.approval_manager.approve(acme_appr_id, decided_by="ops")
-        cp_flow = server.checkpoint_store.record_from_report(
+        cp_flow = await server.checkpoint_store.record_from_report(
             report=type(
                 "_FakeReport",
                 (),

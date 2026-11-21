@@ -459,7 +459,7 @@ async def test_mcp_flow_failure_attaches_diagnostic_and_resumes_from_checkpoint(
         risk_tier="safe",
     )
 
-    cp_store = FlowCheckpointStore(store_path=tmp_path / "checkpoints.json")
+    cp_store = FlowCheckpointStore(store_path=tmp_path / "checkpoints.db")
     registry = MCPHostRegistry.from_sources(include_local=True)
     server = MCPServer(
         registry=registry,

@@ -16,14 +16,13 @@ import logging
 import os
 import secrets
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, Self
 
 from .._logging import SecretMaskingFilter
 from ..exceptions import (
@@ -32,6 +31,7 @@ from ..exceptions import (
     ApprovalRejectedError,
     ApprovalRequiredError,
     ApprovalTamperingError,
+    ConcurrencyConflictError,
     ConfigurationError,
 )
 from ..security.url_validation import open_ssrf_safe_url, validate_outbound_url
@@ -54,8 +54,17 @@ from .risk_classifier import (
     _split_shell_segments,
     build_unified_diff,
 )
+from .storage import (
+    DEFAULT_STATE_DB_PATH,
+    HITL_STATE_NAMESPACE,
+    SQLiteStateStore,
+    StateRecord,
+    StateStore,
+    resolve_state_store,
+    sync_meta_secret,
+)
 
-DEFAULT_APPROVAL_STORE_PATH = Path.home() / ".uniconn" / "approvals.json"
+DEFAULT_APPROVAL_STORE_PATH = DEFAULT_STATE_DB_PATH
 _LOGGER = logging.getLogger("uniconn.mcp.hitl")
 
 _ = (
@@ -324,118 +333,87 @@ def _canonicalize_parameters_for_hmac(parameters: Mapping[str, Any] | None) -> d
 
 
 class ApprovalManager:
-    """Потокобезопасный менеджер двухфазных согласований (HITL) с контролем HMAC и IPC-файлом."""
+    """Асинхронный менеджер двухфазных согласований (HITL) с HMAC и атомарным CAS поверх ``StateStore``."""
 
     def __init__(
         self,
         policy: HITLPolicy | None = None,
         *,
         secret: str | None = None,
+        store: StateStore | None = None,
         store_path: str | Path | None = None,
         channels: Sequence[ApprovalChannel] | None = None,
+        retention_seconds: float = 86400.0,
     ) -> None:
-        """Инициализировать менеджер заявок согласования."""
+        """Инициализировать менеджер заявок (по умолчанию 100% in-memory ``InMemoryStateStore``)."""
         self.policy = policy or HITLPolicy(enabled=True)
-        resolved_store = store_path or self.policy.store_path or os.environ.get("UNICONN_APPROVAL_STORE")
-        self.store_path: Path | None = Path(resolved_store).expanduser() if resolved_store else None
-        self._lock = asyncio.Lock()
-        self._requests: dict[str, ApprovalRequest] = {}
+        self._retention_seconds = max(1.0, float(retention_seconds))
+        self._secret_lock = asyncio.Lock()
         self._events: dict[str, asyncio.Event] = {}
+
+        if store is not None:
+            self._store: StateStore = store
+            self._owns_store = False
+            db_attr = getattr(store, "db_path", None)
+            self.store_path: Path | None = db_attr if isinstance(db_attr, Path) else None
+        else:
+            resolved_store = (
+                store_path
+                or self.policy.store_path
+                or os.environ.get("UNICONN_STATE_DB")
+                or os.environ.get("UNICONN_APPROVAL_STORE")
+            )
+            self._store, self.store_path = resolve_state_store(resolved_store)
+            self._owns_store = True
 
         env_secret = os.environ.get("UNICONN_HITL_SECRET")
         # Внутренний HMAC-ключ заявок изолирован от webhook_secret (защита от утечки ключа)
-        self._secret: str = secret or env_secret or ""
-        with self._store_file_lock():
-            if not self._secret and self.store_path is not None:
-                self._secret = self._load_key_file_sync()
-            if self.store_path is not None:
-                self._load_from_disk_sync()
-            if not self._secret:
-                self._secret = secrets.token_hex(32)
-                if self.store_path is not None:
-                    self._save_key_file_sync()
+        if secret or env_secret:
+            self._secret: str = str(secret or env_secret)
+            self._secret_synced = True
+        elif isinstance(self._store, SQLiteStateStore):
+            meta = self._store.get_or_create_meta_sync(
+                "hitl_hmac_secret",
+                {"secret": secrets.token_hex(32)},
+            )
+            self._secret = str(meta.get("secret") or secrets.token_hex(32))
+            self._secret_synced = True
+        else:
+            self._secret = secrets.token_hex(32)
+            self._secret_synced = False
 
         if channels is not None:
             self._channels: list[ApprovalChannel] = list(channels)
         else:
             self._channels = self._build_default_channels()
 
-    def _key_file_path(self) -> Path | None:
-        """Вернуть путь к изолированному файлу HMAC-ключа (0600) рядом с JSON-стором."""
-        if self.store_path is None:
-            return None
-        return self.store_path.with_name(f".{self.store_path.name}.key")
+    @property
+    def store(self) -> StateStore:
+        """Активный бэкенд ``StateStore`` менеджера согласований."""
+        return self._store
 
-    @contextlib.contextmanager
-    def _store_file_lock(self) -> Iterator[None]:
-        """Межпроцессная файловая блокировка (flock/msvcrt) вокруг цикла load/modify/save."""
-        if self.store_path is None:
-            yield
-            return
-        lock_path = self.store_path.with_name(f".{self.store_path.name}.lock")
-        lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if lock_path.is_symlink():
-            raise PermissionError(f"Refusing to open symlink lock file: {lock_path}")
-        with open(lock_path, "a+", encoding="utf-8") as lock_file:
-            try:
-                with contextlib.suppress(OSError):
-                    os.chmod(lock_path, 0o600)
-                if os.name == "nt":
-                    import msvcrt
+    async def __aenter__(self) -> Self:
+        return self
 
-                    lock_file.seek(0)
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
-                else:
-                    import fcntl
+    async def __aexit__(self, *args: object) -> None:
+        await self.close()
 
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-                yield
-            finally:
-                with contextlib.suppress(OSError):
-                    if os.name == "nt":
-                        import msvcrt
+    async def close(self) -> None:
+        """Освободить ресурсы собственного ``StateStore`` (если создан менеджером)."""
+        if self._owns_store:
+            await self._store.close()
 
-                        lock_file.seek(0)
-                        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-                    else:
-                        import fcntl
-
-                        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-
-    def _load_key_file_sync(self) -> str:
-        key_path = self._key_file_path()
-        if key_path is None or not key_path.is_file() or key_path.is_symlink():
-            return ""
-        with contextlib.suppress(OSError):
-            val = key_path.read_text(encoding="utf-8").strip()
-            if val:
-                return val
-        return ""
-
-    def _save_key_file_sync(self) -> None:
-        key_path = self._key_file_path()
-        if key_path is None or not self._secret:
-            return
-        key_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if key_path.is_symlink():
-            raise PermissionError(f"Refusing to overwrite symlink HMAC key path: {key_path}")
-        fd, tmp_name = tempfile.mkstemp(
-            prefix=f".{key_path.name}_",
-            suffix=".tmp",
-            dir=str(key_path.parent),
-        )
-        try:
-            with contextlib.suppress(OSError):
-                os.chmod(tmp_name, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
-                tmp_file.write(self._secret)
-            with contextlib.suppress(OSError):
-                os.chmod(tmp_name, 0o600)
-            os.replace(tmp_name, key_path)
-        except Exception:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_name)
-            raise
+    async def _ensure_secret_synced(self) -> str:
+        """Синхронизировать внутренний HMAC-секрет через ``StateStore`` для общих/кластерных бэкендов."""
+        if self._secret_synced:
+            return self._secret
+        async with self._secret_lock:
+            if self._secret_synced:
+                return self._secret
+            candidate = self._secret or secrets.token_hex(32)
+            self._secret = await sync_meta_secret(self._store, "hitl_hmac_secret", candidate)
+            self._secret_synced = True
+            return self._secret
 
     def _build_default_channels(self) -> list[ApprovalChannel]:
         built: list[ApprovalChannel] = []
@@ -535,53 +513,6 @@ class ApprovalManager:
         )
         return hmac.compare_digest(request.hmac_signature, expected)
 
-    def _load_from_disk_sync(self) -> None:
-        if self.store_path is None or self.store_path.is_symlink() or not self.store_path.is_file():
-            return
-        with contextlib.suppress(OSError, json.JSONDecodeError, ValueError, TypeError):
-            raw_text = self.store_path.read_text(encoding="utf-8")
-            data = json.loads(raw_text)
-            if not isinstance(data, dict):
-                return
-            raw_reqs = data.get("requests")
-            if isinstance(raw_reqs, dict):
-                for appr_id, item in raw_reqs.items():
-                    if isinstance(item, dict):
-                        req = ApprovalRequest.model_validate(item)
-                        self._requests[str(appr_id)] = req
-                        if req.status != ApprovalStatus.PENDING and appr_id in self._events:
-                            self._events[appr_id].set()
-
-    def _save_to_disk_sync(self) -> None:
-        if self.store_path is None:
-            return
-        self.store_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        payload = {
-            "updated_at": datetime.now(UTC).isoformat(),
-            "requests": {
-                k: v.model_dump(mode="json")
-                for k, v in self._requests.items()
-            },
-        }
-        serialized = json.dumps(payload, ensure_ascii=False, indent=2)
-        fd, tmp_name = tempfile.mkstemp(
-            prefix=".approvals_",
-            suffix=".tmp",
-            dir=str(self.store_path.parent),
-        )
-        try:
-            with contextlib.suppress(OSError):
-                os.chmod(tmp_name, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
-                tmp_file.write(serialized)
-            with contextlib.suppress(OSError):
-                os.chmod(tmp_name, 0o600)
-            os.replace(tmp_name, self.store_path)
-        except Exception:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp_name)
-            raise
-
     def _write_audit_entry(self, event: str, request: ApprovalRequest, **extra: Any) -> None:
         audit_path_str = self.policy.audit_log_path
         if not audit_path_str:
@@ -609,64 +540,90 @@ class ApprovalManager:
         with contextlib.suppress(OSError), audit_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
-    def _expire_stale_unlocked(self, now: datetime | None = None) -> bool:
-        ref = now or datetime.now(UTC)
-        changed = False
-        for appr_id, req in self._requests.items():
-            if req.status == ApprovalStatus.PENDING and req.is_expired(ref):
-                req.status = ApprovalStatus.EXPIRED
-                changed = True
-                if appr_id in self._events:
-                    self._events[appr_id].set()
-                self._write_audit_entry("approval.expired", req)
-        if self._prune_completed_unlocked(now=ref):
-            changed = True
-        return changed
-
-    def _prune_completed_unlocked(
-        self,
-        *,
-        now: datetime | None = None,
-        max_completed: int = 1000,
-        retention_seconds: float = 86400.0,
-    ) -> bool:
-        """Удалить устаревшие завершённые заявки и события для предотвращения утечки памяти."""
-        ref = now or datetime.now(UTC)
-        cutoff = ref - timedelta(seconds=retention_seconds)
-        terminal = (ApprovalStatus.CONSUMED, ApprovalStatus.EXPIRED, ApprovalStatus.REJECTED)
-        completed_ids: list[tuple[datetime, str]] = []
-        removed = False
-        for appr_id, req in list(self._requests.items()):
-            if req.status in terminal:
-                ref_ts = req.consumed_at or req.decided_at or req.expires_at
-                if ref_ts < cutoff:
-                    self._requests.pop(appr_id, None)
-                    self._events.pop(appr_id, None)
-                    removed = True
-                else:
-                    completed_ids.append((ref_ts, appr_id))
-        if len(completed_ids) > max_completed:
-            completed_ids.sort(key=lambda item: item[0])
-            for _, appr_id in completed_ids[: len(completed_ids) - max_completed]:
-                self._requests.pop(appr_id, None)
-                self._events.pop(appr_id, None)
-                removed = True
-        return removed
-
     @staticmethod
     def _normalize_tenant_id(tenant_id: str | None) -> str | None:
         return tenant_id.strip() if isinstance(tenant_id, str) and tenant_id.strip() else None
 
+    def _signal_local_event(self, approval_id: str) -> None:
+        ev = self._events.get(approval_id)
+        if ev is not None:
+            ev.set()
+
+    def _cleanup_local_events(self, max_events: int = 1024) -> None:
+        if len(self._events) <= max_events:
+            return
+        done_keys = [k for k, ev in self._events.items() if ev.is_set()]
+        for k in done_keys[: max(0, len(self._events) - max_events // 2)]:
+            self._events.pop(k, None)
+
     @staticmethod
-    def _tenant_matches(
-        record_tenant: str | None,
-        query_tenant: str | None,
+    def _raise_for_terminal_status(
+        req: ApprovalRequest,
+        appr_key: str,
         *,
-        strict_tenant: bool,
-    ) -> bool:
-        if strict_tenant or query_tenant is not None:
-            return record_tenant == query_tenant
-        return True
+        command: str | None = None,
+        host: str | None = None,
+        cause: Exception | None = None,
+    ) -> None:
+        """Выбросить доменное исключение, если заявка в терминальном статусе CONSUMED/REJECTED/EXPIRED."""
+        if req.status == ApprovalStatus.CONSUMED:
+            raise ApprovalAlreadyConsumedError(
+                f"Single-use approval token {appr_key!r} has already been consumed",
+                approval_id=appr_key,
+                approval_request=req,
+                command=command,
+                host=host,
+            ) from cause
+        if req.status == ApprovalStatus.REJECTED:
+            raise ApprovalRejectedError(
+                f"Action rejected by operator ({req.decided_by or 'operator'}): "
+                f"{req.decision_reason or 'No reason provided'}",
+                approval_id=appr_key,
+                decided_by=req.decided_by,
+                decision_reason=req.decision_reason,
+                approval_request=req,
+                command=command,
+                host=host,
+            ) from cause
+        if req.status == ApprovalStatus.EXPIRED:
+            raise ApprovalExpiredError(
+                f"Approval request {appr_key!r} expired at {req.expires_at.isoformat()}",
+                approval_id=appr_key,
+                approval_request=req,
+                command=command,
+                host=host,
+            ) from cause
+
+    async def _try_mark_expired(
+        self,
+        req: ApprovalRequest,
+        state_rec: StateRecord,
+    ) -> tuple[ApprovalRequest, StateRecord]:
+        """Перевести просроченную PENDING-заявку в EXPIRED через CAS (идемпотентно)."""
+        if req.status != ApprovalStatus.PENDING or not req.is_expired():
+            return req, state_rec
+        expired_req = req.model_copy(update={"status": ApprovalStatus.EXPIRED})
+        try:
+            updated = await self._store.put(
+                HITL_STATE_NAMESPACE,
+                expired_req.approval_id,
+                expired_req.model_dump(mode="json"),
+                tenant_id=expired_req.tenant_id,
+                status=ApprovalStatus.EXPIRED.value,
+                ttl_seconds=self._retention_seconds,
+                expected_version=state_rec.version,
+            )
+            self._write_audit_entry("approval.expired", expired_req)
+            self._signal_local_event(expired_req.approval_id)
+            return expired_req, updated
+        except ConcurrencyConflictError:
+            latest = await self._store.get(HITL_STATE_NAMESPACE, req.approval_id)
+            if latest is not None:
+                latest_req = ApprovalRequest.model_validate(latest.value)
+                if latest_req.status != ApprovalStatus.PENDING:
+                    self._signal_local_event(req.approval_id)
+                return latest_req, latest
+            return expired_req, state_rec
 
     async def create_request(
         self,
@@ -686,91 +643,106 @@ class ApprovalManager:
         deduplicate: bool = True,
     ) -> ApprovalRequest:
         """Создать новую заявку на согласование (или вернуть идентичную активную PENDING-заявку)."""
+        await self._ensure_secret_synced()
+        await self._store.prune_expired(HITL_STATE_NAMESPACE)
+        self._cleanup_local_events()
+
         norm_tenant = self._normalize_tenant_id(tenant_id)
-        async with self._lock:
-            with self._store_file_lock():
-                self._load_from_disk_sync()
-                self._expire_stale_unlocked()
+        norm_host = target_host.strip()
+        norm_tool = tool_name.strip()
+        norm_cwd = (cwd or "").strip() or None
+        norm_params = _normalize_parameters_for_hmac(parameters)
+        masked_cmd = SecretMaskingFilter._mask_string(command.strip()) if command is not None else None
+        masked_diff = SecretMaskingFilter._mask_string(diff) if diff is not None else None
+        diff_sha256 = hashlib.sha256((diff or "").encode("utf-8")).hexdigest()
 
-                norm_host = target_host.strip()
-                norm_tool = tool_name.strip()
-                norm_cwd = (cwd or "").strip() or None
-                norm_params = _normalize_parameters_for_hmac(parameters)
-                masked_cmd = SecretMaskingFilter._mask_string(command.strip()) if command is not None else None
-                masked_diff = SecretMaskingFilter._mask_string(diff) if diff is not None else None
-                diff_sha256 = hashlib.sha256((diff or "").encode("utf-8")).hexdigest()
+        if deduplicate:
+            pending_recs = await self._store.list(
+                HITL_STATE_NAMESPACE,
+                tenant_id=norm_tenant,
+                strict_tenant=True,
+                status=ApprovalStatus.PENDING.value,
+            )
+            for rec in pending_recs:
+                existing = ApprovalRequest.model_validate(rec.value)
+                if existing.is_expired():
+                    await self._try_mark_expired(existing, rec)
+                    continue
+                if (
+                    existing.tenant_id == norm_tenant
+                    and existing.target_host == norm_host
+                    and existing.tool_name == norm_tool
+                    and existing.sudo == bool(sudo)
+                    and existing.cwd == norm_cwd
+                ):
+                    expected_existing = self.compute_hmac(
+                        approval_id=existing.approval_id,
+                        target_host=norm_host,
+                        tool_name=norm_tool,
+                        command=command,
+                        sudo=sudo,
+                        cwd=norm_cwd,
+                        parameters=parameters,
+                        diff=diff,
+                        diff_sha256=diff_sha256,
+                        tenant_id=norm_tenant,
+                    )
+                    if hmac.compare_digest(existing.hmac_signature, expected_existing):
+                        return existing
 
-                if deduplicate:
-                    for existing in self._requests.values():
-                        if (
-                            existing.status == ApprovalStatus.PENDING
-                            and not existing.is_expired()
-                            and existing.tenant_id == norm_tenant
-                            and existing.target_host == norm_host
-                            and existing.tool_name == norm_tool
-                            and existing.sudo == bool(sudo)
-                            and existing.cwd == norm_cwd
-                        ):
-                            expected_existing = self.compute_hmac(
-                                approval_id=existing.approval_id,
-                                target_host=norm_host,
-                                tool_name=norm_tool,
-                                command=command,
-                                sudo=sudo,
-                                cwd=norm_cwd,
-                                parameters=parameters,
-                                diff=diff,
-                                diff_sha256=diff_sha256,
-                                tenant_id=norm_tenant,
-                            )
-                            if hmac.compare_digest(existing.hmac_signature, expected_existing):
-                                return existing
+        approval_id = f"appr_{secrets.token_hex(6)}"
+        now = datetime.now(UTC)
+        ttl = float(timeout_seconds if timeout_seconds is not None else self.policy.timeout_seconds)
+        effective_ttl = max(0.1, ttl)
+        expires_at = now + timedelta(seconds=effective_ttl)
 
-                approval_id = f"appr_{secrets.token_hex(6)}"
-                now = datetime.now(UTC)
-                ttl = float(timeout_seconds if timeout_seconds is not None else self.policy.timeout_seconds)
-                expires_at = now + timedelta(seconds=max(0.1, ttl))
+        sig = self.compute_hmac(
+            approval_id=approval_id,
+            target_host=norm_host,
+            tool_name=norm_tool,
+            command=command,
+            sudo=sudo,
+            cwd=norm_cwd,
+            parameters=parameters,
+            diff=diff,
+            diff_sha256=diff_sha256,
+            tenant_id=norm_tenant,
+        )
 
-                sig = self.compute_hmac(
-                    approval_id=approval_id,
-                    target_host=norm_host,
-                    tool_name=norm_tool,
-                    command=command,
-                    sudo=sudo,
-                    cwd=norm_cwd,
-                    parameters=parameters,
-                    diff=diff,
-                    diff_sha256=diff_sha256,
-                    tenant_id=norm_tenant,
-                )
-
-                req = ApprovalRequest(
-                    approval_id=approval_id,
-                    created_at=now,
-                    expires_at=expires_at,
-                    agent_id=agent_id,
-                    tenant_id=norm_tenant,
-                    target_host=norm_host,
-                    tool_name=norm_tool,
-                    command=masked_cmd,
-                    sudo=bool(sudo),
-                    cwd=norm_cwd,
-                    parameters=norm_params,
-                    risk_tier=risk_tier,
-                    risk_reasons=list(risk_reasons),
-                    diff=masked_diff,
-                    diff_sha256=diff_sha256,
-                    status=ApprovalStatus.PENDING,
-                    hmac_signature=sig,
-                )
-                self._requests[approval_id] = req
-                self._events[approval_id] = asyncio.Event()
-                self._save_to_disk_sync()
-                self._write_audit_entry("approval.requested", req)
+        req = ApprovalRequest(
+            approval_id=approval_id,
+            created_at=now,
+            expires_at=expires_at,
+            agent_id=agent_id,
+            tenant_id=norm_tenant,
+            target_host=norm_host,
+            tool_name=norm_tool,
+            command=masked_cmd,
+            sudo=bool(sudo),
+            cwd=norm_cwd,
+            parameters=norm_params,
+            risk_tier=risk_tier,
+            risk_reasons=list(risk_reasons),
+            diff=masked_diff,
+            diff_sha256=diff_sha256,
+            status=ApprovalStatus.PENDING,
+            hmac_signature=sig,
+        )
+        await self._store.put(
+            HITL_STATE_NAMESPACE,
+            approval_id,
+            req.model_dump(mode="json"),
+            tenant_id=norm_tenant,
+            status=ApprovalStatus.PENDING.value,
+            ttl_seconds=effective_ttl + self._retention_seconds,
+            expected_version=0,
+        )
+        self._events[approval_id] = asyncio.Event()
+        self._write_audit_entry("approval.requested", req)
 
         # Оповещаем подключённые каналы (например, stderr или webhook)
         for channel in self._channels:
-            with contextlib.suppress(Exception):
+            try:
                 chan_resp = await channel.notify(req)
                 if isinstance(chan_resp, dict):
                     decision = str(chan_resp.get("decision") or "").upper()
@@ -788,6 +760,13 @@ class ApprovalManager:
                             decided_by=by_user,
                             reason=str(reason) if reason else None,
                         )
+            except Exception as exc:
+                _LOGGER.debug(
+                    "HITL channel %s notification failed for %s: %s",
+                    type(channel).__name__,
+                    approval_id,
+                    exc,
+                )
 
         return await self.get_request(req.approval_id, tenant_id=norm_tenant)
 
@@ -799,20 +778,23 @@ class ApprovalManager:
         strict_tenant: bool = False,
     ) -> ApprovalRequest:
         """Получить заявку по ID с проверкой ``tenant_id`` и актуализацией таймаута."""
+        await self._ensure_secret_synced()
         appr_key = approval_id.strip()
         norm_tenant = self._normalize_tenant_id(tenant_id)
-        async with self._lock:
-            with self._store_file_lock():
-                self._load_from_disk_sync()
-                changed = self._expire_stale_unlocked()
-                if changed:
-                    self._save_to_disk_sync()
-                req = self._requests.get(appr_key)
-                if req is None or not self._tenant_matches(
-                    req.tenant_id, norm_tenant, strict_tenant=strict_tenant
-                ):
-                    raise KeyError(f"Approval request {approval_id!r} not found")
-                return req
+        rec = await self._store.get(
+            HITL_STATE_NAMESPACE,
+            appr_key,
+            tenant_id=norm_tenant,
+            strict_tenant=strict_tenant,
+        )
+        if rec is None or rec.is_expired():
+            raise KeyError(f"Approval request {approval_id!r} not found")
+        req = ApprovalRequest.model_validate(rec.value)
+        if req.status == ApprovalStatus.PENDING and req.is_expired():
+            req, _ = await self._try_mark_expired(req, rec)
+        elif req.status != ApprovalStatus.PENDING:
+            self._signal_local_event(appr_key)
+        return req
 
     async def list_requests(
         self,
@@ -822,19 +804,32 @@ class ApprovalManager:
         strict_tenant: bool = False,
     ) -> list[ApprovalRequest]:
         """Вернуть список всех заявок (опционально отфильтрованный по статусу и ``tenant_id``)."""
+        await self._ensure_secret_synced()
+        await self._store.prune_expired(HITL_STATE_NAMESPACE)
         norm_tenant = self._normalize_tenant_id(tenant_id)
-        async with self._lock:
-            with self._store_file_lock():
-                self._load_from_disk_sync()
-                if self._expire_stale_unlocked():
-                    self._save_to_disk_sync()
-                items = list(self._requests.values())
-                if strict_tenant or norm_tenant is not None:
-                    items = [r for r in items if r.tenant_id == norm_tenant]
-                if status is not None:
-                    target_status = ApprovalStatus(str(status).upper())
-                    items = [r for r in items if r.status == target_status]
-                return sorted(items, key=lambda r: r.created_at, reverse=True)
+        target_status = ApprovalStatus(str(status).upper()) if status is not None else None
+
+        # Актуализируем истёкшие PENDING-заявки, если фильтр может их затронуть
+        if target_status in (None, ApprovalStatus.PENDING, ApprovalStatus.EXPIRED):
+            pending_recs = await self._store.list(
+                HITL_STATE_NAMESPACE,
+                tenant_id=norm_tenant,
+                strict_tenant=strict_tenant,
+                status=ApprovalStatus.PENDING.value,
+            )
+            for rec in pending_recs:
+                parsed = ApprovalRequest.model_validate(rec.value)
+                if parsed.is_expired():
+                    await self._try_mark_expired(parsed, rec)
+
+        recs = await self._store.list(
+            HITL_STATE_NAMESPACE,
+            tenant_id=norm_tenant,
+            strict_tenant=strict_tenant,
+            status=target_status.value if target_status is not None else None,
+        )
+        items = [ApprovalRequest.model_validate(rec.value) for rec in recs]
+        return sorted(items, key=lambda r: r.created_at, reverse=True)
 
     async def approve(
         self,
@@ -843,47 +838,55 @@ class ApprovalManager:
         decided_by: str = "operator",
         reason: str | None = None,
     ) -> ApprovalRequest:
-        """Одобрить заявку оператором (PENDING -> APPROVED)."""
+        """Одобрить заявку оператором (PENDING -> APPROVED) через атомарный CAS."""
+        await self._ensure_secret_synced()
         appr_key = approval_id.strip()
-        async with self._lock:
-            with self._store_file_lock():
-                self._load_from_disk_sync()
-                self._expire_stale_unlocked()
-                req = self._requests.get(appr_key)
-                if req is None:
-                    raise KeyError(f"Approval request {approval_id!r} not found")
-                if req.status == ApprovalStatus.CONSUMED:
-                    raise ApprovalAlreadyConsumedError(
-                        f"Approval {appr_key!r} has already been consumed",
-                        approval_id=appr_key,
-                        approval_request=req,
-                    )
-                if req.status == ApprovalStatus.EXPIRED or req.is_expired():
-                    req.status = ApprovalStatus.EXPIRED
-                    self._save_to_disk_sync()
-                    raise ApprovalExpiredError(
-                        f"Approval {appr_key!r} has expired at {req.expires_at.isoformat()}",
-                        approval_id=appr_key,
-                        approval_request=req,
-                    )
-                if req.status == ApprovalStatus.REJECTED:
-                    raise ApprovalRejectedError(
-                        f"Approval {appr_key!r} was already rejected by {req.decided_by!r}",
-                        approval_id=appr_key,
-                        decided_by=req.decided_by,
-                        decision_reason=req.decision_reason,
-                        approval_request=req,
-                    )
+        rec = await self._store.get(HITL_STATE_NAMESPACE, appr_key)
+        if rec is None or rec.is_expired():
+            raise KeyError(f"Approval request {approval_id!r} not found")
+        req = ApprovalRequest.model_validate(rec.value)
 
-                req.status = ApprovalStatus.APPROVED
-                req.decided_by = decided_by.strip() or "operator"
-                req.decided_at = datetime.now(UTC)
-                req.decision_reason = reason
-                self._save_to_disk_sync()
-                self._write_audit_entry("approval.approved", req)
-                if appr_key in self._events:
-                    self._events[appr_key].set()
-                return req
+        if req.status == ApprovalStatus.CONSUMED:
+            self._raise_for_terminal_status(req, appr_key)
+        if req.status == ApprovalStatus.EXPIRED or req.is_expired():
+            req, _ = await self._try_mark_expired(req, rec)
+            if req.status != ApprovalStatus.EXPIRED:
+                req = req.model_copy(update={"status": ApprovalStatus.EXPIRED})
+            self._raise_for_terminal_status(req, appr_key)
+        self._raise_for_terminal_status(req, appr_key)
+
+        approved_req = req.model_copy(
+            update={
+                "status": ApprovalStatus.APPROVED,
+                "decided_by": decided_by.strip() or "operator",
+                "decided_at": datetime.now(UTC),
+                "decision_reason": reason,
+            }
+        )
+        try:
+            await self._store.put(
+                HITL_STATE_NAMESPACE,
+                appr_key,
+                approved_req.model_dump(mode="json"),
+                tenant_id=approved_req.tenant_id,
+                status=ApprovalStatus.APPROVED.value,
+                ttl_seconds=approved_req.remaining_seconds() + self._retention_seconds,
+                expected_version=rec.version,
+            )
+        except ConcurrencyConflictError as exc:
+            latest_rec = await self._store.get(HITL_STATE_NAMESPACE, appr_key)
+            if latest_rec is None:
+                raise KeyError(f"Approval request {approval_id!r} not found") from exc
+            latest = ApprovalRequest.model_validate(latest_rec.value)
+            if latest.status not in (ApprovalStatus.CONSUMED, ApprovalStatus.REJECTED) and latest.is_expired():
+                latest = latest.model_copy(update={"status": ApprovalStatus.EXPIRED})
+            self._raise_for_terminal_status(latest, appr_key, cause=exc)
+            self._signal_local_event(appr_key)
+            return latest
+
+        self._write_audit_entry("approval.approved", approved_req)
+        self._signal_local_event(appr_key)
+        return approved_req
 
     async def reject(
         self,
@@ -892,31 +895,63 @@ class ApprovalManager:
         decided_by: str = "operator",
         reason: str | None = None,
     ) -> ApprovalRequest:
-        """Отклонить заявку оператором (PENDING -> REJECTED)."""
+        """Отклонить заявку оператором (PENDING/APPROVED -> REJECTED) через атомарный CAS."""
+        await self._ensure_secret_synced()
         appr_key = approval_id.strip()
-        async with self._lock:
-            with self._store_file_lock():
-                self._load_from_disk_sync()
-                self._expire_stale_unlocked()
-                req = self._requests.get(appr_key)
-                if req is None:
-                    raise KeyError(f"Approval request {approval_id!r} not found")
-                if req.status == ApprovalStatus.CONSUMED:
-                    raise ApprovalAlreadyConsumedError(
-                        f"Approval {appr_key!r} has already been consumed",
-                        approval_id=appr_key,
-                        approval_request=req,
-                    )
+        actor = decided_by.strip() or "operator"
 
-                req.status = ApprovalStatus.REJECTED
-                req.decided_by = decided_by.strip() or "operator"
-                req.decided_at = datetime.now(UTC)
-                req.decision_reason = reason
-                self._save_to_disk_sync()
-                self._write_audit_entry("approval.rejected", req)
-                if appr_key in self._events:
-                    self._events[appr_key].set()
+        for _attempt in range(3):
+            rec = await self._store.get(HITL_STATE_NAMESPACE, appr_key)
+            if rec is None or rec.is_expired():
+                raise KeyError(f"Approval request {approval_id!r} not found")
+            req = ApprovalRequest.model_validate(rec.value)
+
+            if req.status == ApprovalStatus.CONSUMED:
+                self._raise_for_terminal_status(req, appr_key)
+            if req.status == ApprovalStatus.REJECTED:
+                self._signal_local_event(appr_key)
                 return req
+
+            rejected_req = req.model_copy(
+                update={
+                    "status": ApprovalStatus.REJECTED,
+                    "decided_by": actor,
+                    "decided_at": datetime.now(UTC),
+                    "decision_reason": reason,
+                }
+            )
+            try:
+                await self._store.put(
+                    HITL_STATE_NAMESPACE,
+                    appr_key,
+                    rejected_req.model_dump(mode="json"),
+                    tenant_id=rejected_req.tenant_id,
+                    status=ApprovalStatus.REJECTED.value,
+                    ttl_seconds=self._retention_seconds,
+                    expected_version=rec.version,
+                )
+            except ConcurrencyConflictError as exc:
+                latest_rec = await self._store.get(HITL_STATE_NAMESPACE, appr_key)
+                if latest_rec is None:
+                    raise KeyError(f"Approval request {approval_id!r} not found") from exc
+                latest = ApprovalRequest.model_validate(latest_rec.value)
+                if latest.status == ApprovalStatus.CONSUMED:
+                    self._raise_for_terminal_status(latest, appr_key, cause=exc)
+                if latest.status == ApprovalStatus.REJECTED:
+                    self._signal_local_event(appr_key)
+                    return latest
+                # Если параллельно выполнился approve() (PENDING -> APPROVED), повторяем CAS для REJECTED
+                continue
+
+            self._write_audit_entry("approval.rejected", rejected_req)
+            self._signal_local_event(appr_key)
+            return rejected_req
+
+        raise ConcurrencyConflictError(
+            f"Failed to reject approval {appr_key!r} due to repeated concurrent updates",
+            namespace=HITL_STATE_NAMESPACE,
+            key=appr_key,
+        )
 
     async def wait_for_decision(
         self,
@@ -927,7 +962,7 @@ class ApprovalManager:
         tenant_id: str | None = None,
         strict_tenant: bool = False,
     ) -> ApprovalRequest:
-        """Ожидать решения оператора (в памяти или через межпроцессный JSON-стор)."""
+        """Ожидать решения оператора (в памяти или через межпроцессный ``StateStore``)."""
         appr_key = approval_id.strip()
         req = await self.get_request(appr_key, tenant_id=tenant_id, strict_tenant=strict_tenant)
         if req.status != ApprovalStatus.PENDING:
@@ -967,95 +1002,111 @@ class ApprovalManager:
         tenant_id: str | None = None,
         strict_tenant: bool = False,
     ) -> ApprovalRequest:
-        """Проверить статус, ``tenant_id`` и HMAC-подпись одобренной заявки и погасить токен."""
+        """Проверить статус, ``tenant_id`` и HMAC-подпись одобренной заявки и атомарно погасить токен (CAS)."""
+        await self._ensure_secret_synced()
         appr_key = approval_id.strip()
         norm_tenant = self._normalize_tenant_id(tenant_id)
-        async with self._lock:
-            with self._store_file_lock():
-                self._load_from_disk_sync()
-                self._expire_stale_unlocked()
-                req = self._requests.get(appr_key)
-                if req is None or not self._tenant_matches(
-                    req.tenant_id, norm_tenant, strict_tenant=strict_tenant
-                ):
-                    raise KeyError(f"Approval request {approval_id!r} not found")
+        rec = await self._store.get(
+            HITL_STATE_NAMESPACE,
+            appr_key,
+            tenant_id=norm_tenant,
+            strict_tenant=strict_tenant,
+        )
+        if rec is None or rec.is_expired():
+            raise KeyError(f"Approval request {approval_id!r} not found")
+        req = ApprovalRequest.model_validate(rec.value)
 
-                if req.status == ApprovalStatus.CONSUMED:
-                    self._write_audit_entry("approval.replay_blocked", req)
-                    raise ApprovalAlreadyConsumedError(
-                        f"Single-use approval token {appr_key!r} has already been consumed",
-                        approval_id=appr_key,
-                        approval_request=req,
-                        command=command,
-                        host=target_host,
-                    )
+        if req.status == ApprovalStatus.CONSUMED:
+            self._write_audit_entry("approval.replay_blocked", req)
+            self._raise_for_terminal_status(req, appr_key, command=command, host=target_host)
 
-                if req.status == ApprovalStatus.EXPIRED or req.is_expired():
-                    req.status = ApprovalStatus.EXPIRED
-                    self._save_to_disk_sync()
-                    raise ApprovalExpiredError(
-                        f"Approval request {appr_key!r} expired at {req.expires_at.isoformat()}",
-                        approval_id=appr_key,
-                        approval_request=req,
-                        command=command,
-                        host=target_host,
-                    )
+        if req.status == ApprovalStatus.EXPIRED or req.is_expired():
+            req, _ = await self._try_mark_expired(req, rec)
+            if req.status != ApprovalStatus.EXPIRED:
+                req = req.model_copy(update={"status": ApprovalStatus.EXPIRED})
+            self._raise_for_terminal_status(req, appr_key, command=command, host=target_host)
 
-                if req.status == ApprovalStatus.REJECTED:
-                    raise ApprovalRejectedError(
-                        f"Action rejected by operator ({req.decided_by or 'operator'}): "
-                        f"{req.decision_reason or 'No reason provided'}",
-                        approval_id=appr_key,
-                        decided_by=req.decided_by,
-                        decision_reason=req.decision_reason,
-                        approval_request=req,
-                        command=command,
-                        host=target_host,
-                    )
+        if req.status == ApprovalStatus.REJECTED:
+            self._raise_for_terminal_status(req, appr_key, command=command, host=target_host)
 
-                if req.status == ApprovalStatus.PENDING:
-                    raise ApprovalRequiredError(
-                        f"Approval request {appr_key!r} is still PENDING operator confirmation",
-                        approval_id=appr_key,
-                        approval_request=req,
-                        command=command,
-                        host=target_host,
-                    )
+        if req.status == ApprovalStatus.PENDING:
+            raise ApprovalRequiredError(
+                f"Approval request {appr_key!r} is still PENDING operator confirmation",
+                approval_id=appr_key,
+                approval_request=req,
+                command=command,
+                host=target_host,
+            )
 
-                if not self.verify_request_hmac(
-                    req,
-                    target_host=target_host,
-                    tool_name=tool_name,
+        if not self.verify_request_hmac(
+            req,
+            target_host=target_host,
+            tool_name=tool_name,
+            command=command,
+            sudo=sudo,
+            cwd=cwd,
+            parameters=parameters,
+            diff=diff,
+            tenant_id=norm_tenant if norm_tenant is not None else req.tenant_id,
+        ):
+            masked_cmd = SecretMaskingFilter._mask_string(command) if command is not None else None
+            self._write_audit_entry(
+                "approval.tampering_detected",
+                req,
+                attempted_host=target_host,
+                attempted_tool=tool_name,
+                attempted_command=masked_cmd,
+                attempted_sudo=sudo,
+            )
+            raise ApprovalTamperingError(
+                f"HMAC signature mismatch for approval {appr_key!r}: "
+                "target host, command, sudo flag, or parameters do not match the approved request",
+                approval_id=appr_key,
+                approval_request=req,
+                command=command,
+                host=target_host,
+            )
+
+        consumed_req = req.model_copy(
+            update={
+                "status": ApprovalStatus.CONSUMED,
+                "consumed_at": datetime.now(UTC),
+            }
+        )
+        try:
+            await self._store.put(
+                HITL_STATE_NAMESPACE,
+                appr_key,
+                consumed_req.model_dump(mode="json"),
+                tenant_id=consumed_req.tenant_id,
+                status=ApprovalStatus.CONSUMED.value,
+                ttl_seconds=self._retention_seconds,
+                expected_version=rec.version,
+            )
+        except ConcurrencyConflictError as exc:
+            latest_rec = await self._store.get(HITL_STATE_NAMESPACE, appr_key)
+            if latest_rec is None:
+                raise KeyError(f"Approval request {approval_id!r} not found") from exc
+            latest = ApprovalRequest.model_validate(latest_rec.value)
+            if latest.status in (ApprovalStatus.REJECTED, ApprovalStatus.EXPIRED):
+                self._raise_for_terminal_status(
+                    latest,
+                    appr_key,
                     command=command,
-                    sudo=sudo,
-                    cwd=cwd,
-                    parameters=parameters,
-                    diff=diff,
-                    tenant_id=norm_tenant if norm_tenant is not None else req.tenant_id,
-                ):
-                    masked_cmd = SecretMaskingFilter._mask_string(command) if command is not None else None
-                    self._write_audit_entry(
-                        "approval.tampering_detected",
-                        req,
-                        attempted_host=target_host,
-                        attempted_tool=tool_name,
-                        attempted_command=masked_cmd,
-                        attempted_sudo=sudo,
-                    )
-                    raise ApprovalTamperingError(
-                        f"HMAC signature mismatch for approval {appr_key!r}: "
-                        "target host, command, sudo flag, or parameters do not match the approved request",
-                        approval_id=appr_key,
-                        approval_request=req,
-                        command=command,
-                        host=target_host,
-                    )
+                    host=target_host,
+                    cause=exc,
+                )
+            self._write_audit_entry("approval.replay_blocked", latest)
+            raise ApprovalAlreadyConsumedError(
+                f"Single-use approval token {appr_key!r} has already been consumed",
+                approval_id=appr_key,
+                approval_request=latest,
+                command=command,
+                host=target_host,
+            ) from exc
 
-                req.status = ApprovalStatus.CONSUMED
-                req.consumed_at = datetime.now(UTC)
-                self._save_to_disk_sync()
-                self._write_audit_entry("approval.consumed", req)
-                return req
+        self._write_audit_entry("approval.consumed", consumed_req)
+        return consumed_req
 
 
 __all__ = [
@@ -1067,3 +1118,4 @@ __all__ = [
     "WebhookApprovalChannel",
     "build_unified_diff",
 ]
+

@@ -374,7 +374,8 @@ class TestSec07SecretMaskingAndCheckpoints:
         assert secret not in masked
         assert "***" in masked
 
-    def test_flow_checkpoint_masks_prior_outputs_and_return_values(self) -> None:
+    @pytest.mark.asyncio
+    async def test_flow_checkpoint_masks_prior_outputs_and_return_values(self) -> None:
         store = FlowCheckpointStore()
         fake_res = MagicMock()
         fake_res.status = "success"
@@ -389,7 +390,7 @@ class TestSec07SecretMaskingAndCheckpoints:
         report.ok = True
         report.results = {"app-01": [fake_res]}
 
-        cp = store.record_from_report(
+        cp = await store.record_from_report(
             report,
             targets=["app-01"],
             prior_outputs={"app-01": {"prev": {"header": "Authorization: Bearer prior_secret_token_999"}}},

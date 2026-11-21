@@ -10,7 +10,7 @@ import os
 import sys
 from collections.abc import AsyncIterable, Callable, Coroutine, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 from .._logging import SecretMaskingFilter
 from ..orchestration.flow import Flow, SyncFlow
@@ -32,6 +32,7 @@ from .schemas import (
     build_default_resources,
     build_default_tools,
 )
+from .storage import StateStore, resolve_state_store
 
 SUPPORTED_PROTOCOL_VERSION = "2024-11-05"
 SUPPORTED_PROTOCOL_VERSIONS: tuple[str, ...] = ("2025-03-26", "2024-11-05")
@@ -56,16 +57,18 @@ class MCPServer(MCPServerToolsMixin):
         allow_shared_hosts: bool = False,
         auth_config: MCPAuthConfig | None = None,
         http_config: MCPHttpConfig | None = None,
+        state_store: StateStore | None = None,
         approval_manager: ApprovalManager | None = None,
         policy_engine: PolicyEngine | None = None,
         flow_registry: MCPFlowRegistry | None = None,
         flows: Sequence[Flow | SyncFlow] = (),
         flow_specs: Sequence[str | Path] = (),
         checkpoint_store: FlowCheckpointStore | None = None,
+        checkpoint_secret: str | bytes | None = None,
         server_name: str = "uniconn-mcp",
         server_version: str | None = None,
     ) -> None:
-        """Создать экземпляр MCP-сервера с реестром хостов, тенантами, Flow, политикой и HITL."""
+        """Создать экземпляр MCP-сервера с реестром хостов, тенантами, Flow, политикой, HITL и StateStore."""
         from .. import __version__
 
         self.registry = registry or MCPHostRegistry.from_sources()
@@ -89,7 +92,25 @@ class MCPServer(MCPServerToolsMixin):
             hitl_pol = hitl_pol.model_copy(
                 update={"audit_log_path": self.registry.policy.audit_log_path}
             )
-        self.approval_manager = approval_manager or ApprovalManager(policy=hitl_pol)
+
+        self._owns_state_store = False
+        if state_store is not None:
+            self.state_store: StateStore = state_store
+        elif approval_manager is not None:
+            self.state_store = approval_manager.store
+        else:
+            raw_state_path = (
+                hitl_pol.store_path
+                or os.environ.get("UNICONN_STATE_DB")
+                or os.environ.get("UNICONN_APPROVAL_STORE")
+            )
+            self.state_store, _ = resolve_state_store(raw_state_path)
+            self._owns_state_store = True
+
+        self.approval_manager = approval_manager or ApprovalManager(
+            policy=hitl_pol,
+            store=self.state_store,
+        )
         self.policy_engine: PolicyEngine = policy_engine or create_policy_engine(
             self.registry.policy.guardrails
         )
@@ -97,16 +118,26 @@ class MCPServer(MCPServerToolsMixin):
             specs=flow_specs,
             flows=flows,
         )
-        default_cp_path: str | Path | None = os.environ.get(
-            "UNICONN_FLOW_CHECKPOINT_STORE"
-        )
-        if default_cp_path is None and hitl_pol.store_path:
-            default_cp_path = Path(hitl_pol.store_path).with_name(
-                "flow_checkpoints.json"
-            )
-        self.checkpoint_store = checkpoint_store or FlowCheckpointStore(
-            store_path=default_cp_path
-        )
+        if checkpoint_store is not None:
+            self.checkpoint_store = checkpoint_store
+        else:
+            env_cp_path = os.environ.get("UNICONN_FLOW_CHECKPOINT_STORE")
+            if (
+                state_store is None
+                and approval_manager is None
+                and env_cp_path
+                and env_cp_path.strip()
+                and env_cp_path.strip() != ":memory:"
+            ):
+                self.checkpoint_store = FlowCheckpointStore(
+                    store_path=env_cp_path.strip(),
+                    signing_secret=checkpoint_secret,
+                )
+            else:
+                self.checkpoint_store = FlowCheckpointStore(
+                    store=self.state_store,
+                    signing_secret=checkpoint_secret,
+                )
         self._tools = build_default_tools(self.registry.policy)
         self._resources = build_default_resources()
         self._resource_templates = build_default_resource_templates()
@@ -131,6 +162,19 @@ class MCPServer(MCPServerToolsMixin):
             "uniconn_run_flow": self._tool_run_flow,
             "uniconn_resume_flow": self._tool_resume_flow,
         }
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        await self.close()
+
+    async def close(self) -> None:
+        """Закрыть внутренние хранилища состояния, созданные экземпляром ``MCPServer``."""
+        await self.approval_manager.close()
+        await self.checkpoint_store.close()
+        if self._owns_state_store:
+            await self.state_store.close()
 
     def register_flow(
         self,

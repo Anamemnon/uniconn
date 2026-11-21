@@ -3,15 +3,24 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import dataclasses
+import hashlib
+import hmac
 import json
+import logging
+import math
 import os
+import secrets
+import time
 import uuid
+import zlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 from .._logging import SecretMaskingFilter
 from ..orchestration.flow import Flow
@@ -19,6 +28,19 @@ from ..orchestration.models import FlowReport
 from ..orchestration.scheduler import compute_active_tasks_by_tags
 from ..orchestration.task import Task
 from .models import ActionRiskTier, HITLPolicy, MCPHostEntry, RiskAssessment
+from .storage import (
+    FLOW_CHECKPOINT_NAMESPACE,
+    SQLiteStateStore,
+    StateStore,
+    resolve_state_store,
+    sync_meta_secret,
+)
+
+_LOGGER = logging.getLogger("uniconn.mcp.checkpoints")
+
+CHECKPOINT_TOKEN_PREFIX: str = "ucp1."
+MAX_CHECKPOINT_TOKEN_BYTES: int = 65_536
+MAX_CHECKPOINT_DECOMPRESSED_BYTES: int = 524_288
 
 _HIGH_RISK_TAGS: frozenset[str] = frozenset(
     {"destructive", "danger", "dangerous", "drop", "purge", "format", "wipe", "reboot", "shutdown", "delete"}
@@ -35,6 +57,15 @@ _SAFE_TAGS: frozenset[str] = frozenset(
         "audit", "inspect", "diagnostics", "status", "ping", "facts",
     }
 )
+
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(data: str) -> bytes:
+    pad = "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode((data + pad).encode("ascii"))
 
 
 def _mask_nested_value(val: Any) -> Any:
@@ -198,7 +229,7 @@ class FlowRiskEvaluator:
 
 @dataclass(slots=True)
 class FlowCheckpointRecord:
-    """Запись чекпоинта выполнения сценария ``Flow`` для возобновления по ``run_id``."""
+    """Запись чекпоинта выполнения сценария ``Flow`` для возобновления по ``run_id`` или токену."""
 
     run_id: str
     flow_name: str
@@ -289,48 +320,203 @@ class FlowCheckpointRecord:
 
 
 class FlowCheckpointStore:
-    """Хранилище чекпоинтов выполнения ``Flow`` (в памяти и опционально на диске)."""
+    """Асинхронное хранилище чекпоинтов ``Flow`` поверх ``StateStore`` и подписанных opaque-токенов."""
 
-    def __init__(self, store_path: str | Path | None = None) -> None:
-        self.store_path = Path(store_path).expanduser() if store_path is not None else None
-        self._records: dict[str, FlowCheckpointRecord] = {}
-        if self.store_path is not None and self.store_path.is_file():
-            self._load_from_disk()
+    def __init__(
+        self,
+        store_path: str | Path | None = None,
+        *,
+        store: StateStore | None = None,
+        ttl_seconds: float = 86400.0,
+        signing_secret: str | bytes | None = None,
+        max_token_bytes: int = MAX_CHECKPOINT_TOKEN_BYTES,
+    ) -> None:
+        """Инициализировать хранилище чекпоинтов (по умолчанию zero-disk ``InMemoryStateStore``)."""
+        self.ttl_seconds = max(1.0, float(ttl_seconds))
+        self.max_token_bytes = max(1024, int(max_token_bytes))
+        self._secret_lock = asyncio.Lock()
 
-    def _load_from_disk(self) -> None:
-        if self.store_path is None or not self.store_path.is_file():
-            return
+        if store is not None:
+            self._store: StateStore = store
+            self._owns_store = False
+            db_attr = getattr(store, "db_path", None)
+            self.store_path: Path | None = db_attr if isinstance(db_attr, Path) else None
+        else:
+            self._store, self.store_path = resolve_state_store(store_path)
+            self._owns_store = True
+
+        raw_secret: str | bytes | None = signing_secret
+        if raw_secret is None:
+            raw_secret = os.environ.get("UNICONN_CHECKPOINT_SECRET")
+
+        if raw_secret is not None and (
+            (isinstance(raw_secret, bytes) and len(raw_secret) > 0)
+            or (isinstance(raw_secret, str) and raw_secret.strip())
+        ):
+            self._signing_key: bytes = (
+                raw_secret if isinstance(raw_secret, bytes) else raw_secret.strip().encode("utf-8")
+            )
+            self._secret_synced = True
+        elif isinstance(self._store, SQLiteStateStore):
+            meta = self._store.get_or_create_meta_sync(
+                "flow_checkpoint_secret",
+                {"secret": secrets.token_hex(32)},
+            )
+            self._signing_key = str(meta.get("secret") or secrets.token_hex(32)).encode("utf-8")
+            self._secret_synced = True
+        else:
+            self._signing_key = secrets.token_hex(32).encode("utf-8")
+            self._secret_synced = False
+
+    @property
+    def store(self) -> StateStore:
+        """Активный бэкенд ``StateStore`` хранилища чекпоинтов."""
+        return self._store
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        await self.close()
+
+    async def close(self) -> None:
+        """Освободить ресурсы собственного ``StateStore`` (если создан хранилищем)."""
+        if self._owns_store:
+            await self._store.close()
+
+    async def ensure_ready(self) -> None:
+        """Гарантировать синхронизацию ключа подписи токенов с общим ``StateStore``."""
+        await self._ensure_secret_synced()
+
+    async def _ensure_secret_synced(self) -> bytes:
+        if self._secret_synced:
+            return self._signing_key
+        async with self._secret_lock:
+            if self._secret_synced:
+                return self._signing_key
+            candidate = self._signing_key.decode("utf-8")
+            synced = await sync_meta_secret(self._store, "flow_checkpoint_secret", candidate)
+            self._signing_key = synced.encode("utf-8")
+            self._secret_synced = True
+            return self._signing_key
+
+    @staticmethod
+    def _normalize_tenant_id(tenant_id: str | None) -> str | None:
+        return tenant_id.strip() if isinstance(tenant_id, str) and tenant_id.strip() else None
+
+    def encode_token(
+        self,
+        record: FlowCheckpointRecord,
+        *,
+        ttl_seconds: float | None = None,
+    ) -> str:
+        """Закодировать чекпоинт в подписанный HMAC-SHA256 сжатый opaque-токен ``ucp1.<data>.<sig>``."""
+        if ttl_seconds is not None:
+            raw_ttl = float(ttl_seconds)
+            if not math.isfinite(raw_ttl):
+                raise ValueError("ttl_seconds must be a finite number")
+            eff_ttl = max(0.1, raw_ttl)
+        else:
+            eff_ttl = self.ttl_seconds
+        envelope = {
+            "v": 1,
+            "exp": round(time.time() + eff_ttl, 3),
+            "rec": record.to_dict(),
+        }
+        canonical = json.dumps(envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        compressed = zlib.compress(canonical, level=6)
+        payload_b64 = _b64url_encode(compressed)
+        signing_input = f"{CHECKPOINT_TOKEN_PREFIX}{payload_b64}".encode("ascii")
+        sig = hmac.new(self._signing_key, signing_input, hashlib.sha256).digest()
+        sig_b64 = _b64url_encode(sig)
+        token = f"{CHECKPOINT_TOKEN_PREFIX}{payload_b64}.{sig_b64}"
+        if len(token.encode("ascii")) > self.max_token_bytes:
+            raise ValueError(
+                f"Signed checkpoint token size ({len(token)} bytes) exceeds max_token_bytes={self.max_token_bytes}"
+            )
+        return token
+
+    def try_encode_token(
+        self,
+        record: FlowCheckpointRecord,
+        *,
+        ttl_seconds: float | None = None,
+    ) -> str | None:
+        """Сформировать подписанный opaque-токен или вернуть ``None`` при превышении лимита размера."""
         try:
-            raw = json.loads(self.store_path.read_text(encoding="utf-8"))
-            items = raw.get("checkpoints", {}) if isinstance(raw, Mapping) else {}
-            if isinstance(items, Mapping):
-                for r_id, item in items.items():
-                    if isinstance(item, Mapping):
-                        self._records[str(r_id)] = FlowCheckpointRecord.from_dict(item)
-        except Exception:
-            return
+            return self.encode_token(record, ttl_seconds=ttl_seconds)
+        except ValueError as exc:
+            _LOGGER.warning("Omitting stateless checkpoint_token for run %s: %s", record.run_id, exc)
+            return None
 
-    def _save_to_disk(self) -> None:
-        if self.store_path is None:
-            return
+    def decode_token(
+        self,
+        token: str,
+        *,
+        tenant_id: str | None = None,
+        strict_tenant: bool = False,
+        now: float | None = None,
+    ) -> FlowCheckpointRecord:
+        """Проверить подпись, TTL, защиту от zip-bomb и ``tenant_id`` и декодировать ``checkpoint_token``."""
+        raw_token = token.strip() if isinstance(token, str) else ""
+        if not raw_token or not raw_token.startswith(CHECKPOINT_TOKEN_PREFIX):
+            raise ValueError("Invalid checkpoint_token format (expected 'ucp1.<payload>.<signature>')")
+        if len(raw_token.encode("utf-8")) > max(self.max_token_bytes * 2, 131_072):
+            raise ValueError("Checkpoint token exceeds maximum allowed encoded length")
+
+        parts = raw_token.split(".")
+        if len(parts) != 3 or parts[0] != "ucp1" or not parts[1] or not parts[2]:
+            raise ValueError("Invalid checkpoint_token structure")
+
+        _, payload_b64, sig_b64 = parts
         try:
-            self.store_path.parent.mkdir(parents=True, exist_ok=True)
-            with os.fdopen(
-                os.open(
-                    str(self.store_path) + ".tmp",
-                    os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-                    0o600,
-                ),
-                "w",
-                encoding="utf-8",
-            ) as fh:
-                payload = {"checkpoints": {k: v.to_dict() for k, v in self._records.items()}}
-                json.dump(payload, fh, ensure_ascii=False, indent=2)
-            os.replace(str(self.store_path) + ".tmp", self.store_path)
-        except Exception:
-            return
+            signing_input = f"{CHECKPOINT_TOKEN_PREFIX}{payload_b64}".encode("ascii")
+            sig_b64.encode("ascii")
+        except UnicodeEncodeError as exc:
+            raise ValueError("Invalid checkpoint_token format (non-ASCII characters)") from exc
+        expected_sig = _b64url_encode(hmac.new(self._signing_key, signing_input, hashlib.sha256).digest())
+        if not hmac.compare_digest(expected_sig, sig_b64):
+            raise ValueError("Invalid checkpoint_token HMAC signature")
 
-    def record_from_report(
+        try:
+            compressed = _b64url_decode(payload_b64)
+        except Exception as exc:
+            raise ValueError("Malformed checkpoint_token base64 payload") from exc
+
+        try:
+            decompressor = zlib.decompressobj()
+            raw_bytes = decompressor.decompress(compressed, MAX_CHECKPOINT_DECOMPRESSED_BYTES + 1)
+            if (
+                len(raw_bytes) > MAX_CHECKPOINT_DECOMPRESSED_BYTES
+                or decompressor.unconsumed_tail
+                or not decompressor.eof
+            ):
+                raise ValueError("Checkpoint token decompressed payload exceeds safety limit")
+            envelope = json.loads(raw_bytes.decode("utf-8"))
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError("Malformed checkpoint_token compressed payload") from exc
+
+        if not isinstance(envelope, Mapping) or envelope.get("v") != 1:
+            raise ValueError("Unsupported checkpoint_token schema version")
+
+        exp = envelope.get("exp")
+        ref_now = time.time() if now is None else float(now)
+        if isinstance(exp, bool) or not isinstance(exp, int | float) or not math.isfinite(exp) or ref_now >= float(exp):
+            raise ValueError("Checkpoint token has expired")
+
+        rec_data = envelope.get("rec")
+        if not isinstance(rec_data, Mapping):
+            raise ValueError("Malformed checkpoint_token record payload")
+
+        record = FlowCheckpointRecord.from_dict(rec_data)
+        norm_tenant = self._normalize_tenant_id(tenant_id)
+        if (strict_tenant or norm_tenant is not None) and record.tenant_id != norm_tenant:
+            raise PermissionError("Flow checkpoint token does not belong to the active tenant")
+        return record
+
+    async def record_from_report(
         self,
         report: FlowReport,
         *,
@@ -344,10 +530,8 @@ class FlowCheckpointStore:
         run_id: str | None = None,
         tenant_id: str | None = None,
     ) -> FlowCheckpointRecord:
-        """Сохранить состояние выполнения ``FlowReport`` в чекпоинт и вернуть запись."""
-        if self.store_path is not None:
-            self._load_from_disk()
-
+        """Асинхронно сохранить состояние выполнения ``FlowReport`` в ``StateStore`` и вернуть запись."""
+        await self._ensure_secret_synced()
         eff_run_id = run_id or report.run_id or f"run_{uuid.uuid4().hex[:12]}"
         completed_map: dict[str, list[str]] = {}
         if prior_completed:
@@ -390,8 +574,17 @@ class FlowCheckpointStore:
                     failed_tasks.append(fail_entry)
 
         now_iso = datetime.now(UTC).isoformat()
-        existing = self._records.get(eff_run_id)
-        created_iso = existing.created_at if existing is not None else now_iso
+        norm_tenant = self._normalize_tenant_id(tenant_id)
+        existing = await self._store.get(FLOW_CHECKPOINT_NAMESPACE, eff_run_id)
+        if existing is not None and not existing.is_expired() and existing.tenant_id != norm_tenant:
+            raise PermissionError(
+                f"Flow checkpoint run_id {eff_run_id!r} belongs to another tenant"
+            )
+        created_iso = (
+            str(existing.value.get("created_at") or now_iso)
+            if existing is not None
+            else now_iso
+        )
         masked_vars: dict[str, Any] = _mask_nested_value(dict(vars)) if vars else {}
 
         record = FlowCheckpointRecord(
@@ -406,60 +599,76 @@ class FlowCheckpointStore:
             task_outputs_by_host=outputs_map,
             failed_tasks=failed_tasks,
             ok=report.ok,
-            tenant_id=tenant_id.strip() if isinstance(tenant_id, str) and tenant_id.strip() else None,
+            tenant_id=norm_tenant,
             created_at=created_iso,
             updated_at=now_iso,
         )
-        self._records[eff_run_id] = record
-        self._save_to_disk()
+        await self._store.put(
+            FLOW_CHECKPOINT_NAMESPACE,
+            eff_run_id,
+            record.to_dict(),
+            tenant_id=norm_tenant,
+            status="completed" if record.ok else "resumable",
+            ttl_seconds=self.ttl_seconds,
+        )
+        await self._store.prune_expired(FLOW_CHECKPOINT_NAMESPACE)
         return record
 
-    @staticmethod
-    def _normalize_tenant_id(tenant_id: str | None) -> str | None:
-        return tenant_id.strip() if isinstance(tenant_id, str) and tenant_id.strip() else None
-
-    def get(
+    async def get(
         self,
         run_id: str,
         *,
         tenant_id: str | None = None,
         strict_tenant: bool = False,
     ) -> FlowCheckpointRecord:
-        """Получить чекпоинт по ``run_id`` (с проверкой изоляции ``tenant_id``) или выбросить ``KeyError``."""
-        if self.store_path is not None:
-            self._load_from_disk()
+        """Асинхронно получить чекпоинт по ``run_id`` (с проверкой изоляции ``tenant_id`` и TTL)."""
         key = run_id.strip()
         norm_tenant = self._normalize_tenant_id(tenant_id)
-        record = self._records.get(key)
-        if record is None:
+        rec = await self._store.get(
+            FLOW_CHECKPOINT_NAMESPACE,
+            key,
+            tenant_id=norm_tenant,
+            strict_tenant=strict_tenant,
+        )
+        if rec is None or rec.is_expired():
             raise KeyError(f"Flow checkpoint run_id {key!r} not found")
-        if (strict_tenant or norm_tenant is not None) and record.tenant_id != norm_tenant:
-            raise KeyError(f"Flow checkpoint run_id {key!r} not found")
-        return record
+        return FlowCheckpointRecord.from_dict(rec.value)
 
-    def list_records(
+    async def list_records(
         self,
         *,
         only_resumable: bool = False,
         tenant_id: str | None = None,
         strict_tenant: bool = False,
     ) -> list[FlowCheckpointRecord]:
-        """Вернуть список сохранённых чекпоинтов (с опциональной фильтрацией по ``tenant_id``)."""
-        if self.store_path is not None:
-            self._load_from_disk()
+        """Асинхронно вернуть список сохранённых чекпоинтов (с фильтрацией по ``tenant_id`` и TTL)."""
         norm_tenant = self._normalize_tenant_id(tenant_id)
-        items = list(self._records.values())
-        if strict_tenant or norm_tenant is not None:
-            items = [r for r in items if r.tenant_id == norm_tenant]
-        if only_resumable:
-            items = [r for r in items if not r.ok]
-        return items
+        rows = await self._store.list(
+            FLOW_CHECKPOINT_NAMESPACE,
+            tenant_id=norm_tenant,
+            strict_tenant=strict_tenant,
+            status="resumable" if only_resumable else None,
+            include_expired=False,
+        )
+        return [FlowCheckpointRecord.from_dict(r.value) for r in rows]
+
+    async def delete(self, run_id: str) -> bool:
+        """Удалить чекпоинт по ``run_id`` из ``StateStore``."""
+        return await self._store.delete(FLOW_CHECKPOINT_NAMESPACE, run_id.strip())
+
+    async def prune_expired(self) -> int:
+        """Удалить просроченные чекпоинты из ``StateStore``."""
+        return await self._store.prune_expired(FLOW_CHECKPOINT_NAMESPACE)
 
 
 __all__ = [
+    "CHECKPOINT_TOKEN_PREFIX",
+    "MAX_CHECKPOINT_DECOMPRESSED_BYTES",
+    "MAX_CHECKPOINT_TOKEN_BYTES",
     "FlowCheckpointRecord",
     "FlowCheckpointStore",
     "FlowRiskEvaluator",
     "_mask_nested_value",
     "_to_checkpoint_json_safe",
 ]
+

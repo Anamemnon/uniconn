@@ -16,6 +16,9 @@ from ..exceptions import ConfigurationError
 from ..orchestration.flow import Flow, SyncFlow
 from ..orchestration.task import Task
 from ._flow_checkpoints import (
+    CHECKPOINT_TOKEN_PREFIX,
+    MAX_CHECKPOINT_DECOMPRESSED_BYTES,
+    MAX_CHECKPOINT_TOKEN_BYTES,
     FlowCheckpointRecord,
     FlowCheckpointStore,
     FlowRiskEvaluator,
@@ -255,6 +258,9 @@ class MCPFlowRegistry:
 
 
 __all__ = [
+    "CHECKPOINT_TOKEN_PREFIX",
+    "MAX_CHECKPOINT_DECOMPRESSED_BYTES",
+    "MAX_CHECKPOINT_TOKEN_BYTES",
     "_RESERVED_MCP_FLOW_ARGS",
     "FlowCheckpointRecord",
     "FlowCheckpointStore",

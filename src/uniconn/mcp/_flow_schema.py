@@ -33,6 +33,7 @@ _RESERVED_MCP_FLOW_ARGS: frozenset[str] = frozenset(
         "approval_id",
         "wait_for_approval",
         "resume_run_id",
+        "checkpoint_token",
         "run_id",
         "agent_id",
         "role",
@@ -427,6 +428,13 @@ class FlowSchemaGenerator:
                 "description": (
                     "Optional checkpoint run_id (e.g. 'run_...') from a previously failed Flow run "
                     "to skip already completed (host, task) nodes."
+                ),
+            },
+            "checkpoint_token": {
+                "type": "string",
+                "description": (
+                    "Optional HMAC-signed opaque checkpoint token ('ucp1....') from a previously failed "
+                    "Flow run for 100% stateless resume without shared storage."
                 ),
             },
         }

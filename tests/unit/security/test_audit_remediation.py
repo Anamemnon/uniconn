@@ -524,17 +524,20 @@ class TestReliabilityAndBugFixes:
 
     @pytest.mark.asyncio
     async def test_hitl_whitespace_approval_id_wakes_event_and_file_lock(self, tmp_path: Path) -> None:
-        store = tmp_path / "approvals.json"
+        store = tmp_path / "state.db"
         mgr = ApprovalManager(policy=HITLPolicy(enabled=True), store_path=store)
-        req = await mgr.create_request(
-            target_host="host1",
-            tool_name="uniconn_run",
-            risk_tier=ActionRiskTier.TIER_2_DESTRUCTIVE,
-            command="reboot",
-        )
-        await mgr.approve(f"  {req.approval_id}  ", decided_by="alice")
-        assert mgr._events[req.approval_id].is_set()
-        assert (tmp_path / ".approvals.json.lock").exists()
+        try:
+            req = await mgr.create_request(
+                target_host="host1",
+                tool_name="uniconn_run",
+                risk_tier=ActionRiskTier.TIER_2_DESTRUCTIVE,
+                command="reboot",
+            )
+            await mgr.approve(f"  {req.approval_id}  ", decided_by="alice")
+            assert mgr._events[req.approval_id].is_set()
+            assert store.is_file()
+        finally:
+            await mgr.close()
 
     def test_sysv_and_universal_service_enable_do_not_hardcode_systemctl(self) -> None:
         sysv = SysVStrategy()

@@ -350,3 +350,24 @@ class PolicyEngineUnavailableError(PolicyError, ConnectionError):
         self.endpoint = endpoint
 
 
+class ConcurrencyConflictError(UniconnError):
+    """Конфликт оптимистической блокировки (CAS) при атомарной записи в StateStore."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        namespace: str | None = None,
+        key: str | None = None,
+        expected_version: int | None = None,
+        actual_version: int | None = None,
+    ) -> None:
+        """Инициализировать ошибку конфликта версий StateStore."""
+        super().__init__(message)
+        self.namespace = namespace
+        self.key = key
+        self.expected_version = expected_version
+        self.actual_version = actual_version
+
+
+

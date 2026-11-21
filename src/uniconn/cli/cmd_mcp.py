@@ -12,10 +12,11 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 
 from ..mcp import (
-    DEFAULT_APPROVAL_STORE_PATH,
+    DEFAULT_STATE_DB_PATH,
     ActionRiskClassifier,
     ApprovalManager,
     HITLPolicy,
+    InMemoryStateStore,
     MCPAuthConfig,
     MCPHostRegistry,
     MCPHttpConfig,
@@ -236,7 +237,11 @@ def build_mcp_client_config(
     if hitl:
         args.append("--hitl")
     if hitl_store:
-        args.extend(["--hitl-store", str(Path(hitl_store).resolve())])
+        norm_hitl_store = hitl_store.strip()
+        resolved_hitl_store = (
+            ":memory:" if norm_hitl_store == ":memory:" else str(Path(norm_hitl_store).resolve())
+        )
+        args.extend(["--hitl-store", resolved_hitl_store])
     if hitl_timeout != 300.0:
         args.extend(["--hitl-timeout", str(hitl_timeout)])
     if hitl_wait:
@@ -269,10 +274,10 @@ def build_mcp_client_config(
 def _resolve_cli_store_path(store: str | None) -> Path:
     if store and store.strip():
         return Path(store.strip()).expanduser()
-    env_store = os.environ.get("UNICONN_APPROVAL_STORE")
-    if env_store and env_store.strip():
-        return Path(env_store.strip()).expanduser()
-    return DEFAULT_APPROVAL_STORE_PATH
+    env_state = os.environ.get("UNICONN_STATE_DB") or os.environ.get("UNICONN_APPROVAL_STORE")
+    if env_state and env_state.strip():
+        return Path(env_state.strip()).expanduser()
+    return DEFAULT_STATE_DB_PATH
 
 
 def _build_mcp_server_from_args(
@@ -305,10 +310,23 @@ def _build_mcp_server_from_args(
     allow_shared_hosts: bool = False,
     auth_config: MCPAuthConfig | None = None,
     http_config: MCPHttpConfig | None = None,
+    stateless: bool = False,
+    checkpoint_secret: str | None = None,
 ) -> MCPServer:
     allow_tuple = _split_csv(allowlist)
     block_tuple = _split_csv(blocklist) if blocklist else None
-    effective_store = str(_resolve_cli_store_path(hitl_store)) if (hitl or hitl_store) else None
+    raw_store = hitl_store.strip() if isinstance(hitl_store, str) and hitl_store.strip() else None
+    force_in_memory = False
+    if raw_store == ":memory:":
+        effective_store: str | None = None
+        force_in_memory = True
+    elif stateless and raw_store is None:
+        effective_store = None
+        force_in_memory = True
+    elif hitl or raw_store is not None:
+        effective_store = str(_resolve_cli_store_path(raw_store))
+    else:
+        effective_store = None
     channels: list[str] = ["cli", "dashboard"]
     if hitl_webhook_url:
         channels.append("webhook")
@@ -367,7 +385,9 @@ def _build_mcp_server_from_args(
         allow_shared_hosts=allow_shared_hosts,
         auth_config=auth_config,
         http_config=http_config,
+        state_store=InMemoryStateStore() if force_in_memory else None,
         flow_specs=parsed_flows,
+        checkpoint_secret=checkpoint_secret,
     )
 
 
@@ -590,7 +610,10 @@ def _register_approval_subcommands(app: Any, console: Any, renderer: CLIOutputRe
         ] = None,
         store: Annotated[
             str | None,
-            Parameter(name=["--store"], help="Path to JSON approval store file"),
+            Parameter(
+                name=["--store", "--state-db"],
+                help="Path to SQLite WAL state database (default: ~/.uniconn/state.db)",
+            ),
         ] = None,
         output_format: Annotated[
             str,
@@ -598,9 +621,13 @@ def _register_approval_subcommands(app: Any, console: Any, renderer: CLIOutputRe
         ] = "table",
     ) -> None:
         """List Human-in-the-Loop approval requests."""
-        mgr = ApprovalManager(store_path=_resolve_cli_store_path(store))
+
+        async def _op() -> list[Any]:
+            async with ApprovalManager(store_path=_resolve_cli_store_path(store)) as mgr:
+                return await mgr.list_requests(status=status)
+
         try:
-            reqs = asyncio.run(mgr.list_requests(status=status))
+            reqs = asyncio.run(_op())
         except Exception as exc:
             renderer.print_error_and_exit(exc, title="Approval List Error")
             return
@@ -611,7 +638,10 @@ def _register_approval_subcommands(app: Any, console: Any, renderer: CLIOutputRe
         approval_id: Annotated[str, Parameter(help="Approval request ID (e.g. appr_...)")],
         store: Annotated[
             str | None,
-            Parameter(name=["--store"], help="Path to JSON approval store file"),
+            Parameter(
+                name=["--store", "--state-db"],
+                help="Path to SQLite WAL state database (default: ~/.uniconn/state.db)",
+            ),
         ] = None,
         output_format: Annotated[
             str,
@@ -619,9 +649,13 @@ def _register_approval_subcommands(app: Any, console: Any, renderer: CLIOutputRe
         ] = "panel",
     ) -> None:
         """Show detailed information and unified diff for a specific approval request."""
-        mgr = ApprovalManager(store_path=_resolve_cli_store_path(store))
+
+        async def _op() -> Any:
+            async with ApprovalManager(store_path=_resolve_cli_store_path(store)) as mgr:
+                return await mgr.get_request(approval_id)
+
         try:
-            req = asyncio.run(mgr.get_request(approval_id))
+            req = asyncio.run(_op())
         except Exception as exc:
             renderer.print_error_and_exit(exc, title="Approval Show Error")
             return
@@ -640,7 +674,10 @@ def _register_approval_subcommands(app: Any, console: Any, renderer: CLIOutputRe
         ] = None,
         store: Annotated[
             str | None,
-            Parameter(name=["--store"], help="Path to JSON approval store file"),
+            Parameter(
+                name=["--store", "--state-db"],
+                help="Path to SQLite WAL state database (default: ~/.uniconn/state.db)",
+            ),
         ] = None,
         output_format: Annotated[
             str,
@@ -649,9 +686,13 @@ def _register_approval_subcommands(app: Any, console: Any, renderer: CLIOutputRe
     ) -> None:
         """Approve a pending Human-in-the-Loop request."""
         operator = by or os.environ.get("USER") or os.environ.get("USERNAME") or "cli_operator"
-        mgr = ApprovalManager(store_path=_resolve_cli_store_path(store))
+
+        async def _op() -> Any:
+            async with ApprovalManager(store_path=_resolve_cli_store_path(store)) as mgr:
+                return await mgr.approve(approval_id, decided_by=operator, reason=reason)
+
         try:
-            req = asyncio.run(mgr.approve(approval_id, decided_by=operator, reason=reason))
+            req = asyncio.run(_op())
         except Exception as exc:
             renderer.print_error_and_exit(exc, title="Approval Error")
             return
@@ -683,7 +724,10 @@ def _register_approval_subcommands(app: Any, console: Any, renderer: CLIOutputRe
         ] = None,
         store: Annotated[
             str | None,
-            Parameter(name=["--store"], help="Path to JSON approval store file"),
+            Parameter(
+                name=["--store", "--state-db"],
+                help="Path to SQLite WAL state database (default: ~/.uniconn/state.db)",
+            ),
         ] = None,
         output_format: Annotated[
             str,
@@ -692,9 +736,13 @@ def _register_approval_subcommands(app: Any, console: Any, renderer: CLIOutputRe
     ) -> None:
         """Reject a pending Human-in-the-Loop request."""
         operator = by or os.environ.get("USER") or os.environ.get("USERNAME") or "cli_operator"
-        mgr = ApprovalManager(store_path=_resolve_cli_store_path(store))
+
+        async def _op() -> Any:
+            async with ApprovalManager(store_path=_resolve_cli_store_path(store)) as mgr:
+                return await mgr.reject(approval_id, decided_by=operator, reason=reason)
+
         try:
-            req = asyncio.run(mgr.reject(approval_id, decided_by=operator, reason=reason))
+            req = asyncio.run(_op())
         except Exception as exc:
             renderer.print_error_and_exit(exc, title="Rejection Error")
             return
@@ -927,8 +975,15 @@ def register_mcp_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
         hitl_store: Annotated[
             str | None,
             Parameter(
-                name=["--hitl-store"],
-                help="Path to JSON approval store file for IPC with 'uniconn approval'",
+                name=["--hitl-store", "--state-db"],
+                help="Path to SQLite WAL state DB for HITL approvals and Flow checkpoints (or ':memory:')",
+            ),
+        ] = None,
+        checkpoint_secret: Annotated[
+            str | None,
+            Parameter(
+                name=["--checkpoint-secret"],
+                help="Shared HMAC secret for stateless signed Flow checkpoint tokens (or UNICONN_CHECKPOINT_SECRET)",
             ),
         ] = None,
         hitl_timeout: Annotated[
@@ -1042,7 +1097,7 @@ def register_mcp_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
             Parameter(
                 name=["--stateless"],
                 negative="",
-                help="Run Streamable HTTP MCP in stateless mode without Mcp-Session-Id tracking",
+                help="Run in 100% stateless mode (no Mcp-Session-Id and pure InMemoryStateStore unless --state-db set)",
             ),
         ] = False,
         session_ttl: Annotated[
@@ -1320,16 +1375,24 @@ def register_mcp_commands(app: Any, console: Any, renderer: CLIOutputRenderer) -
                 allow_shared_hosts=allow_shared_hosts,
                 auth_config=auth_cfg,
                 http_config=http_cfg,
+                stateless=stateless,
+                checkpoint_secret=checkpoint_secret,
             )
         except Exception as exc:
             renderer.print_error_and_exit(exc, title="MCP Server Configuration Error")
             return
 
+        async def _serve_and_close() -> None:
+            try:
+                if transport_norm == "http":
+                    await server.serve_http(auth_config=auth_cfg, http_config=http_cfg)
+                else:
+                    await server.serve_stdio()
+            finally:
+                await server.close()
+
         with contextlib.suppress(KeyboardInterrupt):
-            if transport_norm == "http":
-                asyncio.run(server.serve_http(auth_config=auth_cfg, http_config=http_cfg))
-            else:
-                asyncio.run(server.serve_stdio())
+            asyncio.run(_serve_and_close())
 
     _register_approval_subcommands(app, console, renderer)
     _register_policy_subcommands(app, console, renderer)

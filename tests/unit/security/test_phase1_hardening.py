@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import stat
 import sys
 from pathlib import Path
@@ -171,55 +170,66 @@ async def test_background_session_uses_private_0700_dir_and_symlink_checks() -> 
 
 @pytest.mark.asyncio
 async def test_hitl_key_isolation_and_unmasked_tampering_detection(tmp_path: Path) -> None:
-    """Секрет HMAC изолирован в .key файле (0600), а подмена замаскированного пароля блокируется."""
-    store_file = tmp_path / "approvals.json"
+    """Секрет HMAC изолирован в _uniconn_meta SQLite WAL (0600), а подмена замаскированного пароля блокируется."""
+    import sqlite3
+
+    store_file = tmp_path / "state.db"
     mgr = ApprovalManager(store_path=store_file)
-    key_file = tmp_path / ".approvals.json.key"
+    mgr2: ApprovalManager | None = None
+    try:
+        cmd_a = "mysql -u root --password=SecretAlpha -e 'FLUSH PRIVILEGES'"
+        cmd_b = "mysql -u root --password=SecretBravo -e 'FLUSH PRIVILEGES'"
 
-    cmd_a = "mysql -u root --password=SecretAlpha -e 'FLUSH PRIVILEGES'"
-    cmd_b = "mysql -u root --password=SecretBravo -e 'FLUSH PRIVILEGES'"
-
-    req = await mgr.create_request(
-        target_host="prod-db",
-        tool_name="uniconn_run",
-        risk_tier=ActionRiskTier.TIER_1_MUTATING,
-        command=cmd_a,
-        parameters={"command": cmd_a},
-        diff="--- old\n+++ new_a\n",
-    )
-    assert key_file.is_file()
-    if sys.platform != "win32":
-        assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
-
-    raw_store = json.loads(store_file.read_text(encoding="utf-8"))
-    assert "hmac_secret" not in raw_store
-    assert "SecretAlpha" not in store_file.read_text(encoding="utf-8")
-
-    # Независимый инстанс без передачи secret читает ключ из .approvals.json.key
-    mgr2 = ApprovalManager(store_path=store_file)
-    await mgr2.approve(req.approval_id, decided_by="sec-admin")
-
-    # Попытка переиграть одобрение с другим паролем (маска идентична!) должна быть отклонена
-    with pytest.raises(ApprovalTamperingError):
-        await mgr2.verify_and_consume(
-            req.approval_id,
+        req = await mgr.create_request(
             target_host="prod-db",
             tool_name="uniconn_run",
-            command=cmd_b,
-            parameters={"command": cmd_b},
-            diff="--- old\n+++ new_a\n",
-        )
-
-    # Попытка подменить diff отклоняется
-    with pytest.raises(ApprovalTamperingError):
-        await mgr2.verify_and_consume(
-            req.approval_id,
-            target_host="prod-db",
-            tool_name="uniconn_run",
+            risk_tier=ActionRiskTier.TIER_1_MUTATING,
             command=cmd_a,
             parameters={"command": cmd_a},
-            diff="--- old\n+++ tampered\n",
+            diff="--- old\n+++ new_a\n",
         )
+        assert store_file.is_file()
+        if sys.platform != "win32":
+            assert stat.S_IMODE(store_file.stat().st_mode) == 0o600
+
+        with sqlite3.connect(str(store_file)) as conn:
+            rows = conn.execute(
+                "SELECT value_json FROM state_entries WHERE namespace = 'hitl_approvals'"
+            ).fetchall()
+            assert len(rows) == 1
+            payload_text = str(rows[0][0])
+            assert "hmac_secret" not in payload_text
+            assert "SecretAlpha" not in payload_text
+
+        # Независимый инстанс без передачи secret читает ключ из _uniconn_meta в SQLite WAL
+        mgr2 = ApprovalManager(store_path=store_file)
+        await mgr2.approve(req.approval_id, decided_by="sec-admin")
+
+        # Попытка переиграть одобрение с другим паролем (маска идентична!) должна быть отклонена
+        with pytest.raises(ApprovalTamperingError):
+            await mgr2.verify_and_consume(
+                req.approval_id,
+                target_host="prod-db",
+                tool_name="uniconn_run",
+                command=cmd_b,
+                parameters={"command": cmd_b},
+                diff="--- old\n+++ new_a\n",
+            )
+
+        # Попытка подменить diff отклоняется
+        with pytest.raises(ApprovalTamperingError):
+            await mgr2.verify_and_consume(
+                req.approval_id,
+                target_host="prod-db",
+                tool_name="uniconn_run",
+                command=cmd_a,
+                parameters={"command": cmd_a},
+                diff="--- old\n+++ tampered\n",
+            )
+    finally:
+        await mgr.close()
+        if mgr2 is not None:
+            await mgr2.close()
 
 
 def test_session_pool_and_connection_pool_sanitize_uris_and_disambiguate_keys() -> None:

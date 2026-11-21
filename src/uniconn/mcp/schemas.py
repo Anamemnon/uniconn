@@ -628,6 +628,13 @@ def build_default_tools(policy: MCPSecurityPolicy) -> list[MCPToolDefinition]:
                         "type": "string",
                         "description": "Optional checkpoint run_id (e.g. 'run_...') to resume from.",
                     },
+                    "checkpoint_token": {
+                        "type": "string",
+                        "description": (
+                            "Optional HMAC-signed opaque checkpoint token ('ucp1....') from a failed Flow run "
+                            "for 100% stateless resume without shared storage."
+                        ),
+                    },
                     "agent_id": {
                         "type": "string",
                         "description": "Optional identifier of the AI agent executing the Flow.",
@@ -644,15 +651,26 @@ def build_default_tools(policy: MCPSecurityPolicy) -> list[MCPToolDefinition]:
         MCPToolDefinition(
             name="uniconn_resume_flow",
             description=(
-                "Resume a previously failed Flow execution from its checkpoint run_id, skipping "
-                "(host, task) nodes that already succeeded in earlier runs."
+                "Resume a previously failed Flow execution from its checkpoint run_id or a stateless "
+                "signed opaque checkpoint_token ('ucp1....'), skipping (host, task) nodes that already "
+                "succeeded in earlier runs. Provide either 'run_id' or 'checkpoint_token'."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "run_id": {
                         "type": "string",
-                        "description": "Checkpoint run_id (e.g. 'run_...') from a failed Flow execution.",
+                        "description": (
+                            "Checkpoint run_id (e.g. 'run_...') from a failed Flow execution "
+                            "(stored in StateStore)."
+                        ),
+                    },
+                    "checkpoint_token": {
+                        "type": "string",
+                        "description": (
+                            "HMAC-signed opaque checkpoint token ('ucp1....') returned by a failed Flow run "
+                            "for 100% stateless resume without shared storage."
+                        ),
                     },
                     "vars": {
                         "type": "object",
@@ -675,7 +693,6 @@ def build_default_tools(policy: MCPSecurityPolicy) -> list[MCPToolDefinition]:
                         "description": "Optional RBAC/ABAC role of the agent resuming the Flow.",
                     },
                 },
-                "required": ["run_id"],
                 "additionalProperties": False,
             },
         ),
