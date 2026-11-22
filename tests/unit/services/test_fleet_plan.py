@@ -109,7 +109,7 @@ def test_fleet_change_plan_hash_determinism_serialization_and_rendering() -> Non
 async def test_connection_state_plan_and_apply_clean_lifecycle(tmp_path: Path) -> None:
     """conn.state.plan() снимает реальный unified diff без мутации, apply_plan() применяет и не дрейфует."""
     target_file = tmp_path / "app.conf"
-    target_file.write_text("PORT=8080\n", encoding="utf-8")
+    target_file.write_text("PORT=8080\n", encoding="utf-8", newline="\n")
     notified: list[str] = []
 
     async with Connection.local() as conn:
@@ -155,14 +155,14 @@ async def test_connection_state_apply_plan_detects_external_drift_before_mutatio
 ) -> None:
     """Если файл изменили вручную между plan() и apply_plan(), StateDriftError падает ДО записи."""
     target_file = tmp_path / "nginx.conf"
-    target_file.write_text("worker_processes 2;\n", encoding="utf-8")
+    target_file.write_text("worker_processes 2;\n", encoding="utf-8", newline="\n")
 
     async with Connection.local() as conn:
         async with conn.state.plan() as plan:
             await conn.state.ensure_file(str(target_file), content="worker_processes 4;\n")
 
         # Внешний дрейф: оператор вручную отредактировал файл
-        target_file.write_text("worker_processes 8; # hotfix\n", encoding="utf-8")
+        target_file.write_text("worker_processes 8; # hotfix\n", encoding="utf-8", newline="\n")
 
         with pytest.raises(StateDriftError) as exc_info:
             async with conn.state.apply_plan(plan):
@@ -215,7 +215,7 @@ async def test_sequential_same_file_mutations_do_not_false_positive_as_drift(
 ) -> None:
     """Последовательные мутации одного файла внутри одного плана не считаются внешним дрейфом."""
     hosts_file = tmp_path / "hosts.conf"
-    hosts_file.write_text("127.0.0.1 localhost\n", encoding="utf-8")
+    hosts_file.write_text("127.0.0.1 localhost\n", encoding="utf-8", newline="\n")
 
     async with Connection.local() as conn:
         async with conn.state.plan() as plan:
@@ -318,8 +318,8 @@ async def test_flow_drift_does_not_retry_and_respects_fail_fast_and_max_fail_rat
     """StateDriftError в Flow: 0 повторов при retries=3, fail_fast на затронутом хосте, max_fail_ratio на флоте."""
     f1 = tmp_path / "web1.conf"
     f2 = tmp_path / "web2.conf"
-    f1.write_text("V=1\n", encoding="utf-8")
-    f2.write_text("V=1\n", encoding="utf-8")
+    f1.write_text("V=1\n", encoding="utf-8", newline="\n")
+    f2.write_text("V=1\n", encoding="utf-8", newline="\n")
 
     attempts_by_host: dict[str, int] = {"web-01": 0, "web-02": 0}
     downstream_hosts: list[str] = []
@@ -351,7 +351,7 @@ async def test_flow_drift_does_not_retry_and_respects_fail_fast_and_max_fail_rat
         downstream_hosts.clear()
 
         # Внешний дрейф только на web-01
-        f1.write_text("V=HOTFIX\n", encoding="utf-8")
+        f1.write_text("V=HOTFIX\n", encoding="utf-8", newline="\n")
 
         report = await flow_ind.run(pool, expected_plan=plan)
         assert report.ok is False
@@ -369,8 +369,8 @@ async def test_flow_drift_does_not_retry_and_respects_fail_fast_and_max_fail_rat
         assert w1_apply.attempts == 1
 
     # 2. Батчевая раскатка с batch_size=1 и max_fail_ratio=0.0 -> BatchAbortedError после падения первого батча
-    f1.write_text("V=1\n", encoding="utf-8")
-    f2.write_text("V=1\n", encoding="utf-8")
+    f1.write_text("V=1\n", encoding="utf-8", newline="\n")
+    f2.write_text("V=1\n", encoding="utf-8", newline="\n")
     flow_batch = Flow(
         name="drift_batch",
         tasks=[apply_cfg],
@@ -380,7 +380,7 @@ async def test_flow_drift_does_not_retry_and_respects_fail_fast_and_max_fail_rat
     )
     async with ConnectionPool([_named_local_conn("web-01"), _named_local_conn("web-02")]) as pool:
         plan_b = await flow_batch.plan(pool)
-        f1.write_text("V=MANUAL\n", encoding="utf-8")
+        f1.write_text("V=MANUAL\n", encoding="utf-8", newline="\n")
 
         with pytest.raises(BatchAbortedError):
             await flow_batch.run(pool, expected_plan=plan_b)
@@ -466,7 +466,7 @@ async def test_apply_plan_strict_allows_ensure_inside_inline_and_batched_notify(
     cfg_file = tmp_path / "service.conf"
     marker_inline = tmp_path / "notified_inline.flag"
     marker_batched = tmp_path / "notified_batched.flag"
-    cfg_file.write_text("STATE=v1\n", encoding="utf-8")
+    cfg_file.write_text("STATE=v1\n", encoding="utf-8", newline="\n")
 
     async with Connection.local() as conn:
         async def _write_inline_marker() -> Any:
@@ -520,7 +520,7 @@ async def test_apply_plan_rejects_hosts_with_plan_errors_or_failed_changes(
 ) -> None:
     """PlanApplier блокирует мутацию с reason='plan_failed', если план хоста завершился с ошибкой."""
     target_file = tmp_path / "protected.conf"
-    target_file.write_text("SAFE=1\n", encoding="utf-8")
+    target_file.write_text("SAFE=1\n", encoding="utf-8", newline="\n")
 
     # Случай 1: host_errors зафиксирован на хосте
     plan_with_host_error = FleetChangePlan(flow_name="broken_host_plan")
@@ -558,13 +558,13 @@ async def test_plan_applier_preserves_remaining_count_on_digest_mismatch(
 ) -> None:
     """При StateDriftError запись не вынимается из очереди: remaining_count и verified_count остаются точными."""
     target_file = tmp_path / "atomic_peek.conf"
-    target_file.write_text("REV=1\n", encoding="utf-8")
+    target_file.write_text("REV=1\n", encoding="utf-8", newline="\n")
 
     async with Connection.local() as conn:
         async with conn.state.plan() as plan:
             await conn.state.ensure_file(str(target_file), content="REV=2\n")
 
-        target_file.write_text("REV=DRIFT\n", encoding="utf-8")
+        target_file.write_text("REV=DRIFT\n", encoding="utf-8", newline="\n")
 
         applier_ctx = conn.state.apply_plan(plan, strict=True)
         async with applier_ctx as applier:
@@ -582,7 +582,7 @@ async def test_fleet_change_plan_short_host_resolution_avoids_multi_port_collisi
 ) -> None:
     """Неоднозначное короткое имя (один IP, разные порты) не вызывает ложного совпадения хостов."""
     target_file = tmp_path / "app.conf"
-    target_file.write_text("PORT=1\n", encoding="utf-8")
+    target_file.write_text("PORT=1\n", encoding="utf-8", newline="\n")
 
     plan = FleetChangePlan(flow_name="multi_port")
     plan.record(
@@ -637,7 +637,7 @@ async def test_single_host_plan_rejects_different_explicit_port_and_raw_host_err
 ) -> None:
     """Однохостовый план не матчится с другим явным портом, а host_errors блокирует даже при strict=False."""
     target_file = tmp_path / "single.conf"
-    target_file.write_text("SAFE=1\n", encoding="utf-8")
+    target_file.write_text("SAFE=1\n", encoding="utf-8", newline="\n")
 
     single_port_plan = FleetChangePlan(flow_name="single_port")
     single_port_plan.record(

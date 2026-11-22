@@ -156,7 +156,7 @@ state_flow = Flow(name="stateful_deploy_flow", tasks=[apply_cfg])
 def test_cli_flow_plan_check_drift_formats_and_out_file(tmp_path: Path) -> None:
     """uniconn flow plan: --format json/diff/table, --out сохраняет JSON, --check-drift отдаёт код 2 и 0."""
     target_file = tmp_path / "cli_app.conf"
-    target_file.write_text("VAL=v1\n", encoding="utf-8")
+    target_file.write_text("VAL=v1\n", encoding="utf-8", newline="\n")
     flow_file = _write_stateful_flow_file(tmp_path, target_file)
     plan_out = tmp_path / "saved_plan.json"
 
@@ -206,7 +206,7 @@ def test_cli_flow_plan_check_drift_formats_and_out_file(tmp_path: Path) -> None:
     assert "stateful_deploy_flow" in res_table.output
 
     # 3. После приведения файла в целевое состояние --check-drift возвращает 0
-    target_file.write_text("VAL=v2\n", encoding="utf-8")
+    target_file.write_text("VAL=v2\n", encoding="utf-8", newline="\n")
     res_clean = runner.invoke(
         app,
         [
@@ -227,7 +227,7 @@ def test_cli_flow_run_with_plan_apply_drift_guard_and_strict_toggle(tmp_path: Pa
     """uniconn flow run --plan применяет чистый план, падает при внешнем дрейфе и уважает --no-strict-plan."""
     target_file = tmp_path / "run_app.conf"
     extra_file = tmp_path / "extra_app.conf"
-    target_file.write_text("VAL=v1\n", encoding="utf-8")
+    target_file.write_text("VAL=v1\n", encoding="utf-8", newline="\n")
     flow_file = _write_stateful_flow_file(tmp_path, target_file, extra_file=extra_file)
     plan_file = tmp_path / "apply_plan.json"
 
@@ -242,7 +242,7 @@ def test_cli_flow_run_with_plan_apply_drift_guard_and_strict_toggle(tmp_path: Pa
     assert res_plan.exit_code == 0
 
     # 1. Внешний дрейф -> flow run --plan падает с exit_code=1, не перезаписывая hotfix
-    target_file.write_text("VAL=HOTFIX\n", encoding="utf-8")
+    target_file.write_text("VAL=HOTFIX\n", encoding="utf-8", newline="\n")
     res_drifted = runner.invoke(
         app,
         [
@@ -261,7 +261,7 @@ def test_cli_flow_run_with_plan_apply_drift_guard_and_strict_toggle(tmp_path: Pa
     assert target_file.read_text(encoding="utf-8") == "VAL=HOTFIX\n"
 
     # 2. Восстанавливаем исходное состояние и применяем план успешно
-    target_file.write_text("VAL=v1\n", encoding="utf-8")
+    target_file.write_text("VAL=v1\n", encoding="utf-8", newline="\n")
     res_apply = runner.invoke(
         app,
         [
@@ -280,7 +280,7 @@ def test_cli_flow_run_with_plan_apply_drift_guard_and_strict_toggle(tmp_path: Pa
     assert target_file.read_text(encoding="utf-8") == "VAL=v2\n"
 
     # 3. Незапланированный ресурс (with_extra=true) с --no-strict-plan разрешается
-    target_file.write_text("VAL=v1\n", encoding="utf-8")
+    target_file.write_text("VAL=v1\n", encoding="utf-8", newline="\n")
     res_non_strict = runner.invoke(
         app,
         [

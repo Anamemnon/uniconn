@@ -657,7 +657,7 @@ async def test_mcp_inspect_flow_live_plan_and_propose_action_with_plan_hash_bind
 ) -> None:
     """uniconn_inspect_flow(live_plan=True) и uniconn_propose_action прикладывают реальный diff и plan_hash."""
     cfg_file = tmp_path / "service.conf"
-    cfg_file.write_text("WORKERS=2\n", encoding="utf-8")
+    cfg_file.write_text("WORKERS=2\n", encoding="utf-8", newline="\n")
 
     @task(name="update_cfg", tags=["deploy", "mutating"])
     async def update_cfg(conn: Connection, workers: int = 4) -> Any:
@@ -856,7 +856,7 @@ async def test_mcp_run_flow_enforces_cached_plan_drift_protection(
 ) -> None:
     """uniconn_run_flow с одобренным plan_hash ловит внешний дрейф до мутации хоста."""
     cfg_file = tmp_path / "drift_guard.conf"
-    cfg_file.write_text("WORKERS=2\n", encoding="utf-8")
+    cfg_file.write_text("WORKERS=2\n", encoding="utf-8", newline="\n")
 
     @task(name="write_workers", tags=["deploy", "mutating"])
     async def write_workers(conn: Connection, workers: int = 4) -> Any:
@@ -895,7 +895,7 @@ async def test_mcp_run_flow_enforces_cached_plan_drift_protection(
     await server.approval_manager.approve(approval_id, decided_by="sre-lead")
 
     # 2. Внешний дрейф на хосте между propose_action и run_flow
-    cfg_file.write_text("WORKERS=HOTFIX\n", encoding="utf-8")
+    cfg_file.write_text("WORKERS=HOTFIX\n", encoding="utf-8", newline="\n")
 
     # 3. Запуск одобренного Flow должен остановить мутацию с StateDriftError
     resp_exec = await server.handle_message(
