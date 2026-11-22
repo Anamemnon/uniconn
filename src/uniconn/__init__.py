@@ -51,6 +51,7 @@ from .exceptions import (
     PolicyEngineUnavailableError,
     PolicyError,
     PolicyViolationError,
+    StateDriftError,
     TimeoutError,
     TransportNotFoundError,
     UniconnError,
@@ -256,6 +257,7 @@ if TYPE_CHECKING:
         TaskOptions,
         TaskResult,
         extract_task_diagnostic,
+        plan_flow,
         task,
     )
     from .parsing import (
@@ -273,9 +275,11 @@ if TYPE_CHECKING:
         strip_ansi,
     )
     from .pool import (
+        PoolApplyPlanContext,
         PoolFileOperationsService,
         PoolNetworkOperationsService,
         PoolNotificationBatch,
+        PoolPlanContext,
         PoolStateManagementService,
         PoolStreamMultiplexer,
     )
@@ -315,12 +319,16 @@ if TYPE_CHECKING:
         ExternalToolRunner,
         FactCollector,
         FileOperationsService,
+        FleetChangePlan,
         NetworkOperationsService,
         NotificationBatch,
         NotifySpec,
         OpenRCStrategy,
         PackageManagerStrategy,
         PacmanStrategy,
+        PlanApplier,
+        PlannedChange,
+        PlanRecorder,
         RemotePath,
         RemoteStatResult,
         ScoopStrategy,
@@ -349,6 +357,10 @@ if TYPE_CHECKING:
         HostFacts,
         NetworkInterface,
         diff_facts,
+    )
+    from .services.provisioning import (
+        ConnectionApplyPlanContext,
+        ConnectionPlanContext,
     )
     from .shell.expect_engine import ExpectStateMachine
     from .shell.marker_protocol import PosixMarkerProtocol
@@ -641,6 +653,7 @@ _LAZY_MODULE_GROUPS: dict[str, tuple[str, ...]] = {
         "TaskOptions",
         "TaskResult",
         "extract_task_diagnostic",
+        "plan_flow",
         "task",
     ),
     ".parsing": (
@@ -658,9 +671,11 @@ _LAZY_MODULE_GROUPS: dict[str, tuple[str, ...]] = {
         "strip_ansi",
     ),
     ".pool": (
+        "PoolApplyPlanContext",
         "PoolFileOperationsService",
         "PoolNetworkOperationsService",
         "PoolNotificationBatch",
+        "PoolPlanContext",
         "PoolStateManagementService",
         "PoolStreamMultiplexer",
     ),
@@ -700,12 +715,16 @@ _LAZY_MODULE_GROUPS: dict[str, tuple[str, ...]] = {
         "ExternalToolRunner",
         "FactCollector",
         "FileOperationsService",
+        "FleetChangePlan",
         "NetworkOperationsService",
         "NotificationBatch",
         "NotifySpec",
         "OpenRCStrategy",
         "PackageManagerStrategy",
         "PacmanStrategy",
+        "PlanApplier",
+        "PlanRecorder",
+        "PlannedChange",
         "RemotePath",
         "RemoteStatResult",
         "ScoopStrategy",
@@ -723,6 +742,10 @@ _LAZY_MODULE_GROUPS: dict[str, tuple[str, ...]] = {
         "ensure_windows_service",
         "ensure_yang",
         "render_template",
+    ),
+    ".services.provisioning": (
+        "ConnectionApplyPlanContext",
+        "ConnectionPlanContext",
     ),
     ".services.facts_models": (
         "CustomCommandSpec",
@@ -937,6 +960,7 @@ __all__ = [
     "FactsDiffReport",
     "FileOperationsService",
     "FileTransferError",
+    "FleetChangePlan",
     "Flow",
     "FlowContext",
     "FlowExecutionError",
@@ -965,6 +989,7 @@ __all__ = [
     "ParsingError",
     "ParsingRegistry",
     "PingResult",
+    "PlannedChange",
     "PolicyEngineUnavailableError",
     "PolicyError",
     "PolicyGuardrailConfig",
@@ -978,6 +1003,7 @@ __all__ = [
     "SecretMaskingFilter",
     "SecretResolver",
     "ShellSession",
+    "StateDriftError",
     "StateManagementService",
     "SyncConnection",
     "SyncConnectionPool",

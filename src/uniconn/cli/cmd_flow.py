@@ -14,7 +14,9 @@ from .. import cli as cli_pkg
 from .._logging import get_logger
 from ..exceptions import ConfigurationError
 from ..orchestration.flow import Flow, SyncFlow
+from ..orchestration.scheduler import coerce_to_flow
 from ..orchestration.task import Task
+from ..services.provisioning._fleet_plan import FleetChangePlan
 from .renderers import (
     CLIOutputRenderer,
     Panel,
@@ -183,6 +185,21 @@ def register_flow_commands(
             bool,
             Parameter(name=["--dry-run"], negative="", help="Execute flow in dry-run mode"),
         ] = False,
+        plan: Annotated[
+            str | None,
+            Parameter(
+                name=["--plan"],
+                help="Path to FleetChangePlan JSON file for optimistic drift verification",
+            ),
+        ] = None,
+        strict_plan: Annotated[
+            bool,
+            Parameter(
+                name=["--strict-plan"],
+                negative="--no-strict-plan",
+                help="Fail with StateDriftError on resources absent from --plan (default: true)",
+            ),
+        ] = True,
         output_format: Annotated[
             str,
             Parameter(name=["--format", "-f"], help="Output format: table, json"),
@@ -194,16 +211,14 @@ def register_flow_commands(
     ) -> None:
         """Execute a declarative Task DAG flow across target hosts."""
         try:
-            flow_obj = resolve_flow_spec(spec)
-            if mode in ("barrier", "independent") and flow_obj.mode != mode:
-                flow_obj = Flow(
-                    name=flow_obj.name,
-                    tasks=list(flow_obj.tasks.values()),
-                    mode=mode,  # type: ignore[arg-type]
-                    fail_fast=flow_obj.fail_fast,
-                    max_fail_ratio=flow_obj.max_fail_ratio,
-                    batch_size=flow_obj.batch_size,
-                    batch_notifications=flow_obj.batch_notifications,
+            flow_obj = coerce_to_flow(resolve_flow_spec(spec), mode=mode)
+            expected_plan: FleetChangePlan | None = None
+            if plan:
+                plan_path = Path(plan)
+                if not plan_path.is_file():
+                    raise ConfigurationError(f"Plan file not found: {plan}")
+                expected_plan = FleetChangePlan.from_json(
+                    plan_path.read_text(encoding="utf-8")
                 )
         except Exception as exc:
             renderer.print_error_and_exit(exc, title="Flow Load Error")
@@ -229,6 +244,8 @@ def register_flow_commands(
                             vars=initial_vars,
                             tags=tag_list,
                             dry_run=dry_run if dry_run else None,
+                            expected_plan=expected_plan,
+                            strict_plan=strict_plan,
                         )
                 else:
                     pool = build_cli_pool(
@@ -249,6 +266,8 @@ def register_flow_commands(
                             dry_run=dry_run if dry_run else None,
                             batch_size=batch_size,
                             max_fail_ratio=max_fail_ratio,
+                            expected_plan=expected_plan,
+                            strict_plan=strict_plan,
                         )
 
                 if output_format == "json":
@@ -272,6 +291,160 @@ def register_flow_commands(
                 renderer.print_error_and_exit(exc, title="Flow Execution Error")
 
         asyncio.run(_execute())
+
+    @flow_app.command(name="plan")
+    def flow_plan(
+        spec: Annotated[
+            str,
+            Parameter(help="Flow specification: path/to/file.py[:flow_or_task]"),
+        ],
+        *uris: Annotated[
+            str,
+            Parameter(help="Target host URIs (defaults to local:// if omitted and no --inventory)"),
+        ],
+        inventory: Annotated[
+            str | None,
+            Parameter(name=["--inventory", "-i"], help="Path to YAML/TOML/JSON inventory file"),
+        ] = None,
+        group: Annotated[
+            str | None,
+            Parameter(name=["--group", "-g"], help="Inventory host group name"),
+        ] = None,
+        mode: Annotated[
+            str | None,
+            Parameter(name=["--mode", "-m"], help="Fleet execution mode: barrier or independent"),
+        ] = None,
+        batch_size: Annotated[
+            int | None,
+            Parameter(name=["--batch-size"], help="Rollout wave/batch size"),
+        ] = None,
+        max_concurrent: Annotated[
+            int,
+            Parameter(name=["--concurrency", "-c"], help="Max concurrent hosts"),
+        ] = 10,
+        tags: Annotated[
+            str | None,
+            Parameter(name=["--tags"], help="Comma-separated list of task tags to plan"),
+        ] = None,
+        var: Annotated[
+            list[str] | None,
+            Parameter(name=["--var"], help="FlowContext variable in KEY=VALUE format"),
+        ] = None,
+        check_drift: Annotated[
+            bool,
+            Parameter(
+                name=["--check-drift"],
+                negative="",
+                help="Exit with code 2 if drift/changes are detected (0 if clean, 1 on error)",
+            ),
+        ] = False,
+        out: Annotated[
+            str | None,
+            Parameter(
+                name=["--out", "-o"],
+                help="Write serialized FleetChangePlan JSON artifact to file",
+            ),
+        ] = None,
+        output_format: Annotated[
+            str,
+            Parameter(name=["--format", "-f"], help="Output format: table, json, diff"),
+        ] = "table",
+        verbose: Annotated[
+            bool,
+            Parameter(name=["--verbose", "-v"], negative="", help="Verbose logging"),
+        ] = False,
+    ) -> None:
+        """Build a read-only FleetChangePlan with unified diffs and optional drift detection."""
+        try:
+            flow_obj = coerce_to_flow(resolve_flow_spec(spec), mode=mode)
+        except Exception as exc:
+            renderer.print_error_and_exit(exc, title="Flow Load Error")
+            return
+
+        tag_list = (
+            [t.strip() for t in tags.split(",") if t.strip()]
+            if tags
+            else None
+        )
+        initial_vars = _parse_cli_vars(var)
+        host_uris = list(uris) if uris else ([] if inventory else ["local://"])
+
+        async def _execute_plan() -> None:
+            logger = get_logger("uniconn.cli", level="DEBUG" if verbose else "INFO")
+            try:
+                if len(host_uris) == 1 and not inventory:
+                    async with cli_pkg.Connection.from_uri(
+                        host_uris[0], logger=logger, dry_run=True
+                    ) as conn:
+                        fleet_plan = await flow_obj.plan(
+                            conn,
+                            vars=initial_vars,
+                            tags=tag_list,
+                        )
+                else:
+                    pool = build_cli_pool(
+                        cli_pkg,
+                        host_uris,
+                        inventory,
+                        group,
+                        max_concurrent,
+                        logger,
+                        batch_size=batch_size,
+                        max_fail_ratio=1.0,
+                    )
+                    async with pool:
+                        fleet_plan = await flow_obj.plan(
+                            pool,
+                            vars=initial_vars,
+                            tags=tag_list,
+                            batch_size=batch_size,
+                        )
+
+                if out:
+                    out_path = Path(out)
+                    out_path.parent.mkdir(parents=True, exist_ok=True)
+                    out_path.write_text(fleet_plan.to_json(), encoding="utf-8")
+
+                if output_format == "json":
+                    payload = fleet_plan.to_dict(include_rendered=True)
+                    if out:
+                        payload["saved_to"] = str(out)
+                    print_json(console, payload)
+                elif output_format == "diff":
+                    diff_text = fleet_plan.to_diff()
+                    if diff_text:
+                        console.print(diff_text, markup=False, end="")
+                    else:
+                        console.print("[green]No changes (fleet matches desired state).[/green]")
+                else:
+                    console.print(fleet_plan.to_rich_table())
+                    diff_text = fleet_plan.to_diff()
+                    if diff_text:
+                        console.print(
+                            Panel(
+                                diff_text.rstrip(),
+                                title=f"Unified Diff (plan_hash={fleet_plan.plan_hash[:12]})",
+                                border_style="magenta",
+                            )
+                        )
+                    border = "red" if not fleet_plan.ok else ("yellow" if fleet_plan.has_drift else "green")
+                    saved_note = f"\nSaved plan to: {out}" if out else ""
+                    console.print(
+                        Panel(
+                            f"{fleet_plan.to_summary()}{saved_note}",
+                            title=f"Plan Summary: {fleet_plan.flow_name or 'flow'}",
+                            border_style=border,
+                        )
+                    )
+
+                if not fleet_plan.ok:
+                    sys.exit(1)
+                if check_drift and fleet_plan.has_drift:
+                    sys.exit(2)
+            except Exception as exc:
+                renderer.print_error_and_exit(exc, title="Flow Plan Error")
+
+        asyncio.run(_execute_plan())
 
     @flow_app.command(name="inspect")
     def flow_inspect(
@@ -411,6 +584,7 @@ def register_flow_commands(
 
     app.command(flow_app)
     app.command(flow_run, name="run-flow")
+    app.command(flow_plan, name="plan-flow")
     app.command(flow_inspect, name="flow-info")
 
 

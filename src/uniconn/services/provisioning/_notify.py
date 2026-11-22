@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any, Self, TypeAlias
 
 from ...core.bridge import _SHARED_LOOP_MANAGER
 from ...result import EnsureResult
+from ._fleet_plan import IN_NOTIFY_HANDLER
 
 if TYPE_CHECKING:
     from ...core.connection import Connection
@@ -225,18 +226,22 @@ async def invoke_notify_handler(
 ) -> Any:
     """Вызвать синхронный или асинхронный обработчик ``notify`` без риска deadlock в портале."""
     args = _bind_notify_args(fn, conn, result)
-    if inspect.iscoroutinefunction(fn):
-        return await fn(*args)
+    token = IN_NOTIFY_HANDLER.set(True)
+    try:
+        if inspect.iscoroutinefunction(fn):
+            return await fn(*args)
 
-    shared_thread = _SHARED_LOOP_MANAGER.thread
-    if shared_thread is not None and threading.current_thread() is shared_thread:
-        outcome = await asyncio.to_thread(fn, *args)
-    else:
-        outcome = fn(*args)
+        shared_thread = _SHARED_LOOP_MANAGER.thread
+        if shared_thread is not None and threading.current_thread() is shared_thread:
+            outcome = await asyncio.to_thread(fn, *args)
+        else:
+            outcome = fn(*args)
 
-    if inspect.isawaitable(outcome):
-        return await outcome
-    return outcome
+        if inspect.isawaitable(outcome):
+            return await outcome
+        return outcome
+    finally:
+        IN_NOTIFY_HANDLER.reset(token)
 
 
 class NotificationBatch:

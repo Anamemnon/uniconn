@@ -370,4 +370,29 @@ class ConcurrencyConflictError(UniconnError):
         self.actual_version = actual_version
 
 
+class StateDriftError(UniconnError):
+    """Обнаружен дрейф состояния ресурса на хосте относительно утверждённого FleetChangePlan."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        host: str | None = None,
+        resource_kind: str | None = None,
+        target: str | None = None,
+        expected_digest: str | None = None,
+        actual_digest: str | None = None,
+        expected_diff: str | None = None,
+        actual_diff: str | None = None,
+        reason: str = "digest_mismatch",
+        command: str | None = None,
+    ) -> None:
+        """Инициализировать ошибку расхождения состояния (дрейфа) перед применением плана."""
+        super().__init__(message, command=command or resource_kind, host=host)
+        self.resource_kind = resource_kind
+        self.target = target
+        self.expected_digest = expected_digest
+        self.actual_digest = actual_digest
+        self.expected_diff = expected_diff
+        self.actual_diff = actual_diff
+        self.reason = reason

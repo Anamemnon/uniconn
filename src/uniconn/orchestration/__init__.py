@@ -14,6 +14,7 @@ from .models import (
 from .scheduler import (
     compute_active_tasks_by_tags,
     execute_flow,
+    plan_flow,
     run_barrier_fleet,
     run_independent_fleet,
     run_single_host_dag,
@@ -36,6 +37,7 @@ __all__ = [
     "extract_task_outcome_metadata",
     "invoke_flow_callable",
     "normalize_host_id",
+    "plan_flow",
     "run_barrier_fleet",
     "run_independent_fleet",
     "run_single_host_dag",

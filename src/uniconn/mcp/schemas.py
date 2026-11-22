@@ -397,6 +397,14 @@ def build_default_tools(policy: MCPSecurityPolicy) -> list[MCPToolDefinition]:
                         "enum": ["barrier", "independent"],
                         "description": "Optional rollout mode when proposing a Flow.",
                     },
+                    "live_plan": {
+                        "type": "boolean",
+                        "description": (
+                            "Execute a read-only FleetChangePlan against target hosts to attach "
+                            "real unified diffs and plan_hash to the HITL approval request (default: true)."
+                        ),
+                        "default": True,
+                    },
                     "agent_id": {
                         "type": "string",
                         "description": "Optional identifier of the AI agent proposing the action.",
@@ -564,6 +572,14 @@ def build_default_tools(policy: MCPSecurityPolicy) -> list[MCPToolDefinition]:
                         "items": {"type": "string"},
                         "description": "Optional tag filter to preview active tasks in the DAG.",
                     },
+                    "live_plan": {
+                        "type": "boolean",
+                        "description": (
+                            "Execute a read-only FleetChangePlan against target hosts to collect "
+                            "live unified diffs, drift status, and plan_hash (default: false)."
+                        ),
+                        "default": False,
+                    },
                 },
                 "required": ["flow_name"],
                 "additionalProperties": False,
@@ -619,6 +635,13 @@ def build_default_tools(policy: MCPSecurityPolicy) -> list[MCPToolDefinition]:
                     "approval_id": {
                         "type": "string",
                         "description": "Single-use HITL approval token ID (e.g. 'appr_...').",
+                    },
+                    "plan_hash": {
+                        "type": "string",
+                        "description": (
+                            "Optional FleetChangePlan SHA-256 plan_hash cryptographically bound "
+                            "to a HITL approval request from uniconn_propose_action."
+                        ),
                     },
                     "wait_for_approval": {
                         "type": "boolean",

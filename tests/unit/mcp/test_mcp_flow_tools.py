@@ -645,3 +645,280 @@ async def test_annotated_types_tag_filtered_validation_and_checkpoint_outputs(
         reg.get_flow("internal_only")
     with pytest.raises(KeyError):
         reg.get_flow("flow_internal_only")
+
+
+# ---------------------------------------------------------------------------
+# 5. Интеграция FleetChangePlan в MCP (live_plan и HITL propose_action + plan_hash)
+# ---------------------------------------------------------------------------
+
+
+async def test_mcp_inspect_flow_live_plan_and_propose_action_with_plan_hash_binding(
+    tmp_path: Path,
+) -> None:
+    """uniconn_inspect_flow(live_plan=True) и uniconn_propose_action прикладывают реальный diff и plan_hash."""
+    cfg_file = tmp_path / "service.conf"
+    cfg_file.write_text("WORKERS=2\n", encoding="utf-8")
+
+    @task(name="update_cfg", tags=["deploy", "mutating"])
+    async def update_cfg(conn: Connection, workers: int = 4) -> Any:
+        return await conn.state.ensure_file(
+            str(cfg_file),
+            content=f"WORKERS={workers}\n",
+        )
+
+    deploy_flow = Flow(
+        name="service_tune",
+        tasks=[update_cfg],
+        risk_tier="medium",
+    )
+
+    policy = MCPSecurityPolicy(
+        allow_write=True,
+        hitl=HITLPolicy(enabled=True, store_path=str(tmp_path / "approvals_plan.json")),
+    )
+    registry = MCPHostRegistry.from_sources(include_local=True, policy=policy)
+    server = MCPServer(
+        registry=registry,
+        flows=[deploy_flow],
+    )
+
+    # 1. Статический uniconn_inspect_flow (live_plan=False по умолчанию) не трогает хост
+    resp_static = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 101,
+            "method": "tools/call",
+            "params": {
+                "name": "uniconn_inspect_flow",
+                "arguments": {"flow_name": "service_tune", "targets": ["local"]},
+            },
+        }
+    )
+    assert isinstance(resp_static, dict)
+    data_static = json.loads(resp_static["result"]["content"][0]["text"])
+    assert "fleet_plan" not in data_static
+
+    # 2. Живой uniconn_inspect_flow(live_plan=True) возвращает реальный FleetChangePlan + unified diff
+    resp_live = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 102,
+            "method": "tools/call",
+            "params": {
+                "name": "uniconn_inspect_flow",
+                "arguments": {
+                    "flow_name": "service_tune",
+                    "targets": ["local"],
+                    "vars": {"workers": 8},
+                    "live_plan": True,
+                },
+            },
+        }
+    )
+    assert isinstance(resp_live, dict)
+    data_live = json.loads(resp_live["result"]["content"][0]["text"])
+    live_plan = data_live["fleet_plan"]
+    assert live_plan["ok"] is True
+    assert live_plan["has_drift"] is True
+    assert live_plan["changed_count"] == 1
+    assert len(live_plan["plan_hash"]) == 64
+    assert data_live["plan_hash"] == live_plan["plan_hash"]
+    assert "-WORKERS=2" in live_plan["diff"]
+    assert "+WORKERS=8" in live_plan["diff"]
+    # Файл не изменился!
+    assert cfg_file.read_text(encoding="utf-8") == "WORKERS=2\n"
+
+    # 3. uniconn_propose_action для Flow автоматически собирает live_plan, diff и привязывает plan_hash в HMAC
+    resp_prop = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 103,
+            "method": "tools/call",
+            "params": {
+                "name": "uniconn_propose_action",
+                "arguments": {
+                    "tool_name": "uniconn_run_flow",
+                    "flow_name": "service_tune",
+                    "targets": ["local"],
+                    "vars": {"workers": 8},
+                },
+            },
+        }
+    )
+    assert isinstance(resp_prop, dict)
+    prop_data = json.loads(resp_prop["result"]["content"][0]["text"])
+    approval = prop_data["approval"]
+    assert approval["status"] == "PENDING"
+    approval_id = approval["approval_id"]
+    plan_hash = prop_data["plan_hash"]
+    assert plan_hash == live_plan["plan_hash"]
+    assert "+WORKERS=8" in approval["diff"]
+    assert prop_data["fleet_plan"]["has_drift"] is True
+
+    # Одобряем запрос
+    assert server.approval_manager is not None
+    await server.approval_manager.approve(approval_id, decided_by="sre-lead")
+
+    # 4. Попытка запуска с подменённым plan_hash отклоняется (HMAC mismatch)
+    resp_tampered = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 104,
+            "method": "tools/call",
+            "params": {
+                "name": "uniconn_run_flow",
+                "arguments": {
+                    "flow_name": "service_tune",
+                    "targets": ["local"],
+                    "vars": {"workers": 8},
+                    "approval_id": approval_id,
+                    "plan_hash": "0" * 64,
+                },
+            },
+        }
+    )
+    assert isinstance(resp_tampered, dict)
+    assert resp_tampered["result"].get("isError") is True
+    assert "tamper" in resp_tampered["result"]["content"][0]["text"].lower() or (
+        "mismatch" in resp_tampered["result"]["content"][0]["text"].lower()
+    )
+    assert cfg_file.read_text(encoding="utf-8") == "WORKERS=2\n"
+
+    # 5. Запуск с подлинным plan_hash проходит проверку HMAC и применяет изменения
+    resp_exec = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 105,
+            "method": "tools/call",
+            "params": {
+                "name": "uniconn_run_flow",
+                "arguments": {
+                    "flow_name": "service_tune",
+                    "targets": ["local"],
+                    "vars": {"workers": 8},
+                    "approval_id": approval_id,
+                    "plan_hash": plan_hash,
+                },
+            },
+        }
+    )
+    assert isinstance(resp_exec, dict)
+    exec_data = json.loads(resp_exec["result"]["content"][0]["text"])
+    assert exec_data["ok"] is True
+    assert cfg_file.read_text(encoding="utf-8") == "WORKERS=8\n"
+
+
+async def test_mcp_propose_action_graceful_fallback_when_live_plan_fails(
+    tmp_path: Path,
+) -> None:
+    """При ошибке live-плана в uniconn_propose_action (напр. сбой задачи) создаётся approval со static preview."""
+
+    @task(name="failing_step", tags=["deploy"])
+    async def failing_step(conn: Connection) -> None:
+        raise RuntimeError("remote host timeout")
+
+    flaky_flow = Flow(name="flaky_deploy", tasks=[failing_step], risk_tier="high")
+    policy = MCPSecurityPolicy(
+        allow_write=True,
+        hitl=HITLPolicy(enabled=True, store_path=str(tmp_path / "approvals_fallback.json")),
+    )
+    registry = MCPHostRegistry.from_sources(include_local=True, policy=policy)
+    server = MCPServer(
+        registry=registry,
+        flows=[flaky_flow],
+    )
+
+    resp = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 201,
+            "method": "tools/call",
+            "params": {
+                "name": "uniconn_propose_action",
+                "arguments": {
+                    "tool_name": "uniconn_run_flow",
+                    "flow_name": "flaky_deploy",
+                    "targets": ["local"],
+                },
+            },
+        }
+    )
+    assert isinstance(resp, dict)
+    payload = json.loads(resp["result"]["content"][0]["text"])
+    assert payload["approval"]["status"] == "PENDING"
+    assert "plan_preview" in payload
+    assert payload["fleet_plan"]["ok"] is False
+    assert "remote host timeout" in str(payload["fleet_plan"]["host_errors"])
+
+
+async def test_mcp_run_flow_enforces_cached_plan_drift_protection(
+    tmp_path: Path,
+) -> None:
+    """uniconn_run_flow с одобренным plan_hash ловит внешний дрейф до мутации хоста."""
+    cfg_file = tmp_path / "drift_guard.conf"
+    cfg_file.write_text("WORKERS=2\n", encoding="utf-8")
+
+    @task(name="write_workers", tags=["deploy", "mutating"])
+    async def write_workers(conn: Connection, workers: int = 4) -> Any:
+        return await conn.state.ensure_file(str(cfg_file), content=f"WORKERS={workers}\n")
+
+    deploy_flow = Flow(name="drift_guarded_flow", tasks=[write_workers], risk_tier="medium")
+    policy = MCPSecurityPolicy(
+        allow_write=True,
+        hitl=HITLPolicy(enabled=True, store_path=str(tmp_path / "approvals_drift.json")),
+    )
+    registry = MCPHostRegistry.from_sources(include_local=True, policy=policy)
+    server = MCPServer(registry=registry, flows=[deploy_flow])
+
+    # 1. Предлагаем действие (создаётся и кэшируется live FleetChangePlan)
+    resp_prop = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 301,
+            "method": "tools/call",
+            "params": {
+                "name": "uniconn_propose_action",
+                "arguments": {
+                    "tool_name": "uniconn_run_flow",
+                    "flow_name": "drift_guarded_flow",
+                    "targets": ["local"],
+                    "vars": {"workers": 8},
+                },
+            },
+        }
+    )
+    assert isinstance(resp_prop, dict)
+    prop_data = json.loads(resp_prop["result"]["content"][0]["text"])
+    approval_id = prop_data["approval"]["approval_id"]
+    plan_hash = prop_data["plan_hash"]
+    assert server.approval_manager is not None
+    await server.approval_manager.approve(approval_id, decided_by="sre-lead")
+
+    # 2. Внешний дрейф на хосте между propose_action и run_flow
+    cfg_file.write_text("WORKERS=HOTFIX\n", encoding="utf-8")
+
+    # 3. Запуск одобренного Flow должен остановить мутацию с StateDriftError
+    resp_exec = await server.handle_message(
+        {
+            "jsonrpc": "2.0",
+            "id": 302,
+            "method": "tools/call",
+            "params": {
+                "name": "uniconn_run_flow",
+                "arguments": {
+                    "flow_name": "drift_guarded_flow",
+                    "targets": ["local"],
+                    "vars": {"workers": 8},
+                    "approval_id": approval_id,
+                    "plan_hash": plan_hash,
+                },
+            },
+        }
+    )
+    assert isinstance(resp_exec, dict)
+    exec_data = json.loads(resp_exec["result"]["content"][0]["text"])
+    assert exec_data["ok"] is False
+    assert cfg_file.read_text(encoding="utf-8") == "WORKERS=HOTFIX\n"
+    assert "drift" in json.dumps(exec_data).lower()
+
+

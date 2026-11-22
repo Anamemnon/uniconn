@@ -11,7 +11,16 @@ from typing import TYPE_CHECKING, Any
 from ..core.bridge import pool_fan_out_dict
 from ..services.files import FileOperationsService
 from ..services.network import NetworkOperationsService
-from ..services.provisioning import StateManagementService
+from ..services.provisioning import (
+    FleetChangePlan,
+    PlanApplier,
+    PlanRecorder,
+    StateManagementService,
+)
+from ..services.provisioning._fleet_plan import (
+    _ServiceApplierBinding,
+    _ServicePlanBinding,
+)
 
 if TYPE_CHECKING:
     from ..core.connection import Connection
@@ -214,6 +223,132 @@ class PoolNotificationBatch:
                 self._entered_pool_here = False
 
 
+class _BasePoolPlanContext:
+    """Общий жизненный цикл группового контекста планирования/применения для ``ConnectionPool``."""
+
+    def __init__(self, pool: ConnectionPool) -> None:
+        self._pool = pool
+        self._bindings: list[tuple[Connection, Any]] = []
+        self._entered_pool_here = False
+
+    def _on_host_registered(self, key: str) -> None:
+        """Хук регистрации ключа хоста при входе в контекст."""
+
+    def _bind_connection(self, conn: Connection, key: str) -> Any:
+        """Привязать хук планирования/применения к соединению хоста."""
+        raise NotImplementedError
+
+    def _unbind_connection(self, conn: Connection, binding: Any) -> None:
+        """Снять хук планирования/применения с соединения хоста."""
+        raise NotImplementedError
+
+    def _enter_result(self) -> Any:
+        """Вернуть объект, передаваемый в ``as ...`` блока ``async with``."""
+        raise NotImplementedError
+
+    async def __aenter__(self) -> Any:
+        if not self._pool._is_entered:
+            await self._pool.__aenter__()
+            self._entered_pool_here = True
+
+        self._bindings.clear()
+        try:
+            for idx, target in enumerate(self._pool._uris):
+                key = self._pool._target_key(target)
+                self._on_host_registered(key)
+                conn = self._pool._active_conns.get(idx)
+                if conn is not None:
+                    binding = self._bind_connection(conn, key)
+                    self._bindings.append((conn, binding))
+        except BaseException:
+            for conn, binding in self._bindings:
+                self._unbind_connection(conn, binding)
+            self._bindings.clear()
+            if self._entered_pool_here:
+                await self._pool.__aexit__(None, None, None)
+                self._entered_pool_here = False
+            raise
+        return self._enter_result()
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        try:
+            for conn, binding in self._bindings:
+                self._unbind_connection(conn, binding)
+            self._bindings.clear()
+        finally:
+            if self._entered_pool_here:
+                await self._pool.__aexit__(exc_type, exc_val, exc_tb)
+                self._entered_pool_here = False
+
+
+class PoolPlanContext(_BasePoolPlanContext):
+    """Групповой read-only контекст сбора ``FleetChangePlan`` по всем хостам ``ConnectionPool``."""
+
+    def __init__(
+        self,
+        pool: ConnectionPool,
+        *,
+        flow_name: str | None = None,
+    ) -> None:
+        super().__init__(pool)
+        self._recorder = PlanRecorder(flow_name=flow_name)
+
+    @property
+    def plan(self) -> FleetChangePlan:
+        """Собираемый агрегированный план ``FleetChangePlan``."""
+        return self._recorder.plan
+
+    def _on_host_registered(self, key: str) -> None:
+        self._recorder.register_host(key)
+
+    def _bind_connection(self, conn: Connection, key: str) -> _ServicePlanBinding:
+        binding = _ServicePlanBinding(recorder=self._recorder, host_override=key)
+        conn.state._push_plan_recorder(binding)
+        return binding
+
+    def _unbind_connection(self, conn: Connection, binding: _ServicePlanBinding) -> None:
+        conn.state._pop_plan_recorder(binding)
+
+    def _enter_result(self) -> FleetChangePlan:
+        return self._recorder.plan
+
+    async def __aenter__(self) -> FleetChangePlan:
+        return await super().__aenter__()
+
+
+class PoolApplyPlanContext(_BasePoolPlanContext):
+    """Групповой контекст защищённого применения ``FleetChangePlan`` на ``ConnectionPool``."""
+
+    def __init__(
+        self,
+        pool: ConnectionPool,
+        plan: FleetChangePlan,
+        *,
+        strict: bool = True,
+    ) -> None:
+        super().__init__(pool)
+        self._applier = PlanApplier(plan, strict=strict)
+
+    @property
+    def applier(self) -> PlanApplier:
+        """Активный верификатор плана ``PlanApplier``."""
+        return self._applier
+
+    def _bind_connection(self, conn: Connection, key: str) -> _ServiceApplierBinding:
+        binding = _ServiceApplierBinding(applier=self._applier, host_override=key)
+        conn.state._push_plan_applier(binding)
+        return binding
+
+    def _unbind_connection(self, conn: Connection, binding: _ServiceApplierBinding) -> None:
+        conn.state._pop_plan_applier(binding)
+
+    def _enter_result(self) -> PlanApplier:
+        return self._applier
+
+    async def __aenter__(self) -> PlanApplier:
+        return await super().__aenter__()
+
+
 class PoolStateManagementService:
     """Доменный сервис идемпотентного управления состоянием для ``ConnectionPool`` (``pool.state``)."""
 
@@ -224,6 +359,19 @@ class PoolStateManagementService:
     def batch_notifications(self) -> PoolNotificationBatch:
         """Создать групповой контекстный менеджер дедупликации ``notify`` по всем хостам пула."""
         return PoolNotificationBatch(self._pool)
+
+    def plan(self, *, flow_name: str | None = None) -> PoolPlanContext:
+        """Создать read-only контекстный менеджер сбора ``FleetChangePlan`` по всем хостам пула."""
+        return PoolPlanContext(self._pool, flow_name=flow_name)
+
+    def apply_plan(
+        self,
+        plan: FleetChangePlan,
+        *,
+        strict: bool = True,
+    ) -> PoolApplyPlanContext:
+        """Создать групповой контекстный менеджер применения ``FleetChangePlan`` с защитой от дрейфа."""
+        return PoolApplyPlanContext(self._pool, plan, strict=strict)
 
     ensure_package = pool_fan_out_dict(
         StateManagementService.ensure_package, conn_attr="state"
@@ -296,9 +444,11 @@ class PoolNetworkOperationsService:
 
 
 __all__ = [
+    "PoolApplyPlanContext",
     "PoolFileOperationsService",
     "PoolNetworkOperationsService",
     "PoolNotificationBatch",
+    "PoolPlanContext",
     "PoolStateManagementService",
 ]
 

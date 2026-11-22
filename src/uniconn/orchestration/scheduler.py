@@ -11,8 +11,17 @@ from collections.abc import Set as AbstractSet
 from graphlib import TopologicalSorter
 from typing import TYPE_CHECKING, Any
 
-from ..exceptions import BatchAbortedError, ConfigurationError
+from ..exceptions import BatchAbortedError, ConfigurationError, StateDriftError
 from ..exceptions import TimeoutError as UniconnTimeoutError
+from ..services.provisioning._fleet_plan import (
+    CURRENT_PLAN_HOST,
+    CURRENT_PLAN_TASK,
+    FleetChangePlan,
+    PlanApplier,
+    PlanRecorder,
+    _ServiceApplierBinding,
+    _ServicePlanBinding,
+)
 from ..services.provisioning._notify import NotificationBatch
 from ._barrier_window import _BarrierConnectionWindow, _WindowedHostConn
 from .context import FlowContext, normalize_host_id
@@ -184,11 +193,15 @@ class _TaskExecutionEngine:
             Mapping[str, AbstractSet[str] | Sequence[str] | Mapping[str, Any]] | None
         ) = None,
         checkpoint_outputs_by_host: Mapping[str, Mapping[str, Any]] | None = None,
+        plan_recorder: PlanRecorder | None = None,
+        plan_applier: PlanApplier | None = None,
     ) -> None:
         self.flow = flow
         self.ctx = ctx
         self.active_by_tags = active_by_tags
         self.dry_run_override = dry_run_override
+        self.plan_recorder = plan_recorder
+        self.plan_applier = plan_applier
         self.completed_by_host: dict[str, set[str]] = {}
         self.checkpoint_outputs_by_host: dict[str, dict[str, Any]] = {}
         for h, tasks in (completed_tasks_by_host or {}).items():
@@ -286,11 +299,12 @@ class _TaskExecutionEngine:
         return None
 
     def _prepare_effective_conn(self, conn: Connection) -> Connection:
-        """Вернуть соединение с учётом переопределения ``dry_run`` и общего стека батчинга ``notify``."""
+        """Вернуть соединение с учётом переопределения ``dry_run`` и общих стеков ``notify``/планирования."""
         if self.dry_run_override is None or conn.dry_run == self.dry_run_override:
             return conn
         eff_conn = conn.with_overrides(dry_run=self.dry_run_override)
         eff_conn.state.share_batches_from(conn.state)
+        eff_conn.state._share_plan_hooks_from(conn.state)
         return eff_conn
 
     async def _evaluate_when(
@@ -391,69 +405,98 @@ class _TaskExecutionEngine:
             return res
 
         eff_conn = self._prepare_effective_conn(conn)
-        when_outcome = await self._evaluate_when(task_obj, host_key, eff_conn)
-        if when_outcome is not None:
-            self.ctx.record_task_result(host_key, when_outcome)
-            return when_outcome
+        rec_binding: _ServicePlanBinding | None = None
+        app_binding: _ServiceApplierBinding | None = None
+        if self.plan_recorder is not None:
+            rec_binding = _ServicePlanBinding(
+                recorder=self.plan_recorder, host_override=host_key
+            )
+            eff_conn.state._push_plan_recorder(rec_binding)
+        if self.plan_applier is not None:
+            app_binding = _ServiceApplierBinding(
+                applier=self.plan_applier, host_override=host_key
+            )
+            eff_conn.state._push_plan_applier(app_binding)
 
-        max_attempts = 1 + max(0, opts.retries)
-        start_ts = time.perf_counter()
-        last_val: Any = None
-        last_exc: BaseException | None = None
-        last_err: str | None = None
-        changed = False
-        diff: str | None = None
-        notified = False
+        host_token = CURRENT_PLAN_HOST.set(host_key)
+        task_token = CURRENT_PLAN_TASK.set(name)
+        try:
+            when_outcome = await self._evaluate_when(task_obj, host_key, eff_conn)
+            if when_outcome is not None:
+                self.ctx.record_task_result(host_key, when_outcome)
+                return when_outcome
 
-        for attempt in range(1, max_attempts + 1):
-            last_exc = None
-            last_val = None
-            try:
-                last_val = await self._invoke_once(task_obj, host_key, eff_conn)
-                is_failed, changed, diff, last_err, notified = (
-                    extract_task_outcome_metadata(last_val)
-                )
-                if not is_failed:
-                    res = TaskResult(
-                        task_name=name,
-                        host=host_key,
-                        status="success",
-                        return_value=last_val,
-                        duration=time.perf_counter() - start_ts,
-                        attempts=attempt,
-                        diff=diff,
-                        changed=changed,
-                        notified=notified,
-                        diagnostic=extract_task_diagnostic(last_val, None),
+            max_attempts = 1 + max(0, opts.retries)
+            start_ts = time.perf_counter()
+            last_val: Any = None
+            last_exc: BaseException | None = None
+            last_err: str | None = None
+            changed = False
+            diff: str | None = None
+            notified = False
+            attempts_used = 0
+
+            for attempt in range(1, max_attempts + 1):
+                attempts_used = attempt
+                last_exc = None
+                last_val = None
+                try:
+                    last_val = await self._invoke_once(task_obj, host_key, eff_conn)
+                    is_failed, changed, diff, last_err, notified = (
+                        extract_task_outcome_metadata(last_val)
                     )
-                    self.ctx.record_task_result(host_key, res)
-                    return res
-            except Exception as exc:
-                last_exc = exc
-                last_err = str(exc) or type(exc).__name__
+                    if not is_failed:
+                        res = TaskResult(
+                            task_name=name,
+                            host=host_key,
+                            status="success",
+                            return_value=last_val,
+                            duration=time.perf_counter() - start_ts,
+                            attempts=attempt,
+                            diff=diff,
+                            changed=changed,
+                            notified=notified,
+                            diagnostic=extract_task_diagnostic(last_val, None),
+                        )
+                        self.ctx.record_task_result(host_key, res)
+                        return res
+                except StateDriftError as exc:
+                    last_exc = exc
+                    last_err = str(exc) or type(exc).__name__
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    last_err = str(exc) or type(exc).__name__
 
-            if attempt < max_attempts:
-                delay = opts.retry_delay * (opts.retry_backoff ** (attempt - 1))
-                if delay > 0:
-                    await asyncio.sleep(delay)
+                if attempt < max_attempts:
+                    delay = opts.retry_delay * (opts.retry_backoff ** (attempt - 1))
+                    if delay > 0:
+                        await asyncio.sleep(delay)
 
-        res = TaskResult(
-            task_name=name,
-            host=host_key,
-            status="failed",
-            return_value=last_val,
-            exception=last_exc,
-            error=last_err,
-            duration=time.perf_counter() - start_ts,
-            attempts=max_attempts,
-            diff=diff,
-            changed=changed,
-            notified=notified,
-            ignored_error=opts.ignore_errors,
-            diagnostic=extract_task_diagnostic(last_val, last_exc),
-        )
-        self.ctx.record_task_result(host_key, res)
-        return res
+            res = TaskResult(
+                task_name=name,
+                host=host_key,
+                status="failed",
+                return_value=last_val,
+                exception=last_exc,
+                error=last_err,
+                duration=time.perf_counter() - start_ts,
+                attempts=attempts_used or max_attempts,
+                diff=diff,
+                changed=changed,
+                notified=notified,
+                ignored_error=opts.ignore_errors,
+                diagnostic=extract_task_diagnostic(last_val, last_exc),
+            )
+            self.ctx.record_task_result(host_key, res)
+            return res
+        finally:
+            CURRENT_PLAN_TASK.reset(task_token)
+            CURRENT_PLAN_HOST.reset(host_token)
+            if rec_binding is not None:
+                eff_conn.state._pop_plan_recorder(rec_binding)
+            if app_binding is not None:
+                eff_conn.state._pop_plan_applier(app_binding)
 
 
 async def run_single_host_dag(
@@ -472,7 +515,7 @@ async def run_single_host_dag(
     host_aborted = False
 
     batch_obj: NotificationBatch | None = None
-    if flow.batch_notifications:
+    if flow.batch_notifications and engine.plan_recorder is None:
         batch_obj = conn.state.batch_notifications()
         await batch_obj.__aenter__()
 
@@ -630,7 +673,7 @@ async def run_barrier_fleet(
     conn_window = _BarrierConnectionWindow(
         pool,
         max_open=eff_window,
-        batch_notifications=flow.batch_notifications,
+        batch_notifications=flow.batch_notifications and engine.plan_recorder is None,
     )
 
     try:
@@ -745,6 +788,9 @@ async def execute_flow(
     checkpoint_outputs_by_host: Mapping[str, Mapping[str, Any]] | None = None,
     run_id: str | None = None,
     resumed_from: str | None = None,
+    expected_plan: FleetChangePlan | None = None,
+    strict_plan: bool = True,
+    plan_recorder: PlanRecorder | None = None,
 ) -> FlowReport:
     """Точка входа исполнения сценария ``Flow`` на ``Connection`` или ``ConnectionPool``."""
     from ..pool.connection_pool import ConnectionPool
@@ -755,6 +801,11 @@ async def execute_flow(
         ctx.update(vars)
 
     active_by_tags = compute_active_tasks_by_tags(flow.tasks, flow.dag, tags)
+    plan_applier = (
+        PlanApplier(expected_plan, strict=strict_plan)
+        if expected_plan is not None and plan_recorder is None
+        else None
+    )
     engine = _TaskExecutionEngine(
         flow,
         ctx,
@@ -762,6 +813,8 @@ async def execute_flow(
         dry_run,
         completed_tasks_by_host=completed_tasks_by_host,
         checkpoint_outputs_by_host=checkpoint_outputs_by_host,
+        plan_recorder=plan_recorder,
+        plan_applier=plan_applier,
     )
     start_ts = time.perf_counter()
 
@@ -859,6 +912,53 @@ def coerce_to_flow(
     return flow_obj
 
 
+async def plan_flow(
+    flow: Flow,
+    target: Connection | ConnectionPool,
+    *,
+    context: FlowContext | None = None,
+    vars: dict[str, Any] | None = None,
+    tags: Sequence[str] | None = None,
+    batch_size: int | None = None,
+    max_fail_ratio: float | None = None,
+    connection_window: int | None = None,
+) -> FleetChangePlan:
+    """Выполнить read-only планирование сценария ``Flow`` и собрать агрегированный ``FleetChangePlan``."""
+    from ..pool.connection_pool import ConnectionPool
+
+    flow.validate()
+    recorder = PlanRecorder(flow_name=flow.name)
+    if isinstance(target, ConnectionPool):
+        for item in target.targets:
+            recorder.register_host(target.target_key(item))
+    else:
+        host_key = target.config.host or target.config.uri_safe or "localhost"
+        recorder.register_host(host_key)
+
+    eff_ratio = 1.0 if max_fail_ratio is None else max_fail_ratio
+    report = await execute_flow(
+        flow,
+        target,
+        context=context,
+        vars=vars,
+        tags=tags,
+        dry_run=True,
+        batch_size=batch_size,
+        max_fail_ratio=eff_ratio,
+        connection_window=connection_window,
+        plan_recorder=recorder,
+    )
+    for host, items in report.results.items():
+        recorder.register_host(host)
+        for item in items:
+            if not item.ok:
+                err_msg = item.error or (
+                    str(item.exception) if item.exception is not None else "failed"
+                )
+                recorder.record_host_error(host, f"{item.task_name}: {err_msg}")
+    return recorder.plan
+
+
 async def run_connection_flow(
     conn: Connection,
     flow: Any,
@@ -867,6 +967,8 @@ async def run_connection_flow(
     vars: dict[str, Any] | None = None,
     tags: Sequence[str] | None = None,
     dry_run: bool | None = None,
+    expected_plan: FleetChangePlan | None = None,
+    strict_plan: bool = True,
 ) -> FlowReport:
     """Выполнить сценарий ``Flow`` (или ``@task`` / список задач) на одиночном ``Connection``."""
     flow_obj = coerce_to_flow(flow)
@@ -876,6 +978,8 @@ async def run_connection_flow(
         vars=vars,
         tags=tags,
         dry_run=dry_run,
+        expected_plan=expected_plan,
+        strict_plan=strict_plan,
     )
 
 
@@ -891,6 +995,8 @@ async def run_pool_flow(
     batch_size: int | None = None,
     max_fail_ratio: float | None = None,
     connection_window: int | None = None,
+    expected_plan: FleetChangePlan | None = None,
+    strict_plan: bool = True,
 ) -> FlowReport:
     """Выполнить сценарий ``Flow`` (или ``@task`` / список задач) на пуле ``ConnectionPool``."""
     flow_obj = coerce_to_flow(flow, mode=mode)
@@ -903,6 +1009,8 @@ async def run_pool_flow(
         batch_size=batch_size,
         max_fail_ratio=max_fail_ratio,
         connection_window=connection_window,
+        expected_plan=expected_plan,
+        strict_plan=strict_plan,
     )
 
 
@@ -910,6 +1018,7 @@ __all__ = [
     "coerce_to_flow",
     "compute_active_tasks_by_tags",
     "execute_flow",
+    "plan_flow",
     "run_barrier_fleet",
     "run_connection_flow",
     "run_independent_fleet",

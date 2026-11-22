@@ -977,6 +977,8 @@ class ConnectionPool:
         batch_size: int | None = None,
         max_fail_ratio: float | None = None,
         connection_window: int | None = None,
+        expected_plan: Any = None,
+        strict_plan: bool = True,
     ) -> Any:
         """Выполнить сценарий ``Flow`` (или задачу ``@task`` / список задач) на всём пуле хостов."""
         from ..orchestration.scheduler import run_pool_flow
@@ -992,6 +994,8 @@ class ConnectionPool:
             batch_size=batch_size,
             max_fail_ratio=max_fail_ratio,
             connection_window=connection_window,
+            expected_plan=expected_plan,
+            strict_plan=strict_plan,
         )
 
     def to_sync(self) -> SyncConnectionPool:

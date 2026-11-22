@@ -104,6 +104,8 @@ class SyncStateManagementService(SyncProxyMixin):
         self._async_target.discard_batch(batch)
 
     batch_notifications = sync_context(StateManagementService.batch_notifications)
+    plan = sync_context(StateManagementService.plan)
+    apply_plan = sync_context(StateManagementService.apply_plan)
     gather_facts = sync_method(StateManagementService.gather_facts)
     resolve_pkg_manager = sync_method(StateManagementService.resolve_pkg_manager)
     ensure_package = sync_method(StateManagementService.ensure_package)
@@ -220,6 +222,8 @@ class SyncPoolStateManagementService(SyncProxyMixin):
     batch_notifications = sync_context(
         PoolStateManagementService.batch_notifications
     )
+    plan = sync_context(PoolStateManagementService.plan)
+    apply_plan = sync_context(PoolStateManagementService.apply_plan)
     ensure_package = sync_method(PoolStateManagementService.ensure_package)
     ensure_service = sync_method(PoolStateManagementService.ensure_service)
     ensure_windows_service = sync_method(

@@ -11,6 +11,7 @@ from ..orchestration.flow import Flow
 from ..orchestration.scheduler import coerce_to_flow
 from ..security.ast_parser import CommandASTParser
 from ..security.models import PolicyDecision
+from ..services.provisioning._fleet_plan import FleetChangePlan
 from ._server_gates import MCPServerGatesMixin, _parse_tags_list
 from .flows import (
     FlowCheckpointRecord,
@@ -41,6 +42,76 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
         async def _inspect_remote_file_for_diff(
             self, entry: MCPHostEntry, path: str, new_content: str
         ) -> tuple[bool, str]: ...
+
+    def _cache_fleet_plan(self, plan: FleetChangePlan) -> None:
+        """Сохранить ``FleetChangePlan`` в ограниченном tenant-изолированном кэше по ``plan_hash``."""
+        cache: dict[tuple[str | None, str], FleetChangePlan] | None = getattr(
+            self, "_fleet_plan_cache", None
+        )
+        if cache is None:
+            cache = {}
+            self._fleet_plan_cache = cache
+        key = (self._active_tenant_id(), plan.plan_hash)
+        cache[key] = plan
+        while len(cache) > 256:
+            cache.pop(next(iter(cache)))
+
+    def _get_cached_fleet_plan(self, plan_hash: str) -> FleetChangePlan | None:
+        """Найти ранее собранный ``FleetChangePlan`` по ``plan_hash`` в рамках текущего тенанта."""
+        cache: dict[tuple[str | None, str], FleetChangePlan] | None = getattr(
+            self, "_fleet_plan_cache", None
+        )
+        if not cache:
+            return None
+        return cache.get((self._active_tenant_id(), plan_hash))
+
+    async def _build_live_flow_plan(
+        self,
+        flow_obj: Flow,
+        entries: list[MCPHostEntry],
+        *,
+        vars: dict[str, Any],
+        tags: list[str] | None,
+        mode: str,
+    ) -> tuple[FleetChangePlan | None, str | None]:
+        """Построить живой read-only ``FleetChangePlan`` с безопасным fallback при ошибках."""
+        if not entries:
+            return None, "No target hosts resolved"
+        try:
+            active_flow = coerce_to_flow(flow_obj, mode=mode)
+            reg = self._active_registry()
+            if len(entries) == 1:
+                async with reg.create_connection(
+                    entries[0],
+                    dry_run=True,
+                    auto_diagnostics=False,
+                ) as conn:
+                    plan = await active_flow.plan(
+                        conn,
+                        vars=vars,
+                        tags=tags,
+                    )
+            else:
+                pool = reg.create_pool(
+                    entries,
+                    dry_run=True,
+                    auto_diagnostics=False,
+                )
+                async with pool:
+                    plan = await active_flow.plan(
+                        pool,
+                        vars=vars,
+                        tags=tags,
+                    )
+            self._cache_fleet_plan(plan)
+            return plan, None
+        except Exception as exc:
+            return None, f"{type(exc).__name__}: {exc}"
+
+    @staticmethod
+    def _serialize_fleet_plan(plan: FleetChangePlan) -> dict[str, Any]:
+        """Сериализовать ``FleetChangePlan`` для ответа MCP-инструмента."""
+        return plan.to_dict(include_rendered=True)
 
     async def _propose_flow_action(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         agent_id = arguments.get("agent_id")
@@ -79,8 +150,22 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
             role=str(raw_role) if raw_role else None,
             enforce_deny=True,
         )
+
+        want_live_plan = bool(arguments.get("live_plan", True))
+        fleet_plan: FleetChangePlan | None = None
+        live_plan_error: str | None = None
+        if want_live_plan and entries:
+            fleet_plan, live_plan_error = await self._build_live_flow_plan(
+                flow_obj,
+                entries,
+                vars=validated_vars,
+                tags=tags_list,
+                mode=eff_mode,
+            )
+
+        approval_diff = plan_preview
         host_label = ",".join(e.name for e in entries)
-        hmac_params = {
+        hmac_params: dict[str, Any] = {
             "flow_name": flow_obj.name,
             "targets": [e.name for e in entries],
             "group": group_str or "",
@@ -88,6 +173,16 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
             "tags": list(tags_list or ()),
             "mode": eff_mode,
         }
+        if fleet_plan is not None:
+            hmac_params["plan_hash"] = fleet_plan.plan_hash
+            live_diff = fleet_plan.to_diff()
+            if live_diff:
+                approval_diff = (
+                    f"{plan_preview}\n\n"
+                    f"# Live FleetChangePlan (hash={fleet_plan.plan_hash[:12]})\n"
+                    f"{live_diff}"
+                )
+
         merged_reasons = self._merge_reasons(assessment.reasons, policy_eval.reasons)
         eff_agent_id, eff_tenant_id = self._resolve_hitl_actor(agent_id)
         req = await self.approval_manager.create_request(
@@ -97,16 +192,22 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
             risk_reasons=tuple(merged_reasons),
             command=f"flow:{flow_obj.name}",
             parameters=hmac_params,
-            diff=plan_preview,
+            diff=approval_diff,
             agent_id=eff_agent_id,
             tenant_id=eff_tenant_id,
         )
-        return {
+        out: dict[str, Any] = {
             "assessment": assessment.to_dict(),
             "policy": policy_eval.to_dict(),
             "plan_preview": plan_preview,
             "approval": req.to_public_dict(),
         }
+        if fleet_plan is not None:
+            out["plan_hash"] = fleet_plan.plan_hash
+            out["fleet_plan"] = self._serialize_fleet_plan(fleet_plan)
+        elif live_plan_error is not None:
+            out["live_plan_error"] = live_plan_error
+        return out
 
     async def _tool_propose_action(self, arguments: dict[str, Any]) -> dict[str, Any]:
         tool_name = str(arguments.get("tool_name") or "uniconn_run").strip()
@@ -451,7 +552,7 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
             flow_obj,
             tool_name=self.flow_registry.get_tool_name(flow_obj.name),
         )
-        return {
+        out: dict[str, Any] = {
             "flow_name": flow_obj.name,
             "tool_name": tool_def.name,
             "description": tool_def.description,
@@ -462,6 +563,20 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
             "input_schema": tool_def.input_schema,
             "waves": [[t.name for t in layer] for layer in flow_obj.get_layers()],
         }
+        if bool(arguments.get("live_plan", False)):
+            fleet_plan, live_err = await self._build_live_flow_plan(
+                flow_obj,
+                entries,
+                vars=vars_dict,
+                tags=tags_list,
+                mode=flow_obj.mode,
+            )
+            if fleet_plan is not None:
+                out["plan_hash"] = fleet_plan.plan_hash
+                out["fleet_plan"] = self._serialize_fleet_plan(fleet_plan)
+            elif live_err is not None:
+                out["live_plan_error"] = live_err
+        return out
 
     async def _tool_run_flow(self, arguments: dict[str, Any]) -> dict[str, Any]:
         flow_name = arguments.get("flow_name")
@@ -636,7 +751,7 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
         merged_reasons = self._merge_reasons(assessment.reasons, policy_eval.reasons)
         target_names = [e.name for e in entries]
         host_label = ",".join(target_names)
-        hmac_params = {
+        hmac_params: dict[str, Any] = {
             "flow_name": flow_obj.name,
             "targets": target_names,
             "group": group_str or "",
@@ -644,9 +759,13 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
             "tags": list(tags_list or ()),
             "mode": eff_mode,
         }
+        raw_plan_hash = arguments.get("plan_hash")
+        if isinstance(raw_plan_hash, str) and raw_plan_hash.strip():
+            hmac_params["plan_hash"] = raw_plan_hash.strip()
         canonical_flow_tool = self.flow_registry.get_tool_name(flow_obj.name)
         allowed_tools = (tool_name, canonical_flow_tool, "uniconn_run_flow")
 
+        gate_diff = None if (approval_id is not None and "plan_hash" in hmac_params) else plan_preview
         consumed_req, pending_payload = await self._resolve_hitl_gate(
             target_host=host_label,
             tool_name=tool_name,
@@ -658,7 +777,7 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
             wait_for_approval=wait_for_appr,
             command=f"flow:{flow_obj.name}",
             parameters=hmac_params,
-            diff=plan_preview,
+            diff=gate_diff,
             agent_id=str(raw_agent_id) if raw_agent_id else None,
             pending_extra={
                 "flow_name": flow_obj.name,
@@ -671,6 +790,9 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
 
         active_flow = coerce_to_flow(flow_obj, mode=eff_mode)
         run_id = resume_run_id or f"run_{uuid.uuid4().hex[:12]}"
+        expected_plan: FleetChangePlan | None = None
+        if not eff_dry_run and "plan_hash" in hmac_params:
+            expected_plan = self._get_cached_fleet_plan(str(hmac_params["plan_hash"]))
 
         reg = self._active_registry()
         if len(entries) == 1:
@@ -688,6 +810,7 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
                     checkpoint_outputs_by_host=prior_outputs,
                     run_id=run_id,
                     resumed_from=resume_run_id,
+                    expected_plan=expected_plan,
                 )
         else:
             pool = reg.create_pool(
@@ -705,6 +828,7 @@ class MCPGovernanceToolsMixin(MCPServerGatesMixin):
                     checkpoint_outputs_by_host=prior_outputs,
                     run_id=run_id,
                     resumed_from=resume_run_id,
+                    expected_plan=expected_plan,
                 )
 
         cp_record = await self.checkpoint_store.record_from_report(

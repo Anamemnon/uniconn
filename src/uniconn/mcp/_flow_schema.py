@@ -31,10 +31,13 @@ _RESERVED_MCP_FLOW_ARGS: frozenset[str] = frozenset(
         "batch_size",
         "max_fail_ratio",
         "approval_id",
+        "plan_hash",
+        "live_plan",
         "wait_for_approval",
         "resume_run_id",
         "checkpoint_token",
         "run_id",
+        "tool_name",
         "agent_id",
         "role",
     }
@@ -415,6 +418,13 @@ class FlowSchemaGenerator:
                 "description": (
                     "Single-use HITL approval token ID (e.g. 'appr_...') obtained after "
                     "human operator approval."
+                ),
+            },
+            "plan_hash": {
+                "type": "string",
+                "description": (
+                    "Optional FleetChangePlan SHA-256 plan_hash cryptographically bound "
+                    "to a HITL approval request."
                 ),
             },
             "wait_for_approval": {

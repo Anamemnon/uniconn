@@ -12,12 +12,13 @@ from ..core.bridge import EventLoopPortal, SyncProxyMixin
 from ..exceptions import ConfigurationError, CyclicDependencyError
 from .context import FlowContext
 from .models import FlowReport
-from .scheduler import compute_active_tasks_by_tags, execute_flow
+from .scheduler import compute_active_tasks_by_tags, execute_flow, plan_flow
 from .task import Task, task
 
 if TYPE_CHECKING:
     from ..core.connection import Connection
     from ..pool.connection_pool import ConnectionPool
+    from ..services.provisioning._fleet_plan import FleetChangePlan
     from ..sync.connection import SyncConnection
     from ..sync.pool import SyncConnectionPool
 
@@ -216,6 +217,29 @@ class Flow:
                 lines.append(f"    {status_prefix} {t_obj.name}{dep_str}{meta_str}")
         return "\n".join(lines)
 
+    async def plan(
+        self,
+        target: Connection | ConnectionPool,
+        *,
+        context: FlowContext | None = None,
+        vars: Mapping[str, Any] | None = None,
+        tags: Sequence[str] | None = None,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
+        connection_window: int | None = None,
+    ) -> FleetChangePlan:
+        """Выполнить read-only планирование сценария и вернуть агрегированный ``FleetChangePlan``."""
+        return await plan_flow(
+            self,
+            target,
+            context=context,
+            vars=dict(vars) if vars else None,
+            tags=tags,
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
+            connection_window=connection_window,
+        )
+
     async def run(
         self,
         target: Connection | ConnectionPool,
@@ -233,6 +257,8 @@ class Flow:
         checkpoint_outputs_by_host: Mapping[str, Mapping[str, Any]] | None = None,
         run_id: str | None = None,
         resumed_from: str | None = None,
+        expected_plan: FleetChangePlan | None = None,
+        strict_plan: bool = True,
     ) -> FlowReport:
         """Асинхронно выполнить сценарий ``Flow`` на ``Connection`` или ``ConnectionPool``."""
         return await execute_flow(
@@ -249,6 +275,8 @@ class Flow:
             checkpoint_outputs_by_host=checkpoint_outputs_by_host,
             run_id=run_id,
             resumed_from=resumed_from,
+            expected_plan=expected_plan,
+            strict_plan=strict_plan,
         )
 
     def to_sync(self) -> SyncFlow:
@@ -384,6 +412,44 @@ class SyncFlow(SyncProxyMixin):
         """Построить ``rich.tree.Tree`` для визуализации графа."""
         return self._async_flow.to_rich_tree()
 
+    def _resolve_portal_and_target(
+        self,
+        target: SyncConnection | SyncConnectionPool | Connection | ConnectionPool,
+    ) -> tuple[Any, Any]:
+        """Извлечь внутренний async-объект цели и активный ``EventLoopPortal``."""
+        async_target: Any = getattr(
+            target, "_async_conn", getattr(target, "_async_pool", target)
+        )
+        portal = getattr(target, "_portal", self._portal)
+        if getattr(portal, "closed", False):
+            portal.reopen()
+        return portal, async_target
+
+    def plan(
+        self,
+        target: SyncConnection | SyncConnectionPool | Connection | ConnectionPool,
+        *,
+        context: FlowContext | None = None,
+        vars: Mapping[str, Any] | None = None,
+        tags: Sequence[str] | None = None,
+        batch_size: int | None = None,
+        max_fail_ratio: float | None = None,
+        connection_window: int | None = None,
+    ) -> FleetChangePlan:
+        """Синхронно выполнить read-only планирование сценария и вернуть ``FleetChangePlan``."""
+        portal, async_target = self._resolve_portal_and_target(target)
+        return portal.call(
+            self._async_flow.plan(
+                async_target,
+                context=context,
+                vars=vars,
+                tags=tags,
+                batch_size=batch_size,
+                max_fail_ratio=max_fail_ratio,
+                connection_window=connection_window,
+            )
+        )
+
     def run(
         self,
         target: SyncConnection | SyncConnectionPool | Connection | ConnectionPool,
@@ -401,14 +467,11 @@ class SyncFlow(SyncProxyMixin):
         checkpoint_outputs_by_host: Mapping[str, Mapping[str, Any]] | None = None,
         run_id: str | None = None,
         resumed_from: str | None = None,
+        expected_plan: FleetChangePlan | None = None,
+        strict_plan: bool = True,
     ) -> FlowReport:
         """Синхронно выполнить сценарий на ``SyncConnection``, ``SyncConnectionPool`` или async-цели."""
-        async_target: Any = getattr(
-            target, "_async_conn", getattr(target, "_async_pool", target)
-        )
-        portal = getattr(target, "_portal", self._portal)
-        if getattr(portal, "closed", False):
-            portal.reopen()
+        portal, async_target = self._resolve_portal_and_target(target)
         return portal.call(
             self._async_flow.run(
                 async_target,
@@ -423,6 +486,8 @@ class SyncFlow(SyncProxyMixin):
                 checkpoint_outputs_by_host=checkpoint_outputs_by_host,
                 run_id=run_id,
                 resumed_from=resumed_from,
+                expected_plan=expected_plan,
+                strict_plan=strict_plan,
             )
         )
 

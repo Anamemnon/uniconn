@@ -3,6 +3,14 @@
 
 from __future__ import annotations
 
+from ._fleet_plan import (
+    ConnectionApplyPlanContext,
+    ConnectionPlanContext,
+    FleetChangePlan,
+    PlanApplier,
+    PlannedChange,
+    PlanRecorder,
+)
 from ._notify import (
     NamedNotifyHandler,
     NotificationBatch,
@@ -90,7 +98,10 @@ __all__ = [
     "AptStrategy",
     "ChangePlan",
     "ChocoStrategy",
+    "ConnectionApplyPlanContext",
+    "ConnectionPlanContext",
     "DnfYumStrategy",
+    "FleetChangePlan",
     "NamedNotifyHandler",
     "NotificationBatch",
     "NotifyCallable",
@@ -100,6 +111,9 @@ __all__ = [
     "PackageManagerStrategy",
     "PacmanStrategy",
     "PkgManagerName",
+    "PlanApplier",
+    "PlanRecorder",
+    "PlannedChange",
     "RegistryValueType",
     "ScoopStrategy",
     "ServiceAction",

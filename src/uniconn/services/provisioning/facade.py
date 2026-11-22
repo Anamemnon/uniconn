@@ -3,11 +3,23 @@
 
 from __future__ import annotations
 
+import contextvars
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from ...result import EnsureResult
+from ._fleet_plan import (
+    IN_NOTIFY_HANDLER,
+    ConnectionApplyPlanContext,
+    ConnectionPlanContext,
+    FleetChangePlan,
+    _ServiceApplierBinding,
+    _ServicePlanBinding,
+    capture_before_snapshot,
+    compute_before_digest,
+    extract_actions_from_result,
+)
 from ._notify import (
     NotificationBatch,
     NotifySpec,
@@ -81,6 +93,10 @@ if TYPE_CHECKING:
     from ...core.connection import Connection
     from ..facts_models import FactSpec, HostFacts
 
+_ENSURE_NESTING_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "uniconn_ensure_nesting_depth", default=0
+)
+
 
 class StateManagementService:
     """Доменный сервис идемпотентных проверок и конфигурации (``conn.state``)."""
@@ -89,6 +105,8 @@ class StateManagementService:
         """Инициализировать сервис для указанного подключения."""
         self._conn = conn
         self._batch_stack: list[NotificationBatch] = []
+        self._plan_recorders: list[_ServicePlanBinding] = []
+        self._plan_appliers: list[_ServiceApplierBinding] = []
 
     def _push_batch(self, batch: NotificationBatch) -> None:
         """Активировать контекст батчинга уведомлений."""
@@ -109,6 +127,41 @@ class StateManagementService:
         """Разделить стек активных ``NotificationBatch`` с другим экземпляром ``StateManagementService``."""
         self._batch_stack = other._batch_stack
 
+    def _share_plan_hooks_from(self, other: StateManagementService) -> None:
+        """Разделить стеки активных ``PlanRecorder`` и ``PlanApplier`` с другим экземпляром сервиса."""
+        self._plan_recorders = other._plan_recorders
+        self._plan_appliers = other._plan_appliers
+
+    def _push_plan_recorder(self, binding: _ServicePlanBinding) -> None:
+        """Активировать перехватчик планирования ``PlanRecorder``."""
+        self._plan_recorders.append(binding)
+
+    def _pop_plan_recorder(self, binding: _ServicePlanBinding) -> None:
+        """Снять перехватчик планирования ``PlanRecorder``."""
+        if self._plan_recorders and self._plan_recorders[-1] is binding:
+            self._plan_recorders.pop()
+        elif binding in self._plan_recorders:
+            self._plan_recorders.remove(binding)
+
+    def _current_plan_recorder(self) -> _ServicePlanBinding | None:
+        """Вернуть текущую активную привязку ``PlanRecorder`` или ``None``."""
+        return self._plan_recorders[-1] if self._plan_recorders else None
+
+    def _push_plan_applier(self, binding: _ServiceApplierBinding) -> None:
+        """Активировать защитный контекст применения плана ``PlanApplier``."""
+        self._plan_appliers.append(binding)
+
+    def _pop_plan_applier(self, binding: _ServiceApplierBinding) -> None:
+        """Снять контекст применения плана ``PlanApplier``."""
+        if self._plan_appliers and self._plan_appliers[-1] is binding:
+            self._plan_appliers.pop()
+        elif binding in self._plan_appliers:
+            self._plan_appliers.remove(binding)
+
+    def _current_plan_applier(self) -> _ServiceApplierBinding | None:
+        """Вернуть текущую активную привязку ``PlanApplier`` или ``None``."""
+        return self._plan_appliers[-1] if self._plan_appliers else None
+
     def discard_batch(self, batch: NotificationBatch) -> None:
         """Безопасно удалить контекст ``NotificationBatch`` из стека активных батчей."""
         self._pop_batch(batch)
@@ -116,6 +169,97 @@ class StateManagementService:
     def batch_notifications(self) -> NotificationBatch:
         """Создать контекстный менеджер для отложенного вызова и дедупликации ``notify``."""
         return NotificationBatch(self)
+
+    def plan(self, *, flow_name: str | None = None) -> ConnectionPlanContext:
+        """Создать read-only контекстный менеджер сбора ``FleetChangePlan`` для этого соединения."""
+        return ConnectionPlanContext(self, flow_name=flow_name)
+
+    def apply_plan(
+        self,
+        plan: FleetChangePlan,
+        *,
+        strict: bool = True,
+    ) -> ConnectionApplyPlanContext:
+        """Создать контекстный менеджер защищённого применения ``FleetChangePlan`` с проверкой дрейфа."""
+        return ConnectionApplyPlanContext(self, plan, strict=strict)
+
+    async def _finalize_ensure_result(
+        self,
+        res: EnsureResult,
+        entries: list[Any],
+    ) -> EnsureResult:
+        """Завершить операцию ``ensure_*`` с обработкой отложенных или немедленных ``notify``."""
+        if not entries:
+            return res
+        return await finalize_ensure_with_notify(
+            self, res, entries, _pre_normalized=True
+        )
+
+    async def _record_planned_ensure(
+        self,
+        rec_binding: _ServicePlanBinding,
+        depth: int,
+        op_fn: Callable[..., Awaitable[EnsureResult]],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> EnsureResult:
+        """Выполнить ``ensure_*`` в read-only режиме планирования и записать ``PlannedChange``."""
+        kwargs["dry_run"] = True
+        if depth > 0 or IN_NOTIFY_HANDLER.get():
+            return await op_fn(self, *args, **kwargs)
+
+        op_name = op_fn.__name__
+        token = _ENSURE_NESTING_DEPTH.set(depth + 1)
+        try:
+            snapshot = await capture_before_snapshot(self, op_name, args, kwargs)
+            res = await op_fn(self, *args, **kwargs)
+        finally:
+            _ENSURE_NESTING_DEPTH.reset(token)
+
+        before_digest = compute_before_digest(
+            operation=op_name,
+            target=res.target,
+            state=res.state,
+            changed=res.changed,
+            ok=res.ok,
+            diff=res.diff,
+            actions=extract_actions_from_result(res),
+            snapshot=snapshot,
+        )
+        rec_binding.recorder.record_result(
+            conn=self._conn,
+            operation=op_name,
+            res=res,
+            before_digest=before_digest,
+            host_override=rec_binding.host_override,
+        )
+        return res
+
+    async def _apply_planned_ensure(
+        self,
+        app_binding: _ServiceApplierBinding,
+        depth: int,
+        op_fn: Callable[..., Awaitable[EnsureResult]],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> EnsureResult:
+        """Выполнить pre-flight проверку дрейфа через ``PlanApplier`` и затем мутацию ``ensure_*``."""
+        op_name = op_fn.__name__
+        token = _ENSURE_NESTING_DEPTH.set(depth + 1)
+        try:
+            target_token = await app_binding.applier.verify_and_prepare(
+                self,
+                op_name,
+                op_fn,
+                args,
+                kwargs,
+                host_override=app_binding.host_override,
+            )
+            res = await op_fn(self, *args, **kwargs)
+            app_binding.applier.mark_mutated(target_token, changed=res.changed)
+            return res
+        finally:
+            _ENSURE_NESTING_DEPTH.reset(token)
 
     async def _execute_ensure(
         self,
@@ -125,14 +269,27 @@ class StateManagementService:
         *args: Any,
         **kwargs: Any,
     ) -> EnsureResult:
-        """Провалидировать ``notify`` до старта операции, выполнить её и диспетчеризовать уведомления."""
+        """Провалидировать ``notify``, применить хуки ``PlanRecorder``/``PlanApplier`` и выполнить ``ensure_*``."""
         entries = normalize_notify_spec(notify)
-        res = await op_fn(self, *args, **kwargs)
-        if not entries:
-            return res
-        return await finalize_ensure_with_notify(
-            self, res, entries, _pre_normalized=True
-        )
+        depth = _ENSURE_NESTING_DEPTH.get()
+        rec_binding = self._current_plan_recorder()
+        if rec_binding is not None:
+            return await self._record_planned_ensure(rec_binding, depth, op_fn, args, kwargs)
+
+        app_binding = self._current_plan_applier()
+        if depth == 0 and app_binding is not None and not IN_NOTIFY_HANDLER.get():
+            explicit_dry = kwargs.get("dry_run")
+            is_effective_dry = self._conn.dry_run if explicit_dry is None else bool(explicit_dry)
+            if not is_effective_dry:
+                res = await self._apply_planned_ensure(app_binding, depth, op_fn, args, kwargs)
+                return await self._finalize_ensure_result(res, entries)
+
+        token = _ENSURE_NESTING_DEPTH.set(depth + 1)
+        try:
+            res = await op_fn(self, *args, **kwargs)
+        finally:
+            _ENSURE_NESTING_DEPTH.reset(token)
+        return await self._finalize_ensure_result(res, entries)
 
     async def gather_facts(
         self,
