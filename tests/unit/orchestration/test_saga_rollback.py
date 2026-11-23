@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -561,7 +562,8 @@ async def test_end_to_end_saga_with_ensure_file_backup_restores_original_file(tm
     assert report.rolled_back is True
     assert report.rollback_ok is True
     assert cfg_file.read_text(encoding="utf-8") == "PORT=8080\nMODE=stable\n"
-    assert (cfg_file.stat().st_mode & 0o777) == 0o600
+    if sys.platform != "win32":
+        assert (cfg_file.stat().st_mode & 0o777) == 0o600
 
 
 async def test_single_param_extra_vars_binding_for_on_failure_and_compensate() -> None:
@@ -702,4 +704,48 @@ async def test_barrier_dry_run_does_not_abort_healthy_hosts_for_rollback() -> No
     assert rep.rolled_back is False
     assert rolled_back == []
     assert ran_layer2 == ["good-02"]
+
+
+async def test_barrier_early_layer_failure_does_not_flush_notify_on_last_layer(
+    tmp_path: Path,
+) -> None:
+    """Сбой на Layer 0 в barrier-режиме не должен сбрасывать notify здорового хоста на Layer 1 до отката."""
+    notify_calls: list[str] = []
+
+    async def undo_l0(conn: Connection, ctx: FlowContext) -> EnsureResult:
+        host = conn.config.host or ""
+        return await conn.state.ensure_file(
+            tmp_path / f"early_{host}.conf",
+            content="v=1\n",
+            notify=(f"undo_{host}", lambda _c, h=host: notify_calls.append(f"undid:{h}")),
+        )
+
+    @task(name="l0", compensate=undo_l0)
+    async def l0(conn: Connection) -> EnsureResult:
+        host = conn.config.host or ""
+        if host == "b2":
+            raise RuntimeError("b2 failed at layer 0")
+        return await conn.state.ensure_file(
+            tmp_path / f"early_{host}.conf",
+            content="v=2\n",
+            notify=(f"main_{host}", lambda _c: notify_calls.append("main_should_not_run")),
+        )
+
+    @task(name="l1", depends_on=[l0])
+    async def l1(conn: Connection) -> str:
+        return "l1-done"
+
+    flow = Flow("barrier_early_fail", tasks=[l1], mode="barrier", batch_notifications=True)
+    conns = [
+        Connection.from_uri("local://").with_overrides(host="b1"),
+        Connection.from_uri("local://").with_overrides(host="b2"),
+    ]
+    async with ConnectionPool(conns) as pool:
+        rep = await pool.run_flow(flow)
+
+    assert rep.ok is False
+    assert rep.rolled_back is True
+    assert rep.rollback_ok is True
+    assert notify_calls == ["undid:b1"]
+
 

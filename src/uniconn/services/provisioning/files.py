@@ -10,6 +10,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import sys
 import tempfile
 from collections.abc import Sequence
@@ -246,12 +247,18 @@ def _create_local_file_backup(
             with contextlib.suppress(OSError, PermissionError):
                 st = src.stat()
                 os.chown(tmp_path, st.st_uid, st.st_gid)
+        elif dst.exists():
+            # На Windows os.replace выбросит WinError 5, если у dst установлен атрибут READONLY
+            with contextlib.suppress(OSError):
+                os.chmod(dst, stat.S_IWRITE | stat.S_IREAD)
         os.replace(tmp_path, dst)
         tmp_path = None
         return backup_path
     finally:
         if tmp_path is not None:
             with contextlib.suppress(OSError):
+                if sys.platform == "win32":
+                    os.chmod(tmp_path, stat.S_IWRITE | stat.S_IREAD)
                 tmp_path.unlink(missing_ok=True)
 
 

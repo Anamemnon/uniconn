@@ -830,6 +830,20 @@ async def run_barrier_fleet(
     keep_warm_for_rollback = engine.should_rollback_pool(pool) and has_compensators
 
     try:
+        async def _flush_entry_batch(entry: _WindowedHostConn, key: str) -> None:
+            if entry.batch is None:
+                return
+            nb = entry.batch
+            entry.batch = None
+            try:
+                notif_list = await _flush_host_notifications(
+                    nb, key, results_by_host[key]
+                )
+                if notif_list:
+                    notified_by_host[key] = notif_list
+            finally:
+                entry.conn.state.discard_batch(nb)
+
         async def _run_layer_on_host(
             idx: int,
             target: Any,
@@ -861,21 +875,8 @@ async def run_barrier_fleet(
                         if not r.ok and flow.fail_fast:
                             host_aborted[key] = True
 
-                    if (
-                        is_last_layer
-                        and not keep_warm_for_rollback
-                        and entry.batch is not None
-                    ):
-                        nb = entry.batch
-                        entry.batch = None
-                        try:
-                            notif_list = await _flush_host_notifications(
-                                nb, key, results_by_host[key]
-                            )
-                            if notif_list:
-                                notified_by_host[key] = notif_list
-                        finally:
-                            conn.state.discard_batch(nb)
+                    if is_last_layer and not keep_warm_for_rollback:
+                        await _flush_entry_batch(entry, key)
 
                     return key, layer_res, None
                 except Exception as exc:
@@ -915,17 +916,19 @@ async def run_barrier_fleet(
                     entry: _WindowedHostConn | None = None
                     try:
                         entry = await conn_window.acquire(idx, target, key)
-                        if entry.batch is not None:
-                            nb = entry.batch
-                            entry.batch = None
-                            try:
-                                notif_list = await _flush_host_notifications(
-                                    nb, key, results_by_host[key]
-                                )
-                                if notif_list:
-                                    notified_by_host[key] = notif_list
-                            finally:
-                                entry.conn.state.discard_batch(nb)
+                        await _flush_entry_batch(entry, key)
+                    except Exception as exc:
+                        results_by_host[key].append(
+                            TaskResult(
+                                task_name="<notify>",
+                                host=key,
+                                status="failed",
+                                exception=exc,
+                                error=f"notify flush connection error: {exc}",
+                                notified=True,
+                                diagnostic=extract_task_diagnostic(None, exc),
+                            )
+                        )
                     finally:
                         if entry is not None:
                             await conn_window.release(entry, close_now=False)
@@ -984,10 +987,16 @@ async def run_barrier_fleet(
                     for k in host_aborted:
                         host_aborted[k] = True
 
-                # В режиме с Saga-откатом сбрасываем уведомления последнего слоя только после
-                # того, как батч/флот прошёл проверку барьера без необходимости отката.
-                if is_last and keep_warm_for_rollback and (enforce_ratio or not batch_failures):
-                    await _flush_deferred_batch_notifications(batch_items)
+                # В режиме с Saga-откатом сбрасываем уведомления последнего слоя только если
+                # батч (или весь флот при not enforce_ratio) не содержит сбоев за все слои.
+                if is_last and keep_warm_for_rollback:
+                    has_any_fleet_failure = any(
+                        not r.ok
+                        for items in results_by_host.values()
+                        for r in items
+                    )
+                    if enforce_ratio or not has_any_fleet_failure:
+                        await _flush_deferred_batch_notifications(batch_items)
 
         if keep_warm_for_rollback:
             failed_keys = {

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import stat
+import sys
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
@@ -35,7 +36,8 @@ async def test_ensure_file_backup_local_creates_bak_preserving_mode_and_content(
     assert target.read_text(encoding="utf-8") == "worker_processes 4;\n"
     assert expected_bak.exists()
     assert expected_bak.read_text(encoding="utf-8") == "worker_processes 2;\n"
-    assert stat.S_IMODE(expected_bak.stat().st_mode) == 0o640
+    if sys.platform != "win32":
+        assert stat.S_IMODE(expected_bak.stat().st_mode) == 0o640
 
 
 async def test_ensure_file_backup_skipped_on_noop_new_file_dry_run_and_failed_validate(
@@ -91,7 +93,8 @@ async def test_ensure_file_absent_with_backup_creates_bak_before_removal(tmp_pat
     assert res.backup_path == str(bak)
     assert not target.exists()
     assert bak.read_text(encoding="utf-8") == "legacy=1\n"
-    assert stat.S_IMODE(bak.stat().st_mode) == 0o600
+    if sys.platform != "win32":
+        assert stat.S_IMODE(bak.stat().st_mode) == 0o600
 
 
 async def test_ensure_line_with_backup_sets_backup_path(tmp_path: Path) -> None:
@@ -199,7 +202,10 @@ async def test_ensure_file_backup_local_overwrites_existing_readonly_bak(tmp_pat
     assert res.ok is True
     assert res.backup_path == str(bak)
     assert bak.read_text(encoding="utf-8") == "secret=v1\n"
-    assert stat.S_IMODE(bak.stat().st_mode) == 0o600
+    if sys.platform != "win32":
+        assert stat.S_IMODE(bak.stat().st_mode) == 0o600
+    else:
+        assert bool(bak.stat().st_mode & stat.S_IWRITE)
 
 
 async def test_ensure_file_backup_remote_raises_when_cp_and_read_both_fail(
