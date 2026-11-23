@@ -162,14 +162,32 @@ class BatchAbortedError(UniconnError):
         max_fail_ratio: float = 0.0,
         completed_results: dict[str, object] | None = None,
         failed_hosts: dict[str, object] | None = None,
+        rollbacks: dict[str, list[object]] | None = None,
     ) -> None:
-        """Инициализировать ошибку прерывания батчевой раскатки с частичными результатами."""
+        """Инициализировать ошибку прерывания батчевой раскатки с частичными результатами и итогами отката."""
         super().__init__(message)
         self.batch_index = batch_index
         self.fail_ratio = fail_ratio
         self.max_fail_ratio = max_fail_ratio
         self.completed_results: dict[str, object] = dict(completed_results or {})
         self.failed_hosts: dict[str, object] = dict(failed_hosts or {})
+        self.rollbacks: dict[str, list[object]] = {
+            host: list(items) for host, items in (rollbacks or {}).items()
+        }
+
+    @property
+    def rolled_back(self) -> bool:
+        """Вернуть ``True``, если при прерывании батча выполнялся Saga-откат хотя бы одной задачи."""
+        return any(bool(items) for items in self.rollbacks.values())
+
+    @property
+    def rollback_ok(self) -> bool:
+        """Вернуть ``True``, если все выполненные шаги отката завершились успешно."""
+        return all(
+            bool(getattr(item, "ok", True))
+            for items in self.rollbacks.values()
+            for item in items
+        )
 
 
 class ModemTransferError(FileTransferError):

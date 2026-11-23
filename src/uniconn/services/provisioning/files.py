@@ -3,18 +3,21 @@
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import hashlib
 import os
 import re
 import shlex
 import shutil
+import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from ..._logging import get_logger
-from ...exceptions import UniconnError
+from ...exceptions import FileTransferError, UniconnError
 from ...result import EnsureResult
 from ...security.regex_safety import validate_safe_regex
 from ._plan import ChangePlan, _parse_mode
@@ -196,19 +199,14 @@ async def ensure_line(
             diff=computed_diff,
         )
 
+    created_backup: str | None = None
     if backup and file_exists:
-        backup_mode: int | None = None
-        try:
-            st = await svc._conn.files.stat(path_str)
-            extracted = svc._extract_stat_mode(st)
-            if extracted >= 0:
-                backup_mode = extracted
-        except (OSError, UniconnError, ValueError) as exc:
-            _logger.debug("Unable to stat mode before backup for %s: %s", path_str, exc)
-        if backup_mode is None:
-            backup_mode = mode
-        await svc._conn.files.write_file(
-            f"{path_str}.bak", original_text, mode=backup_mode, encoding=encoding
+        created_backup = await _create_file_backup(
+            svc,
+            path_str,
+            old_bytes=original_text.encode(encoding),
+            fallback_mode=mode,
+            sudo=False,
         )
     await svc._conn.files.write_file(path_str, new_content, mode=mode, encoding=encoding)
     return EnsureResult(
@@ -219,6 +217,124 @@ async def ensure_line(
         details=details,
         dry_run=False,
         diff=computed_diff,
+        backup_path=created_backup,
+    )
+
+
+def _create_local_file_backup(
+    svc: StateManagementService,
+    path_str: str,
+    backup_path: str,
+) -> str:
+    """Атомарно создать локальную ``.bak``-копию файла с сохранением прав, mtime и владельца.
+
+    Использует временный файл рядом с целевым и ``os.replace``, поэтому корректно
+    перезаписывает даже существующий ``.bak`` с правами ``0o400``.
+    """
+    src = Path(svc._conn.context.resolve_path(path_str))
+    dst = Path(svc._conn.context.resolve_path(backup_path))
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=dst.parent,
+            prefix=f".{dst.name}.",
+            delete=False,
+        ) as tmp_f:
+            tmp_path = Path(tmp_f.name)
+        shutil.copy2(src, tmp_path)
+        if sys.platform != "win32":
+            with contextlib.suppress(OSError, PermissionError):
+                st = src.stat()
+                os.chown(tmp_path, st.st_uid, st.st_gid)
+        os.replace(tmp_path, dst)
+        tmp_path = None
+        return backup_path
+    finally:
+        if tmp_path is not None:
+            with contextlib.suppress(OSError):
+                tmp_path.unlink(missing_ok=True)
+
+
+async def _create_remote_file_backup(
+    svc: StateManagementService,
+    path_str: str,
+    backup_path: str,
+    *,
+    old_bytes: bytes | None,
+    fallback_mode: int | None = None,
+    sudo: bool = False,
+) -> str:
+    """Создать ``.bak``-копию файла на удалённом хосте или под ``sudo`` (``cp -pf`` + fallback)."""
+    # На удалённом хосте или под sudo пробуем нативный cp -pf (сохраняет права, владельца и mtime за 1 RTT)
+    try:
+        cp_res = await svc._conn.run(
+            f"cp -pf {shlex.quote(path_str)} {shlex.quote(backup_path)}",
+            sudo=sudo,
+            raise_on_error=False,
+            dry_run=False,
+        )
+        if cp_res.ok:
+            return backup_path
+    except Exception as exc:
+        _logger.debug(
+            "Native cp -pf backup failed for %s, falling back to file copy: %s",
+            path_str,
+            exc,
+        )
+
+    if old_bytes is None:
+        raise FileTransferError(
+            f"Failed to create backup {backup_path!r} for {path_str!r}: "
+            "native cp -pf failed and original file content could not be read.",
+            host=svc._conn.config.host,
+        )
+
+    backup_mode: int | None = None
+    try:
+        st_info = await svc._conn.files.stat(path_str)
+        extracted = svc._extract_stat_mode(st_info)
+        if extracted >= 0:
+            backup_mode = extracted
+    except (OSError, UniconnError, ValueError) as exc:
+        _logger.debug("Unable to stat mode before backup for %s: %s", path_str, exc)
+    if backup_mode is None:
+        backup_mode = fallback_mode
+
+    orig_owner, orig_group = await svc._get_owner_group(path_str, sudo=sudo)
+    await svc._conn.files.write_file(backup_path, old_bytes, mode=backup_mode, sudo=sudo)
+    if backup_mode is not None and not sudo:
+        with contextlib.suppress(OSError, UniconnError):
+            await svc._conn.files.chmod(backup_path, backup_mode)
+    if orig_owner is not None or orig_group is not None:
+        with contextlib.suppress(OSError, UniconnError, PermissionError):
+            await svc._apply_owner_group(
+                backup_path,
+                owner=orig_owner,
+                group=orig_group,
+                sudo=sudo,
+            )
+    return backup_path
+
+
+async def _create_file_backup(
+    svc: StateManagementService,
+    path_str: str,
+    *,
+    old_bytes: bytes | None,
+    fallback_mode: int | None = None,
+    sudo: bool = False,
+) -> str:
+    """Создать локальную ``.bak``-копию файла на целевом хосте с сохранением прав и владельца."""
+    backup_path = f"{path_str}.bak"
+    if svc._conn.transport_name == "local" and not sudo:
+        return _create_local_file_backup(svc, path_str, backup_path)
+    return await _create_remote_file_backup(
+        svc,
+        path_str,
+        backup_path,
+        old_bytes=old_bytes,
+        fallback_mode=fallback_mode,
+        sudo=sudo,
     )
 
 
@@ -301,6 +417,7 @@ async def _ensure_file_absent(
     path_str: str,
     *,
     encoding: str,
+    backup: bool,
     sudo: bool,
     is_dry_run: bool,
 ) -> EnsureResult:
@@ -333,11 +450,13 @@ async def _ensure_file_absent(
             diff=None,
         )
 
+    old_bytes: bytes | None = None
     old_text = ""
     if not is_symlink:
         try:
-            raw = await svc._conn.files.read_file(path_str, encoding=encoding)
-            old_text = raw if isinstance(raw, str) else raw.decode(encoding, errors="replace")
+            raw = await svc._conn.files.read_file(path_str, encoding=None)
+            old_bytes = raw if isinstance(raw, bytes) else raw.encode(encoding, errors="replace")
+            old_text = old_bytes.decode(encoding, errors="replace")
         except (OSError, UniconnError, UnicodeDecodeError) as exc:
             _logger.debug("Skipping diff preview read before remove for %s: %s", path_str, exc)
 
@@ -365,6 +484,15 @@ async def _ensure_file_absent(
             diff=diff_str,
         )
 
+    created_backup: str | None = None
+    if backup and not is_symlink:
+        created_backup = await _create_file_backup(
+            svc,
+            path_str,
+            old_bytes=old_bytes,
+            sudo=sudo,
+        )
+
     if svc._conn.transport_name == "local" and not sudo:
         Path(svc._conn.context.resolve_path(path_str)).unlink(missing_ok=True)
     elif sudo or is_symlink:
@@ -385,6 +513,7 @@ async def _ensure_file_absent(
         details=f"Removed {path_str}",
         dry_run=False,
         diff=diff_str,
+        backup_path=created_backup,
     )
 
 
@@ -569,6 +698,7 @@ async def _ensure_file_present(
     owner: str | None,
     group: str | None,
     validate: str | None,
+    backup: bool,
     encoding: str,
     atomic: bool,
     sudo: bool,
@@ -576,7 +706,7 @@ async def _ensure_file_present(
 ) -> EnsureResult:
     """Обработать ``ensure_file(..., state='present')``."""
     file_exists = await svc._conn.files.exists(path_str)
-    old_bytes = b""
+    old_bytes: bytes | None = None
     if file_exists:
         try:
             raw_existing = await svc._conn.files.read_file(path_str, encoding=None)
@@ -589,7 +719,7 @@ async def _ensure_file_present(
         plan,
         path_str,
         file_exists=file_exists,
-        old_bytes=old_bytes,
+        old_bytes=old_bytes or b"",
         content=content,
         encoding=encoding,
     )
@@ -608,7 +738,7 @@ async def _ensure_file_present(
         )
 
     if validate is not None:
-        candidate: str | bytes = content if content is not None else (old_bytes if file_exists else "")
+        candidate: str | bytes = content if content is not None else (old_bytes or b"" if file_exists else "")
         val_failure = await _validate_candidate_file(
             svc,
             path_str,
@@ -621,6 +751,16 @@ async def _ensure_file_present(
         )
         if val_failure is not None:
             return val_failure
+
+    created_backup: str | None = None
+    if backup and file_exists:
+        created_backup = await _create_file_backup(
+            svc,
+            path_str,
+            old_bytes=old_bytes,
+            fallback_mode=parsed_mode,
+            sudo=sudo,
+        )
 
     if content_changed:
         write_payload: str | bytes = content if content is not None else ""
@@ -657,6 +797,7 @@ async def _ensure_file_present(
         unchanged_details=f"File {path_str} already in desired state",
         changed_prefix=f"File {path_str}",
         dry_run_prefix=f"[DRY-RUN] Would update {path_str}",
+        backup_path=created_backup,
     )
 
 
@@ -671,6 +812,7 @@ async def ensure_file(
     owner: str | None = None,
     group: str | None = None,
     validate: str | None = None,
+    backup: bool = False,
     encoding: str = "utf-8",
     atomic: bool = False,
     sudo: bool = False,
@@ -698,7 +840,12 @@ async def ensure_file(
 
     if state == "absent":
         return await _ensure_file_absent(
-            svc, path_str, encoding=encoding, sudo=sudo, is_dry_run=is_dry_run
+            svc,
+            path_str,
+            encoding=encoding,
+            backup=backup,
+            sudo=sudo,
+            is_dry_run=is_dry_run,
         )
     if state == "link":
         return await _ensure_file_link(
@@ -718,6 +865,7 @@ async def ensure_file(
         owner=owner,
         group=group,
         validate=validate,
+        backup=backup,
         encoding=encoding,
         atomic=atomic,
         sudo=sudo,

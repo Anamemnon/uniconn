@@ -59,6 +59,14 @@ class _BarrierConnectionWindow:
             entry.conn.state.discard_batch(entry.batch)
         entry.batch = None
 
+    def discard_notifications(self, entry: _WindowedHostConn) -> None:
+        """Отменить и удалить все отложенные уведомления хоста (как активные, так и вытесненные LRU)."""
+        self._detached_notifications.pop(entry.key, None)
+        if entry.batch is not None:
+            with contextlib.suppress(Exception):
+                entry.conn.state.discard_batch(entry.batch)
+            entry.batch = None
+
     async def _close_entry(self, entry: _WindowedHostConn) -> None:
         self._stash_entry_notifications(entry)
         with contextlib.suppress(Exception):

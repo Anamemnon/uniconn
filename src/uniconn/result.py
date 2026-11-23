@@ -422,6 +422,7 @@ class EnsureResult:
     reboot_required: bool = False
     notified: bool = False
     notify_results: tuple[Any, ...] = ()
+    backup_path: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Преобразовать отчёт идемпотентной проверки в сериализуемый словарь."""
@@ -440,6 +441,7 @@ class EnsureResult:
             "reboot_required": self.reboot_required,
             "notified": self.notified,
             "notify_results": serialized_notify,
+            "backup_path": self.backup_path,
         }
 
 

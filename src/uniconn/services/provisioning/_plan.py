@@ -107,6 +107,7 @@ class ChangePlan:
         changed_prefix: str,
         dry_run_prefix: str,
         reboot_required: bool = False,
+        backup_path: str | None = None,
     ) -> EnsureResult:
         """Сформировать ``EnsureResult`` на основе накопленных изменений."""
         if not self.changed:
@@ -119,6 +120,7 @@ class ChangePlan:
                 dry_run=self.is_dry_run,
                 diff=None,
                 reboot_required=reboot_required,
+                backup_path=None,
             )
         actions_summary = ", ".join(self.actions)
         if self.is_dry_run:
@@ -131,6 +133,7 @@ class ChangePlan:
                 dry_run=True,
                 diff=self.full_diff,
                 reboot_required=reboot_required,
+                backup_path=None,
             )
         return EnsureResult(
             target=self.target,
@@ -141,6 +144,7 @@ class ChangePlan:
             dry_run=False,
             diff=self.full_diff,
             reboot_required=reboot_required,
+            backup_path=backup_path,
         )
 
 

@@ -4,12 +4,17 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import threading
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .models import TaskResult
+
+CURRENT_FLOW_HOST: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "uniconn_flow_host", default=None
+)
 
 
 def normalize_host_id(host_or_conn: Any) -> tuple[str, str]:
@@ -187,7 +192,44 @@ class FlowContext:
             return default
 
 
+    @staticmethod
+    def _extract_outputs_from_map(
+        host_map: Mapping[str, TaskResult],
+    ) -> dict[str, Any]:
+        """Извлечь словарь ``{task_name: return_value}`` из карты результатов одного хоста."""
+        return {
+            name: res.return_value
+            for name, res in host_map.items()
+            if res.status == "success" or res.skip_reason == "checkpoint_completed"
+        }
+
+    def host_outputs(self, host_or_conn: Any) -> dict[str, Any]:
+        """Вернуть словарь ``{task_name: return_value}`` успешно выполненных задач для указанного хоста."""
+        with self._thread_lock:
+            bucket = self._resolve_host_bucket(host_or_conn)
+            return self._extract_outputs_from_map(self._task_results.get(bucket, {}))
+
+    @property
+    def outputs(self) -> dict[str, Any]:
+        """Словарь ``{task_name: return_value}`` результатов выполненных задач для активного хоста.
+
+        При обращении внутри задачи, ``on_failure`` или ``compensate`` возвращает выходы
+        строго для текущего хоста (``CURRENT_FLOW_HOST``). Вне контекста активного хоста
+        возвращает словарь для единственного хоста либо объединённый снимок по всем хостам.
+        """
+        active_host = CURRENT_FLOW_HOST.get()
+        with self._thread_lock:
+            if active_host is not None:
+                bucket = self._resolve_host_bucket(active_host)
+                return self._extract_outputs_from_map(self._task_results.get(bucket, {}))
+            merged: dict[str, Any] = {}
+            for host_map in self._task_results.values():
+                merged.update(self._extract_outputs_from_map(host_map))
+            return merged
+
+
 __all__ = [
+    "CURRENT_FLOW_HOST",
     "FlowContext",
     "normalize_host_id",
 ]

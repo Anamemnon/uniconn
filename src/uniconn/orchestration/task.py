@@ -7,7 +7,7 @@ import asyncio
 import functools
 import inspect
 import threading
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Generic, ParamSpec, TypeVar, overload
 
@@ -66,8 +66,9 @@ def _bind_callable_args(
     ctx: FlowContext,
     *,
     prefer_sync_conn: bool = False,
+    extra_vars: Mapping[str, Any] | None = None,
 ) -> tuple[tuple[Any, ...], dict[str, Any]]:
-    """Подобрать позиционные и именованные аргументы для вызова задачи или предиката ``when``."""
+    """Подобрать позиционные и именованные аргументы для вызова задачи, ``when``, ``compensate`` или ``on_failure``."""
     try:
         sig = inspect.signature(fn)
     except (ValueError, TypeError):
@@ -123,6 +124,7 @@ def _bind_callable_args(
                     idx == 0
                     and param.name != "host"
                     and param.name not in ctx.vars
+                    and (extra_vars is None or param.name not in extra_vars)
                 )
             )
         )
@@ -135,6 +137,8 @@ def _bind_callable_args(
             conn_consumed = True
         elif param.name in ctx.vars:
             _assign_arg(param, ctx.vars[param.name])
+        elif extra_vars is not None and param.name in extra_vars:
+            _assign_arg(param, extra_vars[param.name])
         elif param.name == "host" and param.default is inspect.Parameter.empty:
             _assign_arg(param, _resolve_host_label(conn))
         elif (
@@ -186,25 +190,30 @@ async def invoke_flow_callable(
     fn: Callable[..., Any],
     conn: Any,
     ctx: FlowContext,
+    *,
+    extra_vars: Mapping[str, Any] | None = None,
 ) -> Any:
-    """Безопасно выполнить синхронную или асинхронную функцию задачи/предиката."""
-    if inspect.iscoroutinefunction(fn):
-        pos_args, kw_args = _bind_callable_args(fn, conn, ctx, prefer_sync_conn=False)
-        return await fn(*pos_args, **kw_args)
+    """Безопасно выполнить синхронную или асинхронную функцию задачи, предиката или обработчика отката."""
+    target_fn: Callable[..., Any] = fn.fn if isinstance(fn, Task) else fn
+    if inspect.iscoroutinefunction(target_fn):
+        pos_args, kw_args = _bind_callable_args(
+            target_fn, conn, ctx, prefer_sync_conn=False, extra_vars=extra_vars
+        )
+        return await target_fn(*pos_args, **kw_args)
 
     shared_thread = _SHARED_LOOP_MANAGER.thread
     in_portal_thread = (
         shared_thread is not None and threading.current_thread() is shared_thread
     )
-    wants_sync_conn = _detect_sync_conn_preference(fn, in_portal_thread)
+    wants_sync_conn = _detect_sync_conn_preference(target_fn, in_portal_thread)
     pos_args, kw_args = _bind_callable_args(
-        fn, conn, ctx, prefer_sync_conn=wants_sync_conn
+        target_fn, conn, ctx, prefer_sync_conn=wants_sync_conn, extra_vars=extra_vars
     )
 
     if in_portal_thread or wants_sync_conn:
-        outcome = await asyncio.to_thread(fn, *pos_args, **kw_args)
+        outcome = await asyncio.to_thread(target_fn, *pos_args, **kw_args)
     else:
-        outcome = fn(*pos_args, **kw_args)
+        outcome = target_fn(*pos_args, **kw_args)
 
     if inspect.isawaitable(outcome):
         return await outcome
@@ -252,6 +261,8 @@ class TaskOptions:
     concurrency: int | None = None
     tags: tuple[str, ...] = ()
     hosts: Sequence[str] | Callable[[str], bool] | None = None
+    compensate: Callable[..., Any] | None = None
+    on_failure: Callable[..., Any] | None = None
 
 
 class Task(Generic[P, R]):
@@ -269,6 +280,14 @@ class Task(Generic[P, R]):
             raise ConfigurationError("Task retries must be >= 0.")
         if options.concurrency is not None and options.concurrency <= 0:
             raise ConfigurationError("Task concurrency must be > 0.")
+        if options.compensate is not None and not callable(options.compensate):
+            raise ConfigurationError(
+                f"Task compensate handler {options.compensate!r} must be callable."
+            )
+        if options.on_failure is not None and not callable(options.on_failure):
+            raise ConfigurationError(
+                f"Task on_failure handler {options.on_failure!r} must be callable."
+            )
 
         self.fn = fn
         self.options = options
@@ -294,6 +313,16 @@ class Task(Generic[P, R]):
     def always_run(self) -> bool:
         """Флаг гарантированного запуска задачи (даже при сбое предшественников)."""
         return self.options.always_run
+
+    @property
+    def compensate(self) -> Callable[..., Any] | None:
+        """Функция компенсирующего отката (Saga), вызываемая в обратном топологическом порядке при сбое."""
+        return self.options.compensate
+
+    @property
+    def on_failure(self) -> Callable[..., Any] | None:
+        """Локальный обработчик падения данной задачи (диагностика, очистка артефактов)."""
+        return self.options.on_failure
 
     def matches_host(self, host_key: str, conn: Connection | Any = None) -> bool:
         """Проверить, разрешено ли выполнение задачи на указанном хосте."""
@@ -360,6 +389,8 @@ def task(
     concurrency: int | None = None,
     tags: Sequence[str] = (),
     hosts: Sequence[str] | Callable[[str], bool] | None = None,
+    compensate: Callable[..., Any] | None = None,
+    on_failure: Callable[..., Any] | None = None,
 ) -> Task[P, R]: ...
 
 
@@ -381,6 +412,8 @@ def task(
     concurrency: int | None = None,
     tags: Sequence[str] = (),
     hosts: Sequence[str] | Callable[[str], bool] | None = None,
+    compensate: Callable[..., Any] | None = None,
+    on_failure: Callable[..., Any] | None = None,
 ) -> Callable[[Callable[P, Awaitable[R] | R]], Task[P, R]]: ...
 
 
@@ -401,8 +434,10 @@ def task(
     concurrency: int | None = None,
     tags: Sequence[str] = (),
     hosts: Sequence[str] | Callable[[str], bool] | None = None,
+    compensate: Callable[..., Any] | None = None,
+    on_failure: Callable[..., Any] | None = None,
 ) -> Task[P, R] | Callable[[Callable[P, Awaitable[R] | R]], Task[P, R]]:
-    """Декоратор объявления задачи ``Task`` с графом зависимостей ``depends_on``/``pre`` и ``post``."""
+    """Декоратор объявления задачи ``Task`` с графом зависимостей и Saga-обработчиками ``compensate``/``on_failure``."""
     combined_deps = [*depends_on, *pre]
     resolved_deps = _coerce_task_list(combined_deps)
     resolved_post = _coerce_task_list(post)
@@ -430,6 +465,8 @@ def task(
             concurrency=concurrency,
             tags=tuple(tags),
             hosts=hosts,
+            compensate=compensate,
+            on_failure=on_failure,
         )
         return Task(base_fn, opts)
 

@@ -979,6 +979,7 @@ class ConnectionPool:
         connection_window: int | None = None,
         expected_plan: Any = None,
         strict_plan: bool = True,
+        rollback_on_failure: bool | None = None,
     ) -> Any:
         """Выполнить сценарий ``Flow`` (или задачу ``@task`` / список задач) на всём пуле хостов."""
         from ..orchestration.scheduler import run_pool_flow
@@ -996,6 +997,7 @@ class ConnectionPool:
             connection_window=connection_window,
             expected_plan=expected_plan,
             strict_plan=strict_plan,
+            rollback_on_failure=rollback_on_failure,
         )
 
     def to_sync(self) -> SyncConnectionPool:

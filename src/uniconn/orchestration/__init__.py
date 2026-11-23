@@ -1,10 +1,12 @@
 # src/uniconn/orchestration/__init__.py
 """Модуль декларативной оркестрации задач с графом зависимостей (Task DAG Runner)."""
 
-from .context import FlowContext, normalize_host_id
+from .context import CURRENT_FLOW_HOST, FlowContext, normalize_host_id
 from .flow import Flow, SyncFlow
 from .models import (
     FlowReport,
+    RollbackResult,
+    RollbackStatus,
     SkipReason,
     TaskResult,
     TaskStatus,
@@ -22,9 +24,12 @@ from .scheduler import (
 from .task import Task, TaskOptions, invoke_flow_callable, task
 
 __all__ = [
+    "CURRENT_FLOW_HOST",
     "Flow",
     "FlowContext",
     "FlowReport",
+    "RollbackResult",
+    "RollbackStatus",
     "SkipReason",
     "SyncFlow",
     "Task",

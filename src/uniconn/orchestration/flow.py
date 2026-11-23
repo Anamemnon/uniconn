@@ -42,6 +42,7 @@ class Flow:
         batch_size: int | None = None,
         connection_window: int | None = None,
         batch_notifications: bool = True,
+        rollback_on_failure: bool = True,
         description: str | None = None,
         params_model: Any | None = None,
         risk_tier: str | None = None,
@@ -68,6 +69,7 @@ class Flow:
         self.batch_size = batch_size
         self.connection_window = connection_window
         self.batch_notifications = batch_notifications
+        self.rollback_on_failure = bool(rollback_on_failure)
         self.description = description.strip() if isinstance(description, str) and description.strip() else None
         self.params_model = params_model
         self.risk_tier = risk_tier.strip().lower() if isinstance(risk_tier, str) and risk_tier.strip() else None
@@ -193,6 +195,10 @@ class Flow:
             lines.append(f"Tag Filter: {', '.join(str(t) for t in tags)}")
         if dry_run is not None:
             lines.append(f"Dry Run: {dry_run}")
+        has_compensators = any(t.compensate is not None for t in self._tasks.values())
+        if has_compensators:
+            rb_note = " (skipped in dry_run)" if (dry_run is True and self.rollback_on_failure) else ""
+            lines.append(f"Rollback On Failure: {self.rollback_on_failure}{rb_note}")
         if vars:
             kv = ", ".join(f"{k}={v!r}" for k, v in sorted(vars.items()))
             lines.append(f"Parameters: {kv}")
@@ -213,6 +219,17 @@ class Flow:
                     meta.append("ignore_errors")
                 if t_obj.options.retries > 0:
                     meta.append(f"retries={t_obj.options.retries}")
+                for hook_label, hook_fn in (
+                    ("compensate", t_obj.compensate),
+                    ("on_failure", t_obj.on_failure),
+                ):
+                    if hook_fn is not None:
+                        hook_name = getattr(hook_fn, "__name__", None)
+                        meta.append(
+                            f"{hook_label}={hook_name}"
+                            if hook_name and hook_name != "<lambda>"
+                            else hook_label
+                        )
                 meta_str = f" ({', '.join(meta)})" if meta else ""
                 lines.append(f"    {status_prefix} {t_obj.name}{dep_str}{meta_str}")
         return "\n".join(lines)
@@ -259,6 +276,7 @@ class Flow:
         resumed_from: str | None = None,
         expected_plan: FleetChangePlan | None = None,
         strict_plan: bool = True,
+        rollback_on_failure: bool | None = None,
     ) -> FlowReport:
         """Асинхронно выполнить сценарий ``Flow`` на ``Connection`` или ``ConnectionPool``."""
         return await execute_flow(
@@ -277,6 +295,7 @@ class Flow:
             resumed_from=resumed_from,
             expected_plan=expected_plan,
             strict_plan=strict_plan,
+            rollback_on_failure=rollback_on_failure,
         )
 
     def to_sync(self) -> SyncFlow:
@@ -308,6 +327,10 @@ class Flow:
                     flags.append(f"retries={t_obj.options.retries}")
                 if t_obj.tags:
                     flags.append(f"tags={list(t_obj.tags)}")
+                if t_obj.compensate is not None:
+                    flags.append("compensate")
+                if t_obj.on_failure is not None:
+                    flags.append("on_failure")
                 flag_str = f" [magenta][{', '.join(flags)}][/magenta]" if flags else ""
                 layer_branch.add(f"[green]{t_obj.name}[/green]{dep_info}{flag_str}")
         return root
@@ -342,6 +365,11 @@ class SyncFlow(SyncProxyMixin):
     def connection_window(self) -> int | None:
         """Ограничение одновременно открытых соединений в барьерном режиме (если задано)."""
         return self._async_flow.connection_window
+
+    @property
+    def rollback_on_failure(self) -> bool:
+        """Флаг автоматического Saga-отката при падении критичной задачи."""
+        return self._async_flow.rollback_on_failure
 
     @property
     def description(self) -> str | None:
@@ -469,6 +497,7 @@ class SyncFlow(SyncProxyMixin):
         resumed_from: str | None = None,
         expected_plan: FleetChangePlan | None = None,
         strict_plan: bool = True,
+        rollback_on_failure: bool | None = None,
     ) -> FlowReport:
         """Синхронно выполнить сценарий на ``SyncConnection``, ``SyncConnectionPool`` или async-цели."""
         portal, async_target = self._resolve_portal_and_target(target)
@@ -488,6 +517,7 @@ class SyncFlow(SyncProxyMixin):
                 resumed_from=resumed_from,
                 expected_plan=expected_plan,
                 strict_plan=strict_plan,
+                rollback_on_failure=rollback_on_failure,
             )
         )
 

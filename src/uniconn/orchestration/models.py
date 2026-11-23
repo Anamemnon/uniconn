@@ -10,6 +10,7 @@ from ..exceptions import FlowExecutionError
 from ..result import EnsureResult, PingResult, Result, SyncResult
 
 TaskStatus = Literal["success", "failed", "skipped"]
+RollbackStatus = Literal["success", "failed"]
 SkipReason = Literal[
     "when_false",
     "host_filtered",
@@ -93,6 +94,15 @@ def extract_task_outcome_metadata(
     return False, False, None, None, False
 
 
+def _serialize_return_value(value: Any) -> Any:
+    """Преобразовать возвращаемое значение задачи или отката в JSON-совместимое представление."""
+    if hasattr(value, "to_dict") and callable(value.to_dict):
+        return value.to_dict()
+    if isinstance(value, (str, int, float, bool, list, dict, type(None))):
+        return value
+    return repr(value)
+
+
 @dataclass(frozen=True, slots=True)
 class TaskResult:
     """Результат выполнения отдельной задачи ``@task`` на конкретном хосте."""
@@ -119,13 +129,7 @@ class TaskResult:
 
     def to_dict(self) -> dict[str, Any]:
         """Преобразовать результат задачи в сериализуемый словарь."""
-        serialized_ret: Any = self.return_value
-        if hasattr(serialized_ret, "to_dict") and callable(serialized_ret.to_dict):
-            serialized_ret = serialized_ret.to_dict()
-        elif not isinstance(
-            serialized_ret, (str, int, float, bool, list, dict, type(None))
-        ):
-            serialized_ret = repr(serialized_ret)
+        serialized_ret = _serialize_return_value(self.return_value)
 
         diag_dict = self.diagnostic or extract_task_diagnostic(
             self.return_value, self.exception
@@ -151,6 +155,46 @@ class TaskResult:
         return out
 
 
+@dataclass(frozen=True, slots=True)
+class RollbackResult:
+    """Результат выполнения компенсирующей транзакции (``compensate``) для задачи на хосте."""
+
+    task_name: str
+    host: str
+    status: RollbackStatus
+    return_value: Any = None
+    exception: BaseException | None = None
+    error: str | None = None
+    duration: float = 0.0
+    diagnostic: dict[str, Any] | None = None
+
+    @property
+    def ok(self) -> bool:
+        """Вернуть ``True``, если откат задачи завершился успешно."""
+        return self.status == "success"
+
+    def to_dict(self) -> dict[str, Any]:
+        """Преобразовать результат отката задачи в сериализуемый словарь."""
+        serialized_ret = _serialize_return_value(self.return_value)
+
+        diag_dict = self.diagnostic or extract_task_diagnostic(
+            self.return_value, self.exception
+        )
+        out: dict[str, Any] = {
+            "task_name": self.task_name,
+            "host": self.host,
+            "status": self.status,
+            "ok": self.ok,
+            "duration": round(self.duration, 6),
+            "error": self.error
+            or (str(self.exception) if self.exception is not None else None),
+            "return_value": serialized_ret,
+        }
+        if diag_dict is not None:
+            out["diagnostic"] = diag_dict
+        return out
+
+
 @dataclass(slots=True)
 class FlowReport:
     """Сводный отчёт о выполнении сценария ``Flow`` на одном хосте или пуле хостов."""
@@ -164,6 +208,7 @@ class FlowReport:
     run_id: str | None = None
     can_resume: bool = False
     resumed_from: str | None = None
+    rollbacks: dict[str, list[RollbackResult]] = field(default_factory=dict)
 
     @property
     def total_tasks(self) -> int:
@@ -216,6 +261,18 @@ class FlowReport:
                 failed.append(host)
         return failed
 
+    @property
+    def rolled_back(self) -> bool:
+        """Вернуть ``True``, если был выполнен Saga-откат хотя бы одной задачи."""
+        return any(bool(items) for items in self.rollbacks.values())
+
+    @property
+    def rollback_ok(self) -> bool:
+        """Вернуть ``True``, если все выполненные шаги Saga-отката завершились успешно."""
+        return all(
+            r.ok for items in self.rollbacks.values() for r in items
+        )
+
     def for_host(self, host: str) -> list[TaskResult]:
         """Вернуть список результатов задач для указанного хоста."""
         if host in self.results:
@@ -252,7 +309,13 @@ class FlowReport:
             f"changed={self.changed_count}, duration={self.duration:.3f}s"
         )
         if details:
-            return f"{summary_head} | failures: {'; '.join(details)}"
+            summary_head = f"{summary_head} | failures: {'; '.join(details)}"
+        if self.rolled_back:
+            total_rb = sum(len(items) for items in self.rollbacks.values())
+            ok_rb = sum(1 for items in self.rollbacks.values() for r in items if r.ok)
+            summary_head = (
+                f"{summary_head} | rollback: ok={self.rollback_ok} ({ok_rb}/{total_rb})"
+            )
         return summary_head
 
     def raise_for_status(self) -> Self:
@@ -278,6 +341,12 @@ class FlowReport:
             "skipped_count": self.skipped_count,
             "changed_count": self.changed_count,
             "failed_hosts": self.failed_hosts,
+            "rolled_back": self.rolled_back,
+            "rollback_ok": self.rollback_ok,
+            "rollbacks": {
+                host: [r.to_dict() for r in items]
+                for host, items in self.rollbacks.items()
+            },
             "notified_handlers": {
                 h: list(names) for h, names in self.notified_handlers.items()
             },
@@ -338,11 +407,32 @@ class FlowReport:
                     dur_str,
                     detail_str,
                 )
+        for host, rb_items in self.rollbacks.items():
+            for rb in rb_items:
+                rb_status = (
+                    "[cyan]↩ rollback ok[/cyan]"
+                    if rb.ok
+                    else "[bold red]↩ rollback fail[/bold red]"
+                )
+                rb_detail = rb.error or (str(rb.exception) if rb.exception else "")
+                if len(rb_detail) > 60:
+                    rb_detail = rb_detail[:57] + "..."
+                table.add_row(
+                    host,
+                    f"{rb.task_name} (compensate)",
+                    rb_status,
+                    "-",
+                    "1",
+                    f"{rb.duration:.3f}s",
+                    rb_detail,
+                )
         return table
 
 
 __all__ = [
     "FlowReport",
+    "RollbackResult",
+    "RollbackStatus",
     "SkipReason",
     "TaskResult",
     "TaskStatus",
