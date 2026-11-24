@@ -4,13 +4,21 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 from .._logging import SecretMaskingFilter
 from ..config.inventory import InventoryLoader
+from ..config.inventory_providers import (
+    CachedInventoryProvider,
+    InventoryProvider,
+    provider_resolves_secrets,
+    resolve_inventory_provider,
+    validate_inventory_entries,
+)
+from ..config.secrets import SecretResolver
 from ..config.uri import URIParser
 from ..core.connection import Connection
 from ..exceptions import ConfigurationError
@@ -50,20 +58,35 @@ _FORBIDDEN_DYNAMIC_URI_OPTIONS: frozenset[str] = frozenset(
     }
 )
 _FORBIDDEN_DYNAMIC_URI_TRANSPORTS: frozenset[str] = frozenset({"local", "replay", "serial", "uart"})
-_SECRET_REF_RE = re.compile(r"(?:env|file)://", re.IGNORECASE)
+_SCHEME_REF_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*)://")
 
 
 def _contains_secret_reference(value: str) -> bool:
-    """Проверить строку (включая percent-decoded варианты) на ссылки ``env://`` или ``file://``."""
+    """Проверить строку (включая до 3 уровней percent-encoding) на любые известные схемы ``SecretResolver``."""
+    schemes = {s.lower() for s in SecretResolver.list_schemes()}
     cur = value
-    for _ in range(3):
-        if _SECRET_REF_RE.search(cur):
-            return True
+    for _ in range(4):
+        for match in _SCHEME_REF_RE.finditer(cur):
+            if match.group(1).lower() in schemes:
+                return True
         decoded = unquote(cur)
         if decoded == cur:
             break
         cur = decoded
     return False
+
+
+def _make_local_entry() -> MCPHostEntry:
+    """Создать стандартную запись ``local`` для ``MCPHostRegistry``."""
+    return MCPHostEntry(
+        name="local",
+        uri="local://",
+        masked_uri="local://",
+        transport="local",
+        host="localhost",
+        groups=("local",),
+        raw_config={"uri": "local://", "name": "local"},
+    )
 
 
 def mask_uri_secrets(uri: str) -> str:
@@ -93,10 +116,27 @@ class MCPHostRegistry:
         policy: MCPSecurityPolicy | None = None,
         *,
         entries: Sequence[MCPHostEntry] = (),
+        provider: InventoryProvider | None = None,
+        provider_host: str | None = None,
+        provider_group: str | None = None,
+        provider_base_dir: str | Path | None = None,
+        include_local: bool = False,
+        default_to_local: bool = False,
     ) -> None:
-        """Инициализировать реестр хостов с заданной политикой безопасности."""
+        """Инициализировать реестр хостов с заданной политикой безопасности и опциональным провайдером."""
         self.policy = policy or MCPSecurityPolicy()
         self._entries: dict[str, MCPHostEntry] = {entry.name: entry for entry in entries}
+        self._provider: InventoryProvider | None = provider
+        self._provider_host: str | None = provider_host
+        self._provider_group: str | None = provider_group
+        self._provider_base_dir: str | Path | None = provider_base_dir
+        self._provider_include_local: bool = include_local
+        self._provider_default_to_local: bool = default_to_local
+
+    @property
+    def provider(self) -> InventoryProvider | None:
+        """Привязанный асинхронный ``InventoryProvider`` (если реестр создан через ``from_provider``)."""
+        return self._provider
 
     @classmethod
     def from_sources(
@@ -125,7 +165,7 @@ class MCPHostRegistry:
             uri_str = raw_uri.strip()
             if not uri_str:
                 continue
-            cfg = URIParser.parse(uri_str)
+            cfg = URIParser.parse(uri_str, resolve_secrets=False)
             candidate_name = cfg.host or f"{cfg.transport}-{idx}"
             if candidate_name in seen_names:
                 candidate_name = f"{candidate_name}-{idx}"
@@ -143,17 +183,7 @@ class MCPHostRegistry:
             )
 
         if (include_local or (not entries and default_to_local)) and "local" not in seen_names:
-            entries.append(
-                MCPHostEntry(
-                    name="local",
-                    uri="local://",
-                    masked_uri="local://",
-                    transport="local",
-                    host="localhost",
-                    groups=("local",),
-                    raw_config={"uri": "local://", "name": "local"},
-                )
-            )
+            entries.append(_make_local_entry())
 
         return cls(policy=policy, entries=entries)
 
@@ -173,6 +203,103 @@ class MCPHostRegistry:
             for idx, item in enumerate(raw_entries, start=1)
         ]
         return cls(policy=policy, entries=entries)
+
+    @classmethod
+    def _build_entries_from_raw(
+        cls,
+        raw_entries: Any,
+        *,
+        host: str | None = None,
+        group: str | None = None,
+        base_dir: str | Path | None = None,
+        include_local: bool = False,
+        default_to_local: bool = True,
+        resolve_secrets: bool = True,
+    ) -> list[MCPHostEntry]:
+        """Нормализовать записи провайдера и собрать список ``MCPHostEntry``."""
+        normalized = InventoryLoader.parse_data(
+            raw_entries,
+            host=host,
+            group=group,
+            base_dir=base_dir,
+            resolve_secrets=resolve_secrets,
+        )
+        entries: list[MCPHostEntry] = []
+        seen_names: set[str] = set()
+        for idx, item in enumerate(normalized, start=1):
+            entry = cls._build_entry_from_dict(item, fallback_index=idx)
+            entries.append(entry)
+            seen_names.add(entry.name)
+        if (include_local or (not entries and default_to_local)) and "local" not in seen_names:
+            entries.append(_make_local_entry())
+        return entries
+
+    @classmethod
+    async def from_provider(
+        cls,
+        source: InventoryProvider | str | Path,
+        *,
+        host: str | None = None,
+        group: str | None = None,
+        base_dir: str | Path | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+        include_local: bool = False,
+        default_to_local: bool = True,
+        policy: MCPSecurityPolicy | None = None,
+    ) -> MCPHostRegistry:
+        """Асинхронно собрать реестр хостов из ``InventoryProvider`` (включая ``CachedInventoryProvider``)."""
+        provider = resolve_inventory_provider(
+            source,
+            base_dir=base_dir,
+            provider_options=provider_options,
+        )
+        raw_entries = validate_inventory_entries(await provider.load())
+        entries = cls._build_entries_from_raw(
+            raw_entries,
+            host=host,
+            group=group,
+            base_dir=base_dir,
+            include_local=include_local,
+            default_to_local=default_to_local,
+            resolve_secrets=not provider_resolves_secrets(provider),
+        )
+        return cls(
+            policy=policy,
+            entries=entries,
+            provider=provider,
+            provider_host=host,
+            provider_group=group,
+            provider_base_dir=base_dir,
+            include_local=include_local,
+            default_to_local=default_to_local,
+        )
+
+    async def refresh(self, *, force: bool = False) -> int:
+        """Асинхронно обновить хосты из привязанного ``InventoryProvider`` с атомарной заменой снимка.
+
+        При ошибке загрузки из провайдера прежний снимок хостов остаётся нетронутым.
+        Возвращает количество записей в обновлённом реестре.
+        """
+        if self._provider is None:
+            return len(self._entries)
+
+        if force and isinstance(self._provider, CachedInventoryProvider):
+            loaded = await self._provider.load(force_refresh=True)
+        else:
+            loaded = await self._provider.load()
+        raw_entries = validate_inventory_entries(loaded)
+
+        new_entries = self._build_entries_from_raw(
+            raw_entries,
+            host=self._provider_host,
+            group=self._provider_group,
+            base_dir=self._provider_base_dir,
+            include_local=self._provider_include_local,
+            default_to_local=self._provider_default_to_local,
+            resolve_secrets=not provider_resolves_secrets(self._provider),
+        )
+        self._entries = {entry.name: entry for entry in new_entries}
+        return len(self._entries)
 
     @staticmethod
     def _build_entry_from_dict(data: dict[str, Any], *, fallback_index: int) -> MCPHostEntry:
@@ -195,7 +322,7 @@ class MCPHostRegistry:
 
         uri_val = raw_copy.get("uri")
         if isinstance(uri_val, str) and uri_val.strip():
-            cfg = URIParser.parse(uri_val)
+            cfg = URIParser.parse(uri_val, resolve_secrets=False)
             name = str(raw_copy.get("name") or cfg.host or f"{cfg.transport}-{fallback_index}")
             return MCPHostEntry(
                 name=name,
@@ -247,7 +374,11 @@ class MCPHostRegistry:
         scoped_policy = self.policy.model_copy(
             update={"allow_dynamic_uri": bool(self.policy.allow_dynamic_uri and allow_dynamic_uri)}
         )
-        return MCPHostRegistry(policy=scoped_policy, entries=scoped_entries)
+        return MCPHostRegistry(
+            policy=scoped_policy,
+            entries=scoped_entries,
+            provider_base_dir=self._provider_base_dir,
+        )
 
     def list_entries(self, *, group: str | None = None) -> list[MCPHostEntry]:
         """Вернуть список зарегистрированных хостов (опционально отфильтрованный по группе)."""
@@ -392,7 +523,13 @@ class MCPHostRegistry:
                 auto_diagnostics=auto_diagnostics,
             )
         else:
-            conn = Connection.from_dict(raw, dry_run=eff_dry_run)
+            conn = Connection.from_dict(
+                raw,
+                dry_run=eff_dry_run,
+                resolve_secrets=False,
+                base_dir=self._provider_base_dir,
+                _resolve_uri_secrets=True,
+            )
         self._attach_security_hooks(conn)
         return conn
 

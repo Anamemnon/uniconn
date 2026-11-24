@@ -1,9 +1,15 @@
 # src/uniconn/plugins/__init__.py
-"""Плагинная система uniconn.
+"""Плагинная система ``uniconn``.
 
-Модуль для динамической загрузки транспортов через entry-points.
+Унифицированная динамическая загрузка расширений через ``importlib.metadata.entry_points``
+для транспортов, хранилищ состояния, провайдеров инвентаря, бэкендов секретов и HITL-каналов.
 """
 
-from ._loader import TransportLoader
+from ._loader import PLUGIN_GROUPS, PluginInfo, PluginLoader, TransportLoader
 
-__all__ = ["TransportLoader"]
+__all__ = [
+    "PLUGIN_GROUPS",
+    "PluginInfo",
+    "PluginLoader",
+    "TransportLoader",
+]

@@ -11,7 +11,15 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING, Any
 
-from .config import ConnectionConfig, InventoryLoader, SecretResolver, URIParser
+from .config import (
+    CachedInventoryProvider,
+    ConnectionConfig,
+    InventoryLoader,
+    InventoryProvider,
+    SecretBackend,
+    SecretResolver,
+    URIParser,
+)
 from .core.connection import Connection, OperationObserver
 from .exceptions import (
     ApprovalAlreadyConsumedError,
@@ -48,6 +56,7 @@ from .exceptions import (
     OptionalDependencyError,
     ParserNotFoundError,
     ParsingError,
+    PluginNotFoundError,
     PolicyEngineUnavailableError,
     PolicyError,
     PolicyViolationError,
@@ -56,6 +65,7 @@ from .exceptions import (
     TransportNotFoundError,
     UniconnError,
 )
+from .plugins import PluginLoader
 from .pool import ConnectionPool, SSHSessionPool
 from .result import (
     DiagnosticSummary,
@@ -119,6 +129,13 @@ if TYPE_CHECKING:
         WindowsJobBackend,
         resolve_backend,
         resolve_watch_rules,
+    )
+    from .config import (
+        EnvSecretBackend,
+        FileInventoryProvider,
+        FileSecretBackend,
+        StaticInventoryProvider,
+        resolve_inventory_provider,
     )
     from .core import (
         AutoDiagnosticMiddleware,
@@ -274,6 +291,11 @@ if TYPE_CHECKING:
         detect_parser_spec,
         parse_output,
         strip_ansi,
+    )
+    from .plugins import (
+        PLUGIN_GROUPS,
+        PluginInfo,
+        TransportLoader,
     )
     from .pool import (
         PoolApplyPlanContext,
@@ -511,6 +533,13 @@ _LAZY_MODULE_GROUPS: dict[str, tuple[str, ...]] = {
         "resolve_backend",
         "resolve_watch_rules",
     ),
+    ".config": (
+        "EnvSecretBackend",
+        "FileInventoryProvider",
+        "FileSecretBackend",
+        "StaticInventoryProvider",
+        "resolve_inventory_provider",
+    ),
     ".core": (
         "AutoDiagnosticMiddleware",
         "CallableSerializer",
@@ -671,6 +700,11 @@ _LAZY_MODULE_GROUPS: dict[str, tuple[str, ...]] = {
         "detect_parser_spec",
         "parse_output",
         "strip_ansi",
+    ),
+    ".plugins": (
+        "PLUGIN_GROUPS",
+        "PluginInfo",
+        "TransportLoader",
     ),
     ".pool": (
         "PoolApplyPlanContext",
@@ -935,6 +969,7 @@ __all__ = [
     "BaseTransport",
     "BatchAbortedError",
     "BeforeRunHook",
+    "CachedInventoryProvider",
     "CapabilityNotSupportedError",
     "Cassette",
     "CassetteError",
@@ -973,6 +1008,7 @@ __all__ = [
     "HostFacts",
     "InMemoryTracer",
     "InventoryLoader",
+    "InventoryProvider",
     "MCPSecurityPolicy",
     "MCPServer",
     "ModemCancelledError",
@@ -992,6 +1028,8 @@ __all__ = [
     "ParsingRegistry",
     "PingResult",
     "PlannedChange",
+    "PluginLoader",
+    "PluginNotFoundError",
     "PolicyEngineUnavailableError",
     "PolicyError",
     "PolicyGuardrailConfig",
@@ -1003,6 +1041,7 @@ __all__ = [
     "Result",
     "RollbackResult",
     "SSHSessionPool",
+    "SecretBackend",
     "SecretMaskingFilter",
     "SecretResolver",
     "ShellSession",

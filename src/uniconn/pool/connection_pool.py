@@ -19,6 +19,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self, TypeVar
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from ..config.inventory import InventoryLoader
+from ..config.inventory_providers import (
+    InventoryProvider,
+    provider_resolves_secrets,
+    resolve_inventory_provider,
+    validate_inventory_entries,
+)
 from ..config.models import ConnectionConfig
 from ..core.bridge import pool_fan_out_dict
 from ..core.connection import Connection, _resolve_rate_limiter, format_command
@@ -219,6 +226,69 @@ class ConnectionPool:
             dry_run=dry_run,
             auto_diagnostics=auto_diagnostics,
         )
+        return cls(
+            conns,
+            max_concurrent=max_concurrent,
+            retry_attempts=retry_attempts,
+            logger=logger,
+            rate_limit=rate_limit,
+            circuit_breaker=circuit_breaker,
+            failure_threshold=failure_threshold,
+            recovery_timeout=recovery_timeout,
+            batch_size=batch_size,
+            max_fail_ratio=max_fail_ratio,
+            dry_run=dry_run,
+            auto_diagnostics=auto_diagnostics,
+        )
+
+    @classmethod
+    async def from_inventory(
+        cls,
+        source: InventoryProvider | str | Path,
+        *,
+        group: str | None = None,
+        host: str | None = None,
+        base_dir: str | Path | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+        max_concurrent: int = 10,
+        retry_attempts: int = 3,
+        logger: logging.Logger | None = None,
+        dry_run: bool = False,
+        rate_limit: float | RateLimiter | None = None,
+        circuit_breaker: bool = False,
+        failure_threshold: int = 5,
+        recovery_timeout: float = 30.0,
+        batch_size: int | None = None,
+        max_fail_ratio: float = 0.0,
+        auto_diagnostics: bool | None = None,
+    ) -> Self:
+        """Асинхронно создать пул подключений из ``InventoryProvider``, файла или плагина ``uniconn.inventory``."""
+        provider = resolve_inventory_provider(
+            source,
+            base_dir=base_dir,
+            provider_options=provider_options,
+        )
+        raw_entries = validate_inventory_entries(await provider.load())
+        normalized = InventoryLoader.parse_data(
+            raw_entries,
+            host=host,
+            group=group,
+            base_dir=base_dir,
+            resolve_secrets=not provider_resolves_secrets(provider),
+        )
+        conns = [
+            Connection.from_dict(
+                data,
+                retry_attempts=retry_attempts,
+                logger=logger,
+                dry_run=dry_run,
+                auto_diagnostics=auto_diagnostics,
+                resolve_secrets=False,
+                base_dir=base_dir,
+                _resolve_uri_secrets=True,
+            )
+            for data in normalized
+        ]
         return cls(
             conns,
             max_concurrent=max_concurrent,

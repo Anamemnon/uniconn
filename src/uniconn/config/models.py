@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextvars import ContextVar
+from pathlib import Path
 from typing import Any, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationInfo, computed_field, model_validator
@@ -12,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationInfo, co
 from .secrets import SecretResolver
 
 _RESOLVE_SECRETS_VAR: ContextVar[bool] = ContextVar("_uniconn_resolve_secrets", default=True)
+_SECRET_BASE_DIR_VAR: ContextVar[str | Path | None] = ContextVar("_uniconn_secret_base_dir", default=None)
 _SECRET_TOP_LEVEL_FIELDS: frozenset[str] = frozenset({"password", "passphrase"})
 _SECRET_OPTION_KEYS: frozenset[str] = frozenset(
     {
@@ -65,7 +67,7 @@ class ConnectionConfig(BaseModel):
         ctx = info.context if isinstance(info.context, Mapping) else {}
         if ctx.get("resolve_secrets", _RESOLVE_SECRETS_VAR.get()) is False:
             return data
-        base_dir = ctx.get("secret_base_dir")
+        base_dir = ctx.get("secret_base_dir", _SECRET_BASE_DIR_VAR.get())
         resolved: dict[str, Any] = dict(data)
         for field_name in _SECRET_TOP_LEVEL_FIELDS:
             if field_name in resolved:
@@ -111,11 +113,17 @@ class ConnectionConfig(BaseModel):
         return f"{self.transport}://{user_prefix}{self.host}{port_suffix}"
 
     @classmethod
-    def from_uri(cls, uri: str, *, resolve_secrets: bool = True) -> Self:
+    def from_uri(
+        cls,
+        uri: str,
+        *,
+        resolve_secrets: bool = True,
+        base_dir: str | Path | None = None,
+    ) -> Self:
         """Парсинг URI в конфигурацию."""
         from .uri import URIParser
 
-        return cast(Self, URIParser.parse(uri, resolve_secrets=resolve_secrets))
+        return cast(Self, URIParser.parse(uri, resolve_secrets=resolve_secrets, base_dir=base_dir))
 
 
 __all__ = ["ConnectionConfig"]

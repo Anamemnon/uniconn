@@ -22,7 +22,7 @@ import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol, Self
+from typing import Any, Protocol, Self, runtime_checkable
 
 from .._logging import SecretMaskingFilter
 from ..exceptions import (
@@ -82,11 +82,13 @@ _ = (
 # ─── Каналы доставки запросов оператору ──────────────────────────────────────
 
 
+@runtime_checkable
 class ApprovalChannel(Protocol):
     """Протокол канала уведомления оператора о новой заявке HITL."""
 
     async def notify(self, request: ApprovalRequest) -> dict[str, Any] | None:
         """Отправить уведомление оператору и опционально вернуть синхронное решение."""
+        ...
 
 
 class TerminalApprovalChannel:
@@ -417,7 +419,8 @@ class ApprovalManager:
 
     def _build_default_channels(self) -> list[ApprovalChannel]:
         built: list[ApprovalChannel] = []
-        chan_set = {c.strip().lower() for c in self.policy.channels if c.strip()}
+        chan_names = [c.strip().lower() for c in self.policy.channels if c.strip()]
+        chan_set = set(chan_names)
         if "terminal" in chan_set:
             built.append(TerminalApprovalChannel(interactive_tty=False))
         if "webhook" in chan_set and self.policy.webhook_url:
@@ -436,6 +439,29 @@ class ApprovalManager:
                     secret=webhook_secret,
                 )
             )
+        builtin_handled = {"terminal", "webhook", "cli", "dashboard"}
+        custom_names = list(dict.fromkeys(name for name in chan_names if name not in builtin_handled))
+        if custom_names:
+            from ..plugins._loader import PluginLoader, _callable_accepts_kwarg
+
+            available_channels = set(PluginLoader.list_available("uniconn.hitl_channels"))
+            for name in custom_names:
+                if name not in available_channels:
+                    continue
+                loaded = PluginLoader.load("uniconn.hitl_channels", name)
+                if isinstance(loaded, ApprovalChannel) and not isinstance(loaded, type):
+                    channel: Any = loaded
+                elif isinstance(loaded, type) or callable(loaded):
+                    channel = loaded(policy=self.policy) if _callable_accepts_kwarg(loaded, "policy") else loaded()
+                else:
+                    channel = loaded
+                PluginLoader.validate_contract(
+                    channel,
+                    ApprovalChannel,
+                    group="uniconn.hitl_channels",
+                    name=name,
+                )
+                built.append(channel)
         return built
 
     def compute_hmac(

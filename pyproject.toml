@@ -121,6 +121,22 @@ netconf = "uniconn.transports.network.netconf:NetconfTransport"
 restconf = "uniconn.transports.network.restconf:RestconfTransport"
 gnmi = "uniconn.transports.network.gnmi:GnmiTransport"
 
+[project.entry-points."uniconn.storage"]
+memory = "uniconn.mcp.storage:InMemoryStateStore"
+sqlite = "uniconn.mcp.storage:SQLiteStateStore"
+
+[project.entry-points."uniconn.inventory"]
+file = "uniconn.config.inventory_providers:FileInventoryProvider"
+static = "uniconn.config.inventory_providers:StaticInventoryProvider"
+
+[project.entry-points."uniconn.secrets"]
+env = "uniconn.config.secrets:EnvSecretBackend"
+file = "uniconn.config.secrets:FileSecretBackend"
+
+[project.entry-points."uniconn.hitl_channels"]
+terminal = "uniconn.mcp.hitl:TerminalApprovalChannel"
+webhook = "uniconn.mcp.hitl:WebhookApprovalChannel"
+
 [project.entry-points.pytest11]
 uniconn = "uniconn.pytest_plugin"
 

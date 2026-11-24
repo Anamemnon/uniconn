@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import ParseResult, parse_qs, quote, unquote, urlparse
 
@@ -37,7 +38,7 @@ if TYPE_CHECKING:
     from .models import ConnectionConfig
 
 _INLINE_SECRET_URI_RE = re.compile(
-    r"^([a-zA-Z][a-zA-Z0-9+.-]*://[^/?#:]*:)(env|file)://([^@/?#]+)(@.*)$"
+    r"^([a-zA-Z][a-zA-Z0-9+.-]*://[^/?#:]*:)([a-zA-Z][a-zA-Z0-9+.-]*)://([^@#]+)(@[^/?#@]+(?:[/?#].*)?)$"
 )
 
 
@@ -61,22 +62,35 @@ class URIParser:
 
     @classmethod
     def _normalize_inline_secret_in_userinfo(cls, uri: str) -> str:
-        """Экранировать ``env://`` и ``file://`` внутри пароля в userinfo перед ``urlparse``."""
+        """Экранировать встроенные секретные URI (``env://``, ``file://`` и плагины) внутри пароля в userinfo."""
+        if uri.count("://") < 2:
+            return uri
         match = _INLINE_SECRET_URI_RE.match(uri)
         if not match:
             return uri
         prefix, secret_scheme, secret_target, suffix = match.groups()
+        from .secrets import SecretResolver
+
+        if secret_scheme.lower() not in set(SecretResolver.list_schemes()):
+            return uri
         encoded_secret = f"{secret_scheme}%3A%2F%2F{quote(secret_target, safe='')}"
         return f"{prefix}{encoded_secret}{suffix}"
 
     @classmethod
-    def parse(cls, uri: str, *, resolve_secrets: bool = True) -> ConnectionConfig:
+    def parse(
+        cls,
+        uri: str,
+        *,
+        resolve_secrets: bool = True,
+        base_dir: str | Path | None = None,
+    ) -> ConnectionConfig:
         """Распарсить URI в ConnectionConfig.
 
         Args:
             uri: URI строка (например, "ssh://user:pass@host:22")
             resolve_secrets: Разрешать ли ссылки ``env://`` и ``file://`` в секретных полях.
                 Для недоверенного пользовательского ввода следует передавать ``False``.
+            base_dir: Опциональная корневая директория для ограничения ``file://`` секретов.
 
         Returns:
             ConnectionConfig объект
@@ -85,7 +99,9 @@ class URIParser:
             ConfigurationError: Если URI некорректен (наследуется от ValueError)
 
         """
-        from .models import _RESOLVE_SECRETS_VAR
+        from pydantic import ValidationError
+
+        from .models import _RESOLVE_SECRETS_VAR, _SECRET_BASE_DIR_VAR
 
         normalized_uri = cls._normalize_inline_secret_in_userinfo(uri)
         parsed = urlparse(normalized_uri)
@@ -97,6 +113,7 @@ class URIParser:
 
         transport = parsed.scheme.lower()
         token = _RESOLVE_SECRETS_VAR.set(resolve_secrets)
+        base_dir_token = _SECRET_BASE_DIR_VAR.set(base_dir) if base_dir is not None else None
         try:
             if transport in ("serial", "uart"):
                 return cls._parse_serial(parsed, uri, transport=transport)
@@ -120,7 +137,16 @@ class URIParser:
                 return cls._parse_pve(parsed)
 
             return cls._parse_network(parsed, transport)
+        except ValidationError as exc:
+            for err in exc.errors():
+                ctx = err.get("ctx")
+                orig = ctx.get("error") if isinstance(ctx, dict) else None
+                if isinstance(orig, ConfigurationError):
+                    raise orig from exc
+            raise
         finally:
+            if base_dir_token is not None:
+                _SECRET_BASE_DIR_VAR.reset(base_dir_token)
             _RESOLVE_SECRETS_VAR.reset(token)
 
     @classmethod

@@ -18,6 +18,7 @@ class InventoryLoader:
         group: str | None = None,
         *,
         base_dir: str | Path | None = None,
+        resolve_secrets: bool = True,
     ) -> list[dict[str, Any]]:
         """Нормализовать данные инвентаря (список или словарь с hosts/groups/defaults).
 
@@ -26,6 +27,7 @@ class InventoryLoader:
             host: Опциональное имя/алиас хоста для фильтрации.
             group: Опциональное имя группы для фильтрации.
             base_dir: Опциональная корневая директория для ограничения ``file://`` секретов.
+            resolve_secrets: Разрешать ли секретные ссылки через ``SecretResolver``.
 
         Returns:
             Список словарей с параметрами подключений.
@@ -128,6 +130,9 @@ class InventoryLoader:
                 raise KeyError(f"Host {host!r} not found in inventory")
             entries = filtered_by_host
 
+        if not resolve_secrets:
+            return entries
+
         from .secrets import SecretResolver
 
         return [
@@ -143,6 +148,7 @@ class InventoryLoader:
         host: str | None = None,
         group: str | None = None,
         base_dir: str | Path | None = None,
+        resolve_secrets: bool = True,
     ) -> list[dict[str, Any]]:
         """Прочитать файл ``.yaml``/``.yml``/``.json``/``.toml`` и вернуть список конфигураций хостов."""
         from ..exceptions import ConfigurationError
@@ -169,5 +175,11 @@ class InventoryLoader:
                 f"Unsupported file format: {filepath.suffix}. Use .json, .yaml, .yml or .toml"
             )
 
-        return cls.parse_data(raw_data, host=host, group=group, base_dir=base_dir)
+        return cls.parse_data(
+            raw_data,
+            host=host,
+            group=group,
+            base_dir=base_dir,
+            resolve_secrets=resolve_secrets,
+        )
 

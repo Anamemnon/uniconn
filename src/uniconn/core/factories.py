@@ -129,9 +129,12 @@ def build_from_uri(
     rate_limit: float | RateLimiter | None = None,
     circuit_breaker: CircuitBreaker | bool | None = None,
     auto_diagnostics: bool | None = None,
+    *,
+    resolve_secrets: bool = True,
+    base_dir: str | Path | None = None,
 ) -> ConnT:
     """Создать подключение из URI строки."""
-    config = ConnectionConfig.from_uri(uri)
+    config = ConnectionConfig.from_uri(uri, resolve_secrets=resolve_secrets, base_dir=base_dir)
     transport_class = TransportLoader.get(config.transport)
     transport = transport_class(config)
     return cls(
@@ -232,13 +235,20 @@ def build_from_dict(
     rate_limit: float | RateLimiter | None = None,
     circuit_breaker: CircuitBreaker | bool | None = None,
     auto_diagnostics: bool | None = None,
+    *,
+    resolve_secrets: bool = True,
+    base_dir: str | Path | None = None,
+    _resolve_uri_secrets: bool | None = None,
 ) -> ConnT:
     """Создать подключение из словаря."""
+    from ..config.models import _RESOLVE_SECRETS_VAR, _SECRET_BASE_DIR_VAR
+
     retry = data.get("retry_attempts", retry_attempts)
     effective_dry_run = bool(data.get("dry_run", dry_run))
     effective_rate_limit = data.get("rate_limit", rate_limit)
     effective_cb = data.get("circuit_breaker", circuit_breaker)
     effective_auto_diag = data.get("auto_diagnostics", auto_diagnostics)
+    uri_resolve = resolve_secrets if _resolve_uri_secrets is None else _resolve_uri_secrets
     if "uri" in data:
         conn = cls.from_uri(
             str(data["uri"]),
@@ -251,6 +261,8 @@ def build_from_dict(
             rate_limit=effective_rate_limit,
             circuit_breaker=effective_cb,
             auto_diagnostics=effective_auto_diag,
+            resolve_secrets=uri_resolve,
+            base_dir=base_dir,
         )
         overrides = {
             k: v
@@ -266,12 +278,19 @@ def build_from_dict(
             )
         }
         if overrides:
-            conn = conn.with_overrides(**overrides)
+            conn = conn.with_overrides(resolve_secrets=resolve_secrets, **overrides)
         return conn
 
-    config = ConnectionConfig(
-        **{k: v for k, v in data.items() if k not in _META_KEYS}
-    )
+    token = _RESOLVE_SECRETS_VAR.set(resolve_secrets)
+    base_dir_token = _SECRET_BASE_DIR_VAR.set(base_dir) if base_dir is not None else None
+    try:
+        config = ConnectionConfig(
+            **{k: v for k, v in data.items() if k not in _META_KEYS}
+        )
+    finally:
+        if base_dir_token is not None:
+            _SECRET_BASE_DIR_VAR.reset(base_dir_token)
+        _RESOLVE_SECRETS_VAR.reset(token)
     transport_class = TransportLoader.get(config.transport)
     transport = transport_class(config)
     return cls(
@@ -309,6 +328,8 @@ def build_from_file(
             logger,
             dry_run=dry_run,
             auto_diagnostics=auto_diagnostics,
+            resolve_secrets=False,
+            _resolve_uri_secrets=True,
         )
         for data in entries
     ]
@@ -353,35 +374,55 @@ def clone_connection(
     rate_limit: float | RateLimiter | None = None,
     circuit_breaker: CircuitBreaker | bool | None = None,
     auto_diagnostics: bool | None = None,
+    *,
+    resolve_secrets: bool = True,
 ) -> ConnT:
     """Создать копию подключения с возможностью изменения параметров."""
+    from ..config.models import _RESOLVE_SECRETS_VAR, _is_secret_option_key
+    from ..config.secrets import SecretResolver
     from .pipeline import HITLApprovalMiddleware
 
     cfg = conn.config
-    new_config = ConnectionConfig(
-        transport=cfg.transport,
-        host=host if host is not None else cfg.host,
-        port=port if port is not None else cfg.port,
-        username=username if username is not None else cfg.username,
-        password=(
-            SecretStr(password)
-            if isinstance(password, str)
-            else password
-            if password is not None
-            else cfg.password
-        ),
-        key_file=key_file if key_file is not None else cfg.key_file,
-        passphrase=(
-            SecretStr(passphrase)
-            if isinstance(passphrase, str)
-            else passphrase
-            if passphrase is not None
-            else cfg.passphrase
-        ),
-        ssh_config=ssh_config if ssh_config is not None else cfg.ssh_config,
-        timeout=timeout if timeout is not None else cfg.timeout,
-        options=dict(options) if options is not None else dict(cfg.options),
-    )
+
+    if password is not None:
+        resolved_pw = SecretResolver.resolve_value(password) if resolve_secrets else password
+        new_password: SecretStr | None = SecretStr(resolved_pw) if isinstance(resolved_pw, str) else resolved_pw
+    else:
+        new_password = cfg.password
+
+    if passphrase is not None:
+        resolved_pp = SecretResolver.resolve_value(passphrase) if resolve_secrets else passphrase
+        new_passphrase: SecretStr | None = SecretStr(resolved_pp) if isinstance(resolved_pp, str) else resolved_pp
+    else:
+        new_passphrase = cfg.passphrase
+
+    if options is not None:
+        if resolve_secrets:
+            new_options: dict[str, Any] = {
+                str(k): (SecretResolver.resolve_value(v) if _is_secret_option_key(str(k)) else v)
+                for k, v in options.items()
+            }
+        else:
+            new_options = dict(options)
+    else:
+        new_options = dict(cfg.options)
+
+    token = _RESOLVE_SECRETS_VAR.set(False)
+    try:
+        new_config = ConnectionConfig(
+            transport=cfg.transport,
+            host=host if host is not None else cfg.host,
+            port=port if port is not None else cfg.port,
+            username=username if username is not None else cfg.username,
+            password=new_password,
+            key_file=key_file if key_file is not None else cfg.key_file,
+            passphrase=new_passphrase,
+            ssh_config=ssh_config if ssh_config is not None else cfg.ssh_config,
+            timeout=timeout if timeout is not None else cfg.timeout,
+            options=new_options,
+        )
+    finally:
+        _RESOLVE_SECRETS_VAR.reset(token)
     transport_class = TransportLoader.get(new_config.transport)
     transport = transport_class(new_config)
     new_conn = type(conn)(
@@ -428,7 +469,12 @@ def clone_connection(
     return new_conn
 
 
-def with_overrides_connection(conn: ConnT, **overrides: Any) -> ConnT:
+def with_overrides_connection(
+    conn: ConnT,
+    *,
+    resolve_secrets: bool = True,
+    **overrides: Any,
+) -> ConnT:
     """Создать копию подключения с переопределёнными параметрами."""
     return conn.copy(
         host=overrides.get("host"),
@@ -446,6 +492,7 @@ def with_overrides_connection(conn: ConnT, **overrides: Any) -> ConnT:
         rate_limit=overrides.get("rate_limit"),
         circuit_breaker=overrides.get("circuit_breaker"),
         auto_diagnostics=overrides.get("auto_diagnostics"),
+        resolve_secrets=resolve_secrets,
     )
 
 

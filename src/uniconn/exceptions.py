@@ -57,7 +57,25 @@ class TimeoutError(UniconnError, builtins.TimeoutError):
     """Таймаут операции (совместим со встроенным builtins.TimeoutError)."""
 
 
-class TransportNotFoundError(UniconnError):
+class PluginNotFoundError(UniconnError, LookupError):
+    """Запрошенный плагин не найден или не удалось его загрузить через entry_points."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        group: str | None = None,
+        plugin_name: str | None = None,
+        available: list[str] | tuple[str, ...] | None = None,
+    ) -> None:
+        """Инициализировать ошибку поиска/загрузки плагина."""
+        super().__init__(message)
+        self.group = group
+        self.plugin_name = plugin_name
+        self.available: list[str] = list(available or ())
+
+
+class TransportNotFoundError(PluginNotFoundError):
     """Транспорт не найден (не установлен extra)."""
 
 

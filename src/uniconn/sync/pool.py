@@ -6,10 +6,11 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, TypeVar, overload
 
+from ..config.inventory_providers import InventoryProvider
 from ..core.bridge import (
     EventLoopPortal,
     SyncProxyMixin,
@@ -137,6 +138,54 @@ class SyncConnectionPool(SyncProxyMixin):
             max_fail_ratio=max_fail_ratio,
             auto_diagnostics=auto_diagnostics,
         )
+        return cls(pool)
+
+    @classmethod
+    def from_inventory(
+        cls,
+        source: InventoryProvider | str | Path,
+        *,
+        group: str | None = None,
+        host: str | None = None,
+        base_dir: str | Path | None = None,
+        provider_options: Mapping[str, Any] | None = None,
+        max_concurrent: int = 10,
+        retry_attempts: int = 3,
+        logger: logging.Logger | None = None,
+        dry_run: bool = False,
+        rate_limit: float | RateLimiter | None = None,
+        circuit_breaker: bool = False,
+        failure_threshold: int = 5,
+        recovery_timeout: float = 30.0,
+        batch_size: int | None = None,
+        max_fail_ratio: float = 0.0,
+        auto_diagnostics: bool | None = None,
+    ) -> Self:
+        """Синхронно создать пул подключений из ``InventoryProvider``, файла или плагина ``uniconn.inventory``."""
+        portal = EventLoopPortal(owner_name="SyncConnectionPool.from_inventory")
+        try:
+            pool = portal.call(
+                ConnectionPool.from_inventory(
+                    source,
+                    group=group,
+                    host=host,
+                    base_dir=base_dir,
+                    provider_options=provider_options,
+                    max_concurrent=max_concurrent,
+                    retry_attempts=retry_attempts,
+                    logger=logger,
+                    dry_run=dry_run,
+                    rate_limit=rate_limit,
+                    circuit_breaker=circuit_breaker,
+                    failure_threshold=failure_threshold,
+                    recovery_timeout=recovery_timeout,
+                    batch_size=batch_size,
+                    max_fail_ratio=max_fail_ratio,
+                    auto_diagnostics=auto_diagnostics,
+                )
+            )
+        finally:
+            portal.close()
         return cls(pool)
 
     def select(

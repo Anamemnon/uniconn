@@ -824,9 +824,74 @@ class SQLiteStateStore:
         await asyncio.to_thread(self.close_sync)
 
 
-def resolve_state_store(store_path: str | Path | None) -> tuple[StateStore, Path | None]:
-    """Создать ``SQLiteStateStore`` (если задан путь) или zero-disk ``InMemoryStateStore``."""
+def resolve_state_store(
+    store_path: str | Path | None = None,
+    *,
+    backend: str | None = None,
+    backend_options: Mapping[str, Any] | None = None,
+) -> tuple[StateStore, Path | None]:
+    """Создать ``StateStore`` (``SQLiteStateStore``, ``InMemoryStateStore`` или плагин ``uniconn.storage``)."""
     raw = str(store_path).strip() if store_path is not None else ""
+    opts = dict(backend_options or {})
+
+    if backend is not None and backend.strip():
+        from ..plugins._loader import (
+            PluginLoader,
+            _callable_accepts_positional,
+            _callable_has_explicit_kwarg,
+        )
+
+        backend_name = PluginLoader.normalize_name(backend, group="uniconn.storage")
+        loaded = PluginLoader.load("uniconn.storage", backend_name)
+
+        if loaded is InMemoryStateStore:
+            return InMemoryStateStore(), None
+        if loaded is SQLiteStateStore:
+            sqlite_path: str | Path = raw or str(opts.pop("db_path", "")).strip() or DEFAULT_STATE_DB_PATH
+            if isinstance(sqlite_path, str):
+                if sqlite_path.lower().startswith("sqlite://"):
+                    sqlite_path = sqlite_path[len("sqlite://") :]
+                    if sqlite_path in ("", "/:memory:", ":memory:"):
+                        return InMemoryStateStore(), None
+                elif sqlite_path == ":memory:":
+                    return InMemoryStateStore(), None
+            sqlite_store = SQLiteStateStore(sqlite_path, **opts)
+            return sqlite_store, sqlite_store.db_path
+
+        if isinstance(loaded, StateStore) and not isinstance(loaded, type):
+            instance: Any = loaded
+        elif isinstance(loaded, type) or callable(loaded):
+            wants_raw = bool(raw) and "db_path" not in opts and "uri" not in opts and "url" not in opts
+            if wants_raw and _callable_accepts_positional(loaded):
+                instance = loaded(raw, **opts)
+            elif wants_raw:
+                kw_target = next(
+                    (p for p in ("uri", "url", "db_path") if _callable_has_explicit_kwarg(loaded, p)),
+                    None,
+                )
+                instance = loaded(**{kw_target: raw, **opts}) if kw_target else loaded(**opts)
+            else:
+                instance = loaded(**opts)
+        else:
+            instance = loaded
+
+        PluginLoader.validate_contract(instance, StateStore, group="uniconn.storage", name=backend_name)
+        return instance, getattr(instance, "db_path", None)
+
+    if raw and "://" in raw:
+        scheme, _, rest = raw.partition("://")
+        norm_scheme = scheme.strip().lower()
+        if norm_scheme == "file":
+            file_target = rest.strip()
+            if not file_target or file_target in (":memory:", "/:memory:"):
+                return InMemoryStateStore(), None
+            sqlite_store = SQLiteStateStore(file_target, **opts)
+            return sqlite_store, sqlite_store.db_path
+        if norm_scheme and norm_scheme[0].isalpha() and all(
+            ch.isalnum() or ch in "+.-_" for ch in norm_scheme
+        ):
+            return resolve_state_store(raw, backend=norm_scheme, backend_options=opts)
+
     if raw and raw != ":memory:":
         sqlite_store = SQLiteStateStore(raw)
         return sqlite_store, sqlite_store.db_path
