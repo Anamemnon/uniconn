@@ -9,13 +9,14 @@ import os
 import posixpath
 import shlex
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ..exceptions import CapabilityNotSupportedError, ExecutionError, FileTransferError, TimeoutError
 from ..result import SyncResult
 from ..transports.base import FileStat as FileStat
+from ..transports.base import _maybe_aclosing
 from ._dir_sync import (
     _CHECKSUM_HEX_LENGTHS as _CHECKSUM_HEX_LENGTHS,
 )
@@ -23,7 +24,9 @@ from ._dir_sync import (
     _SUPPORTED_CHECKSUMS as _SUPPORTED_CHECKSUMS,
 )
 from ._dir_sync import (
+    DEFAULT_ARCHIVE_THRESHOLD,
     STREAM_UPLOAD_THRESHOLD,
+    ArchiveMode,
     ChecksumAlgorithm,
     DirectorySynchronizer,
     _build_checksum_command,
@@ -596,9 +599,20 @@ class FileOperationsService:
             return res.stdout.strip().split()[0].lower()
 
         if not sudo:
-            raw = await self.read_file(remote_path, encoding=None)
-            raw_bytes = raw.encode("utf-8") if isinstance(raw, str) else bytes(raw)
-            return hashlib.new(algorithm, raw_bytes).hexdigest().lower()
+            await self._ensure_connected("checksum")
+            hasher = hashlib.new(algorithm)
+            transport: Any = self._conn.transport
+            iter_chunks = getattr(transport, "iter_file_chunks", None)
+            if callable(iter_chunks):
+                chunk_stream = cast(AsyncIterator[bytes], iter_chunks(effective_path))
+                async with _maybe_aclosing(chunk_stream):
+                    async for chunk in chunk_stream:
+                        hasher.update(chunk)
+            else:
+                raw = await self.read_file(remote_path, encoding=None)
+                raw_bytes = raw.encode("utf-8") if isinstance(raw, str) else bytes(raw)
+                hasher.update(raw_bytes)
+            return hasher.hexdigest().lower()
 
         raise ExecutionError(
             res.stderr.strip() or f"Failed to calculate {algorithm} checksum for {effective_path}",
@@ -717,6 +731,8 @@ class FileOperationsService:
         *,
         checksum_check: bool = False,
         preserve_permissions: bool = False,
+        archive: ArchiveMode = "auto",
+        archive_threshold: int = DEFAULT_ARCHIVE_THRESHOLD,
     ) -> SyncResult:
         return await self._synchronizer.sync(
             local_dir=local_dir,
@@ -727,6 +743,8 @@ class FileOperationsService:
             dry_run=dry_run,
             checksum_check=checksum_check,
             preserve_permissions=preserve_permissions,
+            archive=archive,
+            archive_threshold=archive_threshold,
         )
 
     async def sync_dir(
@@ -740,6 +758,8 @@ class FileOperationsService:
         *,
         checksum_check: bool = False,
         preserve_permissions: bool = False,
+        archive: ArchiveMode = "auto",
+        archive_threshold: int = DEFAULT_ARCHIVE_THRESHOLD,
     ) -> SyncResult:
         """Инкрементально синхронизировать локальную директорию с удалённой."""
 
@@ -761,6 +781,8 @@ class FileOperationsService:
                 dry_run=dry_run,
                 checksum_check=checksum_check,
                 preserve_permissions=preserve_permissions,
+                archive=archive,
+                archive_threshold=archive_threshold,
             )
 
         handler = self._build_observed_handler("observe_sync_dir", _base_sync)
@@ -775,7 +797,9 @@ class FileOperationsService:
 
 
 __all__ = [
+    "DEFAULT_ARCHIVE_THRESHOLD",
     "STREAM_UPLOAD_THRESHOLD",
+    "ArchiveMode",
     "ChecksumAlgorithm",
     "DirectorySynchronizer",
     "FileOperationsService",

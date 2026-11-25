@@ -98,13 +98,14 @@
 .. code-block:: python
 
    async with Connection.from_uri("ssh://admin@node-01") as conn:
-       # Передача только изменившихся файлов по сверке SHA-256 хешей
+       # Передача только изменившихся файлов по сверке SHA-256 хешей (с авто-архивацией tar)
        sync_res = await conn.files.sync_dir(
            "./build",
            "/var/www/app",
            delete=True,
            checksum_check=True,
            exclude=["*.pyc", ".git", "__pycache__"],
+           archive="auto",
        )
        print(f"Загружено: {len(sync_res.uploaded)}, Пропущено: {len(sync_res.skipped)}")
 

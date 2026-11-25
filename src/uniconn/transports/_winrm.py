@@ -12,7 +12,7 @@ import posixpath
 import re
 import time
 import xml.etree.ElementTree as ET
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -28,7 +28,13 @@ from ..exceptions import (
     UniconnError,
 )
 from ..result import Result
-from .base import BaseTransport, FileStat
+from .base import (
+    BaseTransport,
+    FileStat,
+    _iter_async_bytes,
+    _iter_local_file_chunks,
+    _save_chunk_stream_to_file,
+)
 
 try:
     import winrm  # type: ignore[import-untyped]
@@ -806,37 +812,186 @@ class WinRMTransport(BaseTransport):
                 host=self.config.host,
             )
 
-    async def read_file(self, remote_path: str) -> bytes:
-        """Прочитать бинарное содержимое файла с Windows-хоста через Base64."""
+    async def _iter_file_chunks_with_total(
+        self,
+        remote_path: str,
+        chunk_size: int = WINRM_CHUNK_SIZE,
+    ) -> AsyncIterator[tuple[bytes, int]]:
+        """Потоково читать файл с Windows-хоста чанками Base64, возвращая ``(chunk, total_size)``."""
+        if chunk_size <= 0:
+            raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+        eff_chunk = min(int(chunk_size), WINRM_CHUNK_SIZE)
         q_path = _ps_quote(remote_path)
-        script = (
-            f"$item = Get-Item -LiteralPath {q_path} -Force -ErrorAction SilentlyContinue; "
-            "if ($null -eq $item -or $item.PSIsContainer) { exit 2 }; "
-            "$bytes = [System.IO.File]::ReadAllBytes($item.FullName); "
-            "[Convert]::ToBase64String($bytes)"
+        offset = 0
+
+        while True:
+            script = (
+                f"$item = Get-Item -LiteralPath {q_path} -Force -ErrorAction SilentlyContinue; "
+                "if ($null -eq $item -or $item.PSIsContainer) { exit 2 }; "
+                "$fs = [System.IO.File]::OpenRead($item.FullName); "
+                "try { "
+                "$len = [int64]$fs.Length; "
+                f"if ($len -le 0 -or {offset} -ge $len) {{ Write-Output \"$len|\"; exit 0 }}; "
+                f"$null = $fs.Seek({offset}, [System.IO.SeekOrigin]::Begin); "
+                f"$buf = New-Object byte[] {eff_chunk}; "
+                "$read = $fs.Read($buf, 0, $buf.Length); "
+                "if ($read -gt 0) { "
+                "$b64 = [Convert]::ToBase64String($buf, 0, $read); "
+                'Write-Output "$len|$b64" '
+                '} else { Write-Output "$len|" } '
+                "} finally { $fs.Dispose() }"
+            )
+            res = await self._run_ps_internal(script)
+            if not res.ok:
+                if res.exit_code == 2:
+                    raise FileNotFoundError(f"Remote file not found: {remote_path}")
+                raise FileTransferError(
+                    res.stderr.strip() or f"Failed to read remote file {remote_path}",
+                    command=res.command,
+                    exit_code=res.exit_code,
+                    stdout=res.stdout,
+                    stderr=res.stderr,
+                    host=self.config.host,
+                )
+
+            raw_out = res.stdout.strip()
+            total_size = -1
+            if "|" in raw_out:
+                size_part, b64_part = raw_out.split("|", 1)
+                try:
+                    total_size = int(size_part.strip())
+                except ValueError as exc:
+                    raise FileTransferError(
+                        f"Unexpected WinRM chunk header for {remote_path}: {size_part!r}",
+                        host=self.config.host,
+                    ) from exc
+                b64_str = "".join(b64_part.split())
+            else:
+                b64_str = "".join(raw_out.split())
+
+            if not b64_str:
+                if offset == 0:
+                    yield b"", (0 if total_size < 0 else total_size)
+                break
+
+            try:
+                chunk = base64.b64decode(b64_str)
+            except Exception as exc:
+                raise FileTransferError(
+                    f"Failed to decode Base64 payload for {remote_path}: {exc}",
+                    host=self.config.host,
+                ) from exc
+
+            if not chunk:
+                if offset == 0:
+                    yield b"", (0 if total_size < 0 else total_size)
+                break
+
+            offset += len(chunk)
+            known_total = total_size if total_size >= 0 else offset
+            yield chunk, known_total
+
+            if total_size >= 0 and offset >= total_size:
+                break
+            if total_size < 0 and len(chunk) < eff_chunk:
+                break
+
+    async def iter_file_chunks(
+        self,
+        remote_path: str,
+        chunk_size: int = WINRM_CHUNK_SIZE,
+    ) -> AsyncIterator[bytes]:
+        """Потоково читать бинарное содержимое файла с Windows-хоста чанками Base64."""
+        async for chunk, _ in self._iter_file_chunks_with_total(
+            remote_path, chunk_size=chunk_size
+        ):
+            if chunk:
+                yield chunk
+
+    async def read_file(self, remote_path: str) -> bytes:
+        """Прочитать бинарное содержимое файла с Windows-хоста (потоковыми чанками Base64)."""
+        chunks: list[bytes] = []
+        async for chunk in self.iter_file_chunks(remote_path):
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    async def _write_chunk_payload(
+        self,
+        remote_path: str,
+        chunk: bytes,
+        *,
+        idx: int,
+        error_context: str = "",
+    ) -> None:
+        """Отправить один Base64-чанк на Windows-хост (создание при ``idx == 0`` или append)."""
+        q_path = _ps_quote(remote_path)
+        b64_chunk = base64.b64encode(chunk).decode("ascii")
+        resolve_expr = (
+            "$p = [System.IO.Path]::GetFullPath("
+            f"[System.IO.Path]::Combine((Get-Location).Path, {q_path})); "
         )
+        if idx == 0:
+            script = (
+                resolve_expr
+                + "$parent = [System.IO.Path]::GetDirectoryName($p); "
+                "if ($parent -and -not [System.IO.Directory]::Exists($parent)) { "
+                "[System.IO.Directory]::CreateDirectory($parent) | Out-Null }; "
+                f"$bytes = [Convert]::FromBase64String('{b64_chunk}'); "
+                "[System.IO.File]::WriteAllBytes($p, $bytes)"
+            )
+        else:
+            script = (
+                resolve_expr
+                + f"$bytes = [Convert]::FromBase64String('{b64_chunk}'); "
+                "$fs = [System.IO.File]::Open($p, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write); "
+                "try { $fs.Write($bytes, 0, $bytes.Length) } finally { $fs.Close() }"
+            )
         res = await self._run_ps_internal(script)
         if not res.ok:
-            if res.exit_code == 2:
-                raise FileNotFoundError(f"Remote file not found: {remote_path}")
+            default_err = error_context or f"Failed to write chunk {idx} to {remote_path}"
             raise FileTransferError(
-                res.stderr.strip() or f"Failed to read remote file {remote_path}",
+                res.stderr.strip() or default_err,
                 command=res.command,
                 exit_code=res.exit_code,
                 stdout=res.stdout,
                 stderr=res.stderr,
                 host=self.config.host,
             )
-        b64_str = "".join(res.stdout.split())
-        if not b64_str:
-            return b""
-        try:
-            return base64.b64decode(b64_str)
-        except Exception as exc:
-            raise FileTransferError(
-                f"Failed to decode Base64 payload for {remote_path}: {exc}",
-                host=self.config.host,
-            ) from exc
+
+    async def _write_stream_chunked(
+        self,
+        remote_path: str,
+        chunk_stream: AsyncIterator[bytes] | Iterable[bytes],
+        *,
+        total_size: int | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
+        error_context: str = "",
+    ) -> None:
+        """Записать поток байтовых чанков на Windows-хост без полной буферизации в памяти."""
+        transferred = 0
+        idx = 0
+        wrote_any = False
+
+        async for chunk in _iter_async_bytes(chunk_stream):
+            if not chunk and wrote_any:
+                continue
+            await self._write_chunk_payload(
+                remote_path, chunk, idx=idx, error_context=error_context
+            )
+            wrote_any = True
+            idx += 1
+            transferred += len(chunk)
+            if progress_callback is not None:
+                progress_callback(
+                    transferred, total_size if total_size is not None else transferred
+                )
+
+        if not wrote_any:
+            await self._write_chunk_payload(
+                remote_path, b"", idx=0, error_context=error_context
+            )
+            if progress_callback is not None:
+                progress_callback(0, total_size if total_size is not None else 0)
 
     async def _write_bytes_chunked(
         self,
@@ -847,51 +1002,20 @@ class WinRMTransport(BaseTransport):
         error_context: str = "",
     ) -> None:
         """Записать массив байтов в файл на Windows-хосте порциями Base64 по ``WINRM_CHUNK_SIZE``."""
-        q_path = _ps_quote(remote_path)
         payload = bytes(data)
         total = len(payload)
-        chunks = (
-            [payload[i : i + WINRM_CHUNK_SIZE] for i in range(0, total, WINRM_CHUNK_SIZE)]
+        chunks: Iterable[bytes] = (
+            (payload[i : i + WINRM_CHUNK_SIZE] for i in range(0, total, WINRM_CHUNK_SIZE))
             if payload
-            else [b""]
+            else (b"",)
         )
-        transferred = 0
-        for idx, chunk in enumerate(chunks):
-            b64_chunk = base64.b64encode(chunk).decode("ascii")
-            resolve_expr = (
-                f"$p = [System.IO.Path]::GetFullPath("
-                f"[System.IO.Path]::Combine((Get-Location).Path, {q_path})); "
-            )
-            if idx == 0:
-                script = (
-                    resolve_expr
-                    + "$parent = [System.IO.Path]::GetDirectoryName($p); "
-                    "if ($parent -and -not [System.IO.Directory]::Exists($parent)) { "
-                    "[System.IO.Directory]::CreateDirectory($parent) | Out-Null }; "
-                    f"$bytes = [Convert]::FromBase64String('{b64_chunk}'); "
-                    "[System.IO.File]::WriteAllBytes($p, $bytes)"
-                )
-            else:
-                script = (
-                    resolve_expr
-                    + f"$bytes = [Convert]::FromBase64String('{b64_chunk}'); "
-                    "$fs = [System.IO.File]::Open($p, [System.IO.FileMode]::Append, [System.IO.FileAccess]::Write); "
-                    "try { $fs.Write($bytes, 0, $bytes.Length) } finally { $fs.Close() }"
-                )
-            res = await self._run_ps_internal(script)
-            if not res.ok:
-                default_err = error_context or f"Failed to write chunk {idx} to {remote_path}"
-                raise FileTransferError(
-                    res.stderr.strip() or default_err,
-                    command=res.command,
-                    exit_code=res.exit_code,
-                    stdout=res.stdout,
-                    stderr=res.stderr,
-                    host=self.config.host,
-                )
-            transferred += len(chunk)
-            if progress_callback is not None:
-                progress_callback(transferred, total)
+        await self._write_stream_chunked(
+            remote_path,
+            chunks,
+            total_size=total,
+            progress_callback=progress_callback,
+            error_context=error_context,
+        )
 
     async def write_file(
         self,
@@ -910,7 +1034,7 @@ class WinRMTransport(BaseTransport):
         remote_path: str,
         **kwargs: Any,
     ) -> None:
-        """Загрузить локальный файл или директорию на Windows-хост."""
+        """Потоково загрузить локальный файл или директорию на Windows-хост."""
         recurse = bool(kwargs.get("recurse", False))
         progress_cb: Callable[[int, int], None] | None = kwargs.get("progress_callback")
 
@@ -935,10 +1059,11 @@ class WinRMTransport(BaseTransport):
                 )
             return
 
-        data = src.read_bytes()
-        await self._write_bytes_chunked(
+        total_size = int(src.stat().st_size)
+        await self._write_stream_chunked(
             remote_path,
-            data,
+            _iter_local_file_chunks(src, WINRM_CHUNK_SIZE),
+            total_size=total_size,
             progress_callback=progress_cb,
             error_context=f"Failed to upload {local_path} -> {remote_path}",
         )
@@ -949,7 +1074,7 @@ class WinRMTransport(BaseTransport):
         local_path: str,
         **kwargs: Any,
     ) -> None:
-        """Скачать файл или директорию с Windows-хоста."""
+        """Потоково скачать файл или директорию с Windows-хоста."""
         recurse = bool(kwargs.get("recurse", False))
         progress_cb: Callable[[int, int], None] | None = kwargs.get("progress_callback")
 
@@ -977,11 +1102,11 @@ class WinRMTransport(BaseTransport):
                 )
             return
 
-        data = await self.read_file(remote_path)
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        dst.write_bytes(data)
-        if progress_cb is not None:
-            progress_cb(len(data), len(data))
+        await _save_chunk_stream_to_file(
+            dst,
+            self._iter_file_chunks_with_total(remote_path),
+            progress_callback=progress_cb,
+        )
 
 
 __all__ = [

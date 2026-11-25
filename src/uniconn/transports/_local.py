@@ -593,6 +593,27 @@ class LocalTransport(BaseTransport):
                 host="localhost",
             ) from e
 
+    async def iter_file_chunks(
+        self,
+        remote_path: str,
+        chunk_size: int = 65536,
+    ) -> AsyncIterator[bytes]:
+        """Потоково читать локальный файл чанками без полной буферизации в памяти."""
+        if chunk_size <= 0:
+            raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+        try:
+            with Path(remote_path).open("rb") as fp:
+                while True:
+                    chunk = await asyncio.to_thread(fp.read, chunk_size)
+                    if not chunk:
+                        break
+                    yield chunk
+        except OSError as e:
+            raise ConnectionError(
+                f"Local read_file failed for {remote_path}: {e}",
+                host="localhost",
+            ) from e
+
     async def write_file(
         self,
         remote_path: str,

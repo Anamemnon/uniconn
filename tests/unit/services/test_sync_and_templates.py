@@ -18,6 +18,7 @@ from uniconn import (
     MetricsCollector,
     Result,
     SSHSessionPool,
+    SyncConnection,
     allowlist_hook,
     audit_log_hook,
     blocklist_hook,
@@ -1017,5 +1018,333 @@ class TestV100AuditStabilization:
         res = await conn.files.sync_dir(local_dir, "/remote", delete=True, checksum_check=False)
         assert res.deleted == ["sym_dir"]
         assert removed_paths == ["/remote/sym_dir"]
+
+
+class TestStreamingChecksumAndSyncDirArchive:
+    """Тесты потокового fallback checksum() и пакетной tar-синхронизации в sync_dir."""
+
+    @pytest.mark.asyncio
+    async def test_checksum_fallback_streams_via_iter_file_chunks_without_read_file(self) -> None:
+        import hashlib
+
+        conn = Connection.from_uri("ssh://user@app-node")
+        conn._transport._connected = True
+        conn._python_worker = None
+        payload_chunks = [b"hello-", b"streaming-", b"checksum!"]
+        expected = hashlib.sha256(b"".join(payload_chunks)).hexdigest().lower()
+
+        # Все удалённые CLI-хешеры не найдены
+        conn.run = AsyncMock(  # type: ignore[method-assign]
+            return_value=Result(
+                exit_code=127,
+                stdout="",
+                stderr="not found",
+                duration=0.01,
+                command="sha256sum",
+                host="app-node",
+            )
+        )
+
+        async def _fake_iter_chunks(remote_path: str, chunk_size: int = 65536):
+            for c in payload_chunks:
+                yield c
+
+        conn._transport.iter_file_chunks = _fake_iter_chunks  # type: ignore[method-assign]
+        conn._transport.read_file = AsyncMock(  # type: ignore[method-assign]
+            side_effect=AssertionError("read_file() must not be called when iter_file_chunks is available")
+        )
+
+        digest = await conn.files.checksum("/var/data/large.bin", algorithm="sha256")
+        assert digest == expected
+        conn._transport.read_file.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_dir_auto_archive_tar_gz_on_threshold_and_extracts_valid_archive(
+        self, tmp_path: Path
+    ) -> None:
+        import tarfile
+
+        local_dir = tmp_path / "src_many"
+        (local_dir / "nested").mkdir(parents=True)
+        for idx in range(12):
+            sub = local_dir / ("nested" if idx % 2 == 0 else "")
+            f = sub / f"item_{idx}.txt"
+            f.write_text(f"payload-{idx}\n", encoding="utf-8")
+
+        remote_extract_dir = tmp_path / "extracted_remote"
+        remote_extract_dir.mkdir()
+
+        conn = Connection.from_uri("ssh://deploy@app-node")
+        conn._transport._connected = True
+        conn._python_worker = None
+
+        staged_dir = tmp_path / "remote_stage"
+        staged_dir.mkdir()
+        conn._create_temp_dir = AsyncMock(return_value=str(staged_dir))  # type: ignore[method-assign]
+        conn._remove_temp_dir = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        uploaded_archives: list[tuple[str, str]] = []
+        run_cmds: list[str] = []
+
+        async def _fake_upload(local_p: str, remote_p: str, **kwargs: Any) -> None:
+            uploaded_archives.append((local_p, remote_p))
+            # Имитируем загрузку архива на удалённый хост и реальную распаковку tar.gz
+            archive_copy = Path(remote_p)
+            archive_copy.write_bytes(Path(local_p).read_bytes())
+
+        async def _fake_run(cmd: str, **kwargs: Any) -> Result:
+            run_cmds.append(cmd)
+            if "command -v tar" in cmd:
+                return Result(exit_code=0, stdout=":gz:tar\n", stderr="", duration=0.01, command=cmd)
+            if "gzip -dc" in cmd and "tar " in cmd:
+                # Извлекаем реальный архив в remote_extract_dir для проверки целостности содержимого
+                arch_file = next(staged_dir.glob("*.tar.gz"))
+                with tarfile.open(arch_file, mode="r:gz") as tf:
+                    tf.extractall(remote_extract_dir, filter="data")
+                return Result(exit_code=0, stdout="", stderr="", duration=0.02, command=cmd)
+            return Result(exit_code=0, stdout="", stderr="", duration=0.01, command=cmd)
+
+        conn._transport.exists = AsyncMock(return_value=False)  # type: ignore[method-assign]
+        conn._transport.mkdir = AsyncMock()  # type: ignore[method-assign]
+        conn._transport.upload = AsyncMock(side_effect=_fake_upload)  # type: ignore[method-assign]
+        conn._transport.write_file = AsyncMock()  # type: ignore[method-assign]
+        conn.run = AsyncMock(side_effect=_fake_run)  # type: ignore[method-assign]
+
+        res = await conn.files.sync_dir(
+            local_dir,
+            "/var/www/app",
+            preserve_permissions=True,
+        )
+        assert len(res.uploaded) == 12
+        # Должен уйти 1 архив через upload(), а не 12 write_file() вызовов
+        assert len(uploaded_archives) == 1
+        assert uploaded_archives[0][1].endswith(".tar.gz")
+        conn._transport.write_file.assert_not_awaited()
+        assert any("-xpf" in c and "gzip -dc" in c for c in run_cmds)
+
+        for idx in range(12):
+            sub_rel = "nested" if idx % 2 == 0 else "."
+            assert (remote_extract_dir / sub_rel / f"item_{idx}.txt").read_text(
+                encoding="utf-8"
+            ) == f"payload-{idx}\n"
+
+    @pytest.mark.asyncio
+    async def test_sync_dir_auto_below_threshold_uses_per_file_and_skips_probe(
+        self, tmp_path: Path
+    ) -> None:
+        local_dir = tmp_path / "src_small"
+        local_dir.mkdir()
+        for idx in range(3):
+            (local_dir / f"f{idx}.txt").write_text(f"v{idx}", encoding="utf-8")
+
+        conn = Connection.from_uri("ssh://deploy@app-node")
+        conn._transport._connected = True
+        conn._python_worker = None
+        conn._transport.exists = AsyncMock(return_value=False)  # type: ignore[method-assign]
+        conn._transport.mkdir = AsyncMock()  # type: ignore[method-assign]
+        conn._transport.write_file = AsyncMock()  # type: ignore[method-assign]
+        conn._transport.upload = AsyncMock()  # type: ignore[method-assign]
+        conn.run = AsyncMock()  # type: ignore[method-assign]
+
+        res = await conn.files.sync_dir(local_dir, "/var/www/small")
+        assert len(res.uploaded) == 3
+        assert conn._transport.write_file.await_count == 3
+        conn.run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_sync_dir_archive_fallback_when_remote_lacks_tar_or_extract_fails(
+        self, tmp_path: Path
+    ) -> None:
+        local_dir = tmp_path / "src_fb"
+        local_dir.mkdir()
+        (local_dir / "a.txt").write_text("aaa", encoding="utf-8")
+        (local_dir / "b.txt").write_text("bbb", encoding="utf-8")
+
+        conn = Connection.from_uri("ssh://deploy@app-node")
+        conn._transport._connected = True
+        conn._python_worker = None
+        conn._transport.exists = AsyncMock(return_value=False)  # type: ignore[method-assign]
+        conn._transport.mkdir = AsyncMock()  # type: ignore[method-assign]
+        conn._transport.write_file = AsyncMock()  # type: ignore[method-assign]
+        conn._transport.upload = AsyncMock()  # type: ignore[method-assign]
+
+        # 1. На удалённом хосте нет tar -> откат на пофайловую отправку
+        conn.run = AsyncMock(  # type: ignore[method-assign]
+            return_value=Result(exit_code=0, stdout="none\n", stderr="", duration=0.01, command="probe")
+        )
+        res1 = await conn.files.sync_dir(local_dir, "/remote/app", archive="tar.gz")
+        assert res1.uploaded == ["a.txt", "b.txt"]
+        assert conn._transport.write_file.await_count == 2
+        conn._transport.upload.assert_not_awaited()
+
+        # 2. В режиме archive="auto" ошибка распаковки тоже откатывается на пофайловую отправку
+        from uniconn.exceptions import ExecutionError
+
+        conn._transport.write_file.reset_mock()
+        conn._transport.upload.reset_mock()
+        conn._create_temp_dir = AsyncMock(return_value="/tmp/stage-fb")  # type: ignore[method-assign]
+        conn._remove_temp_dir = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        async def _fail_extract(cmd: str, **kwargs: Any) -> Result:
+            if "command -v tar" in cmd:
+                return Result(exit_code=0, stdout=":gz:tar\n", stderr="", duration=0.01, command=cmd)
+            raise ExecutionError("tar failed", command=cmd, exit_code=2, stderr="invalid flag")
+
+        conn.run = AsyncMock(side_effect=_fail_extract)  # type: ignore[method-assign]
+        res2 = await conn.files.sync_dir(
+            local_dir,
+            "/remote/app",
+            archive="auto",
+            archive_threshold=2,
+        )
+        assert res2.uploaded == ["a.txt", "b.txt"]
+        assert conn._transport.upload.await_count == 1
+        assert conn._transport.write_file.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_sync_dir_zst_optional_dependency_and_mocked_zstd_stream(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import io
+        import sys
+        import types
+
+        import uniconn.services._dir_sync as dir_sync_mod
+        from uniconn.exceptions import OptionalDependencyError
+
+        local_dir = tmp_path / "src_zst"
+        local_dir.mkdir()
+        (local_dir / "one.txt").write_text("zst-content", encoding="utf-8")
+
+        conn = Connection.from_uri("ssh://deploy@app-node")
+        conn._transport._connected = True
+        conn._python_worker = None
+        conn._transport.exists = AsyncMock(return_value=False)  # type: ignore[method-assign]
+        conn._transport.mkdir = AsyncMock()  # type: ignore[method-assign]
+        conn._transport.write_file = AsyncMock()  # type: ignore[method-assign]
+        conn._transport.upload = AsyncMock()  # type: ignore[method-assign]
+
+        # Без локального zstandard явный archive="tar.zst" кидает OptionalDependencyError
+        monkeypatch.setattr(dir_sync_mod, "_detect_local_zstd_backend", lambda: None)
+        with pytest.raises(OptionalDependencyError, match="zstandard"):
+            await conn.files.sync_dir(local_dir, "/remote/zst", archive="tar.zst")
+
+        # С доступным zstandard и удалённой поддержкой zstd пакуется .tar.zst
+        class _FakeWriter(io.RawIOBase):
+            def __init__(self, target_fp: Any) -> None:
+                self._target = target_fp
+
+            def writable(self) -> bool:
+                return True
+
+            def write(self, b: Any) -> int:
+                data = bytes(b)
+                self._target.write(data)
+                return len(data)
+
+        class _FakeZstdCompressor:
+            def __init__(self, level: int = 3) -> None:
+                self.level = level
+
+            def stream_writer(self, raw_fp: Any, closefd: bool = False):
+                from contextlib import nullcontext
+
+                return nullcontext(_FakeWriter(raw_fp))
+
+        fake_zstd_mod = types.SimpleNamespace(ZstdCompressor=_FakeZstdCompressor)
+        monkeypatch.setitem(sys.modules, "zstandard", fake_zstd_mod)
+        monkeypatch.setattr(dir_sync_mod, "_detect_local_zstd_backend", lambda: "zstandard")
+
+        conn._create_temp_dir = AsyncMock(return_value="/tmp/stage-zst")  # type: ignore[method-assign]
+        conn._remove_temp_dir = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        cmds: list[str] = []
+
+        async def _zst_run(cmd: str, **kwargs: Any) -> Result:
+            cmds.append(cmd)
+            if "command -v tar" in cmd:
+                return Result(exit_code=0, stdout="zst:gz:tar\n", stderr="", duration=0.01, command=cmd)
+            return Result(exit_code=0, stdout="", stderr="", duration=0.01, command=cmd)
+
+        conn.run = AsyncMock(side_effect=_zst_run)  # type: ignore[method-assign]
+        res = await conn.files.sync_dir(local_dir, "/remote/zst", archive="tar.zst")
+        assert res.uploaded == ["one.txt"]
+        assert conn._transport.upload.call_args.args[1].endswith(".tar.zst")
+        assert any("zstd -dc" in c and "tar -xf -" in c for c in cmds)
+
+    @pytest.mark.asyncio
+    async def test_sync_dir_archive_skips_windows_and_validates_rel_paths(
+        self, tmp_path: Path
+    ) -> None:
+        from uniconn.services._dir_sync import _validate_archive_rel_path
+        from uniconn.services.facts_models import HostFacts
+
+        for bad in ("", "/etc/passwd", "../escape.txt", "a/../../b", "./.."):
+            with pytest.raises(ValueError):
+                _validate_archive_rel_path(bad)
+        assert _validate_archive_rel_path("./sub/file.txt") == "sub/file.txt"
+        assert _validate_archive_rel_path("./.env") == ".env"
+        assert _validate_archive_rel_path("./.git/config") == ".git/config"
+
+        local_dir = tmp_path / "src_win"
+        local_dir.mkdir()
+        (local_dir / "cfg.ini").write_text("[app]\n", encoding="utf-8")
+
+        # 1. Хост с cached HostFacts(os_family="Windows") пропускает tar-архивацию
+        ssh_win_conn = Connection.from_uri("ssh://admin@win-host")
+        ssh_win_conn._facts_collector.cached = HostFacts(os_family="Windows", hostname="win-host")
+        ssh_win_conn._transport._connected = True
+        ssh_win_conn._python_worker = None
+        ssh_win_conn._transport.exists = AsyncMock(return_value=False)  # type: ignore[method-assign]
+        ssh_win_conn._transport.mkdir = AsyncMock()  # type: ignore[method-assign]
+        ssh_win_conn._transport.write_file = AsyncMock()  # type: ignore[method-assign]
+        ssh_win_conn.run = AsyncMock()  # type: ignore[method-assign]
+
+        res = await ssh_win_conn.files.sync_dir(
+            local_dir,
+            "C:\\App",
+            archive="auto",
+            archive_threshold=1,
+        )
+        assert res.uploaded == ["cfg.ini"]
+        ssh_win_conn._transport.write_file.assert_awaited_once()
+        ssh_win_conn.run.assert_not_awaited()
+
+        # 2. WinRM-транспорт также пропускает tar-архивацию
+        with patch("uniconn.transports._winrm.winrm", MagicMock()):
+            win_conn = Connection.from_uri("winrm://admin:pass@win-host")
+            win_conn._transport._connected = True
+            win_conn._transport.exists = AsyncMock(return_value=False)  # type: ignore[method-assign]
+            win_conn._transport.mkdir = AsyncMock()  # type: ignore[method-assign]
+            win_conn._transport.write_file = AsyncMock()  # type: ignore[method-assign]
+            win_conn.run = AsyncMock()  # type: ignore[method-assign]
+
+            res2 = await win_conn.files.sync_dir(
+                local_dir,
+                "C:\\App",
+                archive="auto",
+                archive_threshold=1,
+            )
+            assert res2.uploaded == ["cfg.ini"]
+            win_conn._transport.write_file.assert_awaited_once()
+            win_conn.run.assert_not_awaited()
+
+    def test_sync_connection_and_cli_archive_option(self, tmp_path: Path) -> None:
+        src_dir = tmp_path / "sync_src"
+        dst_dir = tmp_path / "sync_dst"
+        src_dir.mkdir()
+        dst_dir.mkdir()
+        (src_dir / "hello.txt").write_text("sync-parity", encoding="utf-8")
+
+        with SyncConnection.from_uri("local://") as sconn:
+            res = sconn.files.sync_dir(src_dir, dst_dir, archive="none", archive_threshold=5)
+            assert res.uploaded == ["hello.txt"]
+            assert (dst_dir / "hello.txt").read_text(encoding="utf-8") == "sync-parity"
+
+        # Проверка валидации некорректных параметров archive/archive_threshold
+        with SyncConnection.from_uri("local://") as sconn:
+            with pytest.raises(ValueError, match="Unsupported archive mode"):
+                sconn.files.sync_dir(src_dir, dst_dir, archive="rar")  # type: ignore[arg-type]
+            with pytest.raises(ValueError, match="archive_threshold"):
+                sconn.files.sync_dir(src_dir, dst_dir, archive_threshold=0)
 
 

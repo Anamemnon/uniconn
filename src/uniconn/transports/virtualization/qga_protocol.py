@@ -11,9 +11,11 @@ import json
 import random
 import shlex
 import time
+from collections.abc import AsyncIterator, Callable, Iterable
 from typing import Any, Protocol, runtime_checkable
 
 from ...exceptions import ConnectionError, ExecutionError, FileTransferError, TimeoutError
+from ..base import _iter_async_bytes
 
 _SYNC_SENTINEL = b"\xff"
 _DEFAULT_CHUNK_SIZE = 32768  # 32 KB (~43.6 KB in base64, fits safely within 64 KB buffers)
@@ -623,8 +625,15 @@ class QgaProtocolClient:
                     timeout=3.0,
                 )
 
-    async def read_file(self, remote_path: str, timeout: float = 60.0) -> bytes:
-        """Прочитать файл из гостевой ОС через ``guest-file-open`` / ``guest-file-read`` / ``guest-file-close``."""
+    async def iter_file_chunks(
+        self,
+        remote_path: str,
+        *,
+        chunk_size: int | None = None,
+        timeout: float = 60.0,
+    ) -> AsyncIterator[bytes]:
+        """Потоково читать файл из гостевой ОС чанками (``guest-file-open``/``read``/``close``)."""
+        eff_count = self.chunk_size if chunk_size is None else max(1, min(int(chunk_size), self.chunk_size))
         try:
             handle_res = await self.channel.execute(
                 "guest-file-open",
@@ -635,19 +644,20 @@ class QgaProtocolClient:
             raise FileTransferError(f"Cannot open remote file {remote_path!r} via QGA: {exc}") from exc
 
         handle = int(handle_res["handle"] if isinstance(handle_res, dict) else handle_res)
-        chunks: list[bytes] = []
         try:
             while True:
                 read_res = await self.channel.execute(
                     "guest-file-read",
-                    {"handle": handle, "count": self.chunk_size},
+                    {"handle": handle, "count": eff_count},
                     timeout=timeout,
                 )
                 if not isinstance(read_res, dict):
                     break
                 buf_b64 = str(read_res.get("buf-b64") or "")
                 if buf_b64:
-                    chunks.append(base64.b64decode(buf_b64))
+                    decoded = base64.b64decode(buf_b64)
+                    if decoded:
+                        yield decoded
                 if read_res.get("eof") or int(read_res.get("count", 0)) == 0:
                     break
         except Exception as exc:
@@ -658,10 +668,49 @@ class QgaProtocolClient:
             with contextlib.suppress(Exception):
                 await self.channel.execute("guest-file-close", {"handle": handle}, timeout=5.0)
 
+    async def read_file(self, remote_path: str, timeout: float = 60.0) -> bytes:
+        """Прочитать файл из гостевой ОС через ``guest-file-open`` / ``guest-file-read`` / ``guest-file-close``."""
+        chunks: list[bytes] = []
+        async for chunk in self.iter_file_chunks(remote_path, timeout=timeout):
+            chunks.append(chunk)
         return b"".join(chunks)
 
-    async def write_file(self, remote_path: str, data: bytes, timeout: float = 60.0) -> None:
-        """Записать байты в файл гостевой ОС через ``guest-file-open`` / ``guest-file-write`` / ``guest-file-close``."""
+    async def _write_handle_slice(
+        self,
+        handle: int,
+        remote_path: str,
+        chunk: bytes,
+        *,
+        timeout: float,
+    ) -> int:
+        offset = 0
+        total = len(chunk)
+        while offset < total:
+            sub = chunk[offset : offset + self.chunk_size]
+            b64_chunk = base64.b64encode(sub).decode("ascii")
+            write_res = await self.channel.execute(
+                "guest-file-write",
+                {"handle": handle, "buf-b64": b64_chunk},
+                timeout=timeout,
+            )
+            written = int(write_res.get("count", len(sub))) if isinstance(write_res, dict) else len(sub)
+            if written <= 0:
+                raise FileTransferError(
+                    f"QGA guest-file-write returned 0 bytes written for {remote_path!r}"
+                )
+            offset += written
+        return offset
+
+    async def write_file_chunks(
+        self,
+        remote_path: str,
+        chunks: AsyncIterator[bytes] | Iterable[bytes],
+        *,
+        timeout: float = 60.0,
+        total_size: int | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> None:
+        """Потоково записать байтовые чанки в файл гостевой ОС без полной буферизации в памяти."""
         try:
             handle_res = await self.channel.execute(
                 "guest-file-open",
@@ -672,29 +721,30 @@ class QgaProtocolClient:
             raise FileTransferError(f"Cannot open remote file {remote_path!r} for writing via QGA: {exc}") from exc
 
         handle = int(handle_res["handle"] if isinstance(handle_res, dict) else handle_res)
+        transferred = 0
+        wrote_any = False
         try:
-            offset = 0
-            total = len(data)
-            if total == 0:
+            async for chunk in _iter_async_bytes(chunks):
+                if not chunk:
+                    continue
+                wrote_any = True
+                transferred += await self._write_handle_slice(
+                    handle, remote_path, chunk, timeout=timeout
+                )
+                if progress_callback is not None:
+                    progress_callback(
+                        transferred, total_size if total_size is not None else transferred
+                    )
+
+            if not wrote_any:
                 await self.channel.execute(
                     "guest-file-write",
                     {"handle": handle, "buf-b64": ""},
                     timeout=timeout,
                 )
-            while offset < total:
-                chunk = data[offset : offset + self.chunk_size]
-                b64_chunk = base64.b64encode(chunk).decode("ascii")
-                write_res = await self.channel.execute(
-                    "guest-file-write",
-                    {"handle": handle, "buf-b64": b64_chunk},
-                    timeout=timeout,
-                )
-                written = int(write_res.get("count", len(chunk))) if isinstance(write_res, dict) else len(chunk)
-                if written <= 0:
-                    raise FileTransferError(
-                        f"QGA guest-file-write returned 0 bytes written for {remote_path!r}"
-                    )
-                offset += written
+                if progress_callback is not None:
+                    progress_callback(0, total_size if total_size is not None else 0)
+
             with contextlib.suppress(Exception):
                 await self.channel.execute("guest-file-flush", {"handle": handle}, timeout=timeout)
         except Exception as exc:
@@ -704,6 +754,10 @@ class QgaProtocolClient:
         finally:
             with contextlib.suppress(Exception):
                 await self.channel.execute("guest-file-close", {"handle": handle}, timeout=5.0)
+
+    async def write_file(self, remote_path: str, data: bytes, timeout: float = 60.0) -> None:
+        """Записать байты в файл гостевой ОС через ``guest-file-open`` / ``guest-file-write`` / ``guest-file-close``."""
+        await self.write_file_chunks(remote_path, (bytes(data),), timeout=timeout)
 
 
 __all__ = [

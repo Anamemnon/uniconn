@@ -606,6 +606,17 @@ class SSHTransport(BaseTransport):
         """Прочитать содержимое удалённого файла в память через SFTP."""
         return await self._sftp.read_file(asyncssh, remote_path)
 
+    async def iter_file_chunks(
+        self,
+        remote_path: str,
+        chunk_size: int = 65536,
+    ) -> AsyncIterator[bytes]:
+        """Потоково читать содержимое удалённого файла чанками через SFTP."""
+        async for chunk in self._sftp.iter_file_chunks(
+            asyncssh, remote_path, chunk_size=chunk_size
+        ):
+            yield chunk
+
     async def write_file(
         self,
         remote_path: str,

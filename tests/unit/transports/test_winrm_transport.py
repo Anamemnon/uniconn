@@ -167,7 +167,7 @@ class FakeWinRMProtocol:
             self.fs_files.pop(norm, None)
             return b"", b"", 0
 
-        # read_file
+        # read_file (legacy ReadAllBytes and streaming OpenRead/Seek/Read)
         if "[System.IO.File]::ReadAllBytes($item.FullName)" in script:
             target = script.split("Get-Item -LiteralPath '", 1)[1].split("'", 1)[0].replace("''", "'")
             norm = self._norm(target)
@@ -175,6 +175,18 @@ class FakeWinRMProtocol:
                 return b"", b"FileNotFoundException", 2
             b64 = base64.b64encode(self.fs_files[norm]).decode("ascii")
             return b64.encode("ascii"), b"", 0
+
+        if "[System.IO.File]::OpenRead($item.FullName)" in script:
+            target = script.split("Get-Item -LiteralPath '", 1)[1].split("'", 1)[0].replace("''", "'")
+            norm = self._norm(target)
+            if norm not in self.fs_files:
+                return b"", b"FileNotFoundException", 2
+            data = self.fs_files[norm]
+            offset = int(script.split("$fs.Seek(", 1)[1].split(",", 1)[0].strip())
+            count = int(script.split("New-Object byte[] ", 1)[1].split(";", 1)[0].strip())
+            chunk = data[offset : offset + count]
+            b64 = base64.b64encode(chunk).decode("ascii") if chunk else ""
+            return f"{len(data)}|{b64}".encode("ascii"), b"", 0
 
         # write_file / upload chunk
         if "[Convert]::FromBase64String('" in script:
@@ -589,3 +601,86 @@ class TestWinRMFileOperationsAndDomainServices:
 
             cleanup_mgr = BackgroundCleanupManager("pool_win")
             await cleanup_mgr.install_server_side(conn)
+
+    async def test_winrm_streaming_upload_download_and_iter_chunks(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from uniconn.transports._winrm import WINRM_CHUNK_SIZE
+
+        proto = FakeWinRMProtocol()
+        fake_mod = _make_fake_winrm_module(proto)
+
+        payload = b"ABCD1234" * ((WINRM_CHUNK_SIZE * 2 + 500) // 8)
+        src_file = tmp_path / "large_stream.bin"
+        src_file.write_bytes(payload)
+        dst_file = tmp_path / "downloaded_stream.bin"
+
+        # Гарантируем, что upload не вызывает read_bytes() целиком
+        def _forbid_read_bytes(self: Path) -> bytes:
+            raise AssertionError("upload() must stream chunks instead of calling Path.read_bytes()")
+
+        monkeypatch.setattr(Path, "read_bytes", _forbid_read_bytes)
+
+        up_progress: list[tuple[int, int]] = []
+        down_progress: list[tuple[int, int]] = []
+
+        with patch("uniconn.transports._winrm.winrm", fake_mod):
+            async with Connection.from_uri("winrm://admin:pass@win-host") as conn:
+                await conn.files.upload(
+                    src_file,
+                    "C:\\Temp\\large_stream.bin",
+                    progress_callback=lambda done, total: up_progress.append((done, total)),
+                )
+                assert len(up_progress) == 3
+                assert up_progress[-1] == (len(payload), len(payload))
+                assert proto.fs_files["C:\\Temp\\large_stream.bin"] == payload
+
+                chunks = [c async for c in conn.transport.iter_file_chunks("C:\\Temp\\large_stream.bin")]
+                assert len(chunks) == 3
+                assert b"".join(chunks) == payload
+
+                await conn.files.download(
+                    "C:\\Temp\\large_stream.bin",
+                    dst_file,
+                    progress_callback=lambda done, total: down_progress.append((done, total)),
+                )
+                assert len(down_progress) == 3
+                assert down_progress[-1] == (len(payload), len(payload))
+
+                # Пустой файл: корректный цикл upload -> iter -> download
+                empty_src = tmp_path / "empty.bin"
+                empty_src.write_bytes(b"")
+                empty_dst = tmp_path / "empty_dl.bin"
+                await conn.files.upload(empty_src, "C:\\Temp\\empty.bin")
+                assert [c async for c in conn.transport.iter_file_chunks("C:\\Temp\\empty.bin")] == []
+                await conn.files.download("C:\\Temp\\empty.bin", empty_dst)
+                assert empty_dst.exists()
+                assert empty_dst.stat().st_size == 0
+
+                # Ошибка FileNotFoundError при скачивании не оставляет пустой локальный файл
+                missing_dst = tmp_path / "missing_dl.bin"
+                with pytest.raises(FileNotFoundError):
+                    await conn.files.download("C:\\Temp\\absent.bin", missing_dst)
+                assert not missing_dst.exists()
+
+                # Сбой на втором чанке не оставляет временный файл или повреждённый dst
+                mid_fail_dst = tmp_path / "mid_fail.bin"
+                orig_run_ps = conn.transport._run_ps_internal
+                call_num = 0
+
+                async def _fail_second_chunk(script: str, timeout: float | None = None):
+                    nonlocal call_num
+                    if "OpenRead($item.FullName)" in script:
+                        call_num += 1
+                        if call_num == 2:
+                            from uniconn.exceptions import FileTransferError
+
+                            raise FileTransferError("Mid-stream WinRM failure", host="win-host")
+                    return await orig_run_ps(script, timeout=timeout)
+
+                monkeypatch.setattr(conn.transport, "_run_ps_internal", _fail_second_chunk)
+                with pytest.raises(Exception, match="Mid-stream WinRM failure"):
+                    await conn.files.download("C:\\Temp\\large_stream.bin", mid_fail_dst)
+                assert not mid_fail_dst.exists()
+                assert list(tmp_path.glob(".mid_fail.bin.part_*")) == []
+
+        with dst_file.open("rb") as fp:
+            assert fp.read() == payload

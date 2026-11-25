@@ -3,19 +3,30 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import fnmatch
 import hashlib
+import importlib
+import importlib.util
 import logging
 import os
 import re
 import shlex
+import tarfile
+import tempfile
 import time
-from collections.abc import Sequence
-from pathlib import Path
+from collections.abc import Iterator, Sequence
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any, Literal
 
-from ..exceptions import CapabilityNotSupportedError, ExecutionError, FileTransferError
+from ..exceptions import (
+    CapabilityNotSupportedError,
+    ExecutionError,
+    FileTransferError,
+    OptionalDependencyError,
+    TimeoutError,
+)
 from ..result import SyncResult
 from ..transports.base import FileStat
 
@@ -25,8 +36,14 @@ if TYPE_CHECKING:
 _logger = logging.getLogger("uniconn.services.files")
 
 STREAM_UPLOAD_THRESHOLD = 4 * 1024 * 1024  # 4 МБ
+DEFAULT_ARCHIVE_THRESHOLD = 10
 ChecksumAlgorithm = Literal["sha256", "sha1", "md5"]
+ArchiveMode = Literal["none", "auto", "tar.gz", "tar.zst"]
 _SUPPORTED_CHECKSUMS: frozenset[str] = frozenset(("sha256", "sha1", "md5"))
+_SUPPORTED_ARCHIVE_MODES: frozenset[str] = frozenset(("none", "auto", "tar.gz", "tar.zst"))
+_NON_ARCHIVE_TRANSPORTS: frozenset[str] = frozenset(
+    ("local", "serial", "uart", "replay", "ipmi", "redfish", "netconf", "restconf", "gnmi")
+)
 _CHECKSUM_HEX_LENGTHS: dict[str, int] = {
     "sha256": 64,
     "sha1": 40,
@@ -144,6 +161,119 @@ def _join_sync_path(base: str, rel: str) -> str:
         clean_r = rel.lstrip("\\/").replace("/", "\\")
         return f"{clean_b}\\{clean_r}"
     return f"{base.rstrip('/')}/{rel.lstrip('/')}"
+
+
+def _detect_local_zstd_backend() -> str | None:
+    """Определить доступный локальный Python-бэкенд zstd (``stdlib`` или ``zstandard``)."""
+    with contextlib.suppress(ModuleNotFoundError):
+        if importlib.util.find_spec("compression.zstd") is not None:
+            return "stdlib"
+    with contextlib.suppress(ModuleNotFoundError):
+        if importlib.util.find_spec("zstandard") is not None:
+            return "zstandard"
+    return None
+
+
+def _validate_archive_rel_path(rel_path: str) -> str:
+    """Проверить относительный путь перед упаковкой в tar (защита от path traversal)."""
+    norm = rel_path.replace("\\", "/")
+    while norm.startswith("./"):
+        norm = norm[2:]
+    if not norm or norm.startswith("/"):
+        raise ValueError(f"Unsafe archive entry path: {rel_path!r}")
+    parts = PurePosixPath(norm).parts
+    if not parts or ".." in parts or any(p == "/" for p in parts):
+        raise ValueError(f"Path traversal blocked in sync archive: {rel_path!r}")
+    return norm
+
+
+def _add_file_to_tar(
+    tf: tarfile.TarFile,
+    rel_path: str,
+    full_local: Path,
+    mode: int,
+    *,
+    preserve_permissions: bool,
+) -> None:
+    """Добавить файл в tar-архив потоково без загрузки содержимого целиком в память."""
+    arcname = _validate_archive_rel_path(rel_path)
+    with full_local.open("rb") as fp:
+        st = os.fstat(fp.fileno())
+        info = tarfile.TarInfo(name=arcname)
+        info.type = tarfile.REGTYPE
+        info.size = int(st.st_size)
+        info.mtime = int(st.st_mtime)
+        info.mode = mode if preserve_permissions else (int(st.st_mode) & 0o777)
+        info.uid = 0
+        info.gid = 0
+        info.uname = ""
+        info.gname = ""
+        tf.addfile(info, fp)
+
+
+@contextlib.contextmanager
+def _open_sync_tar_writer(
+    archive_path: Path,
+    *,
+    codec: Literal["gz", "zst"],
+    zstd_backend: str | None = None,
+) -> Iterator[tarfile.TarFile]:
+    """Открыть потоковый ``TarFile`` для записи в формате ``gz`` или ``zst``."""
+    if codec == "gz":
+        with tarfile.open(archive_path, mode="w:gz") as tf:
+            yield tf
+        return
+    if zstd_backend == "stdlib":
+        comp_zstd = importlib.import_module("compression.zstd")
+        with (
+            comp_zstd.open(archive_path, "wb") as z_fp,
+            tarfile.open(fileobj=z_fp, mode="w|") as tf,
+        ):
+            yield tf
+        return
+    if zstd_backend == "zstandard":
+        zstd_mod = importlib.import_module("zstandard")
+        cctx = zstd_mod.ZstdCompressor(level=3)
+        with (
+            archive_path.open("wb") as raw_fp,
+            cctx.stream_writer(raw_fp, closefd=False) as z_fp,
+            tarfile.open(fileobj=z_fp, mode="w|") as tf,
+        ):
+            yield tf
+        return
+    raise OptionalDependencyError(
+        "zstandard package is required for archive='tar.zst' (or use archive='auto'/'tar.gz')"
+    )
+
+
+def _build_sync_tar_archive(
+    pending_uploads: Sequence[tuple[str, Path, int, int]],
+    *,
+    codec: Literal["gz", "zst"],
+    zstd_backend: str | None = None,
+    preserve_permissions: bool = False,
+) -> Path:
+    """Сформировать временный сжатый tar-архив для пакетной передачи изменённых файлов."""
+    suffix = ".tar.zst" if codec == "zst" else ".tar.gz"
+    fd, raw_tmp = tempfile.mkstemp(prefix="uniconn_sync_", suffix=suffix)
+    os.close(fd)
+    archive_path = Path(raw_tmp)
+    try:
+        with _open_sync_tar_writer(
+            archive_path, codec=codec, zstd_backend=zstd_backend
+        ) as tf:
+            for rel_path, full_local, _l_size, mode in pending_uploads:
+                _add_file_to_tar(
+                    tf,
+                    rel_path,
+                    full_local,
+                    mode,
+                    preserve_permissions=preserve_permissions,
+                )
+    except Exception:
+        archive_path.unlink(missing_ok=True)
+        raise
+    return archive_path
 
 
 class DirectorySynchronizer:
@@ -402,6 +532,132 @@ class DirectorySynchronizer:
             await _walk_remote("")
         return deleted
 
+    def _is_archive_eligible(
+        self,
+        archive_mode: str,
+        pending_count: int,
+        archive_threshold: int,
+    ) -> bool:
+        """Проверить применимость пакетной tar-передачи для текущего транспорта, ОС и объёма."""
+        if archive_mode == "none" or pending_count == 0:
+            return False
+        if self._conn.transport_name in _NON_ARCHIVE_TRANSPORTS:
+            return False
+        cached_facts = getattr(self._conn, "_cached_facts", None)
+        os_family = getattr(cached_facts, "os_family", None)
+        if os_family and str(os_family).lower() == "windows":
+            return False
+        from .provisioning.windows import is_windows_connection
+
+        if is_windows_connection(self._conn):
+            return False
+        return not (archive_mode == "auto" and pending_count < archive_threshold)
+
+    async def _probe_remote_archive_caps(self) -> set[str]:
+        """Определить доступные утилиты архивации на целевом POSIX-хосте за 1 запрос."""
+        probe_cmd = (
+            "if command -v tar >/dev/null 2>&1; then "
+            'z=""; g=""; '
+            'command -v zstd >/dev/null 2>&1 && z="zst"; '
+            'command -v gzip >/dev/null 2>&1 && g="gz"; '
+            'echo "${z}:${g}:tar"; '
+            "else echo none; fi"
+        )
+        try:
+            res = await self._conn.run(probe_cmd, raise_on_error=False, dry_run=False)
+        except (OSError, ExecutionError, CapabilityNotSupportedError, TimeoutError) as exc:
+            _logger.debug("Remote archive probe failed, falling back to per-file sync: %s", exc)
+            return set()
+        if not res.ok:
+            return set()
+        tokens = {tok.strip().lower() for line in res.stdout.splitlines() for tok in line.split(":") if tok.strip()}
+        if "tar" not in tokens or "none" in tokens:
+            return set()
+        return tokens
+
+    async def _upload_pending_individually(
+        self,
+        pending_uploads: Sequence[tuple[str, Path, int, int]],
+        effective_remote: str,
+    ) -> None:
+        """Последовательно загрузить изменённые файлы по одному."""
+        transport = self._conn.transport
+        for rel_path, full_local, l_size, mode in pending_uploads:
+            target_file = _join_sync_path(effective_remote, rel_path)
+            if l_size > STREAM_UPLOAD_THRESHOLD:
+                await transport.upload(str(full_local), target_file)
+                with contextlib.suppress(OSError, ExecutionError):
+                    await transport.chmod(target_file, mode)
+            else:
+                data = full_local.read_bytes()
+                await transport.write_file(target_file, data, mode=mode)
+
+    async def _try_sync_via_archive(
+        self,
+        pending_uploads: Sequence[tuple[str, Path, int, int]],
+        effective_remote: str,
+        *,
+        archive_mode: str,
+        preserve_permissions: bool,
+    ) -> bool:
+        """Попытаться передать ``pending_uploads`` одним сжатым tar-архивом; вернуть ``True`` при успехе."""
+        zstd_backend = _detect_local_zstd_backend()
+        if archive_mode == "tar.zst" and zstd_backend is None:
+            raise OptionalDependencyError(
+                "zstandard package is required for archive='tar.zst' (or use archive='auto'/'tar.gz')"
+            )
+
+        remote_caps = await self._probe_remote_archive_caps()
+        if "tar" not in remote_caps:
+            return False
+
+        codec: Literal["gz", "zst"] = "gz"
+        if archive_mode in ("auto", "tar.zst") and zstd_backend is not None and "zst" in remote_caps:
+            codec = "zst"
+        elif archive_mode == "tar.zst" and "zst" not in remote_caps:
+            _logger.debug(
+                "Remote host lacks zstd binary; falling back to gzip tar archive on %s",
+                self._conn.config.uri_safe,
+            )
+
+        local_archive = await asyncio.to_thread(
+            _build_sync_tar_archive,
+            pending_uploads,
+            codec=codec,
+            zstd_backend=zstd_backend,
+            preserve_permissions=preserve_permissions,
+        )
+        transport = self._conn.transport
+        q_dst = shlex.quote(effective_remote)
+        tar_flags = "-xpf" if preserve_permissions else "-xf"
+        tar_z_flags = "-xzpf" if preserve_permissions else "-xzf"
+        ext = ".tar.zst" if codec == "zst" else ".tar.gz"
+        try:
+            async with self._conn.temp_dir() as remote_tmp:
+                remote_archive = f"{str(remote_tmp).rstrip('/')}/uniconn_sync{ext}"
+                q_arch = shlex.quote(remote_archive)
+                await transport.upload(str(local_archive), remote_archive)
+                if codec == "zst":
+                    extract_cmd = f"mkdir -p -- {q_dst} && zstd -dc {q_arch} | tar {tar_flags} - -C {q_dst}"
+                elif "gz" in remote_caps:
+                    extract_cmd = f"mkdir -p -- {q_dst} && gzip -dc {q_arch} | tar {tar_flags} - -C {q_dst}"
+                else:
+                    extract_cmd = f"mkdir -p -- {q_dst} && tar {tar_z_flags} {q_arch} -C {q_dst}"
+                try:
+                    await self._conn.run(extract_cmd, raise_on_error=True, dry_run=False)
+                except (ExecutionError, CapabilityNotSupportedError) as exc:
+                    if archive_mode == "auto":
+                        _logger.warning(
+                            "Archive extraction failed on %s (%s); falling back to per-file upload",
+                            self._conn.config.uri_safe,
+                            exc,
+                        )
+                        return False
+                    raise
+        finally:
+            local_archive.unlink(missing_ok=True)
+        return True
+
     async def sync(
         self,
         local_dir: str | Path,
@@ -413,8 +669,19 @@ class DirectorySynchronizer:
         *,
         checksum_check: bool = False,
         preserve_permissions: bool = False,
+        archive: ArchiveMode = "auto",
+        archive_threshold: int = DEFAULT_ARCHIVE_THRESHOLD,
     ) -> SyncResult:
         """Выполнить инкрементальную синхронизацию ``local_dir -> remote_dir``."""
+        archive_mode = str(archive).lower().strip()
+        if archive_mode not in _SUPPORTED_ARCHIVE_MODES:
+            raise ValueError(
+                f"Unsupported archive mode: {archive!r}. "
+                f"Expected one of {sorted(_SUPPORTED_ARCHIVE_MODES)}"
+            )
+        if archive_threshold < 1:
+            raise ValueError(f"archive_threshold must be >= 1, got {archive_threshold}")
+
         start_time = time.monotonic()
         is_dry = self._conn.dry_run if dry_run is None else dry_run
         patterns = list(exclude or [])
@@ -457,6 +724,7 @@ class DirectorySynchronizer:
             batch_manifest.get("entries") if isinstance(batch_manifest, dict) else None
         )
 
+        pending_uploads: list[tuple[str, Path, int, int]] = []
         for rel_path, (full_local, l_size, l_mtime, mode) in sorted(local_files.items()):
             target_file = _join_sync_path(effective_remote, rel_path)
             needs_upload, r_stat = await self._needs_file_upload(
@@ -472,14 +740,7 @@ class DirectorySynchronizer:
             )
 
             if needs_upload:
-                if not is_dry:
-                    if l_size > STREAM_UPLOAD_THRESHOLD:
-                        await transport.upload(str(full_local), target_file)
-                        with contextlib.suppress(OSError, ExecutionError):
-                            await transport.chmod(target_file, mode)
-                    else:
-                        data = full_local.read_bytes()
-                        await transport.write_file(target_file, data, mode=mode)
+                pending_uploads.append((rel_path, full_local, l_size, mode))
                 uploaded.append(rel_path)
                 bytes_transferred += l_size
             else:
@@ -496,6 +757,18 @@ class DirectorySynchronizer:
                         with contextlib.suppress(OSError, ExecutionError):
                             await transport.chmod(target_file, mode)
                 skipped.append(rel_path)
+
+        if pending_uploads and not is_dry:
+            used_archive = False
+            if self._is_archive_eligible(archive_mode, len(pending_uploads), archive_threshold):
+                used_archive = await self._try_sync_via_archive(
+                    pending_uploads,
+                    effective_remote,
+                    archive_mode=archive_mode,
+                    preserve_permissions=preserve_permissions,
+                )
+            if not used_archive:
+                await self._upload_pending_individually(pending_uploads, effective_remote)
 
         if delete and (not is_dry or transport.is_connected):
             if batch_entries is not None:

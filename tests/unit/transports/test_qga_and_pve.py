@@ -493,3 +493,68 @@ class TestPveTransportAndMockServer:
             assert facts.hostname == "win-srv-2022"
             assert "qga" in facts.custom
 
+    async def test_qga_streaming_upload_download_and_iter_file_chunks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from uniconn.exceptions import FileTransferError
+
+        mock_qga = MockQgaServer(hostname="stream-vm")
+        cfg = ConnectionConfig.from_uri("qga:///tmp/stream_qga.sock")
+        transport = QgaTransport(cfg, channel=mock_qga)
+        conn = Connection(transport, cfg)
+
+        payload = b"qga-chunk-data!" * 6000  # ~90 KB (> 32 KB single QGA chunk)
+        src_file = tmp_path / "qga_src.bin"
+        src_file.write_bytes(payload)
+        dst_file = tmp_path / "qga_dst.bin"
+
+        def _forbid_read_bytes(self: Path) -> bytes:
+            raise AssertionError("QgaTransport.upload() must stream chunks without Path.read_bytes()")
+
+        monkeypatch.setattr(Path, "read_bytes", _forbid_read_bytes)
+
+        up_events: list[tuple[int, int]] = []
+        down_events: list[tuple[int, int]] = []
+
+        async with conn:
+            await conn.files.upload(
+                src_file,
+                "/var/tmp/qga_stream.bin",
+                progress_callback=lambda done, total: up_events.append((done, total)),
+            )
+            assert len(up_events) >= 3
+            assert up_events[-1] == (len(payload), len(payload))
+            assert mock_qga.files["/var/tmp/qga_stream.bin"] == payload
+            assert mock_qga._open_files == {}
+
+            chunks = [c async for c in transport.iter_file_chunks("/var/tmp/qga_stream.bin")]
+            assert len(chunks) >= 3
+            assert b"".join(chunks) == payload
+            assert mock_qga._open_files == {}
+
+            await conn.files.download(
+                "/var/tmp/qga_stream.bin",
+                dst_file,
+                progress_callback=lambda done, total: down_events.append((done, total)),
+            )
+            assert len(down_events) >= 3
+            assert down_events[-1] == (len(payload), len(payload))
+            with dst_file.open("rb") as fp:
+                assert fp.read() == payload
+
+            # Пустой файл
+            empty_src = tmp_path / "qga_empty.bin"
+            empty_src.write_bytes(b"")
+            empty_dst = tmp_path / "qga_empty_dl.bin"
+            await conn.files.upload(empty_src, "/var/tmp/qga_empty.bin")
+            assert [c async for c in transport.iter_file_chunks("/var/tmp/qga_empty.bin")] == []
+            await conn.files.download("/var/tmp/qga_empty.bin", empty_dst)
+            assert empty_dst.exists() and empty_dst.stat().st_size == 0
+
+            # Ошибка чтения отсутствующего файла не создаёт пустой локальный файл и не течёт handle
+            missing_dst = tmp_path / "qga_missing.bin"
+            with pytest.raises(FileTransferError):
+                await conn.files.download("/var/tmp/nonexistent.bin", missing_dst)
+            assert not missing_dst.exists()
+            assert mock_qga._open_files == {}
+

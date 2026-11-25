@@ -2,6 +2,7 @@
 """Тесты для CLI интерфейса"""
 
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -358,5 +359,48 @@ class TestCLISerialPorts:
             assert parsed[0]["device"] == "/dev/ttyUSB0"
             assert parsed[0]["vid"] == 0x0403
             assert parsed[0]["pid"] == 0x6001
+
+
+def test_cli_sync_passes_archive_option(tmp_path: Path) -> None:
+    """Команда `uniconn sync --archive` пробрасывает параметр archive в pool.files.sync_dir."""
+    from unittest.mock import MagicMock
+
+    from uniconn import cli
+    from uniconn.cli import CliRunner
+    from uniconn.result import SyncResult
+
+    src_dir = tmp_path / "src"
+    src_dir.mkdir()
+    (src_dir / "a.txt").write_text("hi", encoding="utf-8")
+
+    fake_pool = MagicMock()
+    fake_pool.files = MagicMock()
+    fake_pool.files.sync_dir = AsyncMock(
+        return_value={"node1": SyncResult(uploaded=["a.txt"], bytes_transferred=2)}
+    )
+
+    app = cli.create_cli_app()
+    runner = CliRunner()
+    with patch("uniconn.cli.cmd_files.build_cli_pool", return_value=fake_pool):
+        res = runner.invoke(
+            app,
+            ["sync", str(src_dir), "/var/www", "ssh://node1", "--archive", "tar.gz", "--format", "json"],
+        )
+    assert res.exit_code == 0, res.output
+    fake_pool.files.sync_dir.assert_awaited_once()
+    assert fake_pool.files.sync_dir.await_args.kwargs["archive"] == "tar.gz"
+
+    # Недопустимое значение --archive не подменяется тихо на auto
+    real_pool = MagicMock()
+    real_pool.files = MagicMock()
+    real_pool.files.sync_dir = AsyncMock(side_effect=ValueError("Unsupported archive mode: 'rar'"))
+    with patch("uniconn.cli.cmd_files.build_cli_pool", return_value=real_pool):
+        bad_res = runner.invoke(
+            app,
+            ["sync", str(src_dir), "/var/www", "ssh://node1", "--archive", "rar"],
+        )
+    assert bad_res.exit_code != 0
+    assert real_pool.files.sync_dir.await_args.kwargs["archive"] == "rar"
+
 
 

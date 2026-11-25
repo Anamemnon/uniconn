@@ -683,4 +683,35 @@ class TestSFTPClientAdapterExtended:
         await transport.disconnect()
         mock_context.__aexit__.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_sftp_iter_file_chunks_streams_incrementally(self, ssh_transport_with_mock):
+        """iter_file_chunks читает удалённый файл чанками заданного размера через sftp.open()."""
+        SSHTransport, _ = ssh_transport_with_mock
+
+        mock_file = AsyncMock()
+        mock_file.read = AsyncMock(side_effect=[b"chunk1-", b"chunk2-", b"end", b""])
+        mock_file_ctx = AsyncMock()
+        mock_file_ctx.__aenter__ = AsyncMock(return_value=mock_file)
+        mock_file_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        mock_sftp = AsyncMock()
+        mock_sftp.open = MagicMock(return_value=mock_file_ctx)
+
+        mock_context = AsyncMock()
+        mock_context.__aenter__ = AsyncMock(return_value=mock_sftp)
+        mock_context.__aexit__ = AsyncMock(return_value=None)
+
+        mock_conn = AsyncMock()
+        mock_conn.is_closed = MagicMock(return_value=False)
+        mock_conn.start_sftp_client = MagicMock(return_value=mock_context)
+
+        transport = SSHTransport(ConnectionConfig(transport="ssh", host="testhost"))
+        transport._conn = mock_conn
+        transport._connected = True
+
+        chunks = [c async for c in transport.iter_file_chunks("/var/log/app.bin", chunk_size=7)]
+        assert chunks == [b"chunk1-", b"chunk2-", b"end"]
+        assert mock_file.read.await_count == 4
+        mock_file.read.assert_awaited_with(7)
+
 

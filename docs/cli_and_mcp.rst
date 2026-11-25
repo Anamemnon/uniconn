@@ -32,7 +32,7 @@ Files, Integrity & Idempotent State Provisioning
 
    # Verify SHA-256 checksums and run delta directory synchronization
    uniconn checksum /etc/app.conf "ssh://node-01" "ssh://node-02" --algorithm sha256
-   uniconn sync ./dist /var/www/app --inventory fleet.yaml --group web --delete --checksum
+   uniconn sync ./dist /var/www/app --inventory fleet.yaml --group web --delete --checksum --archive auto
 
    # Idempotent system provisioning with unified diff preview (--dry-run)
    uniconn ensure-user deploy "ssh://node-01" --uid 1050 --groups docker,sudo --sudo

@@ -371,6 +371,8 @@ sync_res: SyncResult = await conn.files.sync_dir(
     *,
     checksum_check: bool = False,
     preserve_permissions: bool = False,
+    archive: Literal["none", "auto", "tar.gz", "tar.zst"] = "auto",
+    archive_threshold: int = 10,
 )
 rendered: str = await conn.files.write_template(remote_path, template_str_or_path, context={...}, mode=0o644, engine="auto", *, atomic: bool = False)
 

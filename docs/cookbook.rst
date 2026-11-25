@@ -99,13 +99,14 @@ Rsync-Style Delta Directory Synchronization & Jinja2 Templates
 .. code-block:: python
 
    async with Connection.from_uri("ssh://admin@node-01") as conn:
-       # Upload only modified files using SHA-256 delta comparison
+       # Upload only modified files using SHA-256 delta comparison (with automatic tar batching)
        sync_res = await conn.files.sync_dir(
            "./build",
            "/var/www/app",
            delete=True,
            checksum_check=True,
            exclude=["*.pyc", ".git", "__pycache__"],
+           archive="auto",
        )
        print(f"Uploaded: {len(sync_res.uploaded)}, Skipped: {len(sync_res.skipped)}")
 

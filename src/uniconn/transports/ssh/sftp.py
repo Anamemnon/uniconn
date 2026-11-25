@@ -8,7 +8,7 @@ import contextlib
 import inspect
 import os
 import stat as stat_module
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from ...exceptions import ConnectionError
@@ -253,6 +253,32 @@ class SFTPClientAdapter:
             async with sftp.open(remote_path, "rb") as f:
                 data = await f.read()
             return data.encode("utf-8") if isinstance(data, str) else bytes(data)
+        except asyncssh_mod.Error as e:
+            if self._is_conn_closed(conn, e):
+                await self.close()
+            raise ConnectionError(
+                f"SFTP read_file failed: {remote_path}: {e}",
+                host=self._transport.config.host,
+            ) from e
+
+    async def iter_file_chunks(
+        self,
+        asyncssh_mod: Any,
+        remote_path: str,
+        chunk_size: int = 65536,
+    ) -> AsyncIterator[bytes]:
+        """Потоково читать файл чанками через SFTP без полной буферизации в памяти."""
+        if chunk_size <= 0:
+            raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+        conn = self._require_conn(asyncssh_mod)
+        try:
+            sftp = await self._get_sftp(asyncssh_mod)
+            async with sftp.open(remote_path, "rb") as f:
+                while True:
+                    chunk = await f.read(chunk_size)
+                    if not chunk:
+                        break
+                    yield chunk.encode("utf-8") if isinstance(chunk, str) else bytes(chunk)
         except asyncssh_mod.Error as e:
             if self._is_conn_closed(conn, e):
                 await self.close()

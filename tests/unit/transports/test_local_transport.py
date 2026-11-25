@@ -3,6 +3,7 @@
 
 import asyncio
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -250,4 +251,23 @@ async def test_local_stream_timeout_and_env(local_transport):
                 pass
     finally:
         await local_transport.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_local_iter_file_chunks_and_base_fallback(local_transport, tmp_path: Path):
+    """LocalTransport.iter_file_chunks читает файл чанками заданного размера."""
+    sample = tmp_path / "chunks.bin"
+    sample.write_bytes(b"0123456789abcdef")
+
+    await local_transport.connect()
+    try:
+        chunks = [c async for c in local_transport.iter_file_chunks(str(sample), chunk_size=5)]
+        assert chunks == [b"01234", b"56789", b"abcde", b"f"]
+
+        with pytest.raises(ValueError, match="chunk_size"):
+            async for _ in local_transport.iter_file_chunks(str(sample), chunk_size=0):
+                pass
+    finally:
+        await local_transport.disconnect()
+
 

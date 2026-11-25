@@ -228,6 +228,7 @@ async def _exec_sync(
     exclude: list[str] | None,
     checksum_check: bool,
     preserve_permissions: bool,
+    archive: str = "auto",
     dry_run: bool,
     max_concurrent: int,
     batch_size: int | None,
@@ -252,6 +253,8 @@ async def _exec_sync(
             extra_sync_kw["checksum_check"] = True
         if preserve_permissions:
             extra_sync_kw["preserve_permissions"] = True
+        if archive != "auto":
+            extra_sync_kw["archive"] = archive
         results = await pool.files.sync_dir(
             local_dir=local_dir,
             remote_dir=remote_dir,
@@ -670,6 +673,13 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                 help="Preserve local file permissions on remote host",
             ),
         ] = False,
+        archive: Annotated[
+            str,
+            Parameter(
+                name="--archive",
+                help="Batch archive transfer mode: auto, none, tar.gz, tar.zst",
+            ),
+        ] = "auto",
         dry_run: Annotated[
             bool,
             Parameter(
@@ -721,6 +731,7 @@ def register_file_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
                 exclude=exclude,
                 checksum_check=checksum_check,
                 preserve_permissions=preserve_permissions,
+                archive=archive,
                 dry_run=dry_run,
                 max_concurrent=max_concurrent,
                 batch_size=batch_size,

@@ -5,11 +5,14 @@ from __future__ import annotations
 
 import contextlib
 import time
+from collections.abc import AsyncIterator, Callable
+from pathlib import Path
 from typing import Any
 
 from ...config.models import ConnectionConfig
-from ...exceptions import ConnectionError
+from ...exceptions import ConnectionError, FileTransferError
 from ...result import Result
+from ..base import _iter_local_file_chunks, _save_chunk_stream_to_file
 from ..ssh.config_parser import OpenSSHConfigParser
 from .guest_base import GuestAgentTransportBase, parse_qga_network_interfaces
 from .qga_protocol import (
@@ -188,6 +191,23 @@ class QgaTransport(GuestAgentTransportBase):
             host=self.config.host or "qga",
         )
 
+    async def iter_file_chunks(
+        self,
+        remote_path: str,
+        chunk_size: int = 65536,
+    ) -> AsyncIterator[bytes]:
+        """Потоково читать файл из гостевой ВМ чанками через ``guest-file-read``."""
+        if chunk_size <= 0:
+            raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+        if not self._connected or self.client is None:
+            raise ConnectionError("QGA transport is not connected", host=self.config.host)
+        async for chunk in self.client.iter_file_chunks(
+            remote_path,
+            chunk_size=chunk_size,
+            timeout=self.exec_timeout,
+        ):
+            yield chunk
+
     async def read_file(self, remote_path: str) -> bytes:
         """Прочитать файл из гостевой ВМ через ``guest-file-read``."""
         if not self._connected or self.client is None:
@@ -206,6 +226,59 @@ class QgaTransport(GuestAgentTransportBase):
         await self.client.write_file(remote_path, data, timeout=self.exec_timeout)
         if mode is not None and not self._is_windows:
             await self.chmod(remote_path, mode)
+
+    async def upload(
+        self,
+        local_path: str,
+        remote_path: str,
+        **kwargs: Any,
+    ) -> None:
+        """Потоково загрузить локальный файл в гостевую ВМ без полной буферизации в памяти."""
+        if not self._connected or self.client is None:
+            raise ConnectionError("QGA transport is not connected", host=self.config.host)
+        src = Path(local_path)
+        if not src.is_file():
+            raise FileTransferError(f"Local file not found: {local_path}", host=self.config.host)
+
+        progress_cb: Callable[[int, int], None] | None = kwargs.get("progress_callback")
+        total_size = int(src.stat().st_size)
+
+        await self.client.write_file_chunks(
+            remote_path,
+            _iter_local_file_chunks(src, self.client.chunk_size),
+            timeout=self.exec_timeout,
+            total_size=total_size,
+            progress_callback=progress_cb,
+        )
+
+    async def download(
+        self,
+        remote_path: str,
+        local_path: str,
+        **kwargs: Any,
+    ) -> None:
+        """Потоково скачать файл из гостевой ВМ на локальный диск без полной буферизации."""
+        if not self._connected or self.client is None:
+            raise ConnectionError("QGA transport is not connected", host=self.config.host)
+        progress_cb: Callable[[int, int], None] | None = kwargs.get("progress_callback")
+        total_size: int | None = None
+        if callable(progress_cb):
+            with contextlib.suppress(Exception):
+                st = await self.stat(remote_path)
+                total_size = int(st.get("size", 0))
+
+        chunk_size = self.client.chunk_size
+
+        async def _qga_chunks_with_total() -> AsyncIterator[tuple[bytes, int | None]]:
+            async for chunk in self.iter_file_chunks(remote_path, chunk_size=chunk_size):
+                yield chunk, total_size
+
+        await _save_chunk_stream_to_file(
+            Path(local_path),
+            _qga_chunks_with_total(),
+            progress_callback=progress_cb,
+            empty_total=total_size if total_size is not None else 0,
+        )
 
     async def gather_qga_native_facts(self, timeout: float = 5.0) -> dict[str, Any]:
         """Собрать нативные факты напрямую через RPC-методы QEMU Guest Agent."""

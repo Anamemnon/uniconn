@@ -3,10 +3,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import inspect
+import os
 import shlex
+import uuid
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import AbstractAsyncContextManager
+from pathlib import Path
 from typing import Any, Protocol, Self, TypedDict, TypeVar, runtime_checkable
 
 from ..config.models import ConnectionConfig
@@ -388,6 +394,18 @@ class BaseTransport(ABC):
             host=self.config.host,
         )
 
+    async def iter_file_chunks(
+        self,
+        remote_path: str,
+        chunk_size: int = 65536,
+    ) -> AsyncIterator[bytes]:
+        """Потоково читать содержимое файла чанками (fallback поверх ``read_file``)."""
+        if chunk_size <= 0:
+            raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+        data = await self.read_file(remote_path)
+        for offset in range(0, len(data), chunk_size):
+            yield data[offset : offset + chunk_size]
+
     async def write_file(
         self,
         remote_path: str,
@@ -466,6 +484,94 @@ class BaseTransport(ABC):
             f"forward_remote_port not supported for {self.name} transport",
             host=self.config.host,
         )
+
+
+@contextlib.asynccontextmanager
+async def _maybe_aclosing(stream: Any) -> AsyncIterator[None]:
+    """Гарантировать вызов ``aclose()`` у асинхронного генератора при выходе или исключении."""
+    try:
+        yield
+    finally:
+        aclose = getattr(stream, "aclose", None)
+        if callable(aclose):
+            res = aclose()
+            if inspect.isawaitable(res):
+                await res
+
+
+async def _iter_async_bytes(
+    chunks: AsyncIterator[bytes] | Iterable[bytes],
+) -> AsyncIterator[bytes]:
+    """Унифицировать синхронный или асинхронный поток байтовых чанков в ``AsyncIterator``."""
+    if isinstance(chunks, AsyncIterator):
+        async with _maybe_aclosing(chunks):
+            async for chunk in chunks:
+                yield bytes(chunk)
+    else:
+        for chunk in chunks:
+            yield bytes(chunk)
+
+
+async def _iter_local_file_chunks(
+    src: Path,
+    chunk_size: int,
+) -> AsyncIterator[bytes]:
+    """Потоково читать локальный файл чанками в отдельном потоке с гарантированным закрытием."""
+    with src.open("rb") as fp:
+        while True:
+            chunk = await asyncio.to_thread(fp.read, chunk_size)
+            if not chunk:
+                break
+            yield chunk
+
+
+async def _save_chunk_stream_to_file(
+    dst: Path,
+    chunk_stream: AsyncIterator[tuple[bytes, int | None]],
+    *,
+    progress_callback: Callable[[int, int], None] | None = None,
+    empty_total: int = 0,
+) -> None:
+    """Атомарно записать поток ``(chunk, total_hint)`` во временный файл и заменить ``dst``."""
+    transferred = 0
+    saw_item = False
+    tmp_dst: Path | None = None
+    fp: Any = None
+    try:
+        async with _maybe_aclosing(chunk_stream):
+            async for chunk, total_hint in chunk_stream:
+                if not saw_item:
+                    saw_item = True
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    tmp_dst = dst.parent / f".{dst.name}.part_{uuid.uuid4().hex[:8]}"
+                    fp = tmp_dst.open("wb")
+                if chunk:
+                    await asyncio.to_thread(fp.write, chunk)
+                    transferred += len(chunk)
+                if callable(progress_callback):
+                    progress_callback(
+                        transferred,
+                        total_hint if total_hint is not None else transferred,
+                    )
+        if not saw_item:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            tmp_dst = dst.parent / f".{dst.name}.part_{uuid.uuid4().hex[:8]}"
+            tmp_dst.write_bytes(b"")
+            if callable(progress_callback):
+                progress_callback(0, empty_total)
+        if fp is not None:
+            fp.close()
+            fp = None
+        if tmp_dst is not None:
+            os.replace(tmp_dst, dst)
+            tmp_dst = None
+    finally:
+        if fp is not None:
+            with contextlib.suppress(Exception):
+                fp.close()
+        if tmp_dst is not None:
+            with contextlib.suppress(OSError):
+                tmp_dst.unlink(missing_ok=True)
 
 
 __all__ = [
