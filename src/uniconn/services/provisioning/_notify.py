@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import functools
 import inspect
 import threading
@@ -15,11 +16,14 @@ from typing import TYPE_CHECKING, Any, Self, TypeAlias
 
 from ...core.bridge import _SHARED_LOOP_MANAGER
 from ...result import EnsureResult
-from ._fleet_plan import IN_NOTIFY_HANDLER
 
 if TYPE_CHECKING:
     from ...core.connection import Connection
     from .facade import StateManagementService
+
+IN_NOTIFY_HANDLER: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "uniconn_in_notify_handler", default=False
+)
 
 NotifyCallable: TypeAlias = Callable[..., Any]
 NamedNotifyHandler: TypeAlias = tuple[str, NotifyCallable]

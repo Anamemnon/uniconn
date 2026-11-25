@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from uniconn import (
-    AptStrategy,
     CapabilityNotSupportedError,
     CommandMiddleware,
     CommandPipeline,
@@ -21,22 +20,25 @@ from uniconn import (
     FileOperationsService,
     InventoryLoader,
     OpenSSHConfigParser,
-    PackageManagerStrategy,
     PosixMarkerProtocol,
     Result,
-    ServiceManagerStrategy,
     ShellCapableTransport,
     StateManagementService,
     SyncContextBridge,
     SyncFileOperationsService,
     SyncStateManagementService,
     SyncTunnelService,
-    SystemdStrategy,
     TemplateEngine,
     TunnelCapableTransport,
     TunnelService,
     require_capability,
     supports_capability,
+)
+from uniconn.services.provisioning import (
+    AptStrategy,
+    PackageManagerStrategy,
+    ServiceManagerStrategy,
+    SystemdStrategy,
 )
 from uniconn.transports._local import LocalTransport
 from uniconn.transports._serial import SerialTransport

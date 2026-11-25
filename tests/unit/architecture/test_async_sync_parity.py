@@ -11,12 +11,6 @@ from uniconn import (
     Connection,
     ConnectionPool,
     FileOperationsService,
-    Flow,
-    MockGnmiServer,
-    MockNetconfServer,
-    MockRestconfServer,
-    MockSSHServer,
-    MockTelnetServer,
     NetworkOperationsService,
     PoolFileOperationsService,
     PoolNetworkOperationsService,
@@ -27,12 +21,6 @@ from uniconn import (
     SyncConnection,
     SyncConnectionPool,
     SyncFileOperationsService,
-    SyncFlow,
-    SyncMockGnmiServer,
-    SyncMockNetconfServer,
-    SyncMockRestconfServer,
-    SyncMockSSHServer,
-    SyncMockTelnetServer,
     SyncNetworkOperationsService,
     SyncPoolFileOperationsService,
     SyncPoolNetworkOperationsService,
@@ -49,6 +37,19 @@ from uniconn.core.bridge import (
     _SyncIterDescriptor,
     _SyncMethodDescriptor,
 )
+from uniconn.mock import (
+    MockGnmiServer,
+    MockNetconfServer,
+    MockRestconfServer,
+    MockSSHServer,
+    MockTelnetServer,
+    SyncMockGnmiServer,
+    SyncMockNetconfServer,
+    SyncMockRestconfServer,
+    SyncMockSSHServer,
+    SyncMockTelnetServer,
+)
+from uniconn.orchestration import Flow, SyncFlow
 
 # Фабричные методы класса и конвертеры, специфичные только для async-фасада
 _ASYNC_ONLY_METHODS: frozenset[str] = frozenset(

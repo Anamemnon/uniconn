@@ -10,8 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from uniconn import Cassette, MockSSHServer, RecordedExecInteraction
+from uniconn import Cassette, RecordedExecInteraction
 from uniconn.cli import main as cli_main
+from uniconn.mock import MockSSHServer
 
 
 @pytest.mark.skipif(shutil.which("ssh") is None, reason="System OpenSSH client not installed")

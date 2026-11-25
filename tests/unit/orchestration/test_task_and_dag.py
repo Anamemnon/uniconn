@@ -8,12 +8,8 @@ import pytest
 from uniconn import (
     ConfigurationError,
     Connection,
-    CyclicDependencyError,
-    Flow,
-    FlowContext,
-    Task,
-    task,
 )
+from uniconn.orchestration import CyclicDependencyError, Flow, FlowContext, Task, task
 
 
 def test_task_decorator_preserves_metadata_and_supports_bare_and_parametrized() -> None:

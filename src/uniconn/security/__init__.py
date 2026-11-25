@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from ..exceptions import PolicyEngineUnavailableError, PolicyError, PolicyViolationError
 from .ast_parser import (
     AtomicCommand,
     CommandASTParser,
@@ -62,6 +63,8 @@ __all__ = [
     "PolicyDecision",
     "PolicyEngine",
     "PolicyEngineProtocol",
+    "PolicyEngineUnavailableError",
+    "PolicyError",
     "PolicyEvaluationResult",
     "PolicyGuardrailConfig",
     "PolicyGuardrailMiddleware",
@@ -69,6 +72,7 @@ __all__ = [
     "PolicyRuleCallable",
     "PolicyRuleResult",
     "PolicyViolation",
+    "PolicyViolationError",
     "PowerShellASTParser",
     "ResourceContext",
     "SubjectContext",

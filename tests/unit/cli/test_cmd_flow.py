@@ -14,7 +14,8 @@ def _write_sample_flow_file(tmp_path: Path) -> Path:
     flow_file.write_text(
         """
 from dataclasses import dataclass
-from uniconn import Connection, Flow, FlowContext, task
+from uniconn import Connection
+from uniconn.orchestration import Flow, FlowContext, task
 
 @dataclass
 class DeployMeta:
@@ -137,7 +138,8 @@ def _write_stateful_flow_file(tmp_path: Path, target_file: Path, extra_file: Pat
         )
     flow_file.write_text(
         f"""
-from uniconn import Connection, Flow, FlowContext, task
+from uniconn import Connection
+from uniconn.orchestration import Flow, FlowContext, task
 
 @task(name="apply_cfg", tags=["deploy"])
 async def apply_cfg(conn: Connection, ctx: FlowContext):
@@ -310,7 +312,7 @@ def test_cli_flow_mode_override_preserves_flow_metadata(tmp_path: Path) -> None:
     flow_file.write_text(
         """
 from pydantic import BaseModel
-from uniconn import Flow, task
+from uniconn.orchestration import Flow, task
 
 class Params(BaseModel):
     tag: str = "v1"

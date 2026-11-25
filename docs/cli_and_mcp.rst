@@ -132,7 +132,7 @@ Programmatic Python Usage
 
 .. code-block:: python
 
-   from uniconn import (
+   from uniconn.security import (
        CommandASTParser,
        PolicyGuardrailConfig,
        build_auth_context,

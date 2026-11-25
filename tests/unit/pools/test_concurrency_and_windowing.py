@@ -8,8 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from uniconn import Connection, ConnectionConfig, ConnectionPool, EnsureResult, Flow, Result, SyncFlow, task
+from uniconn import Connection, ConnectionConfig, ConnectionPool, EnsureResult, Result
 from uniconn.exceptions import ConnectionError
+from uniconn.orchestration import Flow, SyncFlow, task
 from uniconn.orchestration._barrier_window import _BarrierConnectionWindow
 from uniconn.orchestration.scheduler import coerce_to_flow
 from uniconn.pool.session_pool import SSHSessionPool

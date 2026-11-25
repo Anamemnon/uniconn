@@ -26,15 +26,14 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from uniconn import (
+from uniconn import Connection, SyncConnection
+from uniconn.background import (
     BUILTIN_WATCH_RULES,
-    Connection,
     DiagnosticConfig,
     HardwareFaultDetectedError,
     LogMatchEvent,
     LogWatchRule,
     StallEvent,
-    SyncConnection,
 )
 
 # ─── 1. Боевой сценарий: Термоциклирование BBU/RRU (SCT) по SSH и UART ────────

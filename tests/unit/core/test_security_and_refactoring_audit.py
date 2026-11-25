@@ -10,17 +10,18 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from uniconn import (
-    ActionRiskClassifier,
-    ActionRiskTier,
-    CommandASTParser,
     Connection,
     ConnectionConfig,
     ConnectionPool,
+    allowlist_hook,
+    blocklist_hook,
+)
+from uniconn.mcp import ActionRiskClassifier, ActionRiskTier
+from uniconn.security import (
+    CommandASTParser,
     DeclarativePolicyRule,
     EmbeddedPolicyEngine,
     PolicyDecision,
-    allowlist_hook,
-    blocklist_hook,
     build_auth_context,
 )
 from uniconn.security.ast_parser import normalize_target_path

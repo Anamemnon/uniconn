@@ -8,12 +8,11 @@ import asyncssh
 from uniconn import (
     Cassette,
     Connection,
-    MockSSHServer,
-    MockTelnetServer,
     RecordedExecInteraction,
     RecordedShellInteraction,
     ShellDialogStep,
 )
+from uniconn.mock import MockSSHServer, MockTelnetServer
 
 
 def _sample_shell_cassette() -> Cassette:

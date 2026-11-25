@@ -9,23 +9,23 @@ from unittest.mock import AsyncMock
 import pytest
 
 from uniconn import (
-    ChocoStrategy,
     Connection,
     ConnectionPool,
     EnsureResult,
     HostFacts,
-    PackageManagerStrategy,
     Result,
-    ScoopStrategy,
-    WingetStrategy,
-    ensure_registry_key,
-    ensure_windows_feature,
-    ensure_windows_service,
 )
 from uniconn.services.provisioning import (
+    ChocoStrategy,
+    PackageManagerStrategy,
+    ScoopStrategy,
+    WingetStrategy,
     build_registry_key_ps_script,
     build_windows_feature_ps_script,
     build_windows_service_ps_script,
+    ensure_registry_key,
+    ensure_windows_feature,
+    ensure_windows_service,
     is_windows_connection,
     normalize_registry_path,
     normalize_registry_value_type,

@@ -13,10 +13,9 @@ from uniconn import (
     Cassette,
     Connection,
     ConnectionError,
-    MockSFTPServer,
-    MockSSHServer,
     RecordedFsInteraction,
 )
+from uniconn.mock import MockSFTPServer, MockSSHServer
 
 
 def _sample_fs_cassette() -> Cassette:

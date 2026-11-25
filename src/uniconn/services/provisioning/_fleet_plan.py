@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from ...exceptions import StateDriftError, UniconnError
 from ...result import EnsureResult
+from ._notify import IN_NOTIFY_HANDLER
 
 if TYPE_CHECKING:
     from ...core.connection import Connection
@@ -28,9 +29,6 @@ CURRENT_PLAN_HOST: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 )
 CURRENT_PLAN_TASK: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "uniconn_plan_task", default=None
-)
-IN_NOTIFY_HANDLER: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "uniconn_in_notify_handler", default=False
 )
 
 

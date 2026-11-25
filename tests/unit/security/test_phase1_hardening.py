@@ -10,16 +10,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from uniconn import (
-    ActionRiskTier,
-    ApprovalManager,
-    ApprovalTamperingError,
-    ConnectionConfig,
-    ConnectionPool,
-)
+from uniconn import ConnectionConfig, ConnectionPool
 from uniconn.background._cleanup import BackgroundCleanupManager
 from uniconn.background._session import BackgroundSession
 from uniconn.exceptions import ConfigurationError
+from uniconn.mcp import ActionRiskTier, ApprovalManager, ApprovalTamperingError
 from uniconn.pool.session_pool import SSHSessionPool
 from uniconn.result import Result
 from uniconn.transports._winrm import WinRMTransport

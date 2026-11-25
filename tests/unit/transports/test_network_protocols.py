@@ -14,20 +14,22 @@ from uniconn import (
     ConnectionPool,
     ExecutionError,
     GnmiWireCodec,
-    MockGnmiServer,
-    MockNetconfServer,
-    MockRestconfServer,
     NetconfFrameCodec,
     NetconfVendorAdapter,
     NetResult,
-    SyncMockGnmiServer,
-    SyncMockNetconfServer,
-    SyncMockRestconfServer,
     TelemetrySample,
     URIParser,
     format_gnmi_path,
     parse_gnmi_path,
     safe_parse_xml,
+)
+from uniconn.mock import (
+    MockGnmiServer,
+    MockNetconfServer,
+    MockRestconfServer,
+    SyncMockGnmiServer,
+    SyncMockNetconfServer,
+    SyncMockRestconfServer,
 )
 
 # ─── 1. Парсинг URI и секретов ──────────────────────────────────────

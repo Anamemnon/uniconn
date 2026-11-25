@@ -189,7 +189,8 @@ Every transport is represented via a standardized, human-readable URI with autom
 Build dependency graphs with prerequisites (`depends_on`), cleanup post-actions (`post`), condition guards (`when`), and wave-synchronized execution (`mode="barrier"`) across a fleet:
 
 ```python
-from uniconn import Connection, ConnectionPool, Flow, FlowContext, task
+from uniconn import Connection, ConnectionPool
+from uniconn.orchestration import Flow, FlowContext, task
 
 @task(name="check_environment", tags=["preflight"])
 async def check_environment(conn: Connection, ctx: FlowContext):
@@ -502,7 +503,7 @@ Example `mcp.json` / `claude_desktop_config.json` configuration:
 You can also embed `MCPServer` directly inside custom agent runners (including JSON-RPC 2.0 batch requests):
 
 ```python
-from uniconn import MCPHostRegistry, MCPSecurityPolicy, MCPServer
+from uniconn.mcp import MCPHostRegistry, MCPSecurityPolicy, MCPServer
 
 policy = MCPSecurityPolicy(allow_write=False, allowlist=("echo", "df", "uptime"))
 registry = MCPHostRegistry.from_sources(inventory="hosts.yaml", policy=policy)

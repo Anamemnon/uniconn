@@ -1,6 +1,7 @@
 # src/uniconn/orchestration/__init__.py
 """Модуль декларативной оркестрации задач с графом зависимостей (Task DAG Runner)."""
 
+from ..exceptions import CyclicDependencyError, FlowExecutionError, StateDriftError
 from .context import CURRENT_FLOW_HOST, FlowContext, normalize_host_id
 from .flow import Flow, SyncFlow
 from .models import (
@@ -25,12 +26,15 @@ from .task import Task, TaskOptions, invoke_flow_callable, task
 
 __all__ = [
     "CURRENT_FLOW_HOST",
+    "CyclicDependencyError",
     "Flow",
     "FlowContext",
+    "FlowExecutionError",
     "FlowReport",
     "RollbackResult",
     "RollbackStatus",
     "SkipReason",
+    "StateDriftError",
     "SyncFlow",
     "Task",
     "TaskOptions",

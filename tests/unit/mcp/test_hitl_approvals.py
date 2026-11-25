@@ -10,7 +10,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from uniconn import (
+from uniconn import Connection, HITLApprovalMiddleware, Result
+from uniconn.mcp import (
     ActionRiskClassifier,
     ActionRiskTier,
     ApprovalAlreadyConsumedError,
@@ -20,14 +21,11 @@ from uniconn import (
     ApprovalRequiredError,
     ApprovalStatus,
     ApprovalTamperingError,
-    Connection,
-    HITLApprovalMiddleware,
     HITLPolicy,
     MCPHostEntry,
     MCPHostRegistry,
     MCPSecurityPolicy,
     MCPServer,
-    Result,
     TerminalApprovalChannel,
     WebhookApprovalChannel,
     build_unified_diff,

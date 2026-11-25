@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 from .._utils import make_lazy_package_loader
 
 if TYPE_CHECKING:
-    from ..security.engine import PolicyGuardrailMiddleware
     from ..telemetry import TracingMiddleware
     from .auto_diagnostics import (
         ClassificationMatch,
@@ -48,7 +47,6 @@ if TYPE_CHECKING:
     from .temp import HostTempManager
 
 _LAZY_MODULE_GROUPS: dict[str, tuple[str, ...]] = {
-    "..security.engine": ("PolicyGuardrailMiddleware",),
     "..telemetry": ("TracingMiddleware",),
     ".auto_diagnostics": (
         "ClassificationMatch",
@@ -117,7 +115,6 @@ __all__ = [
     "ObserverContext",
     "OperationObserver",
     "PassiveDiagnosticStrategy",
-    "PolicyGuardrailMiddleware",
     "RateLimitMiddleware",
     "RateLimiter",
     "RemotePythonWorker",

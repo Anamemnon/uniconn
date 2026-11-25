@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from uniconn import (
+from uniconn.mcp import (
     MCPHostEntry,
     MCPHostRegistry,
     MCPSecurityPolicy,

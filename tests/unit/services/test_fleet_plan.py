@@ -12,15 +12,11 @@ from uniconn import (
     BatchAbortedError,
     Connection,
     ConnectionPool,
-    FleetChangePlan,
-    Flow,
-    PlannedChange,
-    StateDriftError,
     SyncConnection,
     SyncConnectionPool,
-    SyncFlow,
-    task,
 )
+from uniconn.orchestration import Flow, SyncFlow, task
+from uniconn.services.provisioning import FleetChangePlan, PlannedChange, StateDriftError
 
 
 def _named_local_conn(name: str) -> Connection:

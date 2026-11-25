@@ -1,6 +1,7 @@
 # src/uniconn/transports/replay/__init__.py
 """Пакет контрактного тестирования, записи и воспроизведения сессий (Replay / Cassette)."""
 
+from ...exceptions import CassetteError, CassetteMissError
 from .context import CassetteContext, SyncCassetteContext, pool_use_cassette
 from .models import (
     CapabilityKind,
@@ -28,7 +29,9 @@ __all__ = [
     "Cassette",
     "CassetteContext",
     "CassetteDiffReport",
+    "CassetteError",
     "CassetteInteraction",
+    "CassetteMissError",
     "CassetteTransportProxy",
     "FsOperationName",
     "InteractionDiff",

@@ -11,12 +11,11 @@ from typing import Annotated, Any, Literal
 import pytest
 from pydantic import BaseModel, Field
 
-from uniconn import (
+from uniconn import Connection, Result
+from uniconn.cli.cmd_mcp import build_mcp_client_config
+from uniconn.mcp import (
     ActionRiskTier,
-    Connection,
-    Flow,
     FlowCheckpointStore,
-    FlowContext,
     FlowRiskEvaluator,
     FlowSchemaGenerator,
     HITLPolicy,
@@ -25,11 +24,9 @@ from uniconn import (
     MCPHostRegistry,
     MCPSecurityPolicy,
     MCPServer,
-    Result,
     normalize_flow_tool_name,
-    task,
 )
-from uniconn.cli.cmd_mcp import build_mcp_client_config
+from uniconn.orchestration import Flow, FlowContext, task
 
 # ---------------------------------------------------------------------------
 # 1. Тесты связывания параметров @task и генерации JSON Schema
@@ -543,7 +540,7 @@ async def test_mcp_flow_registry_loads_from_python_file_and_cli_config(
     """MCPFlowRegistry должен загружать сценарии Flow из .py файла, а CLI формировать конфиг с --flows."""
     flow_file = tmp_path / "custom_flows.py"
     flow_file.write_text(
-        "from uniconn import Flow, task\n\n"
+        "from uniconn.orchestration import Flow, task\n\n"
         "@task(name='ping_step', tags=['safe'])\n"
         "async def ping_step(conn, label: str = 'ok'):\n"
         "    return await conn.run(f'echo {label}')\n\n"

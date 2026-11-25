@@ -11,19 +11,16 @@ from typing import TYPE_CHECKING, Any
 from ..core.bridge import pool_fan_out_dict
 from ..services.files import FileOperationsService
 from ..services.network import NetworkOperationsService
-from ..services.provisioning import (
-    FleetChangePlan,
-    PlanApplier,
-    PlanRecorder,
-    StateManagementService,
-)
-from ..services.provisioning._fleet_plan import (
-    _ServiceApplierBinding,
-    _ServicePlanBinding,
-)
+from ..services.provisioning import StateManagementService
 
 if TYPE_CHECKING:
     from ..core.connection import Connection
+    from ..services.provisioning._fleet_plan import (
+        FleetChangePlan,
+        PlanApplier,
+        _ServiceApplierBinding,
+        _ServicePlanBinding,
+    )
     from .connection_pool import ConnectionPool
 
 
@@ -290,6 +287,8 @@ class PoolPlanContext(_BasePoolPlanContext):
         *,
         flow_name: str | None = None,
     ) -> None:
+        from ..services.provisioning._fleet_plan import PlanRecorder
+
         super().__init__(pool)
         self._recorder = PlanRecorder(flow_name=flow_name)
 
@@ -302,6 +301,8 @@ class PoolPlanContext(_BasePoolPlanContext):
         self._recorder.register_host(key)
 
     def _bind_connection(self, conn: Connection, key: str) -> _ServicePlanBinding:
+        from ..services.provisioning._fleet_plan import _ServicePlanBinding
+
         binding = _ServicePlanBinding(recorder=self._recorder, host_override=key)
         conn.state._push_plan_recorder(binding)
         return binding
@@ -326,6 +327,8 @@ class PoolApplyPlanContext(_BasePoolPlanContext):
         *,
         strict: bool = True,
     ) -> None:
+        from ..services.provisioning._fleet_plan import PlanApplier
+
         super().__init__(pool)
         self._applier = PlanApplier(plan, strict=strict)
 
@@ -335,6 +338,8 @@ class PoolApplyPlanContext(_BasePoolPlanContext):
         return self._applier
 
     def _bind_connection(self, conn: Connection, key: str) -> _ServiceApplierBinding:
+        from ..services.provisioning._fleet_plan import _ServiceApplierBinding
+
         binding = _ServiceApplierBinding(applier=self._applier, host_override=key)
         conn.state._push_plan_applier(binding)
         return binding

@@ -9,12 +9,11 @@ import pytest
 
 from uniconn import (
     Cassette,
-    MockSSHServer,
     RecordedExecInteraction,
     RecordedFsInteraction,
     SyncConnection,
-    SyncMockSSHServer,
 )
+from uniconn.mock import MockSSHServer, SyncMockSSHServer
 
 
 def test_sync_mock_ssh_server_context_manager(tmp_path: Path) -> None:

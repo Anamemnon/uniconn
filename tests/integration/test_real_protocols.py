@@ -11,9 +11,14 @@ from urllib.parse import urlparse
 
 import pytest
 
-from uniconn import Connection, PolicyDecision
+from uniconn import Connection
 from uniconn.pool.session_pool import SSHSessionPool
-from uniconn.security import OPAPolicyEngine, PolicyGuardrailMiddleware, build_auth_context
+from uniconn.security import (
+    OPAPolicyEngine,
+    PolicyDecision,
+    PolicyGuardrailMiddleware,
+    build_auth_context,
+)
 
 pytestmark = pytest.mark.integration
 

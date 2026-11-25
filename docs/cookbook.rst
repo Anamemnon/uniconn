@@ -180,7 +180,8 @@ Define reusable tasks with ``depends_on``, guaranteed ``post`` cleanup, ``when``
 
 .. code-block:: python
 
-   from uniconn import Connection, ConnectionPool, Flow, FlowContext, task
+   from uniconn import Connection, ConnectionPool
+   from uniconn.orchestration import Flow, FlowContext, task
 
    @task(name="preflight_check", tags=["preflight"])
    async def preflight_check(conn: Connection, ctx: FlowContext):
@@ -326,7 +327,8 @@ Test real socket clients (even external tools or ``AsyncSSH``) against an in-mem
 
 .. code-block:: python
 
-   from uniconn import Cassette, Connection, MockSSHServer, RecordedExecInteraction
+   from uniconn import Cassette, Connection, RecordedExecInteraction
+   from uniconn.mock import MockSSHServer
 
    cassette = Cassette(
        transport="ssh",

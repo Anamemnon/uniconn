@@ -1,95 +1,192 @@
 # src/uniconn/services/provisioning/__init__.py
-"""Пакет идемпотентного управления состоянием (декомпозиция с 100% обратной совместимостью)."""
+"""Пакет идемпотентного управления состоянием (``conn.state``)."""
 
 from __future__ import annotations
 
-from ._fleet_plan import (
-    ConnectionApplyPlanContext,
-    ConnectionPlanContext,
-    FleetChangePlan,
-    PlanApplier,
-    PlannedChange,
-    PlanRecorder,
-)
-from ._notify import (
-    NamedNotifyHandler,
-    NotificationBatch,
-    NotifyCallable,
-    NotifyItem,
-    NotifySpec,
-    finalize_ensure_with_notify,
-    invoke_notify_handler,
-    normalize_notify_spec,
-)
-from ._plan import (
-    ChangePlan,
-    _parse_mode,
-    apply_owner_group,
-    can_inspect_in_dry_run,
-    extract_stat_mode,
-    get_owner_group,
-)
-from .facade import StateManagementService
-from .files import (
-    ensure_directory,
-    ensure_file,
-    ensure_line,
-    transform_lines_absent,
-    transform_lines_present,
-)
-from .packages import (
-    PACKAGE_STRATEGIES,
-    ApkStrategy,
-    AptStrategy,
-    ChocoStrategy,
-    DnfYumStrategy,
-    PackageManagerStrategy,
-    PacmanStrategy,
-    PkgManagerName,
-    ScoopStrategy,
-    WingetStrategy,
-    ZypperStrategy,
-    ensure_package,
-    resolve_pkg_manager,
-)
-from .service_managers import (
-    SERVICE_STRATEGIES,
-    OpenRCStrategy,
-    ServiceAction,
-    ServiceManagerStrategy,
-    ServiceState,
-    SystemdStrategy,
-    SysVStrategy,
-    UniversalServiceStrategy,
-    ensure_service,
-    resolve_service_transition,
-)
-from .system import (
-    UserAttributeSpec,
-    build_useradd_command,
-    ensure_authorized_key,
-    ensure_sysctl,
-    ensure_systemd_unit,
-    ensure_user,
-    resolve_user_home,
-    transform_authorized_keys,
-)
-from .windows import (
-    RegistryValueType,
-    WindowsServiceState,
-    WindowsStartupType,
-    build_registry_key_ps_script,
-    build_windows_feature_ps_script,
-    build_windows_service_ps_script,
-    ensure_registry_key,
-    ensure_windows_feature,
-    ensure_windows_service,
-    is_windows_connection,
-    normalize_registry_path,
-    normalize_registry_value_type,
-    ps_quote,
-)
-from .yang import ensure_yang
+from typing import TYPE_CHECKING
+
+from ..._utils import make_lazy_package_loader
+
+if TYPE_CHECKING:
+    from ...exceptions import StateDriftError
+    from ._fleet_plan import (
+        ConnectionApplyPlanContext,
+        ConnectionPlanContext,
+        FleetChangePlan,
+        PlanApplier,
+        PlannedChange,
+        PlanRecorder,
+    )
+    from ._notify import (
+        NamedNotifyHandler,
+        NotificationBatch,
+        NotifyCallable,
+        NotifyItem,
+        NotifySpec,
+        finalize_ensure_with_notify,
+        invoke_notify_handler,
+        normalize_notify_spec,
+    )
+    from ._plan import (
+        ChangePlan,
+        _parse_mode,
+        apply_owner_group,
+        can_inspect_in_dry_run,
+        extract_stat_mode,
+        get_owner_group,
+    )
+    from .facade import StateManagementService
+    from .files import (
+        ensure_directory,
+        ensure_file,
+        ensure_line,
+        transform_lines_absent,
+        transform_lines_present,
+    )
+    from .packages import (
+        PACKAGE_STRATEGIES,
+        ApkStrategy,
+        AptStrategy,
+        ChocoStrategy,
+        DnfYumStrategy,
+        PackageManagerStrategy,
+        PacmanStrategy,
+        PkgManagerName,
+        ScoopStrategy,
+        WingetStrategy,
+        ZypperStrategy,
+        ensure_package,
+        resolve_pkg_manager,
+    )
+    from .service_managers import (
+        SERVICE_STRATEGIES,
+        OpenRCStrategy,
+        ServiceAction,
+        ServiceManagerStrategy,
+        ServiceState,
+        SystemdStrategy,
+        SysVStrategy,
+        UniversalServiceStrategy,
+        ensure_service,
+        resolve_service_transition,
+    )
+    from .system import (
+        UserAttributeSpec,
+        build_useradd_command,
+        ensure_authorized_key,
+        ensure_sysctl,
+        ensure_systemd_unit,
+        ensure_user,
+        resolve_user_home,
+        transform_authorized_keys,
+    )
+    from .windows import (
+        RegistryValueType,
+        WindowsServiceState,
+        WindowsStartupType,
+        build_registry_key_ps_script,
+        build_windows_feature_ps_script,
+        build_windows_service_ps_script,
+        ensure_registry_key,
+        ensure_windows_feature,
+        ensure_windows_service,
+        is_windows_connection,
+        normalize_registry_path,
+        normalize_registry_value_type,
+        ps_quote,
+    )
+    from .yang import ensure_yang
+
+_LAZY_MODULE_GROUPS: dict[str, tuple[str, ...]] = {
+    "...exceptions": ("StateDriftError",),
+    "._fleet_plan": (
+        "ConnectionApplyPlanContext",
+        "ConnectionPlanContext",
+        "FleetChangePlan",
+        "PlanApplier",
+        "PlanRecorder",
+        "PlannedChange",
+    ),
+    "._notify": (
+        "NamedNotifyHandler",
+        "NotificationBatch",
+        "NotifyCallable",
+        "NotifyItem",
+        "NotifySpec",
+        "finalize_ensure_with_notify",
+        "invoke_notify_handler",
+        "normalize_notify_spec",
+    ),
+    "._plan": (
+        "ChangePlan",
+        "_parse_mode",
+        "apply_owner_group",
+        "can_inspect_in_dry_run",
+        "extract_stat_mode",
+        "get_owner_group",
+    ),
+    ".facade": ("StateManagementService",),
+    ".files": (
+        "ensure_directory",
+        "ensure_file",
+        "ensure_line",
+        "transform_lines_absent",
+        "transform_lines_present",
+    ),
+    ".packages": (
+        "PACKAGE_STRATEGIES",
+        "ApkStrategy",
+        "AptStrategy",
+        "ChocoStrategy",
+        "DnfYumStrategy",
+        "PackageManagerStrategy",
+        "PacmanStrategy",
+        "PkgManagerName",
+        "ScoopStrategy",
+        "WingetStrategy",
+        "ZypperStrategy",
+        "ensure_package",
+        "resolve_pkg_manager",
+    ),
+    ".service_managers": (
+        "SERVICE_STRATEGIES",
+        "OpenRCStrategy",
+        "ServiceAction",
+        "ServiceManagerStrategy",
+        "ServiceState",
+        "SystemdStrategy",
+        "SysVStrategy",
+        "UniversalServiceStrategy",
+        "ensure_service",
+        "resolve_service_transition",
+    ),
+    ".system": (
+        "UserAttributeSpec",
+        "build_useradd_command",
+        "ensure_authorized_key",
+        "ensure_sysctl",
+        "ensure_systemd_unit",
+        "ensure_user",
+        "resolve_user_home",
+        "transform_authorized_keys",
+    ),
+    ".windows": (
+        "RegistryValueType",
+        "WindowsServiceState",
+        "WindowsStartupType",
+        "build_registry_key_ps_script",
+        "build_windows_feature_ps_script",
+        "build_windows_service_ps_script",
+        "ensure_registry_key",
+        "ensure_windows_feature",
+        "ensure_windows_service",
+        "is_windows_connection",
+        "normalize_registry_path",
+        "normalize_registry_value_type",
+        "ps_quote",
+    ),
+    ".yang": ("ensure_yang",),
+}
 
 __all__ = [
     "PACKAGE_STRATEGIES",
@@ -119,6 +216,7 @@ __all__ = [
     "ServiceAction",
     "ServiceManagerStrategy",
     "ServiceState",
+    "StateDriftError",
     "StateManagementService",
     "SysVStrategy",
     "SystemdStrategy",
@@ -164,3 +262,7 @@ __all__ = [
     "transform_lines_absent",
     "transform_lines_present",
 ]
+
+_LAZY_EXPORTS, __getattr__, __dir__ = make_lazy_package_loader(
+    __name__, globals(), _LAZY_MODULE_GROUPS, all_names=__all__
+)

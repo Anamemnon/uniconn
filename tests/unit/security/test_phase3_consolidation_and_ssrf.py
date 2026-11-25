@@ -7,17 +7,15 @@ import socket
 
 import pytest
 
-from uniconn import (
-    ActionRiskClassifier,
-    ActionRiskTier,
+from uniconn import ConfigurationError, blocklist_hook
+from uniconn.mcp import ActionRiskClassifier, ActionRiskTier, WebhookApprovalChannel
+from uniconn.security import (
     CommandASTParser,
-    ConfigurationError,
     DeclarativePolicyRule,
     OPAPolicyEngine,
-    WebhookApprovalChannel,
-    blocklist_hook,
+    validate_outbound_url,
+    validate_safe_regex,
 )
-from uniconn.security import validate_outbound_url, validate_safe_regex
 
 
 class TestASTClassifierConsolidation:

@@ -13,7 +13,6 @@ import uniconn
 from uniconn import (
     ConfigurationError,
     ConnectionConfig,
-    InMemoryStateStore,
     InventoryProvider,
     PluginLoader,
     PluginNotFoundError,
@@ -23,6 +22,7 @@ from uniconn import (
     URIParser,
 )
 from uniconn.config.inventory_providers import FileInventoryProvider, StaticInventoryProvider
+from uniconn.mcp import InMemoryStateStore
 from uniconn.mcp.hitl import ApprovalChannel, ApprovalManager, TerminalApprovalChannel
 from uniconn.mcp.models import ActionRiskTier, ApprovalRequest, HITLPolicy, MCPSecurityPolicy
 from uniconn.mcp.registry import MCPHostRegistry

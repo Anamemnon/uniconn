@@ -1,6 +1,6 @@
 # Реализованные возможности и архитектура библиотеки uniconn
 
-> **Версия**: v0.21.0 | **1 320+ unit- и fuzz-тестов** | 16+ транспортов (`ssh`, `winrm`/`wsman`, `netconf`, `restconf`, `gnmi`, `qga`/`qemu-ga`, `pve`, `docker`, `podman`, `kubectl`, `telnet`, `serial`/`uart`, `ipmi`, `redfish`, `replay`, `local`) | Модульный CLI (`cyclopts` + `rich`) | Встроенный MCP-сервер (`uniconn mcp`) | Интерактивная веб-панель (`examples/dashboard/`) | PEP 561 (`py.typed`) + PEP 562 Lazy Exports
+> **Версия**: v0.23.0 | **1 460+ unit- и fuzz-тестов** | 13 транспортов (`ssh`, `winrm`/`wsman`, `netconf`, `restconf`, `gnmi`, `qga`/`qemu-ga`, `pve`, `telnet`, `serial`/`uart`, `ipmi`, `redfish`, `replay`, `local`) | Модульный CLI (`cyclopts` + `rich`) | Встроенный MCP-сервер (`uniconn mcp`) | PEP 561 (`py.typed`) + PEP 562 Lazy Exports
 >
 > **Для ИИ-агентов**: этот файл (`FEATURES.md`) является полным каталогом реализованных фич и архитектурных решений библиотеки `uniconn`. **Не загружайте его в контекст при каждом запросе** — используйте `llms.txt` для быстрого обзора сигнатур API, а к `FEATURES.md` обращайтесь только по требованию (on-demand), когда нужно сверить наличие конкретной функциональности или обновить список возможностей после релиза.
 >

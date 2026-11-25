@@ -14,33 +14,34 @@ from typing import Any
 import pytest
 from rich.console import Console
 
-from uniconn import (
+from uniconn import CommandRequest, Result
+from uniconn.cli.app import create_cli_app
+from uniconn.mcp import (
     ActionRiskClassifier,
     ActionRiskTier,
     ApprovalManager,
     ApprovalRequiredError,
-    CommandASTParser,
-    CommandRequest,
-    DeclarativePolicyRule,
-    EmbeddedPolicyEngine,
     HITLPolicy,
     MCPHostEntry,
     MCPHostRegistry,
     MCPSecurityPolicy,
     MCPServer,
+)
+from uniconn.security import (
+    CommandASTParser,
+    DeclarativePolicyRule,
+    EmbeddedPolicyEngine,
     OPAPolicyEngine,
     PolicyDecision,
     PolicyEngineUnavailableError,
     PolicyGuardrailConfig,
     PolicyGuardrailMiddleware,
     PolicyViolationError,
-    Result,
     build_auth_context,
     create_policy_engine,
     is_within_maintenance_windows,
     load_declarative_rules,
 )
-from uniconn.cli.app import create_cli_app
 
 
 class TestCommandASTParser:

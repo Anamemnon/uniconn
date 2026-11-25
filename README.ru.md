@@ -189,7 +189,8 @@ uv add "uniconn[all]"
 Построение графов зависимостей задач с предусловиями (`depends_on`), гарантированной очисткой (`post`), предикатами выполнения (`when`) и барьерной волновой раскаткой по кластеру (`mode="barrier"`):
 
 ```python
-from uniconn import Connection, ConnectionPool, Flow, FlowContext, task
+from uniconn import Connection, ConnectionPool
+from uniconn.orchestration import Flow, FlowContext, task
 
 @task(name="check_environment", tags=["preflight"])
 async def check_environment(conn: Connection, ctx: FlowContext):
@@ -502,7 +503,7 @@ uniconn mcp --inventory hosts.yaml --group web --max-read-bytes 131072 --print-c
 Вы также можете встраивать `MCPServer` напрямую в собственные агентные пайплайны (включая пакетные JSON-RPC 2.0 запросы):
 
 ```python
-from uniconn import MCPHostRegistry, MCPSecurityPolicy, MCPServer
+from uniconn.mcp import MCPHostRegistry, MCPSecurityPolicy, MCPServer
 
 policy = MCPSecurityPolicy(allow_write=False, allowlist=("echo", "df", "uptime"))
 registry = MCPHostRegistry.from_sources(inventory="hosts.yaml", policy=policy)

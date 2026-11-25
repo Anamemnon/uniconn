@@ -3,7 +3,15 @@
 
 from __future__ import annotations
 
-from ..exceptions import ConcurrencyConflictError
+from ..exceptions import (
+    ApprovalAlreadyConsumedError,
+    ApprovalError,
+    ApprovalExpiredError,
+    ApprovalRejectedError,
+    ApprovalRequiredError,
+    ApprovalTamperingError,
+    ConcurrencyConflictError,
+)
 from .auth import (
     CallerIdentity,
     MCPAuthConfig,
@@ -78,10 +86,16 @@ __all__ = [
     "SUPPORTED_PROTOCOL_VERSIONS",
     "ActionRiskClassifier",
     "ActionRiskTier",
+    "ApprovalAlreadyConsumedError",
     "ApprovalChannel",
+    "ApprovalError",
+    "ApprovalExpiredError",
     "ApprovalManager",
+    "ApprovalRejectedError",
     "ApprovalRequest",
+    "ApprovalRequiredError",
     "ApprovalStatus",
+    "ApprovalTamperingError",
     "CallerIdentity",
     "ConcurrencyConflictError",
     "FlowCheckpointRecord",

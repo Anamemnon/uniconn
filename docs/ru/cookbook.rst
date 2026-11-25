@@ -159,7 +159,8 @@
 
 .. code-block:: python
 
-   from uniconn import Connection, ConnectionPool, Flow, FlowContext, task
+   from uniconn import Connection, ConnectionPool
+   from uniconn.orchestration import Flow, FlowContext, task
 
    @task(name="preflight_check", tags=["preflight"])
    async def preflight_check(conn: Connection, ctx: FlowContext):

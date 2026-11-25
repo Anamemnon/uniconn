@@ -14,8 +14,8 @@ from uniconn import (
     Connection,
     RecordMode,
     SyncConnection,
-    UniconnCassetteFixture,
 )
+from uniconn.pytest_plugin import UniconnCassetteFixture
 from uniconn.result import Result
 from uniconn.transports.replay.models import (
     RecordedExecInteraction,

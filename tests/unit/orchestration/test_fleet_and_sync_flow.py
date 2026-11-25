@@ -11,11 +11,9 @@ from uniconn import (
     BatchAbortedError,
     Connection,
     ConnectionPool,
-    Flow,
-    FlowContext,
     SyncConnection,
-    task,
 )
+from uniconn.orchestration import Flow, FlowContext, task
 
 
 async def test_fleet_barrier_mode_synchronizes_layers_across_hosts() -> None:

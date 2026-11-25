@@ -15,6 +15,61 @@ from uniconn.pool.session_pool import SSHSessionPool as CanonicalSessionPool
 from uniconn.services.facts_models import HostFacts as CanonicalFacts
 from uniconn.sync.connection import SyncConnection as CanonicalSyncConn
 
+_ISOLATED_BY_SUBPACKAGE: dict[str, tuple[str, ...]] = {
+    "uniconn.mcp": (
+        "MCPServer",
+        "MCPHostRegistry",
+        "MCPSecurityPolicy",
+        "HITLPolicy",
+        "ApprovalManager",
+        "ApprovalError",
+        "ApprovalRequiredError",
+        "ConcurrencyConflictError",
+    ),
+    "uniconn.orchestration": (
+        "Flow",
+        "SyncFlow",
+        "FlowContext",
+        "FlowReport",
+        "Task",
+        "task",
+        "FlowExecutionError",
+        "CyclicDependencyError",
+    ),
+    "uniconn.security": (
+        "CommandASTParser",
+        "EmbeddedPolicyEngine",
+        "PolicyGuardrailMiddleware",
+        "OPAPolicyEngine",
+        "PolicyViolationError",
+    ),
+    "uniconn.background": (
+        "BackgroundPool",
+        "DiagnosticSession",
+        "DiagnosticConfig",
+        "LogPipeline",
+        "BackgroundError",
+        "HardwareFaultDetectedError",
+    ),
+    "uniconn.mock": (
+        "MockSSHServer",
+        "MockNetconfServer",
+        "MockGnmiServer",
+    ),
+    "uniconn.services.provisioning": (
+        "FleetChangePlan",
+        "PlannedChange",
+        "PlanRecorder",
+        "AptStrategy",
+        "SystemdStrategy",
+        "StateDriftError",
+    ),
+    "uniconn.pytest_plugin": ("UniconnCassetteFixture",),
+}
+_ISOLATED_ROOT_SYMBOLS: frozenset[str] = frozenset(
+    sym for symbols in _ISOLATED_BY_SUBPACKAGE.values() for sym in symbols
+)
+
 
 def test_no_stdlib_quote_leak_in_public_api() -> None:
     """Убедиться, что shlex.quote не входит в публичную витрину __all__, __dict__ и __getattr__ пакета."""
@@ -115,10 +170,25 @@ def test_readme_and_docs_contain_no_outdated_api_patterns() -> None:
         "uniconn._config",
     )
 
+    import re
+
+    root_import_re = re.compile(r"from uniconn import\s+(?:\(([^)]+)\)|([^\n]+))")
+    autodoc_root_re = re.compile(r"\.\.\s+auto(?:class|exception|function)::\s+uniconn\.([A-Za-z_][A-Za-z0-9_]*)")
+
     for doc_path in doc_files:
         text = doc_path.read_text(encoding="utf-8")
         for pattern in forbidden_patterns:
             assert pattern not in text, f"Outdated pattern {pattern!r} found in {doc_path.name}"
+        for block_match in root_import_re.finditer(text):
+            chunk = block_match.group(1) or block_match.group(2)
+            names = {x.strip().split()[0] for x in chunk.replace("\n", " ").split(",") if x.strip()}
+            disallowed = names & _ISOLATED_ROOT_SYMBOLS
+            assert not disallowed, f"Isolated root import {sorted(disallowed)} in {doc_path.name}"
+        for auto_match in autodoc_root_re.finditer(text):
+            sym = auto_match.group(1)
+            assert sym not in _ISOLATED_ROOT_SYMBOLS, (
+                f"Isolated autodoc target uniconn.{sym} in {doc_path.name}"
+            )
 
 
 def test_bilingual_documentation_structure_and_coverage() -> None:
@@ -163,7 +233,8 @@ def test_bilingual_documentation_structure_and_coverage() -> None:
 
 
 def test_examples_use_only_public_uniconn_imports() -> None:
-    """Все скрипты в examples/*.py не должны импортировать приватные подмодули uniconn._*."""
+    """Все скрипты в examples/*.py импортируют только актуальные публичные модули без изолированных корней."""
+    import ast
     from pathlib import Path
 
     root_dir = Path(__file__).resolve().parents[3]
@@ -171,10 +242,18 @@ def test_examples_use_only_public_uniconn_imports() -> None:
     py_files = sorted(p for p in examples_dir.glob("*.py") if p.name != "__init__.py")
     assert len(py_files) >= 13
 
+    allowed_root = set(uniconn.__all__) | set(uniconn._LAZY_EXPORTS) | {"__version__"}
     for py_path in py_files:
         source = py_path.read_text(encoding="utf-8")
         assert "from uniconn._" not in source, f"Private import in {py_path.name}"
         assert "from uniconn.transports._" not in source, f"Private transport import in {py_path.name}"
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "uniconn":
+                for alias in node.names:
+                    assert alias.name in allowed_root, (
+                        f"Non-core/isolated symbol {alias.name!r} imported from root in {py_path.name}"
+                    )
 
 
 async def test_all_examples_execute_main_cleanly() -> None:
@@ -257,19 +336,115 @@ async def test_from_dict_hooks_and_clone_isolates_options_and_hitl() -> None:
 
 
 def test_root_all_is_clean_and_lazy_aliases_remain_accessible() -> None:
-    """Корневой __all__ содержит только публичное ядро, но внутренние классы доступны лениво через PEP 562."""
-    assert len(uniconn.__all__) <= 130
+    """Корневой __all__ содержит только компактное SemVer-ядро, а внутренние алиасы ядра загружаются лениво."""
+    assert len(uniconn.__all__) <= 55
     internal_symbols = (
         "compute_crc16",
         "CallableSerializer",
         "PosixMarkerProtocol",
         "EventLoopPortal",
-        "AptStrategy",
     )
     for sym in internal_symbols:
         assert sym not in uniconn.__all__, f"Internal symbol {sym} should not be in root __all__"
         assert sym in dir(uniconn)
         assert getattr(uniconn, sym) is not None
+
+
+def test_isolated_subsystems_excluded_from_root_api() -> None:
+    """Изолированные подсистемы и внутренние стратегии отсутствуют в корневом uniconn, но доступны в подпакетах."""
+    dir_names = set(dir(uniconn))
+    for subpkg_name, symbols in _ISOLATED_BY_SUBPACKAGE.items():
+        submod = importlib.import_module(subpkg_name)
+        for sym in symbols:
+            assert sym not in uniconn.__all__, f"{sym} must not be in root __all__"
+            assert sym not in uniconn.__dict__, f"{sym} must not be in root __dict__"
+            assert sym not in dir_names, f"{sym} must not be in dir(uniconn)"
+            with pytest.raises(AttributeError):
+                getattr(uniconn, sym)
+            assert hasattr(submod, sym), f"{sym} missing from canonical subpackage {subpkg_name}"
+
+
+def test_isolated_packages_all_exports_resolvable() -> None:
+    """Проверить консистентность __all__ во всех изолированных и сервисных подпакетах."""
+    subpackages = (
+        "uniconn.mcp",
+        "uniconn.security",
+        "uniconn.background",
+        "uniconn.orchestration",
+        "uniconn.mock",
+        "uniconn.transports.replay",
+        "uniconn.services",
+        "uniconn.services.provisioning",
+    )
+    for pkg_name in subpackages:
+        mod = importlib.import_module(pkg_name)
+        exports = list(mod.__all__)
+        assert len(exports) == len(set(exports)), f"Duplicate exports in {pkg_name}.__all__"
+        for sym in exports:
+            assert hasattr(mod, sym), f"{pkg_name}.{sym} from __all__ failed to resolve"
+
+
+def test_import_latency_and_lazy_isolation(tmp_path) -> None:
+    """import uniconn и ConnectionPool быстры и не подгружают _fleet_plan и тяжёлые модули."""
+    import json
+    import subprocess
+    import sys
+
+    probe_import = (
+        "import json, sys, time; "
+        "t0 = time.perf_counter(); "
+        "import uniconn; "
+        "ms = (time.perf_counter() - t0) * 1000; "
+        "forbidden = ["
+        "'niquests', 'urllib3', 'asyncssh', 'pydantic', 'structlog', 'pywinrm', 'telnetlib3', 'pyghmi', "
+        "'uniconn.mcp', 'uniconn.orchestration', 'uniconn.security', 'uniconn.background', 'uniconn.mock', "
+        "'uniconn.services', 'uniconn.services.provisioning', 'uniconn.transports.bmc', "
+        "'uniconn.transports.network', 'uniconn.transports._winrm'"
+        "]; "
+        "loaded = [m for m in forbidden if m in sys.modules]; "
+        "_ = uniconn.ConnectionPool; "
+        "pool_pulled_fleet = 'uniconn.services.provisioning._fleet_plan' in sys.modules; "
+        "print(json.dumps({'ms': ms, 'loaded': loaded, 'pool_pulled_fleet': pool_pulled_fleet}))"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe_import],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    info = json.loads(proc.stdout.strip())
+    assert info["loaded"] == [], f"Unexpected eager imports: {info['loaded']}"
+    assert info["pool_pulled_fleet"] is False, "ConnectionPool import eagerly loaded _fleet_plan"
+    assert info["ms"] < 250.0, f"import uniconn took too long: {info['ms']:.2f} ms"
+
+    target = tmp_path / "lazy_prov.txt"
+    probe_prov = (
+        "import asyncio, json, sys\n"
+        "from uniconn import Connection\n"
+        "async def run():\n"
+        "    async with Connection.local() as conn:\n"
+        f"        await conn.state.ensure_file({str(target)!r}, content='ok', dry_run=True)\n"
+        "asyncio.run(run())\n"
+        "unwanted = [\n"
+        "    'uniconn.services.provisioning._fleet_plan',\n"
+        "    'uniconn.services.provisioning.yang',\n"
+        "    'uniconn.services.provisioning.packages',\n"
+        "    'uniconn.services.provisioning.service_managers',\n"
+        "    'uniconn.services.provisioning.system',\n"
+        "    'uniconn.services.provisioning.windows',\n"
+        "]\n"
+        "print(json.dumps([m for m in unwanted if m in sys.modules]))\n"
+    )
+    prov_proc = subprocess.run(
+        [sys.executable, "-c", probe_prov],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    prov_loaded = json.loads(prov_proc.stdout.strip())
+    assert prov_loaded == [], f"Lazy provisioning leaked submodules: {prov_loaded}"
 
 
 def test_readmes_and_svg_have_no_removed_transports_or_dashboard() -> None:

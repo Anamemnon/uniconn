@@ -20,21 +20,16 @@ from typing import Any
 
 import pytest
 
-from uniconn import (
-    ApprovalAlreadyConsumedError,
-    ConcurrencyConflictError,
-    Connection,
-    Flow,
-    Result,
-    task,
-)
+from uniconn import Connection, Result
 from uniconn.cli.cmd_mcp import _build_mcp_server_from_args, build_mcp_client_config
 from uniconn.mcp import (
     CHECKPOINT_TOKEN_PREFIX,
     FLOW_CHECKPOINT_NAMESPACE,
     HITL_STATE_NAMESPACE,
     ActionRiskTier,
+    ApprovalAlreadyConsumedError,
     ApprovalManager,
+    ConcurrencyConflictError,
     FlowCheckpointRecord,
     FlowCheckpointStore,
     HITLPolicy,
@@ -46,6 +41,7 @@ from uniconn.mcp import (
     StateRecord,
     StateStore,
 )
+from uniconn.orchestration import Flow, task
 
 
 async def _make_store(kind: str, tmp_path: Path) -> StateStore:

@@ -6,6 +6,13 @@
 собирать их логи порциями (polling + tail) и гарантированно очищать ресурсы.
 """
 
+from ..exceptions import (
+    BackgroundBackendError,
+    BackgroundError,
+    BackgroundPoolFullError,
+    BackgroundSessionExistsError,
+    HardwareFaultDetectedError,
+)
 from ._backends import (
     BackgroundBackendStrategy,
     BackgroundBackendType,
@@ -59,19 +66,24 @@ __all__ = [
     "KERNEL_PANIC_RULES",
     "TELECOM_BS_RULES",
     "ArchiveHandler",
+    "BackgroundBackendError",
     "BackgroundBackendStrategy",
     "BackgroundBackendType",
     "BackgroundCleanupManager",
+    "BackgroundError",
     "BackgroundLogCollector",
     "BackgroundPool",
     "BackgroundPoolConfig",
+    "BackgroundPoolFullError",
     "BackgroundResult",
     "BackgroundSession",
+    "BackgroundSessionExistsError",
     "DiagnosticConfig",
     "DiagnosticResult",
     "DiagnosticSession",
     "DirectStreamCollector",
     "ForwardHandler",
+    "HardwareFaultDetectedError",
     "LocalFileHandler",
     "LogConfig",
     "LogEvent",

@@ -18,8 +18,6 @@ from uniconn import (
     Connection,
     ConnectionConfig,
     FileCapableTransport,
-    MockPveServer,
-    MockQgaServer,
     PveTransport,
     QgaProtocolClient,
     QgaTransport,
@@ -31,6 +29,7 @@ from uniconn import (
     VirshCommandChannel,
     supports_capability,
 )
+from uniconn.mock import MockPveServer, MockQgaServer
 
 
 class TestVirtualizationURIParsing:

@@ -15,7 +15,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from uniconn import BackgroundPool, BackgroundPoolConfig, LogConfig
+from uniconn.background import BackgroundPool, BackgroundPoolConfig, LogConfig
 
 # ─── Справочные примеры для удалённого SSH-сервера ──────────────────
 

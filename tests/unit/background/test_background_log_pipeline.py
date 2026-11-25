@@ -341,9 +341,9 @@ class TestPatternTriggerAndTimelineAndWatchdog:
 
         import pytest
 
-        from uniconn import (
+        from uniconn import ConfigurationError
+        from uniconn.background import (
             BUILTIN_WATCH_RULES,
-            ConfigurationError,
             HardwareFaultDetectedError,
             LogMatchEvent,
             LogWatchRule,
@@ -421,8 +421,8 @@ class TestPatternTriggerAndTimelineAndWatchdog:
         import asyncio
         import json
 
-        from uniconn import (
-            Connection,
+        from uniconn import Connection
+        from uniconn.background import (
             DirectStreamCollector,
             StallEvent,
             TimelineHandler,
@@ -474,10 +474,9 @@ class TestPatternTriggerAndTimelineAndWatchdog:
     ) -> None:
         import pytest
 
-        from uniconn import (
+        from uniconn import ConfigurationError, Connection
+        from uniconn.background import (
             BUILTIN_WATCH_RULES,
-            ConfigurationError,
-            Connection,
             DirectStreamCollector,
             LogPipeline,
             PatternTriggerHandler,

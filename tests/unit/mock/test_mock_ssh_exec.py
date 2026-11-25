@@ -13,11 +13,10 @@ from uniconn import (
     AuthenticationError,
     Cassette,
     Connection,
-    MockServerConfig,
-    MockSSHServer,
     RecordedExecInteraction,
     RecordedStreamInteraction,
 )
+from uniconn.mock import MockServerConfig, MockSSHServer
 
 
 def _sample_exec_cassette() -> Cassette:

@@ -13,22 +13,22 @@
 - Local Sphinx docs server: `uv run python main.py --serve` (listens on `0.0.0.0:3000`)
 - Documentation & Feature Matrix: `AGENTS.md` (architecture & rules), `FEATURES.md` (full catalog of implemented features — consult on-demand only)
 
-## Public Exports (`from uniconn import ...`)
-- **Core & Facade**: `Connection`, `SyncConnection`, `ConnectionConfig`, `SecretResolver`, `SecretBackend`, `EnvSecretBackend`, `FileSecretBackend`, `URIParser`, `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `NetResult`, `DiagnosticSummary`, `SystemVitals`, `PortConflictInfo`, `ErrorCategory`, `TelemetrySample`, `HostFacts`, `FactSpec`, `CustomCommandSpec`, `FileSourceSpec`, `ExternalToolSpec`, `ExternalToolRunner`, `FactsDiffReport`, `DiskInfo`, `NetworkInterface`, `diff_facts`, `render_template`, `OperationObserver`, `ObserverContext`, `HostTempManager`, `ScriptExecutionManager`, `RemotePythonWorker`, `CallableSerializer`, `BeforeRunHook`, `AfterRunHook`, `OnErrorHook`, `HookCallback`, `HookEvent`
-- **Plugins & Dynamic Inventory (`uniconn.plugins` / `uniconn.config`)**: `PluginLoader`, `PluginInfo`, `PLUGIN_GROUPS`, `TransportLoader`, `InventoryLoader`, `InventoryProvider`, `CachedInventoryProvider`, `FileInventoryProvider`, `StaticInventoryProvider`, `resolve_inventory_provider`
-- **Resilience (`uniconn.core.resilience`)**: `CircuitBreaker`, `CircuitState`, `RateLimiter`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`
-- **Domain Services & Object-Oriented FS (`uniconn.services` / `uniconn.pool`)**: `FileOperationsService`, `RemotePath`, `SyncRemotePath`, `RemoteStatResult`, `DirectorySynchronizer`, `TemplateEngine`, `StateManagementService`, `FleetChangePlan`, `PlannedChange`, `PlanRecorder`, `PlanApplier`, `NetworkOperationsService`, `NotificationBatch`, `PoolNotificationBatch`, `NotifySpec`, `FactCollector`, `TunnelService`, `PoolFileOperationsService`, `PoolStateManagementService`, `PoolNetworkOperationsService`, `SyncFileOperationsService`, `SyncStateManagementService`, `SyncTunnelService`, `SyncNetworkOperationsService`, `SyncPoolFileOperationsService`, `SyncPoolStateManagementService`, `SyncPoolNetworkOperationsService`, `ensure_windows_service`, `ensure_registry_key`, `ensure_windows_feature`, `ensure_yang`
-- **Strategies (`uniconn.services.provisioning`)**: `PackageManagerStrategy`, `AptStrategy`, `ApkStrategy`, `DnfYumStrategy`, `PacmanStrategy`, `ZypperStrategy`, `WingetStrategy`, `ChocoStrategy`, `ScoopStrategy`, `ServiceManagerStrategy`, `SystemdStrategy`, `OpenRCStrategy`, `SysVStrategy`
-- **Middleware Pipeline, Auto-Diagnostics & Context (`uniconn.core`)**: `CommandRequest`, `CommandPipeline`, `CommandMiddleware`, `ContextMiddleware`, `HITLApprovalMiddleware`, `SudoMiddleware`, `HookMiddleware`, `DryRunMiddleware`, `ObservabilityMiddleware`, `AutoDiagnosticMiddleware`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`, `RetryMiddleware`, `TracingMiddleware`, `ErrorClassifier`, `ClassificationMatch`, `DiagnosticStrategy`, `PassiveDiagnosticStrategy`, `LinuxDiagnosticStrategy`, `WindowsDiagnosticStrategy`, `resolve_diagnostic_strategy`, `ExecutionContext`, `EventLoopPortal`, `SyncContextBridge`, `InventoryLoader`
-- **Transport Protocols, Structured Network (NETCONF/RESTCONF/gNMI), Virtualization (QGA/PVE), BMC, WinRM, Serial Modem, Replay/Cassette, Socket Mock Servers & Helpers (`uniconn.transports` / `uniconn.mock` / `uniconn.pytest_plugin`)**: `BaseTransport`, `CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `ShellStdinProtocol`, `ShellStdoutProtocol`, `TunnelCapableTransport`, `StructuredNetworkTransport`, `require_capability`, `supports_capability`, `NetconfTransport`, `NetconfFrameCodec`, `NetconfVendorAdapter`, `RestconfTransport`, `RestconfClient`, `GnmiTransport`, `GnmiWireCodec`, `GnmiPath`, `GnmiPathElem`, `parse_gnmi_path`, `format_gnmi_path`, `safe_parse_xml`, `xml_to_data`, `data_to_xml`, `parse_rpc_reply`, `parse_yang_path_steps`, `query_yang_tree`, `apply_yang_edit`, `deep_merge_yang`, `yang_subset_matches`, `compute_yang_diff`, `MockNetconfServer`, `SyncMockNetconfServer`, `MockRestconfServer`, `SyncMockRestconfServer`, `MockGnmiServer`, `SyncMockGnmiServer`, `QgaTransport`, `QgaProtocolClient`, `QgaChannelProtocol`, `LocalUnixSocketChannel`, `SshUnixSocketChannel`, `VirshCommandChannel`, `parse_qga_network_interfaces`, `PveTransport`, `PveHttpClient`, `MockQgaServer`, `MockPveServer`, `MockPveResponse`, `WinRMTransport`, `SerialTransport`, `SerialPortInfo`, `list_serial_ports`, `AsyncXmodemSender`, `AsyncXmodemReceiver`, `AsyncYmodemSender`, `AsyncYmodemReceiver`, `ZmodemSubprocessAdapter`, `compute_crc16`, `compute_checksum8`, `IPMITransport`, `RedfishTransport`, `LocalTransport`, `ReplayTransport`, `CassetteTransportProxy`, `Cassette`, `CassetteDiffReport`, `InteractionDiff`, `CassetteContext`, `SyncCassetteContext`, `UniconnCassetteFixture`, `MockServerConfig`, `MockRequestEvent`, `CassetteInteractionMatcher`, `MockSSHServer`, `SyncMockSSHServer`, `MockSSHServerInterface`, `MockSSHServerSession`, `MockSFTPServer`, `MockSFTPFile`, `MockTelnetServer`, `SyncMockTelnetServer`, `RecordMode`, `RecordedExecInteraction`, `RecordedStreamInteraction`, `RecordedFsInteraction`, `RecordedShellInteraction`, `RecordedPyRpcInteraction`, `ShellDialogStep`, `ReplayShellProcess`, `normalize_temp_paths`, `OpenSSHConfigParser`, `SSHJumpChainManager`, `SFTPClientAdapter`
-- **Pools & Task DAG Orchestration (`uniconn.pool` / `uniconn.orchestration`)**: `ConnectionPool`, `SyncConnectionPool`, `PoolFileOperationsService`, `PoolStateManagementService`, `PoolNetworkOperationsService`, `PoolNotificationBatch`, `SyncPoolFileOperationsService`, `SyncPoolStateManagementService`, `SyncPoolNetworkOperationsService`, `PoolStreamMultiplexer`, `SSHSessionPool`, `Flow`, `SyncFlow`, `Task`, `TaskOptions`, `FlowContext`, `TaskResult`, `RollbackResult`, `FlowReport`, `plan_flow`, `task`
-- **Interactive PTY Shell (`uniconn.shell`)**: `ShellSession`, `SyncShellSession`, `PosixMarkerProtocol`, `ExpectStateMachine`
-- **Background Diagnostics, Streaming Logs & Pluggable Backends (`uniconn.background`)**: `DiagnosticSession`, `SyncDiagnosticSession`, `DiagnosticConfig`, `DiagnosticResult`, `StreamSourceSpec`, `DirectStreamCollector`, `LogPipeline`, `LogHandler`, `LocalFileHandler`, `ForwardHandler`, `StreamHandler`, `ArchiveHandler`, `TimelineHandler`, `PatternTriggerHandler`, `LogWatchRule`, `LogMatchEvent`, `StallEvent`, `BUILTIN_WATCH_RULES`, `KERNEL_PANIC_RULES`, `HARDWARE_ERROR_RULES`, `TELECOM_BS_RULES`, `resolve_watch_rules`, `BackgroundPool`, `BackgroundPoolConfig`, `BackgroundSession`, `BackgroundResult`, `BackgroundCleanupManager`, `BackgroundLogCollector`, `BackgroundBackendStrategy`, `TmuxBackend`, `ScreenBackend`, `NohupBackend`, `WindowsJobBackend`, `resolve_backend`, `LogConfig`
-- **Hooks & OpenTelemetry (`uniconn.hooks` / `uniconn.telemetry`)**: `audit_log_hook`, `allowlist_hook`, `blocklist_hook`, `MetricsCollector`, `metrics_collector_hook`, `structured_log_hook`, `OtelTracingHook`, `otel_tracing_hook`, `InMemoryTracer`, `RecordedSpan`, `SpanProtocol`, `TracerProtocol`, `get_current_span`
-- **Structured CLI Output Parsing (`uniconn.parsing`)**: `ParsingEngine`, `ParsingRegistry`, `ParseSpec`, `default_registry`, `parse_output`, `detect_parser_spec`, `strip_ansi`, `BuiltinEngine`, `NativeJsonEngine`, `JCEngine`, `TTPEngine`, `TextFSMEngine`
-- **Model Context Protocol Server, Remote HTTP/SSE, Auth, Pluggable StateStore & HITL Approvals (`uniconn.mcp`)**: `MCPServer`, `MCPHostRegistry`, `MCPSecurityPolicy`, `MCPHostEntry`, `MCPToolDefinition`, `MCPResourceDefinition`, `MCPResourceTemplate`, `HITLPolicy`, `ActionRiskTier`, `ApprovalStatus`, `RiskAssessment`, `ApprovalRequest`, `ActionRiskClassifier`, `ApprovalManager`, `ApprovalChannel`, `TerminalApprovalChannel`, `WebhookApprovalChannel`, `StateStore`, `StateRecord`, `InMemoryStateStore`, `SQLiteStateStore`, `DEFAULT_STATE_DB_PATH`, `DEFAULT_APPROVAL_STORE_PATH`, `HITL_STATE_NAMESPACE`, `FLOW_CHECKPOINT_NAMESPACE`, `SUPPORTED_PROTOCOL_VERSIONS`, `CallerIdentity`, `OAuth2OIDCConfig`, `MTLSConfig`, `MCPAuthConfig`, `MCPHttpConfig`, `MCPAuthError`, `OAuth2JWTValidator`, `MTLSClientCertValidator`, `MCPAuthenticator`, `MCPSession`, `MCPSessionManager`, `MCPSessionError`, `MCPSessionNotFoundError`, `MCPSessionForbiddenError`, `MCPSessionLimitError`, `build_mcp_http_app`, `serve_mcp_http`, `caller_identity_context`, `get_current_caller`, `build_unified_diff`, `mask_uri_secrets`
-- **Logging (`structlog` + `stdlib`)**: `configure_logging`, `get_struct_logger`, `log_context`, `bind_log_context`, `unbind_log_context`, `clear_log_context`, `get_log_context`, `get_logger`, `setup_file_logging`, `SecretMaskingFilter`
-- **Exceptions**: `UniconnError`, `ConfigurationError`, `ConcurrencyConflictError`, `CyclicDependencyError`, `ConnectionError`, `CircuitOpenError`, `BatchAbortedError`, `CassetteError`, `CassetteMissError`, `AuthenticationError`, `ExecutionError`, `FlowExecutionError`, `StateDriftError`, `ApprovalError`, `ApprovalRequiredError`, `ApprovalRejectedError`, `ApprovalExpiredError`, `ApprovalTamperingError`, `ApprovalAlreadyConsumedError`, `FileTransferError`, `ModemTransferError`, `ModemHandshakeTimeoutError`, `ModemCancelledError`, `ModemMaxRetriesError`, `ModemProtocolError`, `ModemChecksumMismatchError`, `ParsingError`, `ParserNotFoundError`, `OptionalDependencyError`, `TimeoutError`, `PluginNotFoundError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `BackgroundError`, `BackgroundBackendError`, `BackgroundSessionExistsError`, `BackgroundPoolFullError`, `HardwareFaultDetectedError`
+## Public Exports (`from uniconn import ...` — Core SemVer Contract v0.23.0)
+- **Core Facade, Pools & Sync (`from uniconn import ...`)**: `Connection`, `SyncConnection`, `ConnectionPool`, `SyncConnectionPool`, `SSHSessionPool`
+- **Config, Secrets & Plugins (`from uniconn import ...`)**: `ConnectionConfig`, `URIParser`, `InventoryLoader`, `SecretResolver`, `PluginLoader`
+- **Results & Host Facts (`from uniconn import ...`)**: `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `NetResult`, `TelemetrySample`, `DiagnosticSummary`, `SystemVitals`, `PortConflictInfo`, `ErrorCategory`, `HostFacts`, `FactsDiffReport`, `diff_facts`
+- **Shell, Remote FS & Templates (`from uniconn import ...`)**: `ShellSession`, `SyncShellSession`, `RemotePath`, `SyncRemotePath`, `TemplateEngine`, `render_template`
+- **Pipeline, Resilience, Transport, Replay & Logging (`from uniconn import ...`)**: `CommandPipeline`, `CommandRequest`, `CommandMiddleware`, `ExecutionContext`, `OperationObserver`, `CircuitBreaker`, `CircuitState`, `RateLimiter`, `BaseTransport`, `Cassette`, `configure_logging`
+- **Core Exceptions (`from uniconn import ...`)**: `UniconnError`, `ConfigurationError`, `ConnectionError`, `AuthenticationError`, `ExecutionError`, `TimeoutError`, `FileTransferError`, `PluginNotFoundError`, `TransportNotFoundError`, `CapabilityNotSupportedError`, `BMCCapabilityError`, `CircuitOpenError`, `BatchAbortedError`, `OptionalDependencyError`
+
+### Subpackage Imports (Isolated / Domain Modules — `from uniconn.<subpkg> import ...`)
+- **Domain Services & Provisioning (`uniconn.services`, `uniconn.services.provisioning`)**: `FileOperationsService`, `DirectorySynchronizer`, `StateManagementService`, `NetworkOperationsService`, `TunnelService`, `NotificationBatch`, `NotifySpec`, `FleetChangePlan`, `PlannedChange`, `PlanRecorder`, `PlanApplier`, `StateDriftError`, package/service `*Strategy`, `ensure_windows_service`, `ensure_registry_key`, `ensure_windows_feature`, `ensure_yang`
+- **Task DAG Orchestration (`uniconn.orchestration`)**: `Flow`, `SyncFlow`, `Task`, `TaskOptions`, `FlowContext`, `TaskResult`, `RollbackResult`, `FlowReport`, `plan_flow`, `task`, `FlowExecutionError`, `CyclicDependencyError`
+- **Policy-as-Code & AST Guardrails (`uniconn.security`)**: `PolicyGuardrailMiddleware`, `PolicyGuardrailConfig`, `CommandASTParser`, `PowerShellASTParser`, `EmbeddedPolicyEngine`, `OPAPolicyEngine`, `ActionContext`, `AuthContext`, `PolicyDecision`, `PolicyError`, `PolicyViolationError`, `PolicyEngineUnavailableError`, `build_auth_context`, `create_policy_engine`
+- **MCP Server, HTTP/SSE & HITL (`uniconn.mcp`)**: `MCPServer`, `MCPHostRegistry`, `MCPSecurityPolicy`, `HITLPolicy`, `ActionRiskTier`, `ActionRiskClassifier`, `ApprovalManager`, `InMemoryStateStore`, `SQLiteStateStore`, `MCPAuthConfig`, `MCPHttpConfig`, `OAuth2OIDCConfig`, `MTLSConfig`, `ConcurrencyConflictError`, `Approval*Error`, `build_mcp_http_app`, `serve_mcp_http`
+- **Background Diagnostics & Log Pipelines (`uniconn.background`)**: `DiagnosticSession`, `DiagnosticConfig`, `DiagnosticResult`, `StreamSourceSpec`, `LogPipeline`, `PatternTriggerHandler`, `BUILTIN_WATCH_RULES`, `BackgroundPool`, `BackgroundPoolConfig`, `BackgroundSession`, `TmuxBackend`, `ScreenBackend`, `NohupBackend`, `WindowsJobBackend`, `Background*Error`, `HardwareFaultDetectedError`
+- **Socket Mock Servers & Testing (`uniconn.mock`, `uniconn.pytest_plugin`)**: `MockSSHServer`, `SyncMockSSHServer`, `MockSFTPServer`, `MockTelnetServer`, `MockNetconfServer`, `MockRestconfServer`, `MockGnmiServer`, `MockQgaServer`, `MockPveServer`, `UniconnCassetteFixture`
+- **Structured Parsing, Hooks, Transports & Logging (`uniconn.parsing`, `uniconn.hooks`, `uniconn.transports.*`, `uniconn._logging`)**: `ParsingRegistry`, `parse_output`, `audit_log_hook`, `blocklist_hook`, `otel_tracing_hook`, `InMemoryTracer`, `get_struct_logger`, `log_context`, transport/modem classes & codecs (`RedfishTransport`, `IPMITransport`, `SerialTransport`, `WinRMTransport`, `QgaTransport`, `PveTransport`, `NetconfTransport`, `RestconfTransport`, `GnmiTransport`, `AsyncXmodemSender`, `CassetteError`, `ModemTransferError`)
 
 ## URI Schemes & Secret Resolution (`SecretResolver`)
 - `ssh://[user[:password]@]host[:22][?key_file=...&password=env://SSH_PASS&known_hosts=strict&keepalive=30&ssh_config=true&use_agent=true&proxy=jump1,jump2&proxy_command=...&rate_limit=10&circuit_breaker_threshold=5&circuit_breaker_timeout=30&auto_diagnostics=true]`
@@ -603,7 +603,7 @@ uniconn policy eval "systemctl restart postgresql" [--host prod-db-01] [--env pr
 
 ### Policy-as-Code Guardrails & AST Command Verification (`uniconn.security`)
 ```python
-from uniconn import (
+from uniconn.security import (
     CommandASTParser,
     EmbeddedPolicyEngine,
     OPAPolicyEngine,
@@ -643,18 +643,15 @@ eval_res = await engine.evaluate(auth_ctx)
 
 ### Declarative Task DAG Orchestration & MCP Flow-as-Tool (`uniconn.orchestration`, `uniconn.mcp`)
 ```python
-from uniconn import (
-    Connection,
-    ConnectionPool,
-    Flow,
+from uniconn import Connection, ConnectionPool
+from uniconn.mcp import (
     FlowCheckpointStore,
-    FlowContext,
     FlowRiskEvaluator,
     FlowSchemaGenerator,
     MCPFlowRegistry,
     MCPServer,
-    task,
 )
+from uniconn.orchestration import Flow, FlowContext, task
 
 @task(name="check_env", tags=["preflight", "safe"])
 async def check_env(conn: Connection, ctx: FlowContext):
@@ -729,13 +726,15 @@ plan_ascii = flow.describe_plan(targets=["web-01", "web-02"], vars={"version": "
 
 ### Remote Network MCP (Streamable HTTP / SSE, OAuth 2.1 / OIDC, mTLS & Multi-Tenant Isolation, `uniconn[mcp-http]`)
 ```python
-from uniconn import (
+from uniconn.mcp import (
+    InMemoryStateStore,
     MCPAuthConfig,
     MCPHostRegistry,
     MCPHttpConfig,
     MCPServer,
     MTLSConfig,
     OAuth2OIDCConfig,
+    SQLiteStateStore,
 )
 
 # 1. Fail-closed hybrid auth (OAuth 2.1 / OIDC JWKS + mTLS X.509 / SPIFFE, modes: oauth2 | mtls | either | both):
@@ -767,7 +766,6 @@ http_cfg = MCPHttpConfig(
 )
 
 # 2. Dual-mode Multi-Tenant Isolation & Pluggable StateStore (default InMemoryStateStore / stdlib SQLiteStateStore WAL / custom Protocol):
-from uniconn import InMemoryStateStore, SQLiteStateStore
 
 server = MCPServer(
     registry=MCPHostRegistry.from_sources(inventory="shared_hosts.yaml"),

@@ -4,23 +4,14 @@
 from __future__ import annotations
 
 import contextvars
+import importlib
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ...result import EnsureResult
-from ._fleet_plan import (
-    IN_NOTIFY_HANDLER,
-    ConnectionApplyPlanContext,
-    ConnectionPlanContext,
-    FleetChangePlan,
-    _ServiceApplierBinding,
-    _ServicePlanBinding,
-    capture_before_snapshot,
-    compute_before_digest,
-    extract_actions_from_result,
-)
 from ._notify import (
+    IN_NOTIFY_HANDLER,
     NotificationBatch,
     NotifySpec,
     finalize_ensure_with_notify,
@@ -32,70 +23,68 @@ from ._plan import (
     extract_stat_mode,
     get_owner_group,
 )
-from .files import (
-    ensure_directory as _ensure_directory,
-)
-from .files import (
-    ensure_file as _ensure_file,
-)
-from .files import (
-    ensure_line as _ensure_line,
-)
-from .packages import (
-    PkgManagerName,
-)
-from .packages import (
-    ensure_package as _ensure_package,
-)
-from .packages import (
-    resolve_pkg_manager as _resolve_pkg_manager,
-)
-from .service_managers import (
-    ServiceState,
-)
-from .service_managers import (
-    ensure_service as _ensure_service,
-)
-from .system import (
-    ensure_authorized_key as _ensure_authorized_key,
-)
-from .system import (
-    ensure_sysctl as _ensure_sysctl,
-)
-from .system import (
-    ensure_systemd_unit as _ensure_systemd_unit,
-)
-from .system import (
-    ensure_user as _ensure_user,
-)
-from .system import (
-    resolve_user_home as _resolve_user_home,
-)
-from .windows import (
-    RegistryValueType,
-    WindowsServiceState,
-    WindowsStartupType,
-)
-from .windows import (
-    ensure_registry_key as _ensure_registry_key,
-)
-from .windows import (
-    ensure_windows_feature as _ensure_windows_feature,
-)
-from .windows import (
-    ensure_windows_service as _ensure_windows_service,
-)
-from .yang import (
-    ensure_yang as _ensure_yang,
-)
 
 if TYPE_CHECKING:
     from ...core.connection import Connection
     from ..facts_models import FactSpec, HostFacts
+    from ._fleet_plan import (
+        ConnectionApplyPlanContext,
+        ConnectionPlanContext,
+        FleetChangePlan,
+        _ServiceApplierBinding,
+        _ServicePlanBinding,
+    )
+    from .packages import PkgManagerName
+    from .service_managers import ServiceState
+    from .windows import RegistryValueType, WindowsServiceState, WindowsStartupType
 
 _ENSURE_NESTING_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar(
     "uniconn_ensure_nesting_depth", default=0
 )
+
+_LAZY_PROVISIONING_FUNCS: dict[str, tuple[str, str]] = {
+    "_resolve_pkg_manager": (".packages", "resolve_pkg_manager"),
+    "_ensure_package": (".packages", "ensure_package"),
+    "_ensure_service": (".service_managers", "ensure_service"),
+    "_ensure_windows_service": (".windows", "ensure_windows_service"),
+    "_ensure_registry_key": (".windows", "ensure_registry_key"),
+    "_ensure_windows_feature": (".windows", "ensure_windows_feature"),
+    "_ensure_line": (".files", "ensure_line"),
+    "_ensure_file": (".files", "ensure_file"),
+    "_ensure_directory": (".files", "ensure_directory"),
+    "_ensure_user": (".system", "ensure_user"),
+    "_resolve_user_home": (".system", "resolve_user_home"),
+    "_ensure_authorized_key": (".system", "ensure_authorized_key"),
+    "_ensure_systemd_unit": (".system", "ensure_systemd_unit"),
+    "_ensure_sysctl": (".system", "ensure_sysctl"),
+    "_ensure_yang": (".yang", "ensure_yang"),
+}
+
+
+def __getattr__(name: str) -> Any:
+    """Лениво загрузить и кэшировать внутреннюю функцию провижининга по имени в ``facade``."""
+    spec = _LAZY_PROVISIONING_FUNCS.get(name)
+    if spec is None:
+        msg = f"module {__name__!r} has no attribute {name!r}"
+        raise AttributeError(msg)
+    mod_name, attr_name = spec
+    mod = importlib.import_module(mod_name, __package__)
+    value = getattr(mod, attr_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    """Включить лениво загружаемые реализации в ``dir(facade)`` для интроспекции."""
+    return sorted(set(globals()) | set(_LAZY_PROVISIONING_FUNCS))
+
+
+def _get_impl(name: str) -> Callable[..., Awaitable[Any]]:
+    """Вернуть функцию реализации с поддержкой ленивой загрузки и test monkeypatch."""
+    existing = globals().get(name)
+    if existing is not None:
+        return cast("Callable[..., Awaitable[Any]]", existing)
+    return cast("Callable[..., Awaitable[Any]]", __getattr__(name))
 
 
 class StateManagementService:
@@ -172,6 +161,8 @@ class StateManagementService:
 
     def plan(self, *, flow_name: str | None = None) -> ConnectionPlanContext:
         """Создать read-only контекстный менеджер сбора ``FleetChangePlan`` для этого соединения."""
+        from ._fleet_plan import ConnectionPlanContext
+
         return ConnectionPlanContext(self, flow_name=flow_name)
 
     def apply_plan(
@@ -181,6 +172,8 @@ class StateManagementService:
         strict: bool = True,
     ) -> ConnectionApplyPlanContext:
         """Создать контекстный менеджер защищённого применения ``FleetChangePlan`` с проверкой дрейфа."""
+        from ._fleet_plan import ConnectionApplyPlanContext
+
         return ConnectionApplyPlanContext(self, plan, strict=strict)
 
     async def _finalize_ensure_result(
@@ -207,6 +200,12 @@ class StateManagementService:
         kwargs["dry_run"] = True
         if depth > 0 or IN_NOTIFY_HANDLER.get():
             return await op_fn(self, *args, **kwargs)
+
+        from ._fleet_plan import (
+            capture_before_snapshot,
+            compute_before_digest,
+            extract_actions_from_result,
+        )
 
         op_name = op_fn.__name__
         token = _ENSURE_NESTING_DEPTH.set(depth + 1)
@@ -309,7 +308,7 @@ class StateManagementService:
 
     async def resolve_pkg_manager(self, manager: PkgManagerName = "auto") -> str:
         """Определить пакетный менеджер хоста при ``manager='auto'``."""
-        return await _resolve_pkg_manager(self, manager)
+        return cast("str", await _get_impl("_resolve_pkg_manager")(self, manager))
 
     async def ensure_package(
         self,
@@ -325,7 +324,7 @@ class StateManagementService:
         """Идемпотентно обеспечить наличие или отсутствие пакета(ов) на хосте."""
         return await self._execute_ensure(
             notify,
-            _ensure_package,
+            _get_impl("_ensure_package"),
             package,
             state=state,
             manager=manager,
@@ -348,7 +347,7 @@ class StateManagementService:
         """Идемпотентно управлять состоянием системного сервиса."""
         return await self._execute_ensure(
             notify,
-            _ensure_service,
+            _get_impl("_ensure_service"),
             service,
             state=state,
             enabled=enabled,
@@ -370,7 +369,7 @@ class StateManagementService:
         """Идемпотентно управлять службой Windows (SCM) с ожиданием переходных статусов."""
         return await self._execute_ensure(
             notify,
-            _ensure_windows_service,
+            _get_impl("_ensure_windows_service"),
             name,
             state=state,
             startup_type=startup_type,
@@ -392,7 +391,7 @@ class StateManagementService:
         """Идемпотентно управлять разделом или параметром системного реестра Windows."""
         return await self._execute_ensure(
             notify,
-            _ensure_registry_key,
+            _get_impl("_ensure_registry_key"),
             path,
             name=name,
             value=value,
@@ -415,7 +414,7 @@ class StateManagementService:
         """Идемпотентно управлять ролями и компонентами Windows через ServerManager или DISM."""
         return await self._execute_ensure(
             notify,
-            _ensure_windows_feature,
+            _get_impl("_ensure_windows_feature"),
             name,
             state=state,
             include_sub_features=include_sub_features,
@@ -477,7 +476,7 @@ class StateManagementService:
         """Идемпотентно обеспечить наличие, замену или отсутствие строки в файле."""
         return await self._execute_ensure(
             notify,
-            _ensure_line,
+            _get_impl("_ensure_line"),
             remote_path,
             line,
             state=state,
@@ -510,7 +509,7 @@ class StateManagementService:
         """Идемпотентно управлять файлом или символической ссылкой на хосте."""
         return await self._execute_ensure(
             notify,
-            _ensure_file,
+            _get_impl("_ensure_file"),
             remote_path,
             state=state,
             content=content,
@@ -542,7 +541,7 @@ class StateManagementService:
         """Идемпотентно обеспечить наличие или отсутствие директории, её прав и владельца."""
         return await self._execute_ensure(
             notify,
-            _ensure_directory,
+            _get_impl("_ensure_directory"),
             remote_path,
             state=state,
             mode=mode,
@@ -572,7 +571,7 @@ class StateManagementService:
         """Идемпотентно управлять системным пользователем и его группами."""
         return await self._execute_ensure(
             notify,
-            _ensure_user,
+            _get_impl("_ensure_user"),
             username,
             state=state,
             uid=uid,
@@ -588,7 +587,7 @@ class StateManagementService:
 
     async def _resolve_user_home(self, user: str, *, sudo: bool = False) -> str:
         """Определить домашнюю директорию пользователя на целевом хосте."""
-        return await _resolve_user_home(self, user, sudo=sudo)
+        return cast("str", await _get_impl("_resolve_user_home")(self, user, sudo=sudo))
 
     async def ensure_authorized_key(
         self,
@@ -604,7 +603,7 @@ class StateManagementService:
         """Идемпотентно управлять SSH-ключами в ``~/.ssh/authorized_keys``."""
         return await self._execute_ensure(
             notify,
-            _ensure_authorized_key,
+            _get_impl("_ensure_authorized_key"),
             user,
             key,
             state=state,
@@ -629,7 +628,7 @@ class StateManagementService:
         """Идемпотентно управлять unit-файлом systemd с вызовом ``daemon-reload`` при изменениях."""
         return await self._execute_ensure(
             notify,
-            _ensure_systemd_unit,
+            _get_impl("_ensure_systemd_unit"),
             name,
             content=content,
             state=state,
@@ -655,7 +654,7 @@ class StateManagementService:
         """Идемпотентно управлять параметром ядра ``sysctl`` и применять его на лету."""
         return await self._execute_ensure(
             notify,
-            _ensure_sysctl,
+            _get_impl("_ensure_sysctl"),
             name,
             value,
             state=state,
@@ -681,7 +680,7 @@ class StateManagementService:
         """Идемпотентно управлять состоянием узла YANG-конфигурации (NETCONF / RESTCONF / gNMI)."""
         return await self._execute_ensure(
             notify,
-            _ensure_yang,
+            _get_impl("_ensure_yang"),
             path,
             data,
             datastore=datastore,

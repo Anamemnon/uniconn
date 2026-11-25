@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -981,3 +981,31 @@ def test_sync_connection_and_pool_notify_and_batch_notifications(tmp_path: Path)
         assert pbatch.triggered_count == 2
         assert pbatch.executed_count == 1
         assert pbatch.ok is True
+
+
+def test_facade_lazy_impl_caching_and_mock_patch_cleanup() -> None:
+    """``facade.__getattr__`` и ``_get_impl`` кэшируют функции и корректно работают с ``mock.patch``."""
+    from uniconn.services.provisioning import facade, system
+
+    facade.__dict__.pop("_ensure_sysctl", None)
+    assert "_ensure_sysctl" in dir(facade)
+
+    # 1. Патчинг до первого обращения к ленивому атрибуту не оставляет мок в globals()
+    with patch("uniconn.services.provisioning.facade._ensure_sysctl", new_callable=AsyncMock) as mocked_first:
+        assert facade._get_impl("_ensure_sysctl") is mocked_first
+    assert facade.__dict__.get("_ensure_sysctl") is not mocked_first
+
+    # 2. После выхода из patch ленивая загрузка возвращает и кэширует реальную функцию в globals()
+    resolved = facade._ensure_sysctl
+    assert resolved is system.ensure_sysctl
+    assert facade.__dict__["_ensure_sysctl"] is system.ensure_sysctl
+    assert facade._get_impl("_ensure_sysctl") is system.ensure_sysctl
+
+    # 3. Повторный patch поверх кэшированного атрибута корректно восстанавливает реальную функцию
+    with patch("uniconn.services.provisioning.facade._ensure_sysctl", new_callable=AsyncMock) as mocked_second:
+        assert facade._get_impl("_ensure_sysctl") is mocked_second
+    assert facade._ensure_sysctl is system.ensure_sysctl
+    assert facade._get_impl("_ensure_sysctl") is system.ensure_sysctl
+
+    with pytest.raises(AttributeError):
+        _ = facade._nonexistent_provisioning_impl

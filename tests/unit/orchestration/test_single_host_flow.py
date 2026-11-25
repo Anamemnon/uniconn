@@ -11,13 +11,10 @@ import pytest
 from uniconn import (
     Connection,
     EnsureResult,
-    Flow,
-    FlowContext,
-    FlowExecutionError,
     Result,
     TimeoutError,
-    task,
 )
+from uniconn.orchestration import Flow, FlowContext, FlowExecutionError, task
 
 
 async def test_single_host_parallel_branches_and_context_passing() -> None:

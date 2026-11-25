@@ -51,21 +51,21 @@ ConnectionPool, Task DAG Orchestration & SSHSessionPool
 .. autoclass:: uniconn.SyncConnectionPool
    :members: from_file, select, use_cassette, map, map_safe, apply, stream, ping, gather_facts, diff_facts, run_flow, files, state, net
 
-.. autofunction:: uniconn.task
+.. autofunction:: uniconn.orchestration.task
 
-.. autoclass:: uniconn.Flow
+.. autoclass:: uniconn.orchestration.Flow
    :members: run, describe_plan
 
-.. autoclass:: uniconn.FlowContext
+.. autoclass:: uniconn.orchestration.FlowContext
    :members: host_get, host_set
 
-.. autoclass:: uniconn.FlowReport
+.. autoclass:: uniconn.orchestration.FlowReport
    :members: raise_for_status, to_dict
 
 .. autoclass:: uniconn.SSHSessionPool
    :members: run, map, resize, stats, check_health, close
 
-.. autoclass:: uniconn.BackgroundPool
+.. autoclass:: uniconn.background.BackgroundPool
    :members: from_file, start, poll_status, poll_logs, wait_all, stop_all, disconnect
 
 ShellSession & SyncShellSession
@@ -124,25 +124,25 @@ Configuration, Resilience, Diagnostics & Results
 MCP Server, HITL Approvals & Policy-as-Code Guardrails
 ------------------------------------------------------
 
-.. autoclass:: uniconn.MCPServer
+.. autoclass:: uniconn.mcp.MCPServer
    :members: handle_message
 
-.. autoclass:: uniconn.MCPHostRegistry
+.. autoclass:: uniconn.mcp.MCPHostRegistry
    :members: from_sources
 
-.. autoclass:: uniconn.MCPSecurityPolicy
+.. autoclass:: uniconn.mcp.MCPSecurityPolicy
    :members:
 
-.. autoclass:: uniconn.ApprovalManager
+.. autoclass:: uniconn.mcp.ApprovalManager
    :members: create_request, get_request, list_requests, approve, reject
 
-.. autoclass:: uniconn.CommandASTParser
+.. autoclass:: uniconn.security.CommandASTParser
    :members: parse
 
-.. autoclass:: uniconn.EmbeddedPolicyEngine
+.. autoclass:: uniconn.security.EmbeddedPolicyEngine
    :members: evaluate
 
-.. autoclass:: uniconn.OPAPolicyEngine
+.. autoclass:: uniconn.security.OPAPolicyEngine
    :members: evaluate
 
 Hooks, Telemetry & Logging
@@ -175,7 +175,7 @@ Exceptions
 
 .. autoexception:: uniconn.UniconnError
 .. autoexception:: uniconn.ConfigurationError
-.. autoexception:: uniconn.CyclicDependencyError
+.. autoexception:: uniconn.orchestration.CyclicDependencyError
 .. autoexception:: uniconn.ConnectionError
 .. autoexception:: uniconn.CircuitOpenError
 .. autoexception:: uniconn.BatchAbortedError
@@ -183,17 +183,17 @@ Exceptions
 .. autoexception:: uniconn.CassetteMissError
 .. autoexception:: uniconn.AuthenticationError
 .. autoexception:: uniconn.ExecutionError
-.. autoexception:: uniconn.FlowExecutionError
-.. autoexception:: uniconn.ApprovalError
-.. autoexception:: uniconn.ApprovalRequiredError
+.. autoexception:: uniconn.orchestration.FlowExecutionError
+.. autoexception:: uniconn.mcp.ApprovalError
+.. autoexception:: uniconn.mcp.ApprovalRequiredError
 .. autoexception:: uniconn.FileTransferError
 .. autoexception:: uniconn.ParsingError
 .. autoexception:: uniconn.TimeoutError
 .. autoexception:: uniconn.TransportNotFoundError
 .. autoexception:: uniconn.CapabilityNotSupportedError
 .. autoexception:: uniconn.BMCCapabilityError
-.. autoexception:: uniconn.BackgroundError
-.. autoexception:: uniconn.HardwareFaultDetectedError
+.. autoexception:: uniconn.background.BackgroundError
+.. autoexception:: uniconn.background.HardwareFaultDetectedError
 
 Transports
 ----------

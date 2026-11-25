@@ -21,7 +21,8 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from uniconn import Connection, DiagnosticConfig, PingResult
+from uniconn import Connection, PingResult
+from uniconn.background import DiagnosticConfig
 
 # ─── 1. Боевой сценарий: Стресс-тест NVMe-диска (fio) с YAML-профилем ─────────
 

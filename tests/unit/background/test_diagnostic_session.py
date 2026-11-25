@@ -13,21 +13,23 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 from uniconn import (
-    ArchiveHandler,
     Connection,
     CustomCommandSpec,
-    DiagnosticConfig,
-    DirectStreamCollector,
     ExternalToolSpec,
     FactSpec,
     FileSourceSpec,
+    PingResult,
+    Result,
+    diff_facts,
+)
+from uniconn.background import (
+    ArchiveHandler,
+    DiagnosticConfig,
+    DirectStreamCollector,
     ForwardHandler,
     LocalFileHandler,
     LogPipeline,
-    PingResult,
-    Result,
     StreamSourceSpec,
-    diff_facts,
 )
 
 SAMPLE_FACTS_STDOUT = """===UNICONN_SECTION:UNAME===
@@ -553,7 +555,7 @@ class TestDiagnosticSessionLifecycle:
         """DiagnosticSession с watch_rules записывает timeline.jsonl, упаковывает архив и выбрасывает HardwareFaultDetectedError."""
         import pytest
 
-        from uniconn import HardwareFaultDetectedError, LogMatchEvent, StallEvent
+        from uniconn.background import HardwareFaultDetectedError, LogMatchEvent, StallEvent
 
         conn = Connection.from_uri("local://")
 
@@ -647,7 +649,7 @@ class TestDiagnosticSessionLifecycle:
         """Вызов diag.check_abort() внутри блока сессии немедленно выбрасывает HardwareFaultDetectedError и сохраняет архив."""
         import pytest
 
-        from uniconn import HardwareFaultDetectedError
+        from uniconn.background import HardwareFaultDetectedError
 
         conn = Connection.from_uri("local://")
 
