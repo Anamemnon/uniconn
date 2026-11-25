@@ -1,23 +1,24 @@
 # uniconn
 
-**Unified Async/Sync Infrastructure Automation &amp; Execution Engine for Python**
+**Unified Async/Sync Infrastructure Automation & Execution Engine for Python**
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code Style: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Type Checker: Pyright](https://img.shields.io/badge/type%20checking-pyright-brightgreen.svg)](https://github.com/microsoft/pyright)
-[![Tests Passing](https://img.shields.io/badge/tests-914%20passed-brightgreen.svg)](tests/)
+[![Tests Passing](https://img.shields.io/badge/tests-1%2C437%20passed-brightgreen.svg)](tests/)
+[![Cold Import](https://img.shields.io/badge/import-~11ms-brightgreen.svg)](benchmarks/overhead_bench.py)
 [![Poe Tasks](https://img.shields.io/badge/tasks-poethepoet-blueviolet.svg)](https://github.com/nat-n/poethepoet)
 
 ---
 
-### Language: **[ English ]** &nbsp;|&nbsp; **[Русский](README.ru.md)** &nbsp;|&nbsp;
+### Language: **[ English ]** &nbsp;|&nbsp; **[Русский](README.ru.md)** &nbsp;
 
 **📚 Documentation:** **[Overview & Cheat Sheet](docs/index.rst)** · **[5-Min Quickstart](docs/quickstart.rst)** · **[Core Architecture & Pipeline](docs/architecture.rst)** · **[Inventory & URI Reference](docs/inventory_and_uris.rst)** · **[Cookbook Recipes](docs/cookbook.rst)** · **[Debugging & Troubleshooting](docs/troubleshooting.rst)** · **[Migration Guides](docs/migration.rst)** · **[CLI, MCP & Policy](docs/cli_and_mcp.rst)** · **[API Reference](docs/api.rst)**
 
 ---
 
-`uniconn` eliminates infrastructure glue code by providing a single, resilient `Connection` facade and a built-in **MCP Server (`uniconn mcp`)** for command execution, file synchronization, idempotent state enforcement, DAG task orchestration, and hardware diagnostics across **SSH, WinRM, Docker, Podman, Kubernetes, Serial/UART, IPMI, Redfish BMC, and Local systems** — with **100% Async + Sync parity** and zero boilerplate.
+`uniconn` eliminates infrastructure glue code by providing a single, resilient `Connection` facade and a built-in **MCP Server (`uniconn mcp`)** for command execution, file synchronization, idempotent state enforcement, DAG task orchestration, and hardware diagnostics across **SSH, WinRM, QEMU Guest Agent (QGA), Proxmox VE, NETCONF/RESTCONF/gNMI, Serial/UART, IPMI, Redfish BMC, Telnet, and Local systems** — with **100% Async + Sync parity**, **~11 ms lazy startup**, and zero boilerplate.
 
 <p align="center">
   <img src="./docs/assets/terminal_demo.svg" alt="uniconn interactive terminal demo" width="100%" />
@@ -47,7 +48,7 @@ Zero `asyncio.run()` boilerplate for scripts, CLI utilities, and sync frameworks
 ```python
 from uniconn import SyncConnection
 
-with SyncConnection.from_uri("docker://root@app-container") as conn:
+with SyncConnection.from_uri("local://") as conn:
     print(conn.run(["uname", "-s"]).text)
     print("OS:", conn.gather_facts().os_family)
 ```
@@ -56,15 +57,15 @@ with SyncConnection.from_uri("docker://root@app-container") as conn:
 
 ## 💡 Why uniconn?
 
-Modern infrastructure is fundamentally heterogeneous: Linux servers run alongside Windows nodes, containers run next to Kubernetes pods, and bare-metal servers require BMC out-of-band management or serial bootloader flashing.
+Modern infrastructure is fundamentally heterogeneous: Linux servers run alongside Windows nodes, KVM/Proxmox virtual machines rely on guest-agent channels, routers expose NETCONF/RESTCONF/gNMI APIs, and bare-metal servers require BMC out-of-band management or serial bootloader flashing.
 
-Traditionally, teams maintain a fragmented stack: `AsyncSSH` or `Paramiko` for SSH, `pywinrm` for Windows, `docker-py` and `kubernetes` for containers, `Pyinfra` or `Ansible` for provisioning, `pyserial` for serial devices, and `Testinfra` for assertions.
+Traditionally, teams maintain a fragmented stack: `AsyncSSH` or `Paramiko` for SSH, `pywinrm` for Windows, `ncclient` or `Scrapli` for network devices, `Pyinfra` or `Ansible` for provisioning, `pyserial` for serial devices, and `Testinfra` for assertions.
 
-`uniconn` unifies all of these into a **single, lightweight, sub-millisecond execution engine**:
+`uniconn` unifies all of these into a **single, lightweight, sub-millisecond execution engine** with PEP 562 lazy loading (~11 ms cold import):
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                  USER APPLICATION / CLI / WEB DASHBOARD / MCP SERVER (AI)              │
+│                       USER APPLICATION / CLI / MCP SERVER (AI)                         │
 │       Async API: Connection / ConnectionPool / Flow / ShellSession / MCPServer         │
 │       Sync API:  SyncConnection / SyncConnectionPool / SyncFlow (via EventLoopPortal)  │
 └───────────────────────────────────────────┬────────────────────────────────────────────┘
@@ -73,23 +74,25 @@ Traditionally, teams maintain a fragmented stack: `AsyncSSH` or `Paramiko` for S
                   │               DOMAIN SERVICES LAYER                │
                   │  • conn.files / conn.path (SFTP, Delta Sync, Hash) │
                   │  • conn.state (Idempotent ensure_*, Diff, Notify)  │
+                  │  • conn.net (NETCONF, RESTCONF, gNMI, YANG diffs)  │
                   │  • conn.gather_facts / diff_facts / diagnostics    │
                   │  • conn.run_python (Persistent Zero-Fork RPC)      │
                   └─────────────────────────┬──────────────────────────┘
                                             │
                   ┌─────────────────────────▼──────────────────────────┐
                   │            RESILIENCE & MIDDLEWARE PIPELINE        │
-                  │  [Context] ──► [Sudo/Secrets] ──► [Hooks/OTel] ──► │
-                  │  [DryRun]  ──► [CircuitBreaker] ──► [RateLimiter]  │
-                  │  ──► [Retry] ──► [Cassette Recorder / Replayer]    │
+                  │  [Context] ──► [Policy/AST] ──► [HITL] ──► [Sudo]  │
+                  │  ──► [Hooks/OTel] ──► [DryRun] ──► [CircuitBreaker]│
+                  │  ──► [RateLimiter] ──► [Retry] ──► [Cassettes]     │
                   └─────────────────────────┬──────────────────────────┘
                                             │
 ┌───────────────────────────────────────────▼────────────────────────────────────────────┐
 │                        PLUGGABLE TRANSPORT LAYER (ISP PROTOCOLS)                       │
-├───────────┬───────────┬───────────┬───────────┬───────────┬────────────┬───────────────┤
-│  ssh://   │  winrm:// │ docker:// │ kubectl://│  uart://  │ redfish:// │   replay://   │
-│  telnet://│  wsman:// │ podman:// │           │  serial://│   ipmi://  │   local://    │
-└───────────┴───────────┴───────────┴───────────┴───────────┴────────────┴───────────────┘
+├───────────┬───────────┬───────────┬────────────┬───────────┬────────────┬──────────────┤
+│  ssh://   │  winrm:// │  qga://   │ netconf:// │  uart://  │ redfish:// │  replay://   │
+│  telnet://│  wsman:// │  pve://   │ restconf://│  serial://│   ipmi://  │  local://    │
+│           │           │ qemu-ga://│   gnmi://  │           │            │              │
+└───────────┴───────────┴───────────┴────────────┴───────────┴────────────┴──────────────┘
 ```
 
 ### 📊 Competitive Comparison Matrix
@@ -98,16 +101,17 @@ Traditionally, teams maintain a fragmented stack: `AsyncSSH` or `Paramiko` for S
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **Core Paradigm** | **Python SDK** | YAML Playbooks | CLI Runner | Python Deploy | Network SDK |
 | **Async + Sync Parity** | **✅ 100%** | ❌ Process | ❌ Sync only | ❌ Threads | ⚠️ Scrapli only |
-| **10+ Transports** | **✅ Unified** | ⚠️ Plugins | ❌ SSH only | ⚠️ Linux/SSH | ❌ Network CLI |
+| **13+ Transports** | **✅ Unified** | ⚠️ Plugins | ❌ SSH only | ⚠️ Linux/SSH | ❌ Network CLI |
 | **Idempotent State (`ensure_*`)** | **✅ Built-in** | ✅ YAML | ❌ None | ✅ Python ops | ❌ None |
 | **DAG Orchestration (`@task`)** | **✅ Built-in** | ✅ Playbooks | ❌ None | ⚠️ Linear | ⚠️ Runners |
-| **Zero-Fork RPC (`run_python`)** | **✅ &lt; 2 ms** | ⚠️ Mitogen plugin | ❌ None | ⚠️ Connector | ❌ None |
+| **Zero-Fork RPC (`run_python`)** | **✅ < 2 ms** | ⚠️ Mitogen plugin | ❌ None | ⚠️ Connector | ❌ None |
 | **Structured Output Parsing** | **✅ `auto`** | ⚠️ Filters | ❌ None | ❌ None | ✅ TextFSM |
-| **Hardware BMC &amp; UART** | **✅ Out-of-box** | ⚠️ Roles | ❌ None | ❌ None | ⚠️ Serial only |
+| **Hardware BMC & UART** | **✅ Out-of-box** | ⚠️ Roles | ❌ None | ❌ None | ⚠️ Serial only |
 | **Offline Testing (Cassettes)** | **✅ Built-in** | ❌ None | ❌ None | ❌ None | ❌ None |
 | **MCP Server for AI Agents** | **✅ Built-in** | ❌ None | ❌ None | ❌ None | ❌ None |
 | **Resilience (CircuitBreaker)** | **✅ Built-in** | ⚠️ `max_fail` | ❌ None | ❌ None | ❌ None |
-| **Task Overhead** | **⚡ &lt; 0.3 ms** | ~ 500–2000 ms | ~ 3–8 ms | ~ 5–15 ms | ~ 1–5 ms |
+| **Cold Import Startup** | **⚡ ~11 ms** | ~ 400–900 ms | ~ 80–150 ms | ~ 150–300 ms | ~ 100–200 ms |
+| **Task Overhead** | **⚡ < 0.3 ms** | ~ 500–2000 ms | ~ 3–8 ms | ~ 5–15 ms | ~ 1–5 ms |
 
 > 💡 *Note: Testinfra assertions and Scrapli network drivers integrate seamlessly with uniconn via its pluggable transport layer and pytest plugin.*
 
@@ -115,7 +119,7 @@ Traditionally, teams maintain a fragmented stack: `AsyncSSH` or `Paramiko` for S
 
 ## 📦 Installation
 
-Lightweight core installation (includes SSH, Local, Docker, Podman, Kubectl, Replay transport, resilient pipeline, and structured logging):
+Lightweight core installation (includes SSH/SFTP, Local, QGA, Replay transport, resilient pipeline, and structured logging — with ~11 ms lazy startup):
 
 ```bash
 # Using uv (recommended):
@@ -127,7 +131,7 @@ pip install uniconn
 
 ### Optional Extras
 
-Install all optional transports, BMC controllers, serial modems, and the CLI in one shot:
+Install all optional transports, network/virtualization drivers, BMC controllers, serial modems, security guardrails, and the CLI in one shot:
 
 ```bash
 uv add "uniconn[all]"
@@ -140,11 +144,17 @@ Or pick only what you need:
 | **CLI** | `uv add "uniconn[cli]"` | Rich terminal CLI (`cyclopts`, `rich`) |
 | **WinRM** | `uv add "uniconn[winrm]"` | Windows Remote Management (`pywinrm`) |
 | **BMC** | `uv add "uniconn[bmc]"` | IPMI (`pyghmi`) and Redfish HTTP/2 (`niquests`) |
+| **Proxmox VE** | `uv add "uniconn[pve]"` | Proxmox VE API & QEMU Guest Agent (`niquests`) |
+| **NETCONF** | `uv add "uniconn[netconf]"` | NETCONF over SSH (`asyncssh`) |
+| **RESTCONF** | `uv add "uniconn[restconf]"` | RESTCONF HTTP/2 client (`niquests`) |
+| **gNMI** | `uv add "uniconn[gnmi]"` | gNMI HTTP/2 telemetry & config (`niquests`) |
 | **Serial** | `uv add "uniconn[serial]"` | Serial/UART console (`pyserial-asyncio`) & X/Y/ZMODEM |
 | **Telnet** | `uv add "uniconn[telnet]"` | Telnet transport (`telnetlib3`) |
 | **Templates** | `uv add "uniconn[templates]"` | Jinja2 templating engine for `write_template()` |
 | **Parsing** | `uv add "uniconn[parsing]"` | Semantic parsers (`jc`, `ttp`, `textfsm`, `ntc-templates`) |
 | **Telemetry** | `uv add "uniconn[otel]"` | OpenTelemetry distributed tracing hooks |
+| **Security** | `uv add "uniconn[security]"` | Tree-sitter Bash AST parsing for Policy-as-Code (`tree-sitter`, `tree-sitter-bash`) |
+| **MCP HTTP** | `uv add "uniconn[mcp-http]"` | HTTP/SSE MCP server transport with JWT auth (`starlette`, `uvicorn`, `pyjwt`, `cryptography`) |
 
 ---
 
@@ -158,10 +168,9 @@ Every transport is represented via a standardized, human-readable URI with autom
 | **NETCONF** | `netconf://` | `netconf://admin:env://NET_PASS@router-01:830?vendor=junos&version=1.1` |
 | **RESTCONF** | `restconf://` | `restconf://admin:env://NET_PASS@router-01/restconf?verify_tls=false&format=json` |
 | **gNMI** | `gnmi://` | `gnmi://admin:env://NET_PASS@spine-01:9339?encoding=json_ietf&origin=openconfig` |
-| **Windows Remote** | `winrm://` | `winrm://Administrator:env://WIN_PASS@win-server:5986?ssl=true&shell=ps&transport=ntlm` |
-| **Docker** | `docker://` | `docker://root@app-container?workdir=/app&shell=/bin/sh` |
-| **Podman** | `podman://` | `podman://web-container?workdir=/srv` |
-| **Kubernetes** | `kubectl://` | `kubectl://production/backend-pod-0?container=api&context=eu-cluster` |
+| **Windows Remote** | `winrm://`, `wsman://` | `winrm://Administrator:env://WIN_PASS@win-server:5986?ssl=true&shell=ps&transport=ntlm` |
+| **QEMU Guest Agent** | `qga://`, `qemu-ga://` | `qga://root@kvm-host-01/vm-prod-01?backend=virsh` or `qga:///var/run/qemu/vm1.sock` |
+| **Proxmox VE** | `pve://` | `pve://root@pam!uniconn:env://PVE_SECRET@pve-host:8006/105?node=pve1&verify_ssl=false` |
 | **Redfish BMC** | `redfish://` | `redfish://admin:env://BMC_PASS@bmc.local?verify_ssl=false&system_id=1` |
 | **IPMI BMC** | `ipmi://` | `ipmi://admin:password@bmc.local:623` (`power status`, `sensors`, `boot device`) |
 | **Serial / UART** | `serial://`, `uart://` | `uart:///dev/ttyUSB0:115200?parity=N&stopbits=1` or `uart://COM3?vid=10c4&pid=ea60` |
@@ -422,12 +431,12 @@ async def test_server_provisioning():
 
 ### 9. Official MCP Server for AI Agents (`uniconn mcp`)
 
-Expose your infrastructure inventory safely to AI agents and IDEs (**Claude Desktop, Cursor, Windsurf, Cline**) over the **Model Context Protocol (MCP, JSON-RPC 2.0 over `stdio`)** with zero external SDK dependencies.
+Expose your infrastructure inventory safely to AI agents and IDEs (**Claude Desktop, Cursor, Windsurf, Cline**) over the **Model Context Protocol (MCP, JSON-RPC 2.0 over `stdio` or HTTP/SSE with JWT via `uniconn[mcp-http]`)** with zero external MCP SDK dependencies.
 
 By default, `uniconn mcp` runs in **Safe Mode**:
 
 - File modification (`uniconn_write_file`) and privileged execution (`sudo=True`) are disabled by default.
-- Destructive commands (`rm -rf /`, `mkfs`, `shutdown`, etc.) are blocked via `blocklist_hook`.
+- Destructive commands (`rm -rf /`, `mkfs`, `shutdown`, etc.) are blocked via `blocklist_hook`, with optional Tree-sitter AST Policy-as-Code (`uniconn[security]`) and Human-in-the-Loop (HITL) approvals.
 - Credentials, tokens, and `SecretResolver` references (`env://`, `file://`) are automatically redacted in URIs (`mask_uri_secrets`) and outputs (`SecretMaskingFilter`).
 - Multi-host operations (`uniconn_ping`, `uniconn_diff_facts`, `uniconn_checksum`) run concurrently via `asyncio.gather` with per-host error isolation.
 
@@ -477,6 +486,14 @@ Example `mcp.json` / `claude_desktop_config.json` configuration:
 | `uniconn_stat_path` | Inspect path existence, size, permissions, and modification time. | Read-only |
 | `uniconn_checksum` | Concurrently compute file digest (`sha256`, `sha1`, `md5`) across hosts. | Read-only |
 | `uniconn_write_file` | Write text content to a remote file (atomically by default `atomic=True`). | **Requires `--allow-write`** |
+| `uniconn_evaluate_policy` | Dry-run AST command decomposition and Policy-as-Code evaluation (`ALLOW`, `REQUIRE_APPROVAL`, `DENY`). | Read-only (no execution) |
+| `uniconn_propose_action` | Evaluate risk tier (`SAFE`/`MUTATING`/`DESTRUCTIVE`/`FORBIDDEN`) and open an HITL approval request. | Two-phase HITL approval |
+| `uniconn_check_approval` | Inspect the status of a specific `approval_id` or list active HITL approval requests. | Read-only |
+| `uniconn_wait_approval` | Asynchronously wait for a human operator to approve or reject a pending `approval_id`. | Read-only (bounded timeout) |
+| `uniconn_list_flows` | List registered declarative DAG orchestration Flows exported to MCP with risk assessments. | Read-only |
+| `uniconn_inspect_flow` | Inspect a Flow's ASCII DAG plan, topological waves, parameter schema, and HITL risk. | Read-only |
+| `uniconn_run_flow` | Execute a registered DAG Flow across hosts/groups with HITL approval and checkpointing. | Policy + HITL approval |
+| `uniconn_resume_flow` | Resume a failed Flow from a `run_id` or signed `checkpoint_token`, skipping completed tasks. | Policy + signed checkpoint |
 | `uniconn://inventory/hosts` | Static resource returning the host manifest, groups, and active security policy. | Read-only |
 | `uniconn://hosts/{host}/facts` | Resource Template returning live `HostFacts` JSON for any registered host. | Read-only |
 
@@ -504,24 +521,17 @@ response = await server.handle_message({
 
 ---
 
-## 🖥️ Interactive Web Dashboard
+## 📚 Local Documentation Server (Sphinx)
 
-`uniconn` includes an interactive browser-based dashboard to test connections, build URIs, inspect execution pipelines, and run test suites without spinning up external servers:
+Build and browse the full bilingual Sphinx HTML documentation locally on port `3000` (or run the quick in-process CLI showcase without flags):
 
 ```bash
-# Launch preview server on http://0.0.0.0:3000
+# Build Sphinx HTML docs (if needed) and serve on http://0.0.0.0:3000
 python main.py --serve
+
+# Run quick local CLI showcase
+python main.py
 ```
-
-Open **<http://localhost:3000>** in your browser to access:
-
-1. **Quickstart & Interactive Recipe Wizard (`#recipes`)**: Pick your engineering goal, generate **Async / Sync / CLI / Migration** code, and run it live in-process.
-2. **Shell & Local Runner (`#shell`)**: Interactive stateful PTY sessions with full `cd` and `export` persistence.
-3. **Hooks & Telemetry Sandbox (`#hooks`)**: Live testing of `CircuitBreaker`, `RateLimiter`, and secret masking.
-4. **Pool & Fleet Orchestrator (`#pool`)**: Multi-host YAML inventory manager with wave rollout simulation.
-5. **Visual URI Builder (`#uri`)**: Real-time URI constructor and validator with Python code generation.
-6. **Interactive Test Runner (`#tests`)**: In-browser execution of unit tests across all domain packages.
-7. **Policy & AST Guardrails (`#policy`)**: Live decomposition of shell commands into AST atoms and ABAC policy evaluation.
 
 ---
 
@@ -534,13 +544,38 @@ Full user guides, task-to-solution matrices, architectural deep dives, and refer
 | **[Overview & Cheat Sheet](docs/index.rst)** | **[Обзор и шпаргалка](docs/ru/index.rst)** | 10-second Task-to-Solution matrix and role-based entry paths |
 | **[5-Minute Quickstart](docs/quickstart.rst)** | **[Быстрый старт за 5 мин](docs/ru/quickstart.rst)** | Installation extras (`uniconn[all]`, `[winrm]`, `[bmc]`), zero-setup sandbox, Async vs. Sync vs. CLI |
 | **[Core Architecture & Pipeline](docs/architecture.rst)** | **[Архитектура ядра и пайплайн](docs/ru/architecture.rst)** | `CommandPipeline`, exact 11-step middleware execution order, `EventLoopPortal`, `RemotePythonWorker`, ISP protocols |
-| **[Inventory & URI Reference](docs/inventory_and_uris.rst)** | **[Схемы инвентаря и URI](docs/ru/inventory_and_uris.rst)** | Full YAML/TOML/JSON schemas, `defaults`/`groups` merge rules, `env://` & `file://` secrets, all 16+ transport options |
+| **[Inventory & URI Reference](docs/inventory_and_uris.rst)** | **[Схемы инвентаря и URI](docs/ru/inventory_and_uris.rst)** | Full YAML/TOML/JSON schemas, `defaults`/`groups` merge rules, `env://` & `file://` secrets, all 13+ transport options |
 | **[Step-by-Step Cookbook](docs/cookbook.rst)** | **[Кулинарная книга (Cookbook)](docs/ru/cookbook.rst)** | Production recipes for auto-parsing, Zero-Fork RPC (`run_python`), `RemotePath`, `ensure_*`, `Flow`, NETCONF/YANG, BMC/UART, and cassettes |
 | **[Debugging & Troubleshooting](docs/troubleshooting.rst)** | **[Отладка и исключения](docs/ru/troubleshooting.rst)** | Full `UniconnError` inheritance tree, `diagnose=True` root-cause strategies, debug logging, and Symptom → Fix matrix |
 | **[Migration Guides](docs/migration.rst)** | **[Гайд по миграции](docs/migration.rst)** | Side-by-side translation tables from **Ansible**, **Paramiko**, **Fabric**, and **Netmiko / Scrapli** |
-| **[Transports Overview](docs/transports.rst)** | **[Обзор 16+ транспортов](docs/transports.rst)** | Quick summary of all 16+ transport URI schemes |
+| **[Transports Overview](docs/transports.rst)** | **[Обзор 13+ транспортов](docs/transports.rst)** | Quick summary of all 13+ transport URI schemes |
 | **[CLI, MCP & Security](docs/cli_and_mcp.rst)** | **[CLI, MCP и Policy](docs/cli_and_mcp.rst)** | Modular CLI commands, `uniconn mcp` AI server, HITL approvals, and `CommandASTParser` Policy-as-Code |
 | **[API Reference](docs/api.rst)** | **[Справочник API](docs/api.rst)** | Complete class and function reference synchronized with `llms.txt` |
+
+---
+
+## 🧪 Runnable Examples Catalog (`examples/`)
+
+Every script in [`examples/`](examples/) is self-contained and verified in our CI test suite (`uv run python examples/<script>.py`):
+
+| Scenario | Key APIs Demonstrated | Runnable Script |
+| :--- | :--- | :--- |
+| **Getting Started (Async & Sync)** | `Connection.from_uri`, `SyncConnection`, `SecretResolver`, `run`, `stream`, `copy` | [examples/basic_usage.py](examples/basic_usage.py) |
+| **Inventory & Result Ergonomics** | `from_file`, `Result` helpers, `ConnectionPool` inventory groups | [examples/ergonomics_and_inventory.py](examples/ergonomics_and_inventory.py) |
+| **File Operations & Delta Sync** | `conn.files.write_file(atomic=True)`, `checksum`, `sync_dir`, `write_template` | [examples/file_transfer.py](examples/file_transfer.py) |
+| **Interactive PTY Shell & Expect** | `conn.open_shell`, `shell.execute`, `conn.expect`, `SyncShellSession` | [examples/interactive_shell.py](examples/interactive_shell.py) |
+| **Health Checks & Wait Primitives** | `ping`, `is_alive`, `wait_for_connection`, `wait_for_port`, `wait_for_path` | [examples/health_check.py](examples/health_check.py) |
+| **Fleet Parallelism & Wave Rollout** | `ConnectionPool.map`, `batch_size`, `max_fail_ratio`, `select`, `pool.stream` | [examples/parallel_execution.py](examples/parallel_execution.py) |
+| **Idempotent State & Drift Detection** | `conn.state.ensure_*`, `gather_facts`, `diff_facts`, `diagnostic_session` | [examples/provisioning_and_facts.py](examples/provisioning_and_facts.py) |
+| **Resilience, Pools & SSH Tunnels** | `CircuitBreaker`, `RateLimiter`, `SSHSessionPool`, `conn.tunnels` | [examples/resilience_rollout_and_waiters.py](examples/resilience_rollout_and_waiters.py) |
+| **Bare-Metal BMC (Redfish & IPMI)** | `redfish://`, `ipmi://`, power control, sensors, cassette replay | [examples/bmc_management.py](examples/bmc_management.py) |
+| **Background Task Monitoring** | `BackgroundPool.from_file`, `tmux`/`screen`/`nohup` auto-backend, log polling | [examples/screen_monitoring.py](examples/screen_monitoring.py) · [YAML](examples/screen_pool_config.yaml) |
+| **NVMe / RAM Stress Diagnostics** | `diagnostic_session`, `fsync_realtime=True`, pre/post `facts_diff`, `.tar.gz` | [examples/stress_test_diagnostics.py](examples/stress_test_diagnostics.py) · [YAML](examples/stress_test_diagnostics.yaml) |
+| **Reactive Log Watchdog (SCT / BBU)** | `PatternTriggerHandler`, `LogWatchRule`, Stream Silence Watchdog | [examples/reactive_log_watchdog_sct.py](examples/reactive_log_watchdog_sct.py) · [YAML](examples/telecom_bs_sct_diagnostics.yaml) |
+| **Security Hooks & OpenTelemetry** | `allowlist_hook`, `blocklist_hook`, `audit_log_hook`, `otel_tracing_hook`, `dry_run` | [examples/security_and_hooks.py](examples/security_and_hooks.py) |
+| **Structured Logging & Metrics** | `configure_logging(fmt="json")`, `log_context`, `metrics_collector_hook` | [examples/structured_logging_telemetry.py](examples/structured_logging_telemetry.py) |
+| **Offline Contract Testing (Cassettes)** | `conn.use_cassette`, `pool.use_cassette`, `cassette.diff`, pytest plugin | [examples/contract_testing_cassettes.py](examples/contract_testing_cassettes.py) |
+| **Custom Transport Plugin** | Subclassing `BaseTransport`, implementing `run`/`stream`/`ping`, entry-points | [examples/custom_transport.py](examples/custom_transport.py) |
 
 ---
 
@@ -556,7 +591,7 @@ uniconn run "ssh://user@host" "systemctl status nginx" --sudo --format json
 uniconn run-multi --inventory fleet.yaml --group web -c "nginx -t" --batch-size 2 --max-fail-ratio 0.0
 
 # Ping and latency probe
-uniconn ping "ssh://node-01" "winrm://win-01" "kubectl://prod/api-pod"
+uniconn ping "ssh://node-01" "winrm://win-01" "redfish://bmc-01"
 
 # Wait primitives (connection, port, or file content regex)
 uniconn wait-for connection "ssh://node-01" --timeout 120

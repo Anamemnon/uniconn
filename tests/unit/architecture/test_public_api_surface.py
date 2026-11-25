@@ -272,4 +272,85 @@ def test_root_all_is_clean_and_lazy_aliases_remain_accessible() -> None:
         assert getattr(uniconn, sym) is not None
 
 
+def test_readmes_and_svg_have_no_removed_transports_or_dashboard() -> None:
+    """README.md, README.ru.md и terminal_demo.svg не должны ссылаться на удалённые контейнеры и Web Dashboard."""
+    from pathlib import Path
+
+    root_dir = Path(__file__).resolve().parents[3]
+    showcase_files = (
+        root_dir / "README.md",
+        root_dir / "README.ru.md",
+        root_dir / "docs" / "assets" / "terminal_demo.svg",
+    )
+    forbidden_lower = (
+        "docker://",
+        "podman://",
+        "kubectl://",
+        "dockertransport",
+        "podmantransport",
+        "kubectltransport",
+        "web dashboard",
+        "веб-панель",
+        "веб-дашборд",
+    )
+    for file_path in showcase_files:
+        text_lower = file_path.read_text(encoding="utf-8").lower()
+        for token in forbidden_lower:
+            assert token not in text_lower, f"Stale reference {token!r} found in {file_path.relative_to(root_dir)}"
+
+
+def test_readmes_document_all_extras_transports_mcp_and_valid_links() -> None:
+    """Оба README должны документировать все extras, транспорты, MCP-инструменты, примеры и иметь валидные ссылки."""
+    import asyncio
+    import re
+    import tomllib
+    from pathlib import Path
+
+    from uniconn.mcp import MCPHostRegistry, MCPServer
+
+    root_dir = Path(__file__).resolve().parents[3]
+    with open(root_dir / "pyproject.toml", "rb") as f:
+        pyproject = tomllib.load(f)
+
+    optional_extras = {
+        name for name in pyproject["project"]["optional-dependencies"] if name not in {"all", "dev"}
+    }
+    transport_schemes = sorted(pyproject["project"]["entry-points"]["uniconn.transports"].keys())
+    example_files = sorted(
+        f"examples/{p.name}"
+        for p in (root_dir / "examples").iterdir()
+        if p.is_file() and p.name != "__init__.py" and p.suffix in {".py", ".yaml"}
+    )
+
+    mcp_server = MCPServer(registry=MCPHostRegistry())
+    tools_resp = asyncio.run(mcp_server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
+    assert tools_resp is not None
+    mcp_tools = sorted(tool["name"] for tool in tools_resp["result"]["tools"])
+
+    rel_link_re = re.compile(r'\]\(([^)]+)\)|src="([^"]+)"')
+
+    for readme_name in ("README.md", "README.ru.md"):
+        text = (root_dir / readme_name).read_text(encoding="utf-8")
+
+        for extra in sorted(optional_extras):
+            assert f"uniconn[{extra}]" in text, f"Extra uniconn[{extra}] missing in {readme_name}"
+
+        for scheme in transport_schemes:
+            assert f"`{scheme}://`" in text, f"Transport scheme {scheme}:// missing in {readme_name}"
+
+        for tool_name in mcp_tools:
+            assert f"`{tool_name}`" in text, f"MCP tool {tool_name} missing in {readme_name}"
+
+        for example_rel in example_files:
+            assert f"({example_rel})" in text, f"Example link {example_rel} missing in {readme_name}"
+
+        for match in rel_link_re.finditer(text):
+            raw_target = match.group(1) or match.group(2)
+            if raw_target.startswith(("http://", "https://", "mailto:", "#")):
+                continue
+            clean_target = raw_target.split("#", 1)[0].lstrip("./")
+            target_path = root_dir / clean_target
+            assert target_path.exists(), f"Broken relative link {raw_target!r} in {readme_name}"
+
+
 

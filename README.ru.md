@@ -6,7 +6,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code Style: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Type Checker: Pyright](https://img.shields.io/badge/type%20checking-pyright-brightgreen.svg)](https://github.com/microsoft/pyright)
-[![Tests Passing](https://img.shields.io/badge/tests-914%20passed-brightgreen.svg)](tests/)
+[![Tests Passing](https://img.shields.io/badge/tests-1%2C437%20passed-brightgreen.svg)](tests/)
+[![Cold Import](https://img.shields.io/badge/import-~11ms-brightgreen.svg)](benchmarks/overhead_bench.py)
 [![Poe Tasks](https://img.shields.io/badge/tasks-poethepoet-blueviolet.svg)](https://github.com/nat-n/poethepoet)
 
 ---
@@ -17,7 +18,7 @@
 
 ---
 
-`uniconn` устраняет необходимость в разрозненном инфраструктурном коде, предоставляя единый отказоустойчивый фасад `Connection` и встроенный **MCP-сервер (`uniconn mcp`)** для выполнения команд, дельта-синхронизации файлов, идемпотентного управления состоянием, DAG-оркестрации задач и аппаратной диагностики поверх **SSH, WinRM, Docker, Podman, Kubernetes, Serial/UART, IPMI, Redfish BMC и Local** — со **100% паритетом Async + Sync** и нулевым оверхедом.
+`uniconn` устраняет необходимость в разрозненном инфраструктурном коде, предоставляя единый отказоустойчивый фасад `Connection` и встроенный **MCP-сервер (`uniconn mcp`)** для выполнения команд, дельта-синхронизации файлов, идемпотентного управления состоянием, DAG-оркестрации задач и аппаратной диагностики поверх **SSH, WinRM, QEMU Guest Agent (QGA), Proxmox VE, NETCONF/RESTCONF/gNMI, Serial/UART, IPMI, Redfish BMC, Telnet и Local** — со **100% паритетом Async + Sync**, **ленивым стартом ~11 мс** и нулевым оверхедом.
 
 <p align="center">
   <img src="./docs/assets/terminal_demo.svg" alt="uniconn interactive terminal demo" width="100%" />
@@ -47,7 +48,7 @@ async with Connection.from_uri("ssh://admin:env://SSH_PASS@node-01") as conn:
 ```python
 from uniconn import SyncConnection
 
-with SyncConnection.from_uri("docker://root@app-container") as conn:
+with SyncConnection.from_uri("local://") as conn:
     print(conn.run(["uname", "-s"]).text)
     print("ОС:", conn.gather_facts().os_family)
 ```
@@ -56,15 +57,15 @@ with SyncConnection.from_uri("docker://root@app-container") as conn:
 
 ## 💡 Почему uniconn?
 
-Современная инфраструктура разнородна: серверы Linux работают рядом с узлами Windows, микросервисы в контейнерах соседствуют с подами Kubernetes, а серверы bare-metal требуют удалённого управления через BMC или перепрошивки загрузчиков по Serial/UART.
+Современная инфраструктура разнородна: серверы Linux работают рядом с узлами Windows, виртуальные машины KVM/Proxmox управляются через каналы гостевых агентов, сетевое оборудование использует NETCONF/RESTCONF/gNMI, а серверы bare-metal требуют удалённого управления через BMC или перепрошивки загрузчиков по Serial/UART.
 
-Традиционно командам приходится комбинировать зоопарк несовместимых библиотек: `AsyncSSH` или `Paramiko` для SSH, `pywinrm` для Windows, `docker-py` и клиент `kubernetes` для контейнеров, `Pyinfra` или тяжеловесный `Ansible` для конфигурации, `pyserial` для плат и `Testinfra` для проверок.
+Традиционно командам приходится комбинировать зоопарк несовместимых библиотек: `AsyncSSH` или `Paramiko` для SSH, `pywinrm` для Windows, `ncclient` или `Scrapli` для сетевых устройств, `Pyinfra` или тяжеловесный `Ansible` для конфигурации, `pyserial` для плат и `Testinfra` для проверок.
 
-`uniconn` объединяет все эти задачи в **единый легковесный движок с субмиллисекундным оверхедом ядра**:
+`uniconn` объединяет все эти задачи в **единый легковесный движок с субмиллисекундным оверхедом ядра** и ленивым импортом PEP 562 (~11 мс холодного старта):
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                 ПОЛЬЗОВАТЕЛЬСКИЙ КОД / CLI / ВЕБ-ПАНЕЛЬ / MCP-СЕРВЕР (AI)              │
+│                       ПОЛЬЗОВАТЕЛЬСКИЙ КОД / CLI / MCP-СЕРВЕР (AI)                     │
 │       Async API: Connection / ConnectionPool / Flow / ShellSession / MCPServer         │
 │       Sync API:  SyncConnection / SyncConnectionPool / SyncFlow (через EventLoopPortal)│
 └───────────────────────────────────────────┬────────────────────────────────────────────┘
@@ -73,23 +74,25 @@ with SyncConnection.from_uri("docker://root@app-container") as conn:
                   │               ДОМЕННЫЕ СЕРВИСЫ ЯДРА                │
                   │  • conn.files / conn.path (SFTP, дельта-синхр, хеш)│
                   │  • conn.state (Идемпотентность, unified diff)      │
+                  │  • conn.net (NETCONF, RESTCONF, gNMI, YANG diff)   │
                   │  • conn.gather_facts / diff_facts / диагностика    │
                   │  • conn.run_python (Zero-Fork RPC без форков)      │
                   └─────────────────────────┬──────────────────────────┘
                                             │
                   ┌─────────────────────────▼──────────────────────────┐
                   │             КОНВЕЙЕР ОТКАЗОУСТОЙЧИВОСТИ            │
-                  │  [Context] ──► [Sudo/Секреты] ──► [Hooks/OTel] ──► │
-                  │  [DryRun]  ──► [CircuitBreaker] ──► [RateLimiter]  │
-                  │  ──► [Retry] ──► [Кассеты Replay / Запись]         │
+                  │  [Context] ──► [Policy/AST] ──► [HITL] ──► [Sudo]  │
+                  │  ──► [Hooks/OTel] ──► [DryRun] ──► [CircuitBreaker]│
+                  │  ──► [RateLimiter] ──► [Retry] ──► [Кассеты]       │
                   └─────────────────────────┬──────────────────────────┘
                                             │
 ┌───────────────────────────────────────────▼────────────────────────────────────────────┐
 │                    ПОДКЛЮЧАЕМЫЕ ТРАНСПОРТЫ (ПРОТОКОЛЫ ISP)                             │
-├───────────┬───────────┬───────────┬───────────┬───────────┬────────────┬───────────────┤
-│  ssh://   │  winrm:// │ docker:// │ kubectl://│  uart://  │ redfish:// │   replay://   │
-│  telnet://│  wsman:// │ podman:// │           │  serial://│   ipmi://  │   local://    │
-└───────────┴───────────┴───────────┴───────────┴───────────┴────────────┴───────────────┘
+├───────────┬───────────┬───────────┬────────────┬───────────┬────────────┬──────────────┤
+│  ssh://   │  winrm:// │  qga://   │ netconf:// │  uart://  │ redfish:// │  replay://   │
+│  telnet://│  wsman:// │  pve://   │ restconf://│  serial://│   ipmi://  │  local://    │
+│           │           │ qemu-ga://│   gnmi://  │           │            │              │
+└───────────┴───────────┴───────────┴────────────┴───────────┴────────────┴──────────────┘
 ```
 
 ### 📊 Сравнительная матрица возможностей
@@ -98,16 +101,17 @@ with SyncConnection.from_uri("docker://root@app-container") as conn:
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | **Основная парадигма** | **Python SDK** | YAML Playbooks | CLI Runner | Python Deploy | Network SDK |
 | **Async + Sync паритет** | **✅ 100%** | ❌ Process | ❌ Только Sync | ❌ Threads | ⚠️ Только Scrapli |
-| **10+ схем URI транспортов** | **✅ Unified** | ⚠️ Плагины | ❌ Только SSH | ⚠️ Linux/SSH | ❌ Network CLI |
+| **13+ схем URI транспортов** | **✅ Unified** | ⚠️ Плагины | ❌ Только SSH | ⚠️ Linux/SSH | ❌ Network CLI |
 | **Идемпотентный стейт (`ensure_*`)** | **✅ Встроено** | ✅ YAML | ❌ Нет | ✅ Python ops | ❌ Нет |
 | **DAG-оркестрация задач (`@task`)** | **✅ Встроено** | ✅ Playbooks | ❌ Нет | ⚠️ Линейная | ⚠️ Раннеры |
-| **Zero-Fork RPC (`run_python`)** | **✅ &lt; 2 мс** | ⚠️ Плагин Mitogen | ❌ Нет | ⚠️ Коннектор | ❌ Нет |
+| **Zero-Fork RPC (`run_python`)** | **✅ < 2 мс** | ⚠️ Плагин Mitogen | ❌ Нет | ⚠️ Коннектор | ❌ Нет |
 | **Автопарсинг вывода (`auto`)** | **✅ Встроено** | ⚠️ Фильтры | ❌ Нет | ❌ Нет | ✅ TextFSM |
 | **Аппаратные BMC и UART** | **✅ Из коробки** | ⚠️ Роли | ❌ Нет | ❌ Нет | ⚠️ Только Serial |
 | **Офлайн кассеты и контрактные тесты** | **✅ Встроено** | ❌ Нет | ❌ Нет | ❌ Нет | ❌ Нет |
 | **MCP-сервер для AI-агентов** | **✅ Встроено** | ❌ Нет | ❌ Нет | ❌ Нет | ❌ Нет |
 | **Отказоустойчивость (CircuitBreaker)** | **✅ Встроено** | ⚠️ `max_fail` | ❌ Нет | ❌ Нет | ❌ Нет |
-| **Накладные расходы ядра** | **⚡ &lt; 0.3 мс** | ~ 500–2000 мс | ~ 3–8 мс | ~ 5–15 мс | ~ 1–5 мс |
+| **Холодный старт (`import`)** | **⚡ ~11 мс** | ~ 400–900 мс | ~ 80–150 мс | ~ 150–300 мс | ~ 100–200 мс |
+| **Накладные расходы ядра** | **⚡ < 0.3 мс** | ~ 500–2000 мс | ~ 3–8 мс | ~ 5–15 мс | ~ 1–5 мс |
 
 > 💡 *Примечание: Ассерты Testinfra и сетевые коннекторы Scrapli бесшовно подключаются к uniconn через адаптеры транспортов и плагин pytest.*
 
@@ -115,7 +119,7 @@ with SyncConnection.from_uri("docker://root@app-container") as conn:
 
 ## 📦 Установка
 
-Базовая легковесная установка (SSH, Local, Docker, Podman, Kubectl, Replay-транспорт, пайплайн отказоустойчивости и структурированные логи):
+Базовая легковесная установка (SSH/SFTP, Local, QGA, Replay-транспорт, пайплайн отказоустойчивости и структурированные логи — с ленивым стартом ~11 мс):
 
 ```bash
 # Через uv (рекомендуется):
@@ -127,7 +131,7 @@ pip install uniconn
 
 ### Дополнительные компоненты (Extras)
 
-Установка всех дополнительных транспортов, BMC-драйверов, протоколов Serial-модемов и CLI одной командой:
+Установка всех дополнительных транспортов, сетевых и виртуализационных драйверов, BMC-контроллеров, протоколов Serial-модемов, модулей безопасности и CLI одной командой:
 
 ```bash
 uv add "uniconn[all]"
@@ -140,11 +144,17 @@ uv add "uniconn[all]"
 | **CLI** | `uv add "uniconn[cli]"` | Полнофункциональный CLI (`cyclopts`, `rich`) |
 | **WinRM** | `uv add "uniconn[winrm]"` | Windows Remote Management (`pywinrm`) |
 | **BMC** | `uv add "uniconn[bmc]"` | IPMI (`pyghmi`) и Redfish HTTP/2 (`niquests`) |
+| **Proxmox VE** | `uv add "uniconn[pve]"` | API Proxmox VE и гостевой агент QEMU (`niquests`) |
+| **NETCONF** | `uv add "uniconn[netconf]"` | NETCONF поверх SSH (`asyncssh`) |
+| **RESTCONF** | `uv add "uniconn[restconf]"` | HTTP/2-клиент RESTCONF (`niquests`) |
+| **gNMI** | `uv add "uniconn[gnmi]"` | Телеметрия и конфигурация gNMI (`niquests`) |
 | **Serial** | `uv add "uniconn[serial]"` | Serial/UART консоль (`pyserial-asyncio`) и X/Y/ZMODEM |
 | **Telnet** | `uv add "uniconn[telnet]"` | Telnet транспорт (`telnetlib3`) |
 | **Templates** | `uv add "uniconn[templates]"` | Шаблонизатор Jinja2 для `write_template()` |
 | **Parsing** | `uv add "uniconn[parsing]"` | Семантические парсеры (`jc`, `ttp`, `textfsm`, `ntc-templates`) |
 | **Telemetry** | `uv add "uniconn[otel]"` | Трассировка OpenTelemetry |
+| **Security** | `uv add "uniconn[security]"` | AST-разбор Bash для Policy-as-Code (`tree-sitter`, `tree-sitter-bash`) |
+| **MCP HTTP** | `uv add "uniconn[mcp-http]"` | HTTP/SSE транспорт MCP-сервера и JWT-авторизация (`starlette`, `uvicorn`, `pyjwt`, `cryptography`) |
 
 ---
 
@@ -155,10 +165,12 @@ uv add "uniconn[all]"
 | Транспорт | Схема URI | Пример использования |
 | :--- | :--- | :--- |
 | **SSH** | `ssh://` | `ssh://admin:env://SSH_PASS@node-01:22?key_file=/path/id_ed25519&proxy=bastion&keepalive=30` |
-| **Windows Remote** | `winrm://` | `winrm://Administrator:env://WIN_PASS@win-server:5986?ssl=true&shell=ps&transport=ntlm` |
-| **Docker** | `docker://` | `docker://root@app-container?workdir=/app&shell=/bin/sh` |
-| **Podman** | `podman://` | `podman://web-container?workdir=/srv` |
-| **Kubernetes** | `kubectl://` | `kubectl://production/backend-pod-0?container=api&context=eu-cluster` |
+| **NETCONF** | `netconf://` | `netconf://admin:env://NET_PASS@router-01:830?vendor=junos&version=1.1` |
+| **RESTCONF** | `restconf://` | `restconf://admin:env://NET_PASS@router-01/restconf?verify_tls=false&format=json` |
+| **gNMI** | `gnmi://` | `gnmi://admin:env://NET_PASS@spine-01:9339?encoding=json_ietf&origin=openconfig` |
+| **Windows Remote** | `winrm://`, `wsman://` | `winrm://Administrator:env://WIN_PASS@win-server:5986?ssl=true&shell=ps&transport=ntlm` |
+| **QEMU Guest Agent** | `qga://`, `qemu-ga://` | `qga://root@kvm-host-01/vm-prod-01?backend=virsh` или `qga:///var/run/qemu/vm1.sock` |
+| **Proxmox VE** | `pve://` | `pve://root@pam!uniconn:env://PVE_SECRET@pve-host:8006/105?node=pve1&verify_ssl=false` |
 | **Redfish BMC** | `redfish://` | `redfish://admin:env://BMC_PASS@bmc.local?verify_ssl=false&system_id=1` |
 | **IPMI BMC** | `ipmi://` | `ipmi://admin:password@bmc.local:623` (`power status`, `sensors`, `boot device`) |
 | **Serial / UART** | `serial://`, `uart://` | `uart:///dev/ttyUSB0:115200?parity=N&stopbits=1` или `uart://COM3?vid=10c4&pid=ea60` |
@@ -419,12 +431,12 @@ async def test_server_provisioning():
 
 ### 9. Официальный MCP-сервер для AI-агентов (`uniconn mcp`)
 
-Безопасно подключайте ваш инфраструктурный инвентарь к ИИ-агентам и IDE (**Claude Desktop, Cursor, Windsurf, Cline**) по протоколу **Model Context Protocol (MCP, JSON-RPC 2.0 поверх `stdio`)** без внешних SDK-зависимостей.
+Безопасно подключайте ваш инфраструктурный инвентарь к ИИ-агентам и IDE (**Claude Desktop, Cursor, Windsurf, Cline**) по протоколу **Model Context Protocol (MCP, JSON-RPC 2.0 поверх `stdio` или HTTP/SSE с JWT через `uniconn[mcp-http]`)** без внешних MCP SDK-зависимостей.
 
 По умолчанию `uniconn mcp` запускается в **безопасном режиме (Safe Mode by Default)**:
 
 - Модификация файлов (`uniconn_write_file`) и привилегированное выполнение (`sudo=True`) отключены по умолчанию.
-- Деструктивные команды (`rm -rf /`, `mkfs`, `shutdown` и др.) блокируются на уровне конвейера через `blocklist_hook`.
+- Деструктивные команды (`rm -rf /`, `mkfs`, `shutdown` и др.) блокируются на уровне конвейера через `blocklist_hook`, с опциональным Tree-sitter AST Policy-as-Code (`uniconn[security]`) и HITL-подтверждениями.
 - Пароли, токены и секреты из `SecretResolver` (`env://`, `file://`) скрываются как в URI (`mask_uri_secrets`), так и в потоках вывода (`SecretMaskingFilter`).
 - Мультихостовые операции (`uniconn_ping`, `uniconn_diff_facts`, `uniconn_checksum`) выполняются конкурентно через `asyncio.gather` с изоляцией сбоев отдельных узлов.
 
@@ -474,6 +486,14 @@ uniconn mcp --inventory hosts.yaml --group web --max-read-bytes 131072 --print-c
 | `uniconn_stat_path` | Проверка существования, размера, прав доступа и времени модификации пути. | Read-only |
 | `uniconn_checksum` | Конкурентный расчёт хеша (`sha256`, `sha1`, `md5`) файла на одном или нескольких хостах. | Read-only |
 | `uniconn_write_file` | Запись содержимого в файл на целевом хосте (по умолчанию атомарно `atomic=True`). | **Требует `--allow-write`** |
+| `uniconn_evaluate_policy` | Dry-run AST-декомпозиция команды и проверка Policy-as-Code (`ALLOW`, `REQUIRE_APPROVAL`, `DENY`). | Read-only (без запуска) |
+| `uniconn_propose_action` | Оценка уровня риска (`SAFE`/`MUTATING`/`DESTRUCTIVE`/`FORBIDDEN`) и создание запроса HITL-аппрува. | Двухфазный HITL-аппрув |
+| `uniconn_check_approval` | Проверка статуса конкретного `approval_id` или просмотр активных запросов HITL. | Read-only |
+| `uniconn_wait_approval` | Асинхронное ожидание решения оператора (approve/reject) по `approval_id` с таймаутом. | Read-only (с таймаутом) |
+| `uniconn_list_flows` | Список зарегистрированных DAG-флоу, экспортированных в MCP, со схемами и оценкой риска. | Read-only |
+| `uniconn_inspect_flow` | Детальный план DAG-флоу в ASCII, топологические волны, JSON Schema параметров и HITL-риск. | Read-only |
+| `uniconn_run_flow` | Запуск зарегистрированного DAG-флоу по хостам/группе с HITL-аппрувом и чекпоинтами. | Политика + HITL-аппрув |
+| `uniconn_resume_flow` | Возобновление прерванного DAG-флоу по `run_id` или подписанному `checkpoint_token`. | Политика + подпись чекпоинта |
 | `uniconn://inventory/hosts` | Статический ресурс с манифестом хостов, групп и параметров безопасности. | Read-only |
 | `uniconn://hosts/{host}/facts` | Шаблон ресурса (Resource Template) для чтения актуальных `HostFacts` хоста в JSON. | Read-only |
 
@@ -501,24 +521,17 @@ response = await server.handle_message({
 
 ---
 
-## 🖥️ Интерактивная веб-панель (Web Dashboard)
+## 📚 Локальный сервер документации (Sphinx)
 
-В репозиторий встроен интерактивный веб-дашборд для проверки подключений, конструирования URI, тестирования конвейера хуков и запуска тестов прямо из браузера:
+Соберите и откройте полную двуязычную HTML-документацию Sphinx локально на порту `3000` (или запустите быструю консольную демонстрацию без флагов):
 
 ```bash
-# Запуск сервера предпросмотра на http://0.0.0.0:3000
+# Сборка HTML-документации Sphinx (при необходимости) и запуск сервера на http://0.0.0.0:3000
 python main.py --serve
+
+# Быстрая локальная CLI-демонстрация
+python main.py
 ```
-
-После запуска перейдите по адресу **<http://localhost:3000>**:
-
-1. **Quickstart & Interactive Recipe Wizard (`#recipes`)**: Мастер выбора инженерной задачи с генерацией кода (**Async / Sync / CLI / Migration**) и живым запуском в песочнице.
-2. **Shell & Local Runner (`#shell`)**: Интерактивные stateful PTY-сессии с сохранением состояния `cd`, переменных `export` и размеров терминала.
-3. **Hooks & Telemetry Sandbox (`#hooks`)**: Тестирование `CircuitBreaker`, `RateLimiter` и маскирования секретов.
-4. **Pool & Fleet Orchestrator (`#pool`)**: Визуальное управление YAML-инвентарём и волновым роллаутом.
-5. **Visual URI Builder (`#uri`)**: Конструктор и валидатор URI с автогенерацией кода на Python.
-6. **Interactive Test Runner (`#tests`)**: Запуск unit-тестов отдельных пакетов из интерфейса.
-7. **Policy & AST Guardrails (`#policy`)**: Декомпозиция команд в AST и проверка политик безопасности для ИИ-агентов.
 
 ---
 
@@ -528,16 +541,41 @@ python main.py --serve
 
 | Руководство (На русском) | Guide (English) | Описание содержимого |
 | :--- | :--- | :--- |
-| **[Обзор и шпаргалка (`docs/ru/index.rst`)](docs/ru/index.rst)** | **[Overview & Cheat Sheet](docs/index.rst)** | Таблица «Задача $\rightarrow$ Решение» за 10 секунд и навигация по инженерным ролям |
+| **[Обзор и шпаргалка (`docs/ru/index.rst`)](docs/ru/index.rst)** | **[Overview & Cheat Sheet](docs/index.rst)** | Таблица «Задача → Решение» за 10 секунд и навигация по инженерным ролям |
 | **[Быстрый старт за 5 мин (`docs/ru/quickstart.rst`)](docs/ru/quickstart.rst)** | **[5-Minute Quickstart](docs/quickstart.rst)** | Установка `extras` (`uniconn[all]`, `[winrm]`, `[bmc]`), запуск без внешних серверов, выбор Async / Sync / CLI |
 | **[Архитектура ядра и пайплайн (`docs/ru/architecture.rst`)](docs/ru/architecture.rst)** | **[Core Architecture & Pipeline](docs/architecture.rst)** | Конвейер `CommandPipeline`, строгий порядок 11 мидлварей, `EventLoopPortal`, `RemotePythonWorker` и протоколы ISP |
-| **[Схемы инвентаря и URI (`docs/ru/inventory_and_uris.rst`)](docs/ru/inventory_and_uris.rst)** | **[Inventory & URI Reference](docs/inventory_and_uris.rst)** | Полный справочник YAML/TOML/JSON инвентарей, правила слияния `defaults`/`groups`, секреты `env://` / `file://` и опции 16+ схем |
+| **[Схемы инвентаря и URI (`docs/ru/inventory_and_uris.rst`)](docs/ru/inventory_and_uris.rst)** | **[Inventory & URI Reference](docs/inventory_and_uris.rst)** | Полный справочник YAML/TOML/JSON инвентарей, правила слияния `defaults`/`groups`, секреты `env://` / `file://` и опции 13+ схем |
 | **[Кулинарная книга (`docs/ru/cookbook.rst`)](docs/ru/cookbook.rst)** | **[Step-by-Step Cookbook](docs/cookbook.rst)** | Рецепты: автопарсинг, Zero-Fork RPC (`run_python`), `RemotePath`, `ensure_*`, `Flow`, NETCONF/YANG, BMC/UART и кассеты |
-| **[Отладка и исключения (`docs/ru/troubleshooting.rst`)](docs/ru/troubleshooting.rst)** | **[Debugging & Troubleshooting](docs/troubleshooting.rst)** | Полное дерево `UniconnError`, автодиагностика `diagnose=True`, отладочные логи и матрица «Симптом $\rightarrow$ Решение» |
-| **[Гайд по миграции (`docs/migration.rst`)](docs/migration.rst)** | **[Migration Guides](docs/migration.rst)** | Таблицы перехода «Было $\rightarrow$ Стало» с **Ansible**, **Paramiko**, **Fabric** и **Netmiko / Scrapli** |
-| **[Обзор 16+ транспортов (`docs/transports.rst`)](docs/transports.rst)** | **[Transports Overview](docs/transports.rst)** | Краткая сводка по всем 16+ схемам URI и динамическим секретам |
+| **[Отладка и исключения (`docs/ru/troubleshooting.rst`)](docs/ru/troubleshooting.rst)** | **[Debugging & Troubleshooting](docs/troubleshooting.rst)** | Полное дерево `UniconnError`, автодиагностика `diagnose=True`, отладочные логи и матрица «Симптом → Решение» |
+| **[Гайд по миграции (`docs/migration.rst`)](docs/migration.rst)** | **[Migration Guides](docs/migration.rst)** | Таблицы перехода «Было → Стало» с **Ansible**, **Paramiko**, **Fabric** и **Netmiko / Scrapli** |
+| **[Обзор 13+ транспортов (`docs/transports.rst`)](docs/transports.rst)** | **[Transports Overview](docs/transports.rst)** | Краткая сводка по всем 13+ схемам URI и динамическим секретам |
 | **[CLI, MCP и Безопасность (`docs/cli_and_mcp.rst`)](docs/cli_and_mcp.rst)** | **[CLI, MCP & Security](docs/cli_and_mcp.rst)** | Команды CLI, MCP-сервер для ИИ-агентов, HITL-подтверждения и AST Policy-as-Code |
 | **[API Reference (`docs/api.rst`)](docs/api.rst)** | **[API Reference](docs/api.rst)** | Полный справочник классов, методов и исключений библиотеки |
+
+---
+
+## 🧪 Каталог готовых сценариев (`examples/`)
+
+Каждый скрипт в [`examples/`](examples/) самодостаточен и автоматически прогоняется в тестовом наборе CI (`uv run python examples/<script>.py`):
+
+| Сценарий | Ключевые возможности API | Готовый скрипт |
+| :--- | :--- | :--- |
+| **Базовый старт (Async и Sync)** | `Connection.from_uri`, `SyncConnection`, `SecretResolver`, `run`, `stream`, `copy` | [examples/basic_usage.py](examples/basic_usage.py) |
+| **Инвентарь и эргономика `Result`** | `from_file`, хелперы `Result`, группы `ConnectionPool` | [examples/ergonomics_and_inventory.py](examples/ergonomics_and_inventory.py) |
+| **Файловые операции и дельта-синхронизация** | `conn.files.write_file(atomic=True)`, `checksum`, `sync_dir`, `write_template` | [examples/file_transfer.py](examples/file_transfer.py) |
+| **Интерактивный PTY Shell и `expect`** | `conn.open_shell`, `shell.execute`, `conn.expect`, `SyncShellSession` | [examples/interactive_shell.py](examples/interactive_shell.py) |
+| **Проверки доступности и ожидания** | `ping`, `is_alive`, `wait_for_connection`, `wait_for_port`, `wait_for_path` | [examples/health_check.py](examples/health_check.py) |
+| **Параллелизм и волновой роллаут** | `ConnectionPool.map`, `batch_size`, `max_fail_ratio`, `select`, `pool.stream` | [examples/parallel_execution.py](examples/parallel_execution.py) |
+| **Идемпотентный стейт и поиск дрейфа** | `conn.state.ensure_*`, `gather_facts`, `diff_facts`, `diagnostic_session` | [examples/provisioning_and_facts.py](examples/provisioning_and_facts.py) |
+| **Отказоустойчивость, пулы и SSH-туннели** | `CircuitBreaker`, `RateLimiter`, `SSHSessionPool`, `conn.tunnels` | [examples/resilience_rollout_and_waiters.py](examples/resilience_rollout_and_waiters.py) |
+| **Bare-Metal BMC (Redfish и IPMI)** | `redfish://`, `ipmi://`, питание, сенсоры, локальное воспроизведение кассеты | [examples/bmc_management.py](examples/bmc_management.py) |
+| **Мониторинг фоновых процессов** | `BackgroundPool.from_file`, автовыбор `tmux`/`screen`/`nohup`, стриминг логов | [examples/screen_monitoring.py](examples/screen_monitoring.py) · [YAML](examples/screen_pool_config.yaml) |
+| **Нагрузочная диагностика NVMe / ОЗУ** | `diagnostic_session`, `fsync_realtime=True`, `facts_diff` до/после, `.tar.gz` | [examples/stress_test_diagnostics.py](examples/stress_test_diagnostics.py) · [YAML](examples/stress_test_diagnostics.yaml) |
+| **Реактивный Watchdog логов (SCT / BBU)** | `PatternTriggerHandler`, `LogWatchRule`, детектор тихого зависания потоков | [examples/reactive_log_watchdog_sct.py](examples/reactive_log_watchdog_sct.py) · [YAML](examples/telecom_bs_sct_diagnostics.yaml) |
+| **Хуки безопасности и OpenTelemetry** | `allowlist_hook`, `blocklist_hook`, `audit_log_hook`, `otel_tracing_hook`, `dry_run` | [examples/security_and_hooks.py](examples/security_and_hooks.py) |
+| **Структурированное логирование и метрики** | `configure_logging(fmt="json")`, `log_context`, `metrics_collector_hook` | [examples/structured_logging_telemetry.py](examples/structured_logging_telemetry.py) |
+| **Офлайн контрактное тестирование (кассеты)** | `conn.use_cassette`, `pool.use_cassette`, `cassette.diff`, плагин pytest | [examples/contract_testing_cassettes.py](examples/contract_testing_cassettes.py) |
+| **Написание собственного транспорта** | Наследование от `BaseTransport`, реализация `run`/`stream`/`ping`, entry-points | [examples/custom_transport.py](examples/custom_transport.py) |
 
 ---
 
@@ -553,7 +591,7 @@ uniconn run "ssh://user@host" "systemctl status nginx" --sudo --format json
 uniconn run-multi --inventory fleet.yaml --group web -c "nginx -t" --batch-size 2 --max-fail-ratio 0.0
 
 # Проверка доступности и задержки (ping)
-uniconn ping "ssh://node-01" "winrm://win-01" "kubectl://prod/api-pod"
+uniconn ping "ssh://node-01" "winrm://win-01" "redfish://bmc-01"
 
 # Примитивы ожидания (доступность хоста, открытие TCP-порта, regex в файле)
 uniconn wait-for connection "ssh://node-01" --timeout 120
