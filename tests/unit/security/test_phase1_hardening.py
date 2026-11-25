@@ -22,8 +22,6 @@ from uniconn.background._session import BackgroundSession
 from uniconn.exceptions import ConfigurationError
 from uniconn.pool.session_pool import SSHSessionPool
 from uniconn.result import Result
-from uniconn.transports._docker import DockerTransport
-from uniconn.transports._kubectl import KubectlTransport
 from uniconn.transports._winrm import WinRMTransport
 from uniconn.transports.bmc.redfish import RedfishTransport
 from uniconn.transports.network.gnmi import GnmiTransport
@@ -48,35 +46,6 @@ def test_proxy_command_expansion_rejects_shell_injection() -> None:
 
     with pytest.raises(ConfigurationError, match="Invalid port"):
         OpenSSHConfigParser.expand_proxy_command("ssh -W %h:%p %r", "10.0.0.1", 70000, "ops")
-
-
-def test_docker_and_kubectl_validate_env_keys_and_shell_binary() -> None:
-    """DockerTransport и KubectlTransport отклоняют невалидные ключи env и небезопасный параметр shell."""
-    cfg_docker_bad_shell = ConnectionConfig(
-        transport="docker",
-        host="web-ctr",
-        options={"shell": "sh; touch /tmp/pwn"},
-    )
-    with pytest.raises(ConfigurationError, match="Unsafe characters"):
-        DockerTransport(cfg_docker_bad_shell)._build_exec_args("id")
-
-    cfg_k8s_bad_shell = ConnectionConfig(
-        transport="kubectl",
-        host="web-pod",
-        options={"shell": "bash && id"},
-    )
-    with pytest.raises(ConfigurationError, match="Unsafe characters"):
-        KubectlTransport(cfg_k8s_bad_shell)._build_exec_args("id")
-
-    docker_ok = DockerTransport(ConnectionConfig(transport="docker", host="web-ctr"))
-    with pytest.raises(ValueError, match="Invalid environment variable"):
-        docker_ok._build_exec_args("env", env={"BAD=KEY": "1"})
-    with pytest.raises(ValueError, match="Invalid environment variable"):
-        docker_ok._build_exec_args("env", env={"1STARTS_DIGIT": "1"})
-
-    k8s_ok = KubectlTransport(ConnectionConfig(transport="kubectl", host="web-pod"))
-    with pytest.raises(ValueError, match="Invalid environment variable"):
-        k8s_ok._build_exec_args("env", env={"BAD;KEY": "1"})
 
 
 def test_winrm_rejects_cmd_metacharacters_in_cwd() -> None:

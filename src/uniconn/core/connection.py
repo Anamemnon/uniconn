@@ -17,15 +17,8 @@ from .._logging import log_event
 from ..config.inventory import InventoryLoader
 from ..config.models import ConnectionConfig
 from ..result import Result
-from ..services.facts import FactCollector
-from ..services.facts_models import FactSpec, HostFacts
-from ..services.files import FileOperationsService
-from ..services.network import NetworkOperationsService
-from ..services.provisioning import StateManagementService
-from ..services.remote_path import RemotePath
-from ..services.templates import render_template as render_template
-from ..services.tunnels import TunnelService
 from ..transports.base import BaseTransport
+from .bridge import LazyAttr, lazy_service
 from .context import CwdContext, EnvContext, ExecutionContext, TempDirContext
 from .factories import (
     _resolve_auto_diagnostics,
@@ -46,17 +39,18 @@ from .pipeline import CommandPipeline, CommandRequest, HookCallback, HookEvent, 
 from .python_worker import RemotePythonWorker, run_python
 from .resilience import CircuitBreaker, RateLimiter
 from .scripts import ScriptExecutionManager, run_script
-from .shell_facade import (
-    ObserverContext,
-    OperationObserver,
-    expect_command,
-    open_shell_session,
-    raw_open_shell,
-)
+from .shell_facade import ObserverContext, OperationObserver, expect_command, open_shell_session, raw_open_shell
 from .temp import HostTempManager, create_temp_dir, remove_temp_dir, temp_dir
 from .waiters import ping_connection, wait_for_connection, wait_for_path, wait_for_port
 
 if TYPE_CHECKING:
+    from ..services.facts import FactCollector
+    from ..services.facts_models import FactSpec, HostFacts
+    from ..services.files import FileOperationsService
+    from ..services.network import NetworkOperationsService
+    from ..services.provisioning import StateManagementService
+    from ..services.remote_path import RemotePath
+    from ..services.tunnels import TunnelService
     from ..sync.connection import SyncConnection
 
 logger = logging.getLogger(__name__)
@@ -97,12 +91,13 @@ class Connection:
         }
         self._operation_observers: list[Any] = []
         self._pipeline = CommandPipeline(self)
-        self.files = FileOperationsService(self)
-        self.state = StateManagementService(self)
-        self.tunnels = TunnelService(self)
-        self.net = NetworkOperationsService(self)
-        self._facts_collector = FactCollector(self)
-        self._python_worker = RemotePythonWorker(self)
+
+    files: LazyAttr[FileOperationsService] = lazy_service("_files_service", "files", "FileOperationsService")
+    state: LazyAttr[StateManagementService] = lazy_service("_state_service", "provisioning", "StateManagementService")
+    tunnels: LazyAttr[TunnelService] = lazy_service("_tunnels_service", "tunnels", "TunnelService")
+    net: LazyAttr[NetworkOperationsService] = lazy_service("_net_service", "network", "NetworkOperationsService")
+    _facts_collector: LazyAttr[FactCollector] = lazy_service("_facts_collector_inst", "facts", "FactCollector")
+    _python_worker: LazyAttr[RemotePythonWorker] = LazyAttr("_python_worker_inst", RemotePythonWorker)
 
     @property
     def python_worker(self) -> RemotePythonWorker:
@@ -111,6 +106,8 @@ class Connection:
 
     def path(self, *pathsegments: str | os.PathLike[str]) -> RemotePath:
         """Создать объектно-ориентированный путь ``RemotePath`` (аналог ``pathlib.Path``) на хосте."""
+        from ..services.remote_path import RemotePath
+
         return RemotePath(self, *pathsegments)
 
     @property
@@ -189,11 +186,13 @@ class Connection:
 
     @property
     def _cached_facts(self) -> HostFacts | None:
-        return self._facts_collector.cached
+        collector = self.__dict__.get("_facts_collector_inst")
+        return collector.cached if collector is not None else None
 
     @_cached_facts.setter
     def _cached_facts(self, value: HostFacts | None) -> None:
-        self._facts_collector.cached = value
+        if value is not None or "_facts_collector_inst" in self.__dict__:
+            self._facts_collector.cached = value
 
     # ─── Фабрики, клонирование и контекстные менеджеры ─────────────
 
@@ -326,8 +325,10 @@ class Connection:
             yield line
 
     async def close(self) -> None:
-        with contextlib.suppress(Exception):
-            await self._python_worker.close()
+        worker = self.__dict__.get("_python_worker_inst")
+        if worker is not None:
+            with contextlib.suppress(Exception):
+                await worker.close()
         await self._transport.disconnect()
 
     async def is_alive(self, timeout: float | None = None) -> bool:
@@ -381,8 +382,17 @@ class Connection:
         return self._transport.name
 
 
+def __getattr__(name: str) -> Any:
+    if name == "render_template":
+        from ..services.templates import render_template
+
+        globals()["render_template"] = render_template
+        return render_template
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     "Connection", "HostTempManager", "ObserverContext", "OperationObserver",
     "ScriptExecutionManager", "_resolve_circuit_breaker", "_resolve_rate_limiter",
-    "format_command", "render_template", "wait_exponential_jitter",
+    "format_command", "wait_exponential_jitter",
 ]

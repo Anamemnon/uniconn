@@ -14,6 +14,7 @@ import concurrent.futures
 import contextlib
 import contextvars
 import functools
+import importlib
 import inspect
 import os
 import threading
@@ -52,6 +53,31 @@ def _extract_buffer_size(kwargs: dict[str, Any], default: int = 1000) -> int:
         with contextlib.suppress(ValueError, TypeError):
             return int(val)
     return default
+
+
+def _close_coro(coro: Any) -> None:
+    """Безопасно закрыть незапланированную корутину без выброса исключений."""
+    close_fn = getattr(coro, "close", None)
+    if callable(close_fn):
+        with contextlib.suppress(Exception):
+            close_fn()
+
+
+def _close_async_gen_sync(async_gen: Any) -> None:
+    """Закрыть корутину ``aclose()`` асинхронного генератора до его запуска."""
+    aclose_fn = getattr(async_gen, "aclose", None)
+    if callable(aclose_fn):
+        with contextlib.suppress(Exception):
+            _close_coro(aclose_fn())
+
+
+def _schedule_coro(coro: Coroutine[Any, Any, Any], loop: asyncio.AbstractEventLoop) -> concurrent.futures.Future[Any]:
+    """Запланировать корутину в event loop, гарантированно закрывая её при сбое."""
+    try:
+        return asyncio.run_coroutine_threadsafe(coro, loop)
+    except BaseException:
+        _close_coro(coro)
+        raise
 
 
 class _SharedLoopManager:
@@ -305,31 +331,37 @@ class EventLoopPortal:
             (self._loop_thread is not None and current_thread is self._loop_thread)
             or (shared_thread is not None and current_thread is shared_thread)
         ):
-            with contextlib.suppress(Exception):
-                coro.close()
+            _close_coro(coro)
             raise RuntimeError(
                 f"Deadlock detected: {self._owner_name}.call() cannot be called "
                 "from within the portal event loop thread. Await the coroutine directly instead."
             )
 
         if self._closed:
-            with contextlib.suppress(Exception):
-                coro.close()
+            _close_coro(coro)
             raise RuntimeError(f"{self._owner_name} уже закрыт")
 
         raw_timeout = timeout if timeout is not None else self._default_timeout
         effective_timeout = (
             float(raw_timeout) if isinstance(raw_timeout, (int, float)) else None
         )
-        loop = self.get_loop()
-        caller_ctx = contextvars.copy_context()
+        try:
+            loop = self.get_loop()
+            caller_ctx = contextvars.copy_context()
+        except BaseException:
+            _close_coro(coro)
+            raise
 
         async def _run_in_caller_context() -> Any:
             for var, val in caller_ctx.items():
                 var.set(val)
             return await coro
 
-        future = asyncio.run_coroutine_threadsafe(_run_in_caller_context(), loop)
+        try:
+            future = _schedule_coro(_run_in_caller_context(), loop)
+        except BaseException:
+            _close_coro(coro)
+            raise
         try:
             return future.result(timeout=effective_timeout)
         except (concurrent.futures.TimeoutError, builtins.TimeoutError):
@@ -363,27 +395,26 @@ class EventLoopPortal:
             (self._loop_thread is not None and current_thread is self._loop_thread)
             or (shared_thread is not None and current_thread is shared_thread)
         ):
+            _close_async_gen_sync(async_gen)
             raise RuntimeError(
                 f"Deadlock detected: {self._owner_name}.iter_async() cannot be called "
                 "from within the portal event loop thread. Iterate with 'async for' directly instead."
             )
 
         if self._closed:
-            close_fn = getattr(async_gen, "aclose", None)
-            if callable(close_fn):
-                with contextlib.suppress(Exception):
-                    coro: Any = close_fn()
-                    coro_close = getattr(coro, "close", None)
-                    if callable(coro_close):
-                        coro_close()
+            _close_async_gen_sync(async_gen)
             raise RuntimeError(f"{self._owner_name} уже закрыт")
 
         raw_timeout = timeout if timeout is not None else self._default_timeout
         effective_timeout = (
             float(raw_timeout) if isinstance(raw_timeout, (int, float)) else None
         )
-        loop = self.get_loop()
-        caller_ctx = contextvars.copy_context()
+        try:
+            loop = self.get_loop()
+            caller_ctx = contextvars.copy_context()
+        except BaseException:
+            _close_async_gen_sync(async_gen)
+            raise
         q: asyncio.Queue[Any] = asyncio.Queue(maxsize=max(1, buffer_size))
 
         async def _pump() -> None:
@@ -399,11 +430,15 @@ class EventLoopPortal:
             else:
                 await q.put(_STREAM_DONE)
 
-        pump_future = asyncio.run_coroutine_threadsafe(_pump(), loop)
+        try:
+            pump_future = _schedule_coro(_pump(), loop)
+        except BaseException:
+            _close_async_gen_sync(async_gen)
+            raise
 
         try:
             while True:
-                get_future = asyncio.run_coroutine_threadsafe(q.get(), loop)
+                get_future = _schedule_coro(q.get(), loop)
                 try:
                     item = get_future.result(timeout=effective_timeout)
                 except (concurrent.futures.TimeoutError, builtins.TimeoutError):
@@ -429,7 +464,7 @@ class EventLoopPortal:
                         await res
 
                 with contextlib.suppress(Exception):
-                    aclose_fut = asyncio.run_coroutine_threadsafe(_do_aclose(), loop)
+                    aclose_fut = _schedule_coro(_do_aclose(), loop)
                     with contextlib.suppress(BaseException):
                         aclose_fut.result(timeout=2.0)
 
@@ -1086,3 +1121,42 @@ class SyncProxyMixin:
             return _sync_gen_fallback
 
         return attr
+
+
+class LazyAttr(Generic[T]):
+    """Ленивый дескриптор с кэшированием в ``__dict__`` и поддержкой явного присваивания (включая ``None``)."""
+
+    def __init__(self, cache_attr: str, factory: Callable[[Any], T]) -> None:
+        self._cache_attr = cache_attr
+        self._factory = factory
+
+    @overload
+    def __get__(self, instance: None, owner: type[Any]) -> LazyAttr[T]: ...
+
+    @overload
+    def __get__(self, instance: object, owner: type[Any]) -> T: ...
+
+    def __get__(self, instance: object | None, owner: type[Any]) -> Any:
+        if instance is None:
+            return self
+        data = instance.__dict__
+        if self._cache_attr not in data:
+            data[self._cache_attr] = self._factory(instance)
+        return data[self._cache_attr]
+
+    def __set__(self, instance: object, value: Any) -> None:
+        instance.__dict__[self._cache_attr] = value
+
+    def __delete__(self, instance: object) -> None:
+        instance.__dict__.pop(self._cache_attr, None)
+
+
+def lazy_service(cache_attr: str, submodule: str, class_name: str) -> LazyAttr[Any]:
+    """Создать ``LazyAttr`` для ленивой загрузки доменного сервиса из ``uniconn.services.<submodule>``."""
+
+    def _factory(owner: Any) -> Any:
+        mod = importlib.import_module(f"uniconn.services.{submodule}")
+        return getattr(mod, class_name)(owner)
+
+    return LazyAttr(cache_attr, _factory)
+

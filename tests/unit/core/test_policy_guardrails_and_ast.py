@@ -14,7 +14,6 @@ from typing import Any
 import pytest
 from rich.console import Console
 
-from examples.dashboard.handlers.api import _execute_endpoint_direct
 from uniconn import (
     ActionRiskClassifier,
     ActionRiskTier,
@@ -507,22 +506,6 @@ class TestCLIPolicyAndDashboardSandbox:
         eval_out = json.loads(buf.getvalue())
         assert eval_out["decision"] == "REQUIRE_APPROVAL"
         assert eval_out["requires_approval"] is True
-
-    def test_dashboard_policy_endpoint(self) -> None:
-        res = _execute_endpoint_direct(
-            "policy",
-            {
-                "command": "echo cm0gLXJmIC8= | base64 -d | sh",
-                "preset": "prod-guard",
-                "role": "operator",
-                "host": "prod-db-01",
-                "environment": "prod",
-            },
-        )
-        assert res["ok"] is True
-        assert res["decision"] == "DENY"
-        assert res["ast"]["is_obfuscated"] is True
-        assert "rm" in res["ast"]["verbs"]
 
     def test_quoted_executable_not_false_positive_and_wrapped_quote_splice_detected(self) -> None:
         clean_ast = CommandASTParser.parse('"/usr/bin/ls" -la /var/log')

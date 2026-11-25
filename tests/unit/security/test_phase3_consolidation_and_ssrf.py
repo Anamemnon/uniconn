@@ -7,7 +7,6 @@ import socket
 
 import pytest
 
-from examples.dashboard.handlers.api import _execute_endpoint_direct
 from uniconn import (
     ActionRiskClassifier,
     ActionRiskTier,
@@ -97,7 +96,7 @@ class TestSSRFUrlValidation:
         with pytest.raises(ConfigurationError):
             WebhookApprovalChannel("http://169.254.169.254/latest/meta-data/", allow_private_network=True)
 
-    def test_opa_url_policy_and_dashboard_ssrf_guard(self) -> None:
+    def test_opa_url_policy_ssrf_guard(self) -> None:
         # OPA allows localhost sidecars by default, but never cloud metadata
         opa_local = OPAPolicyEngine("http://127.0.0.1:8181/v1/data/uniconn/authz")
         assert "127.0.0.1" in opa_local.opa_url
@@ -107,14 +106,6 @@ class TestSSRFUrlValidation:
 
         with pytest.raises(ConfigurationError):
             OPAPolicyEngine("http://10.10.10.5:8181/v1/data", allow_private_network=False)
-
-        # Dashboard HTTP API denies private RFC1918 and metadata OPA URLs
-        for blocked in ("http://192.168.1.10:8181", "http://169.254.169.254/latest"):
-            res = _execute_endpoint_direct(
-                "policy",
-                {"command": "uptime", "engine": "opa", "opa_url": blocked, "_http_safe": True},
-            )
-            assert res["ok"] is False
 
     def test_dns_rebinding_protection(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _fake_getaddrinfo(
@@ -162,10 +153,3 @@ class TestRegexSafetyAndReDoS:
 
         with pytest.raises(ConfigurationError):
             blocklist_hook(["([0-9]+)+"])
-
-        sbx_err = _execute_endpoint_direct(
-            "screen",
-            {"pattern": "(a+)+"},
-        )
-        assert sbx_err["status"] == "error"
-        assert sbx_err["error"]["type"] == "ConfigurationError"

@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from examples.dashboard.server import _execute_pool_sandbox, _execute_v080_sandbox
 from uniconn import (
     Connection,
     ConnectionPool,
@@ -519,36 +518,6 @@ class TestCliAndDashboardV080:
         assert exc_tail.value.code == 0
         out_tail = capsys.readouterr().out
         assert "POST /api/v080 200" in out_tail
-
-    def test_dashboard_v080_and_pool_endpoints(self) -> None:
-        facts_resp = _execute_v080_sandbox({"feature": "gather_facts"})
-        assert facts_resp["status"] == "ok"
-        assert "os_family" in facts_resp["facts"]
-
-        line_resp = _execute_v080_sandbox({"feature": "ensure_line"})
-        assert line_resp["status"] == "ok"
-        assert line_resp["pass1"]["changed"] is True
-        assert line_resp["pass2"]["changed"] is False
-
-        pkg_resp = _execute_v080_sandbox({"feature": "ensure_package", "package": "curl"})
-        assert pkg_resp["status"] == "ok"
-        assert pkg_resp["result"]["dry_run"] is True
-
-        svc_resp = _execute_v080_sandbox({"feature": "ensure_service", "service": "nginx"})
-        assert svc_resp["status"] == "ok"
-        assert svc_resp["result"]["dry_run"] is True
-
-        stream_resp = _execute_v080_sandbox({"feature": "pool_stream"})
-        assert stream_resp["status"] == "ok"
-        assert len(stream_resp["lines"]) == 4
-
-        sync_pool_resp = _execute_v080_sandbox({"feature": "sync_pool"})
-        assert sync_pool_resp["status"] == "ok"
-        assert sync_pool_resp["hosts_count"] == 2
-
-        pool_facts = _execute_pool_sandbox({"operation": "gather_facts", "group": "web"})
-        assert pool_facts["status"] == "ok"
-        assert len(pool_facts["nodes"]) == 2
 
 
 class TestProvisioningPackageDecomposition:

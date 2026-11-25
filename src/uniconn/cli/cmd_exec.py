@@ -48,13 +48,16 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
         transport_info = {
             "local": ("Local command execution", "-"),
             "ssh": ("SSH connection", "asyncssh"),
+            "winrm": ("Windows Remote Management (WinRM/WS-Man)", "pywinrm"),
             "telnet": ("Telnet protocol", "telnetlib3"),
             "serial": ("Serial/UART ports", "pyserial-asyncio"),
             "ipmi": ("IPMI BMC management", "pyghmi"),
             "redfish": ("DMTF Redfish BMC REST API", "niquests"),
-            "docker": ("Docker container exec/cp", "docker CLI"),
-            "podman": ("Podman container exec/cp", "podman CLI"),
-            "kubectl": ("Kubernetes pod exec/cp/port-forward", "kubectl CLI"),
+            "qga": ("QEMU Guest Agent (socket/SSH/virsh)", "-"),
+            "pve": ("Proxmox VE REST API", "niquests"),
+            "netconf": ("NETCONF (RFC 6241 over SSH)", "asyncssh"),
+            "restconf": ("RESTCONF (RFC 8040 over HTTP)", "niquests"),
+            "gnmi": ("gNMI network management", "niquests"),
             "replay": ("Deterministic cassette replay", "-"),
         }
 
@@ -71,7 +74,7 @@ def register_exec_commands(app: Any, console: Any, renderer: CLIOutputRenderer) 
 
         console.print(table)
         console.print("\n[dim]To install additional transports:[/dim]")
-        console.print("[dim]  pip install uniconn[ssh,telnet,serial,bmc,redfish][/dim]")
+        console.print("[dim]  pip install uniconn[winrm,telnet,serial,bmc][/dim]")
 
     @app.command
     def run(

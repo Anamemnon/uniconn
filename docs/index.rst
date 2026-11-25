@@ -1,9 +1,9 @@
 uniconn Documentation
 =====================
 
-**Language:** **[ English ]** | `Русский <ru/index.rst>`_
+**Language:** **[ English ]** | :doc:`Русский <ru/index>`
 
-**uniconn** is a universal async-first Python library (Python 3.11+) and CLI for executing commands, inspecting host facts, enforcing idempotent states, orchestrating multi-host task DAGs, and synchronizing files across **16+ transport schemes** with **100% Async + Sync API parity** and sub-millisecond core overhead.
+**uniconn** is a universal async-first Python library (Python 3.11+) and CLI for executing commands, inspecting host facts, enforcing idempotent states, orchestrating multi-host task DAGs, and synchronizing files across **13+ transport schemes** with **100% Async + Sync API parity** and sub-millisecond core overhead.
 
 .. image:: https://img.shields.io/badge/python-3.11+-blue.svg
    :target: https://www.python.org/downloads/
@@ -16,9 +16,9 @@ uniconn Documentation
 Why uniconn?
 ------------
 
-Modern infrastructure spans Linux and Windows servers, containers, Kubernetes pods, network routers, hypervisors, and bare-metal BMC/UART controllers. Instead of stitching together incompatible libraries (`Paramiko`, `pywinrm`, `docker-py`, `Netmiko`, `Ansible`), ``uniconn`` provides a single resilient facade:
+Modern infrastructure spans Linux and Windows servers, network routers, hypervisors, and bare-metal BMC/UART controllers. Instead of stitching together incompatible libraries (`Paramiko`, `pywinrm`, `Netmiko`, `Ansible`), ``uniconn`` provides a single resilient facade:
 
-- **16+ Unified Transport Schemes**: ``ssh://``, ``winrm://`` (``wsman://``), ``docker://``, ``podman://``, ``kubectl://``, ``netconf://``, ``restconf://``, ``gnmi://``, ``pve://`` (Proxmox VE), ``qga://`` (QEMU Guest Agent), ``redfish://``, ``ipmi://``, ``serial://`` (``uart://``), ``telnet://``, ``replay://``, and ``local://``.
+- **13+ Unified Transport Schemes**: ``ssh://``, ``winrm://`` (``wsman://``), ``netconf://``, ``restconf://``, ``gnmi://``, ``pve://`` (Proxmox VE), ``qga://`` (QEMU Guest Agent), ``redfish://``, ``ipmi://``, ``serial://`` (``uart://``), ``telnet://``, ``replay://``, and ``local://``.
 - **100% Async + Sync Parity**: Use ``Connection`` / ``ConnectionPool`` / ``Flow`` for high-concurrency async workloads, or ``SyncConnection`` / ``SyncConnectionPool`` / ``SyncFlow`` for synchronous scripts and tests—powered by a shared background ``EventLoopPortal``.
 - **Semantic Output Parsing & Auto-Diagnostics**: Parse CLI output directly into dicts or Pydantic models via ``conn.run("df -h", parse="auto")``, and automatically diagnose failed commands (port conflicts, disk full, OOM kills) with ``diagnose=True``.
 - **Zero-Fork Remote Python RPC**: Execute Python functions or lambdas directly inside a persistent remote worker over stdio pipe in ``< 2 ms`` via ``conn.run_python(fn)``.
@@ -121,7 +121,7 @@ Documentation Contents
    :maxdepth: 1
    :caption: Project Links:
 
-   GitHub <https://github.com/yourusername/uniconn>
+   GitHub <https://github.com/Anamemnon/uniconn>
    PyPI <https://pypi.org/project/uniconn>
 
 Indices and tables

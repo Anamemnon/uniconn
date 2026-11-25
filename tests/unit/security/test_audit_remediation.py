@@ -48,8 +48,6 @@ from uniconn.services._dir_sync import _build_checksum_command
 from uniconn.services.provisioning.service_managers import SysVStrategy, UniversalServiceStrategy
 from uniconn.services.provisioning.system import build_useradd_command
 from uniconn.services.templates import TemplateEngine, render_template
-from uniconn.transports._docker import DockerTransport
-from uniconn.transports._kubectl import KubectlTransport
 from uniconn.transports._telnet import TelnetTransport
 from uniconn.transports._winrm import WinRMTransport, clean_clixml_stderr
 from uniconn.transports.network.gnmi import GnmiTransport
@@ -184,27 +182,6 @@ class TestSecretScopingAndControllerRCE:
         secret_file.write_text("leaked", encoding="utf-8")
         cfg = URIParser.parse(f"ssh://user@host?sudo_password=file://{secret_file}", resolve_secrets=False)
         assert cfg.options["sudo_password"] == f"file://{secret_file}"
-
-    def test_docker_and_kubectl_block_custom_binary_by_default(self) -> None:
-        for bad_runtime in ("/tmp/evil", "/tmp/evil/docker", "C:\\evil\\docker.exe"):
-            with pytest.raises(ConfigurationError, match="Untrusted container runtime"):
-                _ = DockerTransport(
-                    ConnectionConfig(transport="docker", host="web", options={"runtime": bad_runtime})
-                ).runtime
-        for bad_kubectl in ("/tmp/evil", "/tmp/evil/kubectl"):
-            with pytest.raises(ConfigurationError, match="Untrusted kubectl binary"):
-                _ = KubectlTransport(
-                    ConnectionConfig(transport="kubectl", host="pod", options={"kubectl_bin": bad_kubectl})
-                ).kubectl_bin
-
-        ok_docker = DockerTransport(
-            ConnectionConfig(
-                transport="docker",
-                host="web",
-                options={"runtime": "/usr/local/bin/docker", "allow_custom_runtime": True},
-            )
-        )
-        assert ok_docker.runtime == "/usr/local/bin/docker"
 
     def test_mcp_dynamic_uri_blocks_dangerous_transports_and_options(self) -> None:
         registry = MCPHostRegistry(policy=MCPSecurityPolicy(allow_dynamic_uri=True))

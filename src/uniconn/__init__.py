@@ -3,24 +3,14 @@
 
 Предоставляет единый фасад ``Connection`` с конвейером ``CommandPipeline``
 и модульными доменными сервисами (``conn.files``, ``conn.state``, ``conn.tunnels``, ``conn.net``)
-для работы поверх SSH, WinRM, NETCONF/RESTCONF/gNMI, QGA/PVE, Docker, K8s, Telnet, Serial, IPMI, Redfish и Local.
+для работы поверх SSH, WinRM, NETCONF/RESTCONF/gNMI, QGA/PVE, Telnet, Serial/UART, IPMI, Redfish и Local.
 """
 
 from __future__ import annotations
 
-import importlib
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from .config import (
-    CachedInventoryProvider,
-    ConnectionConfig,
-    InventoryLoader,
-    InventoryProvider,
-    SecretBackend,
-    SecretResolver,
-    URIParser,
-)
-from .core.connection import Connection, OperationObserver
+from ._utils import make_lazy_package_loader
 from .exceptions import (
     ApprovalAlreadyConsumedError,
     ApprovalError,
@@ -65,21 +55,6 @@ from .exceptions import (
     TransportNotFoundError,
     UniconnError,
 )
-from .plugins import PluginLoader
-from .pool import ConnectionPool, SSHSessionPool
-from .result import (
-    DiagnosticSummary,
-    EnsureResult,
-    ErrorCategory,
-    NetResult,
-    PingResult,
-    PortConflictInfo,
-    Result,
-    SyncResult,
-    SystemVitals,
-    TelemetrySample,
-)
-from .sync import SyncConnection, SyncConnectionPool
 
 if TYPE_CHECKING:
     from ._logging import (
@@ -131,10 +106,17 @@ if TYPE_CHECKING:
         resolve_watch_rules,
     )
     from .config import (
+        CachedInventoryProvider,
+        ConnectionConfig,
         EnvSecretBackend,
         FileInventoryProvider,
         FileSecretBackend,
+        InventoryLoader,
+        InventoryProvider,
+        SecretBackend,
+        SecretResolver,
         StaticInventoryProvider,
+        URIParser,
         resolve_inventory_provider,
     )
     from .core import (
@@ -147,7 +129,7 @@ if TYPE_CHECKING:
         CommandMiddleware,
         CommandPipeline,
         CommandRequest,
-        ContainerDiagnosticStrategy,
+        Connection,
         ContextMiddleware,
         DiagnosticStrategy,
         DryRunMiddleware,
@@ -160,6 +142,7 @@ if TYPE_CHECKING:
         LinuxDiagnosticStrategy,
         ObservabilityMiddleware,
         ObserverContext,
+        OperationObserver,
         PassiveDiagnosticStrategy,
         RateLimiter,
         RateLimitMiddleware,
@@ -295,9 +278,11 @@ if TYPE_CHECKING:
     from .plugins import (
         PLUGIN_GROUPS,
         PluginInfo,
+        PluginLoader,
         TransportLoader,
     )
     from .pool import (
+        ConnectionPool,
         PoolApplyPlanContext,
         PoolFileOperationsService,
         PoolNetworkOperationsService,
@@ -305,8 +290,21 @@ if TYPE_CHECKING:
         PoolPlanContext,
         PoolStateManagementService,
         PoolStreamMultiplexer,
+        SSHSessionPool,
     )
     from .pytest_plugin import UniconnCassetteFixture
+    from .result import (
+        DiagnosticSummary,
+        EnsureResult,
+        ErrorCategory,
+        NetResult,
+        PingResult,
+        PortConflictInfo,
+        Result,
+        SyncResult,
+        SystemVitals,
+        TelemetrySample,
+    )
     from .security import (
         BUILTIN_POLICY_PRESETS,
         ActionContext,
@@ -389,6 +387,8 @@ if TYPE_CHECKING:
     from .shell.marker_protocol import PosixMarkerProtocol
     from .shell.session import ShellSession
     from .sync import (
+        SyncConnection,
+        SyncConnectionPool,
         SyncDiagnosticSession,
         SyncFileOperationsService,
         SyncNetworkOperationsService,
@@ -399,8 +399,6 @@ if TYPE_CHECKING:
         SyncStateManagementService,
         SyncTunnelService,
     )
-    from .transports._docker import DockerTransport, PodmanTransport
-    from .transports._kubectl import KubectlTransport
     from .transports._local import LocalTransport
     from .transports._serial import SerialPortInfo, SerialTransport, list_serial_ports
     from .transports._winrm import WinRMTransport
@@ -482,9 +480,21 @@ if TYPE_CHECKING:
         parse_qga_network_interfaces,
     )
 
-__version__ = "0.21.0"
+__version__ = "0.22.0"
 
 _LAZY_MODULE_GROUPS: dict[str, tuple[str, ...]] = {
+    ".result": (
+        "DiagnosticSummary",
+        "EnsureResult",
+        "ErrorCategory",
+        "NetResult",
+        "PingResult",
+        "PortConflictInfo",
+        "Result",
+        "SyncResult",
+        "SystemVitals",
+        "TelemetrySample",
+    ),
     "._logging": (
         "SecretMaskingFilter",
         "bind_log_context",
@@ -534,11 +544,22 @@ _LAZY_MODULE_GROUPS: dict[str, tuple[str, ...]] = {
         "resolve_watch_rules",
     ),
     ".config": (
+        "CachedInventoryProvider",
+        "ConnectionConfig",
         "EnvSecretBackend",
         "FileInventoryProvider",
         "FileSecretBackend",
+        "InventoryLoader",
+        "InventoryProvider",
+        "SecretBackend",
+        "SecretResolver",
         "StaticInventoryProvider",
+        "URIParser",
         "resolve_inventory_provider",
+    ),
+    ".core.connection": (
+        "Connection",
+        "OperationObserver",
     ),
     ".core": (
         "AutoDiagnosticMiddleware",
@@ -550,7 +571,6 @@ _LAZY_MODULE_GROUPS: dict[str, tuple[str, ...]] = {
         "CommandMiddleware",
         "CommandPipeline",
         "CommandRequest",
-        "ContainerDiagnosticStrategy",
         "ContextMiddleware",
         "DiagnosticStrategy",
         "DryRunMiddleware",
@@ -704,9 +724,11 @@ _LAZY_MODULE_GROUPS: dict[str, tuple[str, ...]] = {
     ".plugins": (
         "PLUGIN_GROUPS",
         "PluginInfo",
+        "PluginLoader",
         "TransportLoader",
     ),
     ".pool": (
+        "ConnectionPool",
         "PoolApplyPlanContext",
         "PoolFileOperationsService",
         "PoolNetworkOperationsService",
@@ -714,6 +736,7 @@ _LAZY_MODULE_GROUPS: dict[str, tuple[str, ...]] = {
         "PoolPlanContext",
         "PoolStateManagementService",
         "PoolStreamMultiplexer",
+        "SSHSessionPool",
     ),
     ".pytest_plugin": ("UniconnCassetteFixture",),
     ".security": (
@@ -798,6 +821,8 @@ _LAZY_MODULE_GROUPS: dict[str, tuple[str, ...]] = {
     ".shell.marker_protocol": ("PosixMarkerProtocol",),
     ".shell.session": ("ShellSession",),
     ".sync": (
+        "SyncConnection",
+        "SyncConnectionPool",
         "SyncDiagnosticSession",
         "SyncFileOperationsService",
         "SyncNetworkOperationsService",
@@ -808,8 +833,6 @@ _LAZY_MODULE_GROUPS: dict[str, tuple[str, ...]] = {
         "SyncStateManagementService",
         "SyncTunnelService",
     ),
-    ".transports._docker": ("DockerTransport", "PodmanTransport"),
-    ".transports._kubectl": ("KubectlTransport",),
     ".transports._local": ("LocalTransport",),
     ".transports._serial": ("SerialPortInfo", "SerialTransport", "list_serial_ports"),
     ".transports._winrm": ("WinRMTransport",),
@@ -892,13 +915,6 @@ _LAZY_MODULE_GROUPS: dict[str, tuple[str, ...]] = {
     ),
 }
 
-_LAZY_EXPORTS: dict[str, str] = {
-    symbol: module_path
-    for module_path, symbols in _LAZY_MODULE_GROUPS.items()
-    for symbol in symbols
-}
-
-
 _LAZY_SUBMODULES: frozenset[str] = frozenset(
     {
         "background",
@@ -923,29 +939,6 @@ _LAZY_SUBMODULES: frozenset[str] = frozenset(
         "transports",
     }
 )
-
-
-def __getattr__(name: str) -> Any:
-    """Ленивая загрузка публичных символов и подпакетов по стандарту PEP 562."""
-    module_path = _LAZY_EXPORTS.get(name)
-    if module_path is not None:
-        module = importlib.import_module(module_path, __name__)
-        value = getattr(module, name)
-        globals()[name] = value
-        return value
-    if name in _LAZY_SUBMODULES:
-        submodule = importlib.import_module(f".{name}", __name__)
-        globals()[name] = submodule
-        return submodule
-    msg = f"module {__name__!r} has no attribute {name!r}"
-    raise AttributeError(msg)
-
-
-def __dir__() -> list[str]:
-    """Полный список публичных атрибутов пакета (включая ленивые экспорты и подпакеты)."""
-    return sorted(
-        set(globals()) | set(__all__) | set(_LAZY_EXPORTS) | _LAZY_SUBMODULES
-    )
 
 
 __all__ = [
@@ -1078,4 +1071,12 @@ __all__ = [
     "structured_log_hook",
     "task",
 ]
+
+_LAZY_EXPORTS, __getattr__, __dir__ = make_lazy_package_loader(
+    __name__,
+    globals(),
+    _LAZY_MODULE_GROUPS,
+    submodules=_LAZY_SUBMODULES,
+    all_names=__all__,
+)
 

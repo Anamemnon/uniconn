@@ -5,21 +5,21 @@ Connection & SyncConnection
 ---------------------------
 
 .. autoclass:: uniconn.Connection
-   :members: from_uri, from_config, from_dict, from_file, from_inventory, local
-   :members: run, run_bytes, run_commands, run_script, run_python, stream, expect, open_shell, close
-   :members: is_alive, ping, wait_for_connection, wait_for_port, wait_for_path
-   :members: gather_facts, diagnostic_session, use_cassette, run_flow
-   :members: files, path, state, tunnels, net, pipeline
-   :members: cd, env, temp_dir, add_hook, to_sync, copy, with_overrides
+   :members: from_uri, from_config, from_dict, from_file, from_inventory, local,
+             run, run_bytes, run_commands, run_script, run_python, stream, expect, open_shell, close,
+             is_alive, ping, wait_for_connection, wait_for_port, wait_for_path,
+             gather_facts, diagnostic_session, use_cassette, run_flow,
+             files, path, state, tunnels, net, pipeline,
+             cd, env, temp_dir, add_hook, to_sync, copy, with_overrides
    :special-members: __aenter__, __aexit__
 
 .. autoclass:: uniconn.SyncConnection
-   :members: from_uri, from_config, from_dict, from_file, from_inventory, local
-   :members: run, run_bytes, run_commands, run_script, run_python, stream, expect, open_shell, close
-   :members: is_alive, ping, wait_for_connection, wait_for_port, wait_for_path
-   :members: gather_facts, diagnostic_session, use_cassette, run_flow
-   :members: files, path, state, tunnels, net
-   :members: cd, env, temp_dir, add_hook, copy, with_overrides
+   :members: from_uri, from_config, from_dict, from_file, from_inventory, local,
+             run, run_bytes, run_commands, run_script, run_python, stream, expect, open_shell, close,
+             is_alive, ping, wait_for_connection, wait_for_port, wait_for_path,
+             gather_facts, diagnostic_session, use_cassette, run_flow,
+             files, path, state, tunnels, net,
+             cd, env, temp_dir, add_hook, copy, with_overrides
    :special-members: __enter__, __exit__
 
 Domain Services (Files, RemotePath, State, Network & Tunnels)
@@ -44,9 +44,9 @@ ConnectionPool, Task DAG Orchestration & SSHSessionPool
 -------------------------------------------------------
 
 .. autoclass:: uniconn.ConnectionPool
-   :members: from_file, select, use_cassette, map, map_safe, map_with_callback, apply, stream
-   :members: ping, wait_for_connection, wait_for_port, wait_for_path, run_script, run_python, gather_facts, diff_facts, run_flow
-   :members: files, state, net, to_sync
+   :members: from_file, select, use_cassette, map, map_safe, map_with_callback, apply, stream,
+             ping, wait_for_connection, wait_for_port, wait_for_path, run_script, run_python,
+             gather_facts, diff_facts, run_flow, files, state, net, to_sync
 
 .. autoclass:: uniconn.SyncConnectionPool
    :members: from_file, select, use_cassette, map, map_safe, apply, stream, ping, gather_facts, diff_facts, run_flow, files, state, net

@@ -24,7 +24,6 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from examples.dashboard.server import _execute_pool_sandbox, _execute_v090_sandbox
 from uniconn import (
     CircuitBreaker,
     CircuitBreakerMiddleware,
@@ -497,25 +496,6 @@ class TestCLIV090AndDashboard:
         scr_data = json.loads(res_scr.stdout, strict=False)
         assert scr_data["local://"]["ok"] is True
         assert "CLI_SCRIPT_OK:v090" in scr_data["local://"]["stdout"]
-
-    def test_dashboard_v090_sandbox_and_pool_ops(self) -> None:
-        """Проверить обработчики /api/v090 и новые операции пула в дашборде."""
-        for feat in (
-            "adaptive_ssh_pool",
-            "circuit_breaker",
-            "rate_limiter",
-            "ping",
-            "diff_facts",
-            "run_script",
-        ):
-            res = _execute_v090_sandbox({"feature": feat})
-            assert res["status"] == "ok", f"Feature {feat} failed: {res}"
-            assert res["feature"] == feat
-
-        for pool_op in ("ping", "diff_facts", "run_script"):
-            pool_res = _execute_pool_sandbox({"group": "web", "operation": pool_op})
-            assert pool_res["status"] == "ok", f"Pool op {pool_op} failed: {pool_res}"
-            assert pool_res["total_hosts"] == 2
 
     def test_rate_limiter_thread_safe_lock_creation_and_reset(self) -> None:
         """RateLimiter._get_lock() и reset() потокобезопасны при конкурентном доступе из разных потоков."""

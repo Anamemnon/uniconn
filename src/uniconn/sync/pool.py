@@ -39,9 +39,10 @@ class SyncConnectionPool(SyncProxyMixin):
     Предоставляет групповое выполнение команд и проверок (``sync_pool.map``,
     ``sync_pool.apply``, ``sync_pool.stream``, ``sync_pool.ping``, ``sync_pool.wait_for_*``,
     ``sync_pool.gather_facts``), а также доменные пространства имён:
-        - ``sync_pool.files`` (``SyncPoolFileOperationsService``)
-        - ``sync_pool.state`` (``SyncPoolStateManagementService``)
-        - ``sync_pool.net`` (``SyncPoolNetworkOperationsService``)
+
+    - ``sync_pool.files`` (``SyncPoolFileOperationsService``)
+    - ``sync_pool.state`` (``SyncPoolStateManagementService``)
+    - ``sync_pool.net`` (``SyncPoolNetworkOperationsService``)
     """
 
     def __init__(self, async_pool: ConnectionPool) -> None:

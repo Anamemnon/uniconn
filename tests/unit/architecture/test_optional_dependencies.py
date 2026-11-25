@@ -47,8 +47,8 @@ def test_optional_dependencies_contain_required_extras() -> None:
 
     assert "winrm" in extras
     assert any("pywinrm" in dep for dep in extras["winrm"])
-    assert "wsman" in extras
-    assert any("pywinrm" in dep for dep in extras["wsman"])
+    for duplicate_extra in ("ssh", "uart", "wsman"):
+        assert duplicate_extra not in extras
 
     assert "cli" in extras
     assert any("cyclopts" in dep for dep in extras["cli"])

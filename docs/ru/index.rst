@@ -1,16 +1,16 @@
 Документация uniconn (На русском языке)
 =======================================
 
-**Язык:** `English <../index.rst>`_ | **[ Русский ]**
+**Язык:** :doc:`English </index>` | **[ Русский ]**
 
-**uniconn** — универсальная async-first Python-библиотека (Python 3.11+) и модульный CLI для выполнения команд, сбора фактов о хостах, идемпотентного управления состоянием, DAG-оркестрации задач и дельта-синхронизации файлов поверх **16+ транспортных схем** со **100% паритетом Async + Sync API** и субмиллисекундным оверхедом ядра.
+**uniconn** — универсальная async-first Python-библиотека (Python 3.11+) и модульный CLI для выполнения команд, сбора фактов о хостах, идемпотентного управления состоянием, DAG-оркестрации задач и дельта-синхронизации файлов поверх **13+ транспортных схем** со **100% паритетом Async + Sync API** и субмиллисекундным оверхедом ядра.
 
 Почему uniconn?
 ---------------
 
-Современная инфраструктура охватывает серверы Linux и Windows, контейнеры, поды Kubernetes, маршрутизаторы, гипервизоры и контроллеры BMC/UART. Вместо склеивания несовместимых библиотек (``Paramiko``, ``pywinrm``, ``docker-py``, ``Netmiko``, ``Ansible``) ``uniconn`` предоставляет единый отказоустойчивый фасад:
+Современная инфраструктура охватывает серверы Linux и Windows, маршрутизаторы, гипервизоры и контроллеры BMC/UART. Вместо склеивания несовместимых библиотек (``Paramiko``, ``pywinrm``, ``Netmiko``, ``Ansible``) ``uniconn`` предоставляет единый отказоустойчивый фасад:
 
-- **16+ схем транспортов**: ``ssh://``, ``winrm://`` (``wsman://``), ``docker://``, ``podman://``, ``kubectl://``, ``netconf://``, ``restconf://``, ``gnmi://``, ``pve://`` (Proxmox VE), ``qga://`` (QEMU Guest Agent), ``redfish://``, ``ipmi://``, ``serial://`` (``uart://``), ``telnet://``, ``replay://`` и ``local://``.
+- **13+ схем транспортов**: ``ssh://``, ``winrm://`` (``wsman://``), ``netconf://``, ``restconf://``, ``gnmi://``, ``pve://`` (Proxmox VE), ``qga://`` (QEMU Guest Agent), ``redfish://``, ``ipmi://``, ``serial://`` (``uart://``), ``telnet://``, ``replay://`` и ``local://``.
 - **100% паритет Async + Sync**: Используйте ``Connection`` / ``ConnectionPool`` / ``Flow`` для высококонкурентных асинхронных сервисов или ``SyncConnection`` / ``SyncConnectionPool`` / ``SyncFlow`` для синхронных скриптов и тестов (через фоновый синглтон ``EventLoopPortal``).
 - **Семантический автопарсинг и автодиагностика сбоев**: Превращайте вывод команд в словари или Pydantic-модели через ``conn.run("df -h", parse="auto")`` и автоматически находите первопричины сбоев (конфликты портов, переполнение диска, OOM killer) с флагом ``diagnose=True``.
 - **Удалённый Python RPC без форков (Zero-Fork RPC)**: Выполняйте функции и ``lambda`` внутри постоянного фонового воркера на удалённом хосте за ``< 2 мс`` через ``conn.run_python(fn)``.
@@ -91,11 +91,10 @@
    cookbook
    troubleshooting
 
-.. toctree::
-   :maxdepth: 1
-   :caption: Справочники на английском (EN):
+Справочники на английском (EN)
+------------------------------
 
-   English Documentation Hub <../index>
-   Migration Guides (Ansible/Fabric/Paramiko) <../migration>
-   CLI, MCP Server & Security Guardrails <../cli_and_mcp>
-   API Reference <../api>
+- :doc:`English Documentation Hub </index>`
+- :doc:`Migration Guides (Ansible/Fabric/Paramiko) </migration>`
+- :doc:`CLI, MCP Server & Security Guardrails </cli_and_mcp>`
+- :doc:`API Reference </api>`

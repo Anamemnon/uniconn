@@ -23,6 +23,7 @@ class NetworkOperationsService:
     """Доменный сервис работы со структурированными сетевыми протоколами (``conn.net``).
 
     Обеспечивает единый интерфейс для ``netconf://``, ``restconf://`` и ``gnmi://``:
+
     - Чтение состояния и конфигурации: ``get()``, ``get_config()``, ``capabilities()``
     - Модификация и атомарные транзакции: ``edit()``, ``commit()``, ``commit_confirm()``,
       ``discard_changes()``, ``validate()``, ``lock()``, ``unlock()``, ``locked()``, ``transaction()``

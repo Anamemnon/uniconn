@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 from ..config.models import ConnectionConfig
 from ..core.bridge import (
     EventLoopPortal,
+    LazyAttr,
     SyncProxyMixin,
     sync_clone_method,
     sync_context,
@@ -50,10 +51,11 @@ class SyncConnection(SyncProxyMixin):
 
     Предоставляет ядро синхронного выполнения команд и интерактивных сессий,
     а также модульные доменные пространства имён:
-        - ``sync_conn.files`` (``SyncFileOperationsService``)
-        - ``sync_conn.state`` (``SyncStateManagementService``)
-        - ``sync_conn.tunnels`` (``SyncTunnelService``)
-        - ``sync_conn.net`` (``SyncNetworkOperationsService``)
+
+    - ``sync_conn.files`` (``SyncFileOperationsService``)
+    - ``sync_conn.state`` (``SyncStateManagementService``)
+    - ``sync_conn.tunnels`` (``SyncTunnelService``)
+    - ``sync_conn.net`` (``SyncNetworkOperationsService``)
     """
 
     def __init__(self, async_conn: Connection) -> None:
@@ -67,10 +69,11 @@ class SyncConnection(SyncProxyMixin):
             owner_name="SyncConnection",
             default_timeout=default_timeout,
         )
-        self.files = SyncFileOperationsService(self)
-        self.state = SyncStateManagementService(self)
-        self.tunnels = SyncTunnelService(self)
-        self.net = SyncNetworkOperationsService(self)
+
+    files: LazyAttr[SyncFileOperationsService] = LazyAttr("_files_service", SyncFileOperationsService)
+    state: LazyAttr[SyncStateManagementService] = LazyAttr("_state_service", SyncStateManagementService)
+    tunnels: LazyAttr[SyncTunnelService] = LazyAttr("_tunnels_service", SyncTunnelService)
+    net: LazyAttr[SyncNetworkOperationsService] = LazyAttr("_net_service", SyncNetworkOperationsService)
 
     # ─── Фабричные методы и клонирование (ParamSpec-дескрипторы) ───
 

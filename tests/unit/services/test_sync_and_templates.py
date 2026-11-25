@@ -687,48 +687,7 @@ class TestCrossPlatformChecksumProgressAndSyncEnhancements:
 
 
 class TestV100AuditStabilization:
-    """Тесты стабилизации v1.0.0: progress_callback в Docker/Kubectl/Cassette, BSD stat, supports_capability и ttl."""
-
-    @pytest.mark.asyncio
-    async def test_docker_and_kubectl_progress_callback(self, tmp_path: Path) -> None:
-        from unittest.mock import AsyncMock, patch
-
-        from uniconn.config.models import ConnectionConfig
-        from uniconn.transports._docker import DockerTransport
-        from uniconn.transports._kubectl import KubectlTransport
-
-        src_file = tmp_path / "payload.bin"
-        src_file.write_bytes(b"0123456789" * 5)
-        dst_file = tmp_path / "downloaded.bin"
-
-        docker_cfg = ConnectionConfig(transport="docker", host="my-container")
-        docker_tr = DockerTransport(docker_cfg)
-        docker_tr._connected = True
-        docker_events: list[tuple[int, int]] = []
-        with patch.object(docker_tr, "_run_host_cli", new=AsyncMock(return_value=(0, b"", b"", 0.01))):
-            await docker_tr.upload(
-                str(src_file),
-                "/tmp/payload.bin",
-                progress_callback=lambda done, total: docker_events.append((done, total)),
-            )
-        assert docker_events[-1] == (50, 50)
-
-        k8s_cfg = ConnectionConfig(transport="kubectl", host="my-pod")
-        k8s_tr = KubectlTransport(k8s_cfg)
-        k8s_tr._connected = True
-        k8s_events: list[tuple[int, int]] = []
-
-        async def _fake_k8s_cli(args: list[str], **kwargs: Any) -> tuple[int, bytes, bytes, float]:
-            dst_file.write_bytes(b"abcdef")
-            return (0, b"", b"", 0.01)
-
-        with patch.object(k8s_tr, "_run_host_cli", side_effect=_fake_k8s_cli):
-            await k8s_tr.download(
-                "/tmp/remote.bin",
-                str(dst_file),
-                progress_callback=lambda done, total: k8s_events.append((done, total)),
-            )
-        assert k8s_events[-1] == (6, 6)
+    """Тесты стабилизации v1.0.0: Cassette, BSD stat, supports_capability и ttl."""
 
     @pytest.mark.asyncio
     async def test_cassette_proxy_supports_capability_and_tunnels(self, tmp_path: Path) -> None:

@@ -8,7 +8,7 @@
 1. Установка и опциональные пакеты (Extras)
 -------------------------------------------
 
-Базовая установка включает ядро библиотеки (транспорты SSH, Local, Docker, Podman, Kubernetes ``kubectl``, NETCONF, RESTCONF, gNMI, Proxmox VE, QEMU Guest Agent, Replay-кассеты, конвейер отказоустойчивости и структурированное логирование):
+Базовая установка включает ядро библиотеки (транспорты SSH, Local, NETCONF, RESTCONF, gNMI, Proxmox VE, QEMU Guest Agent, Replay-кассеты, конвейер отказоустойчивости и структурированное логирование):
 
 .. code-block:: bash
 

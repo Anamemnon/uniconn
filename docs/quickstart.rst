@@ -3,12 +3,12 @@
 
 **Language:** **[ English ]** | `Русский <ru/quickstart.rst>`_
 
-This guide walks you through installing ``uniconn``, choosing between the **Async** and **Sync** APIs, running your first commands (even without a remote server), and using the built-in interactive web console.
+This guide walks you through installing ``uniconn``, choosing between the **Async** and **Sync** APIs, running your first commands (even without a remote server), and browsing the local Sphinx documentation server.
 
 1. Installation
 ---------------
 
-Install the lightweight core package (includes SSH, Local, Docker, Podman, Kubernetes ``kubectl``, NETCONF, RESTCONF, gNMI, Proxmox VE, QEMU Guest Agent, Replay cassettes, resilience pipeline, and structured logging):
+Install the lightweight core package (includes SSH, Local, NETCONF, RESTCONF, gNMI, Proxmox VE, QEMU Guest Agent, Replay cassettes, resilience pipeline, and structured logging):
 
 .. code-block:: bash
 
@@ -148,17 +148,13 @@ Never hardcode credentials in scripts. ``uniconn`` resolves ``env://`` and ``fil
        for host, status in ping_results.items():
            print(f"{host}: alive={status.alive} ({status.latency_ms:.1f} ms)")
 
-5. Interactive Web Console & Recipe Wizard
-------------------------------------------
+5. Local Sphinx Documentation Server
+------------------------------------
 
-``uniconn`` includes a built-in web dashboard with an interactive **Quickstart & Recipe Wizard**, **Visual URI Builder**, **Fleet Simulator**, and **AST Policy Inspector**:
+When developing from source, you can build and browse the complete Sphinx documentation locally:
 
 .. code-block:: bash
 
    python main.py --serve
 
-Open ``http://localhost:3000`` in your browser to:
-
-1. Pick your target transport and engineering task in the **Quickstart & Recipes** tab.
-2. Generate ready-to-copy **Async Python**, **Sync Python**, and **CLI** code.
-3. Click **Run Recipe in Live Sandbox** to execute the workflow in-process and inspect real ``Result``, ``EnsureResult``, ``FlowReport``, and ``PolicyDecision`` objects.
+Open ``http://localhost:3000`` in your browser to explore the bilingual (English & Russian) guides, runnable example scripts in ``examples/``, and API reference. Pass ``--rebuild`` to force a fresh Sphinx HTML build.

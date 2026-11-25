@@ -12,7 +12,6 @@ Below are self-contained runnable example scripts located in the ``examples/`` d
    examples/provisioning
    examples/resilience
    examples/cassettes
-   examples/containers
    examples/health_check
    examples/bmc
    examples/custom_transport

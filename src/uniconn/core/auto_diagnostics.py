@@ -14,7 +14,6 @@ from ._diag_classifier import (
     _sanitize_lines,
 )
 from ._diag_strategies import (
-    ContainerDiagnosticStrategy,
     DiagnosticStrategy,
     LinuxDiagnosticStrategy,
     PassiveDiagnosticStrategy,
@@ -28,7 +27,6 @@ if TYPE_CHECKING:
 _PASSIVE_TRANSPORTS = frozenset(
     {"ipmi", "redfish", "netconf", "restconf", "gnmi", "replay", "serial", "uart"}
 )
-_CONTAINER_TRANSPORTS = frozenset({"docker", "podman", "kubectl"})
 _WINDOWS_TRANSPORTS = frozenset({"winrm", "wsman"})
 
 
@@ -42,8 +40,6 @@ def resolve_diagnostic_strategy(conn: Connection) -> DiagnosticStrategy:
         or hasattr(conn.transport, "cassette")
     ):
         return PassiveDiagnosticStrategy()
-    if t_name in _CONTAINER_TRANSPORTS or cfg_name in _CONTAINER_TRANSPORTS:
-        return ContainerDiagnosticStrategy()
     if t_name in _WINDOWS_TRANSPORTS or cfg_name in _WINDOWS_TRANSPORTS:
         return WindowsDiagnosticStrategy()
     cached_facts = getattr(conn, "_cached_facts", None)
@@ -56,7 +52,6 @@ def resolve_diagnostic_strategy(conn: Connection) -> DiagnosticStrategy:
 
 __all__ = [
     "ClassificationMatch",
-    "ContainerDiagnosticStrategy",
     "DiagnosticStrategy",
     "ErrorClassifier",
     "LinuxDiagnosticStrategy",

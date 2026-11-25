@@ -13,7 +13,7 @@ This document outlines our development workflows, coding standards, architectura
 ### 1. Clone the repository and install dependencies
 
 ```bash
-git clone https://github.com/ChekirDmitry/uniconn.git
+git clone https://github.com/Anamemnon/uniconn.git
 cd uniconn
 
 # Install all runtime, transport, CLI, and development dependencies
@@ -66,7 +66,7 @@ tests/unit/
 ├── architecture/    # API surface, async/sync parity, exception hierarchy
 ├── core/            # Connection, pipeline, context, waiters, resilience, hooks
 ├── services/        # files, state, facts, templates, remote_path
-├── transports/      # ssh, telnet, serial, bmc (ipmi/redfish), replay, container
+├── transports/      # ssh, telnet, serial, bmc (ipmi/redfish), replay, virtualization, network
 ├── pools/           # ConnectionPool, SSHSessionPool, batch rollout, stream mux
 ├── background/      # BackgroundPool, DiagnosticSession, LogPipeline
 ├── orchestration/   # Flow, Task, task decorator, DAG barriers
@@ -125,6 +125,6 @@ Every bugfix or new feature **must** include dedicated unit tests in the appropr
 
 ## 💬 Community & Questions
 
-- For general discussions, architecture questions, or proposals: open a [GitHub Discussion](https://github.com/ChekirDmitry/uniconn/discussions).
-- For bug reports and reproducible defects: file a [GitHub Issue](https://github.com/ChekirDmitry/uniconn/issues).
+- For general discussions, architecture questions, or proposals: open a [GitHub Discussion](https://github.com/Anamemnon/uniconn/discussions).
+- For bug reports and reproducible defects: file a [GitHub Issue](https://github.com/Anamemnon/uniconn/issues).
 - For security vulnerabilities: please consult [SECURITY.md](SECURITY.md) for private disclosure instructions.

@@ -1,5 +1,5 @@
 # src/uniconn/core/_diag_strategies.py
-"""Платформенные стратегии автоматической диагностики сбоев (Passive, Linux, Container, Windows)."""
+"""Платформенные стратегии автоматической диагностики сбоев (Passive, Linux, Windows)."""
 
 from __future__ import annotations
 
@@ -329,29 +329,6 @@ class LinuxDiagnosticStrategy:
         )
 
 
-class ContainerDiagnosticStrategy(LinuxDiagnosticStrategy):
-    """Стратегия зондирования для контейнеров (Docker / Podman / Kubernetes) с анализом cgroup v1/v2."""
-
-    _CONTAINER_VITALS_CMD = (
-        LinuxDiagnosticStrategy._VITALS_CMD
-        + "; echo '---CGROUP---'; "
-        "cat /sys/fs/cgroup/memory.events /sys/fs/cgroup/memory/memory.oom_control 2>/dev/null"
-    )
-
-    async def _collect_vitals(self, probe: ProbeRunner) -> SystemVitals:
-        res = await probe(self._CONTAINER_VITALS_CMD)
-        parts = res.stdout.split("---CGROUP---")
-        base_out = parts[0] if parts else ""
-        cgroup_out = parts[1] if len(parts) > 1 else ""
-        oom_kills: int | None = None
-        for line in cgroup_out.splitlines():
-            tokens = line.strip().split()
-            if len(tokens) == 2 and tokens[0] == "oom_kill" and tokens[1].isdigit():
-                oom_kills = int(tokens[1])
-                break
-        return self.parse_vitals(base_out, oom_kill_count=oom_kills)
-
-
 def _extract_json_dict(stdout: str) -> dict[str, object] | None:
     """Извлечь JSON-объект из вывода PowerShell, игнорируя служебные баннеры и прогресс-строки."""
     text = (stdout or "").strip()
@@ -480,7 +457,6 @@ class WindowsDiagnosticStrategy:
 
 
 __all__ = [
-    "ContainerDiagnosticStrategy",
     "DiagnosticStrategy",
     "LinuxDiagnosticStrategy",
     "PassiveDiagnosticStrategy",

@@ -26,7 +26,7 @@ We provide security updates and patches for the following versions:
 If you believe you have found a security vulnerability in `uniconn`:
 
 1. **Email us privately**: Send an encrypted or plain-text report directly to **`ChekirDmitry@gmail.com`**.
-   - Alternatively, submit a private advisory via [GitHub Security Advisories](https://github.com/ChekirDmitry/uniconn/security/advisories/new).
+   - Alternatively, submit a private advisory via [GitHub Security Advisories](https://github.com/Anamemnon/uniconn/security/advisories/new).
 2. **Include details**:
    - Description of the potential vulnerability and its impact.
    - Minimal reproduction script or test case.

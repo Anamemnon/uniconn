@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import SecretStr
 
-from examples.dashboard.server import _execute_pool_sandbox, _execute_v070_sandbox
 from uniconn import (
     Connection,
     ConnectionConfig,
@@ -480,26 +479,3 @@ class TestCLIAndDashboardV070:
         with pytest.raises(SystemExit) as exc_exp:
             cli.main()
         assert exc_exp.value.code == 0
-
-    def test_dashboard_v070_and_pool_sandboxes(self) -> None:
-        """Веб-панель поддерживает /api/v070 (expect, sync_dir, write_template) и групповые операции."""
-        exp_res = _execute_v070_sandbox({"feature": "expect"})
-        assert exp_res["status"] == "ok"
-        assert "FLASH_COMPLETE" in exp_res["result"]["stdout"]
-
-        sync_res = _execute_v070_sandbox({"feature": "sync_dir"})
-        assert sync_res["status"] == "ok"
-        assert len(sync_res["pass1"]["uploaded"]) == 2
-        assert len(sync_res["pass2"]["skipped"]) == 2
-
-        tpl_res = _execute_v070_sandbox({"feature": "write_template"})
-        assert tpl_res["status"] == "ok"
-        assert "listen 8080;" in tpl_res["rendered"]
-
-        pool_sync = _execute_pool_sandbox({"group": "web", "operation": "sync_dir"})
-        assert pool_sync["status"] == "ok"
-        assert pool_sync["ok_hosts"] == 2
-
-        pool_tpl = _execute_pool_sandbox({"group": "web", "operation": "write_template"})
-        assert pool_tpl["status"] == "ok"
-        assert pool_tpl["ok_hosts"] == 2

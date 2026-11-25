@@ -6,10 +6,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import hmac
-import http.client
 import json
-import threading
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -77,71 +74,6 @@ class TestSec02AstParserHardening:
         assert classifier.classify_command("echo $((1 + 2))").risk_tier == ActionRiskTier.TIER_0_SAFE
         assert classifier.classify_command("command -v docker").risk_tier == ActionRiskTier.TIER_0_SAFE
         assert classifier.classify_command("ls -la /tmp").risk_tier == ActionRiskTier.TIER_0_SAFE
-
-
-class TestSec03DashboardSecurity:
-    """SEC-03: Проверка защиты дашборда от path traversal и DNS rebinding."""
-
-    def test_dashboard_rejects_untrusted_host_and_docs_traversal(self) -> None:
-        from examples.dashboard.server import create_dashboard_handler
-
-        handler_cls = create_dashboard_handler(bind_host="127.0.0.1")
-        server = ThreadingHTTPServer(("127.0.0.1", 0), handler_cls)
-        port = server.server_address[1]
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        try:
-            # 1. DNS Rebinding: Host: evil.com на GET / -> 403 Forbidden (CSRF-токен не утекает)
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-            conn.request("GET", "/", headers={"Host": "evil.com"})
-            resp = conn.getresponse()
-            body = resp.read().decode("utf-8", errors="replace")
-            conn.close()
-            assert resp.status == 403
-            assert "csrf" not in body.lower()
-
-            # 2. Path traversal за пределы docs/: /docs/../pyproject.toml -> 404
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-            conn.request("GET", "/docs/../pyproject.toml", headers={"Host": f"127.0.0.1:{port}"})
-            resp = conn.getresponse()
-            resp.read()
-            conn.close()
-            assert resp.status == 404
-
-            # 3. Dotfile блокировка: /docs/../.env -> 404
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-            conn.request("GET", "/docs/../.env", headers={"Host": f"127.0.0.1:{port}"})
-            resp = conn.getresponse()
-            resp.read()
-            conn.close()
-            assert resp.status == 404
-
-            # 4. URL-кодированный path traversal: /docs/%2e%2e/pyproject.toml -> 404
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-            conn.request("GET", "/docs/%2e%2e/pyproject.toml", headers={"Host": f"127.0.0.1:{port}"})
-            resp = conn.getresponse()
-            resp.read()
-            conn.close()
-            assert resp.status == 404
-
-            # 5. DNS Rebinding на OPTIONS: Host: evil.com -> 403 Forbidden
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-            conn.request("OPTIONS", "/api/status", headers={"Host": "evil.com"})
-            resp = conn.getresponse()
-            resp.read()
-            conn.close()
-            assert resp.status == 403
-
-            # 6. Доверенный Host: 127.0.0.1:<port> на /api/status -> 200 OK
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-            conn.request("GET", "/api/status", headers={"Host": f"127.0.0.1:{port}"})
-            resp = conn.getresponse()
-            resp.read()
-            conn.close()
-            assert resp.status == 200
-        finally:
-            server.shutdown()
-            server.server_close()
 
 
 class TestSec04SsrfAndWebhookHardening:

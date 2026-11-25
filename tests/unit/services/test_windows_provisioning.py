@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from examples.dashboard.sandboxes.features import _execute_v080_sandbox
 from uniconn import (
     ChocoStrategy,
     Connection,
@@ -544,14 +543,6 @@ class TestWindowsProvisioningSyncPoolAndPerformance:
             )
         avg_ms = ((time.perf_counter() - t0) / iterations) * 1000.0
         assert avg_ms < 2.0, f"Expected Windows provisioning overhead < 2.0 ms, got {avg_ms:.3f} ms"
-
-    def test_dashboard_windows_provisioning_sandbox(self) -> None:
-        resp = _execute_v080_sandbox({"feature": "windows_provisioning"})
-        assert resp["status"] == "ok"
-        assert resp["package"]["changed"] is True
-        assert resp["service"]["changed"] is True
-        assert resp["registry"]["changed"] is True
-        assert resp["windows_feature"]["reboot_required"] is True
 
     def test_delayed_autostart_reset_in_powershell_script(self) -> None:
         """Проверка сброса DelayedAutoStart=0 в PowerShell-скрипте при переходе из delayed."""

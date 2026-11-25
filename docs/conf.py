@@ -6,10 +6,13 @@ from pathlib import Path
 # Add src to path so autodoc can find the module
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from uniconn import __version__
+
 project = "uniconn"
 copyright = "2026, uniconn contributors"
 author = "uniconn contributors"
-release = "0.20.0"
+version = __version__
+release = __version__
 
 extensions = [
     "sphinx.ext.autodoc",
@@ -24,7 +27,8 @@ templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "sphinx_rtd_theme"
-html_static_path = ["_static"]
+html_static_path: list[str] = []
+autosectionlabel_prefix_document = True
 
 # Autodoc settings
 autodoc_default_options = {

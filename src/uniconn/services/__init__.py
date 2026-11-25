@@ -1,59 +1,122 @@
 # src/uniconn/services/__init__.py
 """Доменные сервисы библиотеки uniconn (files, state, tunnels, facts, templates)."""
 
-from .facts import (
-    DEFAULT_DIFF_FIELDS,
-    FACT_COLLECTION_SCRIPT,
-    CustomCommandSpec,
-    DiskInfo,
-    ExternalToolRunner,
-    ExternalToolSpec,
-    FactCollector,
-    FactsDiffReport,
-    FactSpec,
-    FileSourceSpec,
-    HostFacts,
-    NetworkInterface,
-    diff_facts,
-    parse_facts_output,
-)
-from .files import DirectorySynchronizer, FileOperationsService
-from .network import NetworkOperationsService
-from .provisioning import (
-    PACKAGE_STRATEGIES,
-    SERVICE_STRATEGIES,
-    ApkStrategy,
-    AptStrategy,
-    ChocoStrategy,
-    DnfYumStrategy,
-    FleetChangePlan,
-    NotificationBatch,
-    NotifySpec,
-    OpenRCStrategy,
-    PackageManagerStrategy,
-    PacmanStrategy,
-    PlanApplier,
-    PlannedChange,
-    PlanRecorder,
-    RegistryValueType,
-    ScoopStrategy,
-    ServiceManagerStrategy,
-    StateManagementService,
-    SystemdStrategy,
-    SysVStrategy,
-    UniversalServiceStrategy,
-    WindowsServiceState,
-    WindowsStartupType,
-    WingetStrategy,
-    ZypperStrategy,
-    ensure_registry_key,
-    ensure_windows_feature,
-    ensure_windows_service,
-    ensure_yang,
-)
-from .remote_path import RemotePath, RemoteStatResult, SyncRemotePath
-from .templates import TemplateEngine, render_template
-from .tunnels import TunnelService
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from .._utils import make_lazy_package_loader
+
+if TYPE_CHECKING:
+    from .facts import (
+        DEFAULT_DIFF_FIELDS,
+        FACT_COLLECTION_SCRIPT,
+        CustomCommandSpec,
+        DiskInfo,
+        ExternalToolRunner,
+        ExternalToolSpec,
+        FactCollector,
+        FactsDiffReport,
+        FactSpec,
+        FileSourceSpec,
+        HostFacts,
+        NetworkInterface,
+        diff_facts,
+        parse_facts_output,
+    )
+    from .files import DirectorySynchronizer, FileOperationsService
+    from .network import NetworkOperationsService
+    from .provisioning import (
+        PACKAGE_STRATEGIES,
+        SERVICE_STRATEGIES,
+        ApkStrategy,
+        AptStrategy,
+        ChocoStrategy,
+        DnfYumStrategy,
+        FleetChangePlan,
+        NotificationBatch,
+        NotifySpec,
+        OpenRCStrategy,
+        PackageManagerStrategy,
+        PacmanStrategy,
+        PlanApplier,
+        PlannedChange,
+        PlanRecorder,
+        RegistryValueType,
+        ScoopStrategy,
+        ServiceManagerStrategy,
+        StateManagementService,
+        SystemdStrategy,
+        SysVStrategy,
+        UniversalServiceStrategy,
+        WindowsServiceState,
+        WindowsStartupType,
+        WingetStrategy,
+        ZypperStrategy,
+        ensure_registry_key,
+        ensure_windows_feature,
+        ensure_windows_service,
+        ensure_yang,
+    )
+    from .remote_path import RemotePath, RemoteStatResult, SyncRemotePath
+    from .templates import TemplateEngine, render_template
+    from .tunnels import TunnelService
+
+_LAZY_MODULE_GROUPS: dict[str, tuple[str, ...]] = {
+    ".facts": (
+        "DEFAULT_DIFF_FIELDS",
+        "FACT_COLLECTION_SCRIPT",
+        "CustomCommandSpec",
+        "DiskInfo",
+        "ExternalToolRunner",
+        "ExternalToolSpec",
+        "FactCollector",
+        "FactsDiffReport",
+        "FactSpec",
+        "FileSourceSpec",
+        "HostFacts",
+        "NetworkInterface",
+        "diff_facts",
+        "parse_facts_output",
+    ),
+    ".files": ("DirectorySynchronizer", "FileOperationsService"),
+    ".network": ("NetworkOperationsService",),
+    ".provisioning": (
+        "PACKAGE_STRATEGIES",
+        "SERVICE_STRATEGIES",
+        "ApkStrategy",
+        "AptStrategy",
+        "ChocoStrategy",
+        "DnfYumStrategy",
+        "FleetChangePlan",
+        "NotificationBatch",
+        "NotifySpec",
+        "OpenRCStrategy",
+        "PackageManagerStrategy",
+        "PacmanStrategy",
+        "PlanApplier",
+        "PlannedChange",
+        "PlanRecorder",
+        "RegistryValueType",
+        "ScoopStrategy",
+        "ServiceManagerStrategy",
+        "StateManagementService",
+        "SystemdStrategy",
+        "SysVStrategy",
+        "UniversalServiceStrategy",
+        "WindowsServiceState",
+        "WindowsStartupType",
+        "WingetStrategy",
+        "ZypperStrategy",
+        "ensure_registry_key",
+        "ensure_windows_feature",
+        "ensure_windows_service",
+        "ensure_yang",
+    ),
+    ".remote_path": ("RemotePath", "RemoteStatResult", "SyncRemotePath"),
+    ".templates": ("TemplateEngine", "render_template"),
+    ".tunnels": ("TunnelService",),
+}
 
 __all__ = [
     "DEFAULT_DIFF_FIELDS",
@@ -110,3 +173,7 @@ __all__ = [
     "parse_facts_output",
     "render_template",
 ]
+
+_LAZY_EXPORTS, __getattr__, __dir__ = make_lazy_package_loader(
+    __name__, globals(), _LAZY_MODULE_GROUPS, all_names=__all__
+)

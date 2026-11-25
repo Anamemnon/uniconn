@@ -10,7 +10,6 @@ from uniconn import (
     AutoDiagnosticMiddleware,
     Connection,
     ConnectionConfig,
-    ContainerDiagnosticStrategy,
     DiagnosticSummary,
     ErrorCategory,
     ErrorClassifier,
@@ -293,36 +292,6 @@ async def test_linux_strategy_two_phase_cascade_service_crash_to_port_conflict()
     assert summary.vitals.memory_available_mb == 2000
     assert summary.vitals.cpu_load_1m == 0.45
     assert len(calls) == 3
-
-
-@pytest.mark.asyncio
-async def test_container_strategy_detects_cgroup_v2_oom_kill() -> None:
-    probe_stdout = (
-        "0.80 0.50 0.20 1/50 99\n"
-        "---MEM---\n"
-        "MemTotal: 1024000 kB\n"
-        "MemAvailable: 64000 kB\n"
-        "---DF---\n"
-        "Filesystem 1048576-blocks Used Available Capacity Mounted on\n"
-        "overlay 10000 2000 8000 20% /\n"
-        "---INODE---\n"
-        "Filesystem Inodes IUsed IFree IUse% Mounted on\n"
-        "overlay 10000 100 9900 1% /\n"
-        "---CGROUP---\n"
-        "low 0\nhigh 2\nmax 5\noom 1\noom_kill 3\n"
-    )
-
-    async def fake_probe(cmd: str) -> Result:
-        if "---CGROUP---" in cmd:
-            return Result(exit_code=0, stdout=probe_stdout, stderr="", duration=0.01, command=cmd)
-        return Result(exit_code=0, stdout="", stderr="", duration=0.01, command=cmd)
-
-    strategy = ContainerDiagnosticStrategy()
-    summary = await strategy.collect("python3 worker.py", "", "Killed", 137, fake_probe)
-
-    assert summary.category == ErrorCategory.OUT_OF_MEMORY
-    assert summary.vitals.oom_kill_count == 3
-    assert "OOM" in summary.root_cause_hint
 
 
 @pytest.mark.asyncio
