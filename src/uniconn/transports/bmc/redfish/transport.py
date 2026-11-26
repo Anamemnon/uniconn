@@ -9,7 +9,9 @@ import json
 import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
+from ...._logging import get_logger
 from ....core._shell_quoting import parse_bool, parse_verify_ssl
 from ....exceptions import (
     AuthenticationError,
@@ -19,7 +21,13 @@ from ....exceptions import (
     TimeoutError,
 )
 from ....result import Result
-from ...base import BaseTransport
+from ..._http_base import (
+    SSE_MIME,
+    close_response_quietly,
+    extract_response_headers,
+    iter_sse_response,
+)
+from ...base import BaseTransport, _maybe_aclosing
 from .client import (
     RedfishHttpClient,
     builtins_timeout_errors,
@@ -51,6 +59,16 @@ from .tasks import (
 
 if TYPE_CHECKING:
     from ....config.models import ConnectionConfig
+
+_logger = get_logger("uniconn.transports.bmc.redfish")
+
+
+class _RedfishSseUnsupportedError(Exception):
+    """Внутренняя ошибка отсутствия поддержки EventService SSE для переключения на polling."""
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class RedfishTransport(BaseTransport):
@@ -565,6 +583,23 @@ class RedfishTransport(BaseTransport):
                 cmd_stripped, timeout=timeout
             )
 
+        # 10b. EventService metadata & capabilities (events / sse)
+        elif cmd_lower in ("events", "sse", "events status", "sse status"):
+            status_code, es_data = await self._request_json(
+                "GET", "/redfish/v1/EventService", timeout=timeout
+            )
+            output_payload = {
+                "service_uri": "/redfish/v1/EventService",
+                "ServiceEnabled": es_data.get("ServiceEnabled"),
+                "ServerSentEventUri": es_data.get("ServerSentEventUri"),
+                "SSEFilterPropertiesSupported": es_data.get(
+                    "SSEFilterPropertiesSupported"
+                ),
+                "DeliveryRetryAttempts": es_data.get("DeliveryRetryAttempts"),
+                "Status": es_data.get("Status", {}),
+                "raw": es_data,
+            }
+
         # 11. Raw REST call: GET/POST/PATCH/PUT/DELETE /redfish/v1/...
         elif self._is_raw_rest_command(cmd_stripped):
             status_code, output_payload = await self._handle_raw_rest(
@@ -906,16 +941,227 @@ class RedfishTransport(BaseTransport):
 
         return await self._request_json(method, path, payload=payload, timeout=timeout)
 
+    @staticmethod
+    def _format_sse_event_lines(sse_ev: dict[str, str]) -> list[str]:
+        """Преобразовать распарсенное SSE-событие Redfish в JSON-строки (разворачивая ``Events``)."""
+        raw_data = sse_ev.get("data", "")
+        event_name = sse_ev.get("event") or "message"
+        sse_id = sse_ev.get("id") or None
+        parsed: Any = None
+        with contextlib.suppress(json.JSONDecodeError, ValueError, TypeError):
+            if raw_data.strip():
+                parsed = json.loads(raw_data)
+
+        if isinstance(parsed, dict) and isinstance(parsed.get("Events"), list):
+            lines: list[str] = []
+            for item in parsed["Events"]:
+                if isinstance(item, dict):
+                    payload = {
+                        "transport_mode": "sse",
+                        "event_name": event_name,
+                        "event_id": item.get("EventId") or sse_id,
+                        "event_type": item.get("EventType") or parsed.get("@odata.type"),
+                        "message_id": item.get("MessageId"),
+                        "message": item.get("Message"),
+                        "severity": item.get("Severity"),
+                        "timestamp": item.get("EventTimestamp")
+                        or parsed.get("EventTimestamp"),
+                        "origin": item.get("OriginOfCondition"),
+                        "raw": item,
+                    }
+                    lines.append(json.dumps(payload, ensure_ascii=False))
+            return lines
+
+        if isinstance(parsed, dict):
+            payload = dict(parsed)
+            payload["transport_mode"] = "sse"
+            payload.setdefault("event_name", event_name)
+            payload.setdefault(
+                "event_id", sse_id or parsed.get("EventId") or parsed.get("Id")
+            )
+            if "Message" in parsed and "message" not in payload:
+                payload["message"] = parsed["Message"]
+            if "Severity" in parsed and "severity" not in payload:
+                payload["severity"] = parsed["Severity"]
+            if "EventTimestamp" in parsed and "timestamp" not in payload:
+                payload["timestamp"] = parsed["EventTimestamp"]
+            return [json.dumps(payload, ensure_ascii=False)]
+
+        return [
+            json.dumps(
+                {
+                    "transport_mode": "sse",
+                    "event_name": event_name,
+                    "event_id": sse_id,
+                    "message": raw_data,
+                },
+                ensure_ascii=False,
+            )
+        ]
+
+    async def _stream_redfish_events(
+        self,
+        command: str,
+        timeout: float | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        """Потоковая подписка на DMTF Redfish EventService SSE с откатом на polling LogServices."""
+        tokens = command.strip().split()[1:]
+        strict = parse_bool(kwargs.get("strict"), default=False)
+        once = parse_bool(kwargs.get("once"), default=False)
+        raw_max = kwargs.get("max_events")
+        max_events = int(raw_max) if raw_max is not None else None
+        poll_interval = max(0.01, float(kwargs.get("poll_interval", 0.5)))
+        filter_expr = kwargs.get("filter")
+
+        if max_events is not None and max_events <= 0:
+            return
+
+        for tok in tokens:
+            tok_low = tok.lower()
+            if tok_low == "strict":
+                strict = True
+            elif tok_low == "once":
+                once = True
+            elif tok_low.startswith("filter=") and filter_expr is None:
+                filter_expr = tok.split("=", 1)[1]
+
+        if not self._connected or self._session is None:
+            await self.connect()
+        if self._session is None:
+            raise ConnectionError(
+                "Redfish HTTP session is not initialized", host=self.config.host
+            )
+
+        emitted = 0
+        fallback_reason: str | None = None
+
+        try:
+            sse_uri = await self._discovery.discover_event_stream_path(timeout=timeout)
+            if not sse_uri:
+                raise _RedfishSseUnsupportedError(
+                    "ServerSentEventUri not advertised by /redfish/v1/EventService"
+                )
+
+            target_uri = sse_uri
+            if filter_expr:
+                sep = "&" if "?" in target_uri else "?"
+                target_uri = f"{target_uri}{sep}$filter={quote(str(filter_expr), safe='')}"
+
+            resp = await self._http.open_stream(
+                self._session, target_uri, timeout=timeout
+            )
+            try:
+                status = int(getattr(resp, "status_code", 0) or 0)
+                resp_hdrs = {
+                    k.lower(): v for k, v in extract_response_headers(resp).items()
+                }
+                ctype = resp_hdrs.get("content-type", "").lower()
+
+                if status in (404, 405, 406, 501) or status >= 400 or status == 0:
+                    raise _RedfishSseUnsupportedError(f"HTTP {status}", status=status)
+                if SSE_MIME not in ctype:
+                    raise _RedfishSseUnsupportedError(
+                        f"Unexpected Content-Type {ctype!r}"
+                    )
+            except BaseException:
+                await close_response_quietly(resp)
+                raise
+
+            sse_stream = iter_sse_response(
+                resp,
+                timeout=timeout,
+                timeout_errors=builtins_timeout_errors(),
+                error_prefix="Redfish EventService SSE",
+            )
+            async with _maybe_aclosing(sse_stream):
+                async for sse_ev in sse_stream:
+                    for line in self._format_sse_event_lines(sse_ev):
+                        yield line
+                        emitted += 1
+                        if max_events is not None and emitted >= max_events:
+                            return
+            return
+        except _RedfishSseUnsupportedError as exc:
+            fallback_reason = str(exc)
+
+        if strict:
+            raise BMCCapabilityError(
+                f"Redfish EventService SSE is not supported on {self._base_url}: "
+                f"{fallback_reason}",
+                host=self.config.host,
+            )
+
+        _logger.warning(
+            "Redfish EventService SSE unavailable (%s); falling back to LogServices polling",
+            fallback_reason,
+        )
+
+        log_path = await self._discovery.discover_log_service_path(timeout=timeout)
+        seen_keys: set[tuple[str, str, str]] = set()
+        deadline = (time.monotonic() + timeout) if timeout is not None else None
+
+        while True:
+            _, entries_data = await self._request_json(
+                "GET", f"{log_path}/Entries", timeout=timeout
+            )
+            raw_members = entries_data.get("Members") or []
+            if isinstance(raw_members, list):
+                for item in raw_members:
+                    if not isinstance(item, dict):
+                        continue
+                    entry_id = str(item.get("Id") or "")
+                    created = str(
+                        item.get("Created") or item.get("EventTimestamp") or ""
+                    )
+                    message = str(item.get("Message") or item.get("Name") or "")
+                    key = (entry_id, created, message)
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    payload = {
+                        "transport_mode": "polling",
+                        "log_service_uri": log_path,
+                        "id": item.get("Id"),
+                        "created": created,
+                        "severity": item.get("Severity") or "OK",
+                        "message": message,
+                        "sensor_type": item.get("SensorType"),
+                        "raw": item,
+                    }
+                    yield json.dumps(payload, ensure_ascii=False)
+                    emitted += 1
+                    if max_events is not None and emitted >= max_events:
+                        return
+
+            if once:
+                return
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return
+                await asyncio.sleep(min(poll_interval, remaining))
+            else:
+                await asyncio.sleep(poll_interval)
+
     async def stream(
         self,
         command: str | None = None,
         timeout: float | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[str]:
-        """Потоковое чтение вывода команды (для ``sel`` / ``logs`` отдаёт события построчно)."""
+        """Потоковое чтение вывода (SSE для ``events``/``sse`` и построчный вывод для ``sel``/``logs``)."""
         eff_cmd = command if command is not None else "sel"
-        result = await self.run(eff_cmd, timeout=timeout, **kwargs)
         cmd_lower = " ".join(eff_cmd.strip().lower().split())
+
+        if cmd_lower in ("events", "sse") or cmd_lower.startswith(("events ", "sse ")):
+            async for line in self._stream_redfish_events(
+                eff_cmd, timeout=timeout, **kwargs
+            ):
+                yield line
+            return
+
+        result = await self.run(eff_cmd, timeout=timeout, **kwargs)
         if cmd_lower in ("sel", "logs") or cmd_lower.startswith(("sel ", "logs ")):
             with contextlib.suppress(Exception):
                 payload = json.loads(result.stdout)

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import asyncio
-import codecs
 import json
 import re
 import time
@@ -22,8 +21,16 @@ from ...exceptions import (
 from ...exceptions import ConnectionError as UniconnConnectionError
 from ...exceptions import TimeoutError as UniconnTimeoutError
 from ...result import NetResult, Result, TelemetrySample
-from .._http_base import BaseAsyncHttpClient, builtins_timeout_errors, resolve_niquests_module
-from ..base import BaseTransport
+from .._http_base import (
+    SSE_MIME,
+    BaseAsyncHttpClient,
+    SseEventParser,
+    builtins_timeout_errors,
+    close_response_quietly,
+    iter_sse_response,
+    resolve_niquests_module,
+)
+from ..base import BaseTransport, _maybe_aclosing
 from .base import (
     data_to_xml,
     extract_yang_interfaces_and_system,
@@ -37,7 +44,7 @@ YANG_JSON_MIME = "application/yang-data+json"
 YANG_XML_MIME = "application/yang-data+xml"
 YANG_PATCH_JSON_MIME = "application/yang-patch+json"
 YANG_PATCH_XML_MIME = "application/yang-patch+xml"
-SSE_MIME = "text/event-stream"
+_SseEventParser = SseEventParser
 
 _HOST_META_LINK_RE = re.compile(
     r"""<Link[^>]+rel=['"]restconf['"][^>]+href=['"]([^'"]+)['"]""",
@@ -52,86 +59,6 @@ class _SseUnsupportedError(Exception):
         super().__init__(reason)
         self.reason = reason
         self.status = status
-
-
-class _SseEventParser:
-    """Инкрементальный парсер событий Server-Sent Events (RFC 8040 / WHATWG)."""
-
-    def __init__(self) -> None:
-        self._line_buf = ""
-        self._ev_name = ""
-        self._ev_id = ""
-        self._data_lines: list[str] = []
-
-    def _emit_ready(self) -> dict[str, str] | None:
-        if not self._data_lines:
-            self._ev_name = ""
-            return None
-        ev = {
-            "event": self._ev_name or "message",
-            "data": "\n".join(self._data_lines),
-            "id": self._ev_id,
-        }
-        self._ev_name = ""
-        self._data_lines = []
-        return ev
-
-    def _process_line(self, raw_line: str) -> dict[str, str] | None:
-        line = raw_line.rstrip("\r\n")
-        if line == "":
-            return self._emit_ready()
-        if line.startswith(":"):
-            return None
-        if ":" in line:
-            field_name, value = line.split(":", 1)
-            if value.startswith(" "):
-                value = value[1:]
-        else:
-            field_name, value = line, ""
-
-        if field_name == "event":
-            self._ev_name = value
-        elif field_name == "data":
-            self._data_lines.append(value)
-        elif field_name == "id" and "\x00" not in value:
-            self._ev_id = value
-        return None
-
-    def feed(self, text_chunk: str) -> list[dict[str, str]]:
-        """Добавить очередной текстовый фрагмент и вернуть все завершённые SSE-события."""
-        if not text_chunk:
-            return []
-        combined = self._line_buf + text_chunk
-        # Придерживаем хвостовой '\r' до следующего куска, чтобы корректно склеить '\r\n' на стыке чанков
-        if combined.endswith("\r"):
-            prefix, trailing_cr = combined[:-1], "\r"
-        else:
-            prefix, trailing_cr = combined, ""
-        self._line_buf = prefix.replace("\r\n", "\n").replace("\r", "\n") + trailing_cr
-
-        events: list[dict[str, str]] = []
-        while "\n" in self._line_buf:
-            sep_idx = self._line_buf.index("\n")
-            one_line = self._line_buf[: sep_idx + 1]
-            self._line_buf = self._line_buf[sep_idx + 1 :]
-            ready = self._process_line(one_line)
-            if ready is not None:
-                events.append(ready)
-        return events
-
-    def finish(self) -> list[dict[str, str]]:
-        """Завершить разбор при закрытии потока и вернуть оставшиеся события."""
-        events: list[dict[str, str]] = []
-        if self._line_buf:
-            for one_line in self._line_buf.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-                ready = self._process_line(one_line)
-                if ready is not None:
-                    events.append(ready)
-            self._line_buf = ""
-        tail = self._emit_ready()
-        if tail is not None:
-            events.append(tail)
-        return events
 
 
 class RestconfClient(BaseAsyncHttpClient):
@@ -361,9 +288,9 @@ class RestconfClient(BaseAsyncHttpClient):
             req_headers.update(headers)
 
         full_url = self._resolve_url(url_path)
-        parser = _SseEventParser()
 
         if self._http_handler is not None:
+            parser = _SseEventParser()
             status_code, resp_hdrs, resp_body = await self._invoke_http_handler(
                 "GET",
                 url_path,
@@ -417,37 +344,17 @@ class RestconfClient(BaseAsyncHttpClient):
             content_type = str(getattr(resp, "headers", {}).get("content-type", "")).lower()
             if SSE_MIME not in content_type:
                 raise _SseUnsupportedError(f"Unexpected Content-Type {content_type!r}")
+        except BaseException:
+            await close_response_quietly(resp)
+            raise
 
-            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-            content_iter = resp.iter_content(chunk_size=1024)
-            if asyncio.iscoroutine(content_iter):
-                content_iter = await content_iter
-            async for chunk in content_iter:
-                if not chunk:
-                    continue
-                text_part = (
-                    decoder.decode(bytes(chunk), final=False)
-                    if isinstance(chunk, bytes | bytearray)
-                    else str(chunk)
-                )
-                for ready in parser.feed(text_part):
-                    yield ready
-
-            tail = decoder.decode(b"", final=True)
-            for ready in parser.feed(tail):
-                yield ready
-            for final_ev in parser.finish():
-                yield final_ev
-        except timeout_errors as exc:
-            raise UniconnTimeoutError(
-                f"RESTCONF SSE stream timed out after {eff_timeout}s"
-            ) from exc
-        finally:
-            close_fn = getattr(resp, "close", None)
-            if callable(close_fn):
-                res_close = close_fn()
-                if asyncio.iscoroutine(res_close):
-                    await res_close
+        async for ready in iter_sse_response(
+            resp,
+            timeout=eff_timeout,
+            timeout_errors=timeout_errors,
+            error_prefix="RESTCONF SSE",
+        ):
+            yield ready
 
 
 class RestconfTransport(BaseTransport):
@@ -1133,6 +1040,9 @@ class RestconfTransport(BaseTransport):
         forced_mode = str(self.config.options.get("subscribe_mode", "auto")).lower()
         fallback_reason: str | None = None
 
+        if not self._connected:
+            await self.connect()
+
         if forced_mode != "polling":
             default_stream_url = f"{self._client.root.rstrip('/')}/streams/NETCONF"
             stream_url = default_stream_url
@@ -1144,20 +1054,22 @@ class RestconfTransport(BaseTransport):
             yielded_sse = False
             try:
                 stream_url = await self._discover_sse_stream_url(timeout=timeout)
-                async for sse_ev in self._client.stream_sse(
+                sse_stream = self._client.stream_sse(
                     stream_url,
                     params=sse_params,
                     timeout=timeout,
-                ):
-                    yielded_sse = True
-                    sample = self._parse_sse_notification(
-                        sse_ev,
-                        default_path=target_paths[0] or "/",
-                        stream_url=stream_url,
-                    )
-                    yield sample
-                    if once:
-                        return
+                )
+                async with _maybe_aclosing(sse_stream):
+                    async for sse_ev in sse_stream:
+                        yielded_sse = True
+                        sample = self._parse_sse_notification(
+                            sse_ev,
+                            default_path=target_paths[0] or "/",
+                            stream_url=stream_url,
+                        )
+                        yield sample
+                        if once:
+                            return
                 if yielded_sse:
                     return
                 fallback_reason = "SSE stream ended without events"
@@ -1180,9 +1092,21 @@ class RestconfTransport(BaseTransport):
             "transport_mode": "polling",
             "fallback_reason": fallback_reason or "sse_unavailable",
         }
+        deadline = (
+            (time.monotonic() + timeout)
+            if (timeout is not None and timeout > 0)
+            else None
+        )
+        interval = max(0.01, sample_interval)
         while self._connected:
             for p in target_paths:
-                res = await self.net_get(p, timeout=timeout)
+                req_timeout = timeout
+                if deadline is not None:
+                    rem = deadline - time.monotonic()
+                    if rem <= 0:
+                        return
+                    req_timeout = rem if timeout is None else min(timeout, rem)
+                res = await self.net_get(p, timeout=req_timeout)
                 if res.ok:
                     vals = res.data if isinstance(res.data, dict) else {"value": res.data}
                     yield TelemetrySample(
@@ -1197,7 +1121,13 @@ class RestconfTransport(BaseTransport):
                     _logger.debug("RESTCONF polling GET %s failed: %s", p or "/", res.text)
             if once:
                 break
-            await asyncio.sleep(max(0.01, sample_interval))
+            if deadline is not None:
+                rem = deadline - time.monotonic()
+                if rem <= 0:
+                    break
+                await asyncio.sleep(min(interval, rem))
+            else:
+                await asyncio.sleep(interval)
 
     async def gather_network_native_facts(
         self,

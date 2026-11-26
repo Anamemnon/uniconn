@@ -1,6 +1,6 @@
 # Реализованные возможности и архитектура библиотеки uniconn
 
-> **Версия**: v0.23.0 | **1 460+ unit- и fuzz-тестов** | 13 транспортов (`ssh`, `winrm`/`wsman`, `netconf`, `restconf`, `gnmi`, `qga`/`qemu-ga`, `pve`, `telnet`, `serial`/`uart`, `ipmi`, `redfish`, `replay`, `local`) | Модульный CLI (`cyclopts` + `rich`) | Встроенный MCP-сервер (`uniconn mcp`) | PEP 561 (`py.typed`) + PEP 562 Lazy Exports
+> **Версия**: v0.24.0 | **1 475+ unit- и fuzz-тестов** | 13 транспортов (`ssh`, `winrm`/`wsman`, `netconf`, `restconf`, `gnmi`, `qga`/`qemu-ga`, `pve`, `telnet`, `serial`/`uart`, `ipmi`, `redfish`, `replay`, `local`) | Модульный CLI (`cyclopts` + `rich`) | Встроенный MCP-сервер (`uniconn mcp`) | PEP 561 (`py.typed`) + PEP 562 Lazy Exports
 >
 > **Для ИИ-агентов**: этот файл (`FEATURES.md`) является полным каталогом реализованных фич и архитектурных решений библиотеки `uniconn`. **Не загружайте его в контекст при каждом запросе** — используйте `llms.txt` для быстрого обзора сигнатур API, а к `FEATURES.md` обращайтесь только по требованию (on-demand), когда нужно сверить наличие конкретной функциональности или обновить список возможностей после релиза.
 >
@@ -10,11 +10,11 @@
 
 | Область | Статус | Детали |
 |---------|--------|--------|
-| Транспорты | ✅ 16+ | SSH (`~/.ssh/config`, `SSHJumpChainManager`, `ProxyCommand`), WinRM/WSMan (`winrm://`, `pywinrm`), NETCONF (`netconf://`), RESTCONF (`restconf://`), gNMI (`gnmi://`), QEMU Guest Agent (`qga://`), Proxmox VE (`pve://`), Docker (`docker://`), Podman (`podman://`), Kubernetes (`kubectl://`), Telnet, Serial/UART (X/Y/ZMODEM), Local, IPMI (`ipmi://`), Redfish BMC (`redfish://` на `niquests`), Replay (`replay://`) |
+| Транспорты | ✅ 16+ | SSH (`~/.ssh/config`, `SSHJumpChainManager`, `ProxyCommand`), WinRM/WSMan (`winrm://`, `pywinrm`), NETCONF (`netconf://`), RESTCONF (`restconf://`, SSE + capabilities), gNMI (`gnmi://` на HTTP/2 gRPC `jh2`/`h2`), QEMU Guest Agent (`qga://`), Proxmox VE (`pve://`, потоковая передача файлов с `truncated=1` fallback), Docker (`docker://`), Podman (`podman://`), Kubernetes (`kubectl://`), Telnet, Serial/UART (X/Y/ZMODEM), Local, IPMI (`ipmi://`, reuse RMCP+ сессии), Redfish BMC (`redfish://` на `niquests`, EventService SSE), Replay (`replay://`) |
 | Протоколы ISP | ✅ `transports.base` | `CommandTransport`, `FileCapableTransport`, `ShellCapableTransport`, `TunnelCapableTransport`, `StructuredNetworkTransport`, `require_capability()` |
 | Конвейер команд | ✅ `CommandPipeline` | Цепочка `CommandMiddleware`: `Context`, `HITLApproval`, `PolicyGuardrail`, `Sudo`, `Hook`, `DryRun`, `Observability`, `AutoDiagnostic`, `CircuitBreaker`, `RateLimit`, `Retry` (`conn.pipeline`) |
 | Отказоустойчивость и раскатка | ✅ `CircuitBreaker` + `RateLimiter` + Waves | Состояния `CLOSED` → `OPEN` → `HALF_OPEN` (`CircuitOpenError`), Token Bucket `RateLimiter`, волновая раскатка `batch_size` / `max_fail_ratio` (`BatchAbortedError`), bounded LRU `connection_window` в `run_barrier_fleet` |
-| Доменные сервисы | ✅ `conn.files` / `path` / `state` / `tunnels` / `net` | `FileOperationsService`, `RemotePath` (`pathlib.Path` API), `DirectorySynchronizer`, `StateManagementService`, `NetworkOperationsService`, `FactCollector`, `TunnelService`, `TemplateEngine` |
+| Доменные сервисы | ✅ `conn.files` / `path` / `state` / `tunnels` / `net` | `FileOperationsService`, `RemotePath` (`pathlib.Path` API), `DirectorySynchronizer`, `StateManagementService`, `NetworkOperationsService`, `FactCollector`, `TunnelService` (с проверкой `TunnelCapableTransport`), `TemplateEngine` |
 | Zero-Fork Python RPC (`v0.18.0`) | ✅ `RemotePythonWorker` | `conn.run_python()` / `pool.run_python()` — постоянный Python-воркер по `stdin`/`stdout` с временем вызова `< 2 мс` |
 | DAG-оркестрация задач (`v0.18.0`–`v0.21.0`) | ✅ `uniconn.orchestration` | Декларативные графы `@task(depends_on=..., post=..., when=...)`, `Flow` / `SyncFlow`, режимы `barrier` (с bounded LRU `connection_window` и сохранением `NotificationBatch`) и `independent`, экспорт `Flow` как MCP Tool |
 | Семантический парсинг (`v0.17.0`) | ✅ `uniconn.parsing` | `conn.run(..., parse="auto" | "df" | "jc:..." | "textfsm:..." | "ttp:...")`, `Result.parse()`, `Result.parsed`, валидация через Pydantic-модели |
@@ -27,7 +27,7 @@
 | Запись/реплей кассет и Mock-серверы | ✅ `Cassette` + `uniconn.mock` | `conn.use_cassette()`, `pool.use_cassette()`, `Cassette.diff()`, `uniconn.pytest_plugin`, сокетные серверы `MockSSHServer`, `MockNetconfServer`, `MockRestconfServer`, `MockGnmiServer`, `MockQgaServer`, `MockPveServer` |
 | API (Async + Sync) и Lazy Loading | ✅ Полный паритет + PEP 562 | `Connection` ↔ `SyncConnection`, `ConnectionPool` ↔ `SyncConnectionPool`, `Flow` ↔ `SyncFlow` на базе `EventLoopPortal` и ленивая загрузка `__getattr__` в `uniconn/__init__.py` |
 | Пул подключений (`v0.20.0`–`v0.21.0`) | ✅ `ConnectionPool` + `SSHSessionPool` | `from_file(..., dry_run, auto_diagnostics)`, `select()`, `use_cassette`, `map`, `map_safe`, `ping`, `wait_for_*`, `run_script`, `run_python`, `expect`, `run_flow(..., connection_window=...)`, `stream`, `.files`, `.state`, `.net`, `apply`; атомарная инициализация слотов в `SSHSessionPool` |
-| Тесты и качество кода | ✅ 1 320+ unit/fuzz + Real Protocol CI | `tests/unit/` + Hypothesis fuzzing (`poe test-fuzz`), реальный Docker Compose стек интеграционных тестов (OpenSSH `MaxSessions=2`, OPA, NETCONF, gNMI) в `.github/workflows/ci.yml`, `ruff` (120 символов, 0 ошибок), `pyright` (`standard`, 0 ошибок) |
+| Тесты и качество кода | ✅ 1 475+ unit/fuzz + Real Protocol CI | `tests/unit/` + Hypothesis fuzzing (`poe test-fuzz`), реальный Docker Compose стек интеграционных тестов (OpenSSH `MaxSessions=2`, OPA, NETCONF, gNMI) в `.github/workflows/ci.yml`, `ruff` (120 символов, 0 ошибок), `pyright` (`standard`, 0 ошибок) |
 
 ---
 
@@ -64,7 +64,9 @@
 - ✅ Serial/UART (`SerialTransport`, схемы `serial://` и `uart://`) — `pyserial-asyncio`, `baudrate` (включая `:baudrate`), `parity` (N/E/O/M/S, even/odd), `stopbits` (1/1.5/2), `xonxoff`, `rtscts`, аппаратные сигналы `DTR`/`RTS`/`send_break()`, опрос `CTS`/`DSR`/`CD`/`RI`, Smart Framing с `inter_byte_timeout`, безопасный `ping()`, Port Discovery (`list_serial_ports`, CLI `uniconn serial-ports`), бинарный ввод-вывод `run_bytes()`, пассивный режим `stream(command=None)`, передача файлов и прошивок по протоколам **XMODEM** (`checksum`, `crc`, `1k`), **YMODEM** (`Packet 0` с именем и точным размером, `Batch`-режим) и **ZMODEM** (`lrzsz` адаптер) с поддержкой `trigger_command` (`upload_xmodem`, `upload_ymodem`, `download_xmodem`, `download_ymodem`)
 - ✅ Telnet (`TelnetTransport`) — `telnetlib3`, аутентификация login/password, настройка `term_type`
 - ✅ Local (`LocalTransport`) — `asyncio.subprocess`, слияние `env`, поддержка `cwd`, PTY-сессии
-- ✅ IPMI (`IPMITransport`) — `pyghmi`, управление питанием (`power status/on/off/cycle`), `sensors`, `boot device`
+- ✅ IPMI (`IPMITransport`, `v0.24.0`) — `pyghmi`, управление питанием (`power status/on/off/cycle`), `sensors` с SDR-порогами, `sel list|clear`, `boot device`, `raw`, переиспользование RMCP+ сессии (`reuse_session=True`, сериализация через `asyncio.Lock`, авто-повтор при протухании, `logout()` при `disconnect()`)
+- ✅ Redfish BMC (`RedfishTransport`, `v0.24.0`) — `niquests` HTTP/2, токен- и Basic-аутентификация, `power`/`sensors`/`sel`/`boot`/`virtual_media`, `run("events")` и потоковая подписка `stream("events"|"sse")` на DMTF EventService SSE с откатом на инкрементальный polling `LogServices` (`strict=True` → `BMCCapabilityError`)
+- ✅ Proxmox VE (`PveTransport`, `v0.24.0`) — REST API + гостевой агент QEMU, управление питанием и снапшотами, потоковая чанковая передача файлов (`iter_file_chunks`, `upload`/`download` с `progress_callback`, `chunk_size=49152`) и авто-fallback на chunked `guest-exec` при `truncated=1`
 - ✅ Плагинная система динамической загрузки транспортов через `entry-points` (`uniconn.transports`)
 
 ### 6. Аутентификация и повышение привилегий
@@ -154,6 +156,7 @@
 ### 18. Проброс портов (SSH Port Forwarding — `TunnelService`)
 - ✅ Локальный проброс порта `conn.forward_local_port(remote_host, remote_port, local_host="127.0.0.1", local_port=0)` (`ssh -L`) в async и sync режимах
 - ✅ Удалённый проброс порта `conn.forward_remote_port(remote_host, remote_port, local_host="127.0.0.1", local_port=8000)` (`ssh -R`) в async и sync режимах
+- ✅ ISP-валидация возможности транспорта через `require_capability(..., TunnelCapableTransport)` до установки соединения (`CapabilityNotSupportedError` на неподдерживаемых транспортах)
 
 ### 19. Пакетное выполнение и фоновые сессии (`BackgroundPool`)
 - ✅ `run_commands(commands, stop_on_error=True)` — последовательное пакетное выполнение списка команд (async и sync)
@@ -213,7 +216,7 @@
 | `PosixMarkerProtocol` и `ExpectStateMachine` (`shell/`) | Разделение маркерной синхронизации команд `__UNICONN_{uuid}__{exit_code}` и автомата интерактивных диалогов `expect()` |
 | Модульный CLI на `cyclopts` (`src/uniconn/cli/`) | Декларативный CLI на стандартных аннотациях `typing.Annotated` без избыточных зависимостей |
 | Структурированные логи (`structlog` + `contextvars`) | Единый пайплайн `ProcessorFormatter` для `structlog` и `stdlib logging`, JSONL/Console и авто-редакция секретов |
-| Модульная группировка `tests/unit/` | 1 320+ unit-, concurrency- и Hypothesis fuzz-тестов в доменных пакетах: `core/`, `services/`, `transports/`, `pools/`, `background/`, `mcp/`, `mock/`, `orchestration/`, `parsing/`, `security/`, `cli/`, `architecture/` + Docker Compose стек реальных протоколов (`tests/integration/`) |
+| Модульная группировка `tests/unit/` | 1 475+ unit-, concurrency- и Hypothesis fuzz-тестов в доменных пакетах: `core/`, `services/`, `transports/`, `pools/`, `background/`, `mcp/`, `mock/`, `orchestration/`, `parsing/`, `security/`, `cli/`, `architecture/` + Docker Compose стек реальных протоколов (`tests/integration/`) |
 | `CircuitBreaker` и `RateLimiter` (`core/resilience.py`) | Защита инфраструктуры на уровне `CommandPipeline` (`CircuitBreakerMiddleware`, `RateLimitMiddleware`) и пулов (`ConnectionPool`, `SSHSessionPool`) |
 | Декомпозиция крупных модулей (`v0.21.0`) | Топ-7 модулей > 1 000 LOC (`mcp/flows.py`, `mcp/_server_tools.py`, `transports/replay/proxy.py`, `transports/_serial.py`, `cli/cmd_ops.py`, `background/_log_pipeline.py`, `core/auto_diagnostics.py`) разделены на компактные подмодули `< 750 LOC` с полными реэкспортами |
 

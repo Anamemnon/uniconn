@@ -143,6 +143,7 @@ class RedfishDiscovery:
         self.system_path: str | None = None
         self.chassis_path: str | None = None
         self.manager_path: str | None = None
+        self.event_stream_path: str | None = None
         self.cached_resources: dict[str, dict[str, Any]] = {}
 
     def reset(self) -> None:
@@ -150,6 +151,7 @@ class RedfishDiscovery:
         self.system_path = None
         self.chassis_path = None
         self.manager_path = None
+        self.event_stream_path = None
         self.cached_resources.clear()
 
     async def discover_first_member(
@@ -280,6 +282,28 @@ class RedfishDiscovery:
                                 return cand_path
                     return normalize_redfish_path(str(best["@odata.id"])).rstrip("/")
         return f"{mgr_path}/VirtualMedia/CD1"
+
+    async def discover_event_stream_path(self, timeout: float | None = None) -> str | None:
+        """Обнаружить URI потока EventService SSE (``ServerSentEventUri``)."""
+        if self.event_stream_path:
+            return self.event_stream_path
+
+        explicit = self._options.get("sse_uri") or self._options.get("event_stream_uri")
+        if explicit:
+            self.event_stream_path = normalize_redfish_path(str(explicit))
+            return self.event_stream_path
+
+        st, es_data = await self._request_json(
+            "GET", "/redfish/v1/EventService", timeout=timeout
+        )
+        if 200 <= st < 300:
+            if es_data.get("ServiceEnabled") is False:
+                return None
+            sse_uri = es_data.get("ServerSentEventUri") or es_data.get("EventStreamUri")
+            if sse_uri:
+                self.event_stream_path = normalize_redfish_path(str(sse_uri))
+                return self.event_stream_path
+        return None
 
 
 __all__ = [

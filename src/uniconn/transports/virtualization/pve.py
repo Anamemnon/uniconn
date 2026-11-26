@@ -7,13 +7,17 @@ import base64
 import contextlib
 import shlex
 import time
+from collections.abc import AsyncIterator, Callable
+from pathlib import Path
 from typing import Any
 
 from ...config.models import ConnectionConfig
+from ...core._shell_quoting import ps_encoded_command, ps_quote
 from ...exceptions import ConfigurationError, ConnectionError, ExecutionError, FileTransferError
 from ...result import Result
+from ..base import _iter_local_file_chunks
 from .guest_base import GuestAgentTransportBase, parse_qga_network_interfaces
-from .pve_client import PveHttpClient, get_pve_niquests_module, niquests
+from .pve_client import PveFileTruncatedError, PveHttpClient, get_pve_niquests_module, niquests
 
 
 class PveTransport(GuestAgentTransportBase):
@@ -36,12 +40,12 @@ class PveTransport(GuestAgentTransportBase):
         super().__init__(config)
         if http_client is None and get_pve_niquests_module() is None:
             raise ImportError(
-                "niquests is required for PveTransport. Install with: pip install uniconn[bmc]"
+                "niquests is required for PveTransport. Install with: pip install uniconn[pve] or uniconn[bmc]"
             )
 
         opts = config.options
         vmid = opts.get("vmid")
-        if vmid is None:
+        if vmid is None or not str(vmid).strip():
             raise ConfigurationError(
                 "Proxmox VE URI must include VMID in path (pve://host:8006/105) or ?vmid=105"
             )
@@ -68,6 +72,10 @@ class PveTransport(GuestAgentTransportBase):
         verify_opt = opts.get("verify_ssl", opts.get("verify", True))
         self.verify_ssl: bool | str = parse_verify_ssl(verify_opt, default=True)
         self.poll_interval = float(opts.get("poll_interval", 0.2))
+        chunk_size = int(opts.get("chunk_size", 49152))
+        if chunk_size <= 0:
+            raise ConfigurationError(f"PVE chunk_size must be positive, got {chunk_size}")
+        self.chunk_size: int = chunk_size
         self._custom_http_client = http_client
         self.client: PveHttpClient | None = None
 
@@ -237,37 +245,149 @@ class PveTransport(GuestAgentTransportBase):
             host=self.config.host or "pve",
         )
 
-    async def _read_file_via_exec_fallback(self, remote_path: str) -> bytes:
-        """Прочитать большой или усечённый файл через ``agent_exec`` (base64)."""
-        if self._is_windows:
-            from ...core._shell_quoting import ps_encoded_command, ps_quote
+    async def _iter_file_chunks_via_exec(
+        self,
+        remote_path: str,
+        chunk_size: int,
+    ) -> AsyncIterator[bytes]:
+        """Потоково читать файл чанками через ``agent_exec`` (при ``truncated=1`` или большом размере)."""
+        if chunk_size <= 0:
+            raise ValueError(f"chunk_size must be positive, got {chunk_size}")
+        offset = 0
+        while True:
+            if self._is_windows:
+                ps_script = (
+                    f"$p = {ps_quote(remote_path)}; "
+                    "$fs = [IO.File]::Open($p, [IO.FileMode]::Open, "
+                    "[IO.FileAccess]::Read, [IO.FileShare]::ReadWrite); "
+                    "try { "
+                    f"$null = $fs.Seek({offset}, [IO.SeekOrigin]::Begin); "
+                    f"$buf = New-Object byte[] {chunk_size}; "
+                    f"$read = $fs.Read($buf, 0, {chunk_size}); "
+                    "if ($read -gt 0) { [Convert]::ToBase64String($buf, 0, $read) } "
+                    "} finally { $fs.Dispose() }"
+                )
+                cmd = ps_encoded_command(ps_script)
+            else:
+                q_path = shlex.quote(remote_path)
+                cmd = f"test -r {q_path} && tail -c +{offset + 1} {q_path} | head -c {chunk_size} | base64"
 
-            ps_script = f"[Convert]::ToBase64String([IO.File]::ReadAllBytes({ps_quote(remote_path)}))"
-            cmd = ps_encoded_command(ps_script)
-        else:
-            cmd = f"base64 {shlex.quote(remote_path)}"
-        res = await self.run(cmd, timeout=self.exec_timeout)
-        if not res.ok:
-            raise FileTransferError(
-                f"Fallback base64 file read failed for {remote_path!r}: {res.stderr or res.stdout}",
-                host=self.config.host,
-            )
-        compact = "".join(res.stdout.split())
+            res = await self.run(cmd, timeout=self.exec_timeout)
+            if not res.ok:
+                raise FileTransferError(
+                    f"Chunked base64 file read failed for {remote_path!r} at offset {offset}: "
+                    f"{res.stderr or res.stdout}",
+                    host=self.config.host,
+                )
+            compact = "".join(res.stdout.split())
+            if not compact:
+                break
+            try:
+                chunk = base64.b64decode(compact)
+            except Exception as exc:
+                raise FileTransferError(
+                    f"Invalid base64 output reading {remote_path!r}: {exc}",
+                    host=self.config.host,
+                ) from exc
+            if not chunk:
+                break
+            yield chunk
+            offset += len(chunk)
+            if len(chunk) < chunk_size:
+                break
+
+    async def iter_file_chunks(
+        self,
+        remote_path: str,
+        chunk_size: int | None = None,
+    ) -> AsyncIterator[bytes]:
+        """Потоково читать файл из гостевой ВМ чанками (``file-read`` с откатом на чанковый ``exec``)."""
+        eff_chunk_size = self.chunk_size if chunk_size is None else chunk_size
+        if eff_chunk_size <= 0:
+            raise ValueError(f"chunk_size must be positive, got {eff_chunk_size}")
+        if not self._connected or self.client is None:
+            raise ConnectionError("PVE transport is not connected", host=self.config.host)
+
         try:
-            return base64.b64decode(compact)
-        except Exception as exc:
-            raise FileTransferError(f"Invalid base64 output reading {remote_path!r}: {exc}") from exc
+            data = await self.client.agent_file_read(remote_path, timeout=self.exec_timeout)
+        except PveFileTruncatedError:
+            async for chunk in self._iter_file_chunks_via_exec(remote_path, eff_chunk_size):
+                yield chunk
+            return
+
+        for offset in range(0, len(data), eff_chunk_size):
+            yield data[offset : offset + eff_chunk_size]
 
     async def read_file(self, remote_path: str) -> bytes:
-        """Прочитать файл из гостевой ВМ через ``GET /agent/file-read`` (с fallback при ``truncated=1``)."""
+        """Прочитать файл из гостевой ВМ через ``GET /agent/file-read`` (с чанковым fallback при ``truncated=1``)."""
         if not self._connected or self.client is None:
             raise ConnectionError("PVE transport is not connected", host=self.config.host)
         try:
             return await self.client.agent_file_read(remote_path, timeout=self.exec_timeout)
-        except FileTransferError as exc:
-            if "truncated" in str(exc).lower():
-                return await self._read_file_via_exec_fallback(remote_path)
-            raise
+        except PveFileTruncatedError:
+            parts = [
+                chunk
+                async for chunk in self._iter_file_chunks_via_exec(remote_path, self.chunk_size)
+            ]
+            return b"".join(parts)
+
+    async def _write_file_chunks(
+        self,
+        remote_path: str,
+        chunks: AsyncIterator[bytes],
+        *,
+        total_size: int | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
+        mode: int | None = None,
+    ) -> None:
+        """Записать поток байтовых чанков: первый через ``agent/file-write``, последующие — ``append``."""
+        if self.client is None:
+            raise ConnectionError("PVE transport is not connected", host=self.config.host)
+
+        transferred = 0
+        wrote_first = False
+        async for chunk in chunks:
+            if not wrote_first:
+                wrote_first = True
+                await self.client.agent_file_write(remote_path, chunk, timeout=self.exec_timeout)
+            else:
+                if not chunk:
+                    continue
+                b64_stdin = base64.b64encode(chunk)
+                if self._is_windows:
+                    ps_script = (
+                        f"$p = {ps_quote(remote_path)}; "
+                        "$b64 = [Console]::In.ReadToEnd().Trim(); "
+                        "if ($b64.Length -gt 0) { "
+                        "$bytes = [Convert]::FromBase64String($b64); "
+                        "$fs = [IO.File]::Open($p, [IO.FileMode]::Append, "
+                        "[IO.FileAccess]::Write, [IO.FileShare]::Read); "
+                        "try { $fs.Write($bytes, 0, $bytes.Length) } "
+                        "finally { $fs.Dispose() } }"
+                    )
+                    append_cmd = ps_encoded_command(ps_script)
+                else:
+                    append_cmd = f"base64 -d >> {shlex.quote(remote_path)}"
+                res = await self.run(append_cmd, input_data=b64_stdin, timeout=self.exec_timeout)
+                if not res.ok:
+                    raise FileTransferError(
+                        f"Chunked append failed for {remote_path!r}: {res.stderr or res.stdout}",
+                        host=self.config.host,
+                    )
+            transferred += len(chunk)
+            if callable(progress_callback):
+                progress_callback(
+                    transferred,
+                    total_size if total_size is not None else transferred,
+                )
+
+        if not wrote_first:
+            await self.client.agent_file_write(remote_path, b"", timeout=self.exec_timeout)
+            if callable(progress_callback):
+                progress_callback(0, total_size if total_size is not None else 0)
+
+        if mode is not None and not self._is_windows:
+            await self.chmod(remote_path, mode)
 
     async def write_file(
         self,
@@ -275,12 +395,67 @@ class PveTransport(GuestAgentTransportBase):
         data: bytes,
         mode: int | None = None,
     ) -> None:
-        """Записать файл в гостевую ВМ через ``POST /agent/file-write`` с ``encode=1``."""
+        """Записать файл в гостевую ВМ (через ``/agent/file-write`` или чанками при большом объёме)."""
         if not self._connected or self.client is None:
             raise ConnectionError("PVE transport is not connected", host=self.config.host)
-        await self.client.agent_file_write(remote_path, data, timeout=self.exec_timeout)
-        if mode is not None and not self._is_windows:
-            await self.chmod(remote_path, mode)
+
+        if len(data) <= self.chunk_size:
+            await self.client.agent_file_write(remote_path, data, timeout=self.exec_timeout)
+            if mode is not None and not self._is_windows:
+                await self.chmod(remote_path, mode)
+            return
+
+        async def _slice_iter() -> AsyncIterator[bytes]:
+            for off in range(0, len(data), self.chunk_size):
+                yield data[off : off + self.chunk_size]
+
+        await self._write_file_chunks(
+            remote_path,
+            _slice_iter(),
+            total_size=len(data),
+            mode=mode,
+        )
+
+    async def upload(
+        self,
+        local_path: str,
+        remote_path: str,
+        **kwargs: Any,
+    ) -> None:
+        """Потоково загрузить локальный файл в гостевую ВМ без полной буферизации в памяти."""
+        if not self._connected or self.client is None:
+            raise ConnectionError("PVE transport is not connected", host=self.config.host)
+        src = Path(local_path)
+        if not src.is_file():
+            raise FileTransferError(f"Local file not found: {local_path}", host=self.config.host)
+
+        progress_cb: Callable[[int, int], None] | None = kwargs.get("progress_callback")
+        mode: int | None = kwargs.get("mode")
+        total_size = int(src.stat().st_size)
+
+        await self._write_file_chunks(
+            remote_path,
+            _iter_local_file_chunks(src, self.chunk_size),
+            total_size=total_size,
+            progress_callback=progress_cb,
+            mode=mode,
+        )
+
+    async def download(
+        self,
+        remote_path: str,
+        local_path: str,
+        **kwargs: Any,
+    ) -> None:
+        """Потоково скачать файл из гостевой ВМ на локальный диск без полной буферизации."""
+        if not self._connected or self.client is None:
+            raise ConnectionError("PVE transport is not connected", host=self.config.host)
+        await self._download_via_chunks(
+            remote_path,
+            local_path,
+            chunk_size=self.chunk_size,
+            progress_callback=kwargs.get("progress_callback"),
+        )
 
     async def vm_power(self, action: str, *, wait: bool = True, timeout: float = 60.0) -> dict[str, Any]:
         """Управление питанием ВМ на уровне гипервизора Proxmox VE."""

@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code Style: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Type Checker: Pyright](https://img.shields.io/badge/type%20checking-pyright-brightgreen.svg)](https://github.com/microsoft/pyright)
-[![Tests Passing](https://img.shields.io/badge/tests-1%2C437%20passed-brightgreen.svg)](tests/)
+[![Tests Passing](https://img.shields.io/badge/tests-1%2C475%20passed-brightgreen.svg)](tests/)
 [![Cold Import](https://img.shields.io/badge/import-~11ms-brightgreen.svg)](benchmarks/overhead_bench.py)
 [![Poe Tasks](https://img.shields.io/badge/tasks-poethepoet-blueviolet.svg)](https://github.com/nat-n/poethepoet)
 
@@ -170,9 +170,9 @@ uv add "uniconn[all]"
 | **gNMI** | `gnmi://` | `gnmi://admin:env://NET_PASS@spine-01:9339?encoding=json_ietf&origin=openconfig` |
 | **Windows Remote** | `winrm://`, `wsman://` | `winrm://Administrator:env://WIN_PASS@win-server:5986?ssl=true&shell=ps&transport=ntlm` |
 | **QEMU Guest Agent** | `qga://`, `qemu-ga://` | `qga://root@kvm-host-01/vm-prod-01?backend=virsh` или `qga:///var/run/qemu/vm1.sock` |
-| **Proxmox VE** | `pve://` | `pve://root@pam!uniconn:env://PVE_SECRET@pve-host:8006/105?node=pve1&verify_ssl=false` |
-| **Redfish BMC** | `redfish://` | `redfish://admin:env://BMC_PASS@bmc.local?verify_ssl=false&system_id=1` |
-| **IPMI BMC** | `ipmi://` | `ipmi://admin:password@bmc.local:623` (`power status`, `sensors`, `boot device`) |
+| **Proxmox VE** | `pve://` | `pve://root@pam!uniconn:env://PVE_SECRET@pve-host:8006/105?node=pve1&verify_ssl=false&chunk_size=49152` |
+| **Redfish BMC** | `redfish://` | `redfish://admin:env://BMC_PASS@bmc.local?verify_ssl=false&system_id=1&sse_uri=...` |
+| **IPMI BMC** | `ipmi://` | `ipmi://admin:password@bmc.local:623?reuse_session=true` (`power status`, `sensors`, `sel list`, `boot device`) |
 | **Serial / UART** | `serial://`, `uart://` | `uart:///dev/ttyUSB0:115200?parity=N&stopbits=1` или `uart://COM3?vid=10c4&pid=ea60` |
 | **Telnet** | `telnet://` | `telnet://admin:pass@switch.local:23?term_type=vt100` |
 | **Replay (Кассеты)** | `replay://` | `replay://node-01?cassette=tests/cassettes/node.yaml&mode=none` |
@@ -281,8 +281,10 @@ async with Connection.from_uri("redfish://admin:env://BMC_PASS@192.168.1.100?ver
     thermal = await bmc.run("sensors")
     print(thermal.text)
 
-    # Холодная перезагрузка bare-metal хоста
+    # Холодная перезагрузка bare-metal хоста и поток событий Redfish EventService SSE
     await bmc.run("power cycle")
+    async for ev in bmc.stream("events", max_events=5):
+        print("Событие BMC:", ev)
 
 # 2. IPMI BMC: низкоуровневые raw-команды netfn и переключение порядка загрузки
 async with Connection.from_uri("ipmi://admin:env://IPMI_PASS@192.168.1.100:623") as ipmi:

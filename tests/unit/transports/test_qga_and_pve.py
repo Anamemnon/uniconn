@@ -7,6 +7,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -391,7 +392,7 @@ class TestPveTransportAndMockServer:
             "uniconn.transports.virtualization.pve_client.niquests", None
         ):
             cfg = ConnectionConfig.from_uri("pve://root@pam:pass@pve.local:8006/105")
-            with pytest.raises(ImportError, match=r"uniconn\[bmc\]"):
+            with pytest.raises(ImportError, match=r"uniconn\[pve\].*uniconn\[bmc\]"):
                 PveTransport(cfg)
 
     async def test_qga_and_pve_cd_env_stdin_and_sudo_pipeline(self) -> None:
@@ -556,4 +557,116 @@ class TestPveTransportAndMockServer:
                 await conn.files.download("/var/tmp/nonexistent.bin", missing_dst)
             assert not missing_dst.exists()
             assert mock_qga._open_files == {}
+
+    async def test_pve_streaming_upload_download_and_iter_file_chunks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from uniconn.exceptions import FileTransferError
+
+        mock_pve = MockPveServer(node="pve-node1", vmid=105)
+        mock_pve.max_file_read_bytes = 32768  # Эмулирует truncated=1 для файлов > 32 КБ
+        uri = "pve://root@pam!uniconn:token-secret-123@pve.local:8006/105?node=pve-node1&chunk_size=32768"
+        cfg = ConnectionConfig.from_uri(uri)
+        transport = PveTransport(cfg)
+        http_client = transport._build_http_client()
+        http_client.create_async_session = lambda: mock_pve  # type: ignore[method-assign]
+        transport._custom_http_client = http_client
+        conn = Connection(transport, cfg)
+
+        # Бинарный многочанковый payload (~96 KB > 32 KB chunk_size, содержит не-UTF-8 байты)
+        payload = (bytes(range(256)) * 380)  # 97 280 bytes
+        src_file = tmp_path / "pve_src.bin"
+        src_file.write_bytes(payload)
+        dst_file = tmp_path / "pve_dst.bin"
+
+        def _forbid_read_bytes(self: Path) -> bytes:
+            raise AssertionError("PveTransport.upload() must stream chunks without Path.read_bytes()")
+
+        monkeypatch.setattr(Path, "read_bytes", _forbid_read_bytes)
+
+        up_events: list[tuple[int, int]] = []
+        down_events: list[tuple[int, int]] = []
+
+        async with conn:
+            await conn.files.upload(
+                src_file,
+                "/var/tmp/pve_stream.bin",
+                progress_callback=lambda done, total: up_events.append((done, total)),
+            )
+            assert len(up_events) >= 3
+            assert up_events[-1] == (len(payload), len(payload))
+            assert mock_pve.qga.files["/var/tmp/pve_stream.bin"] == payload
+
+            chunks = [
+                c
+                async for c in transport.iter_file_chunks(
+                    "/var/tmp/pve_stream.bin", chunk_size=32768
+                )
+            ]
+            assert len(chunks) >= 3
+            assert b"".join(chunks) == payload
+
+            await conn.files.download(
+                "/var/tmp/pve_stream.bin",
+                dst_file,
+                progress_callback=lambda done, total: down_events.append((done, total)),
+            )
+            assert len(down_events) >= 3
+            assert down_events[-1] == (len(payload), len(payload))
+            with dst_file.open("rb") as fp:
+                assert fp.read() == payload
+
+            # Пустой файл: корректно загружается и скачивается без ошибок
+            empty_src = tmp_path / "pve_empty.bin"
+            empty_src.write_bytes(b"")
+            empty_dst = tmp_path / "pve_empty_dl.bin"
+            await conn.files.upload(empty_src, "/var/tmp/pve_empty.bin")
+            assert [c async for c in transport.iter_file_chunks("/var/tmp/pve_empty.bin")] == []
+            await conn.files.download("/var/tmp/pve_empty.bin", empty_dst)
+            assert empty_dst.exists() and empty_dst.stat().st_size == 0
+
+            # Ошибка скачивания несуществующего файла не оставляет пустой файл на диске
+            missing_dst = tmp_path / "pve_missing.bin"
+            with pytest.raises(FileTransferError):
+                await conn.files.download("/var/tmp/no_such_pve_file.bin", missing_dst)
+            assert not missing_dst.exists()
+
+    async def test_pve_truncated_filename_not_misclassified_and_default_chunk_size(self) -> None:
+        """Имя файла со словом 'truncated' не вызывает exec fallback, а iter_file_chunks уважает ?chunk_size."""
+        from uniconn.exceptions import FileTransferError
+        from uniconn.mock.pve_server import MockPveResponse
+
+        mock_pve = MockPveServer(node="pve-node1", vmid=105)
+        payload = b"X" * 40000
+        mock_pve.qga.files["/var/log/my_file.bin"] = payload
+
+        uri = "pve://root@pam!uniconn:token-secret-123@pve.local:8006/105?node=pve-node1&chunk_size=16384"
+        conn = self._make_pve_connection(uri, mock_pve)
+        assert isinstance(conn.transport, PveTransport)
+
+        async with conn:
+            # Отсутствующий файл со словом truncated в имени должен сразу падать, без запуска agent_exec
+            with pytest.raises(FileTransferError, match="failed"):
+                await conn.files.read_file("/var/log/truncated_missing.log")
+            assert not any("truncated_missing.log" in cmd for cmd in mock_pve.qga.executed_commands)
+
+            # iter_file_chunks() без аргумента chunk_size обязан использовать self.chunk_size (16384)
+            chunks = [c async for c in conn.transport.iter_file_chunks("/var/log/my_file.bin")]
+            assert [len(c) for c in chunks] == [16384, 16384, 7232]
+
+            # JSON null в exitcode не вызывает TypeError
+            orig_req = mock_pve._request
+
+            async def _null_exit_req(method: str, path: str, **kw: Any) -> Any:
+                if "/agent/exec-status" in path:
+                    return MockPveResponse(
+                        200,
+                        {"data": {"exited": 1, "exitcode": None, "signal": 15, "out-data": "", "err-data": ""}},
+                    )
+                return await orig_req(method, path, **kw)
+
+            mock_pve._request = _null_exit_req  # type: ignore[method-assign]
+            sig_res = await conn.run("echo test")
+            assert sig_res.exit_code == 143
+
 

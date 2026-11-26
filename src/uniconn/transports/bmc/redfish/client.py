@@ -10,9 +10,12 @@ from urllib.parse import urlsplit
 from ....exceptions import (
     AuthenticationError,
     ConnectionError,
+    TimeoutError,
 )
 from ..._http_base import (
+    SSE_MIME,
     BaseAsyncHttpClient,
+    close_response_quietly,
     extract_response_headers,
     parse_json_dict,
     resolve_lazy_response,
@@ -274,6 +277,76 @@ class RedfishHttpClient(BaseAsyncHttpClient):
             self.cache_etag(norm_path, resp_headers, data)
 
         return status, data, resp_headers
+
+    async def open_stream(
+        self,
+        session: Any,
+        path: str,
+        *,
+        accept: str = SSE_MIME,
+        headers: dict[str, str] | None = None,
+        timeout: float | None = None,
+        _retry_on_401: bool = True,
+    ) -> Any:
+        """Открыть потоковый HTTP GET-запрос (``stream=True``) для Redfish SSE с обновлением токена при 401."""
+        eff_timeout = timeout if timeout is not None else self.default_timeout
+        norm_path = normalize_redfish_path(path)
+        req_headers: dict[str, str] = {
+            "Accept": accept,
+            "Cache-Control": "no-cache",
+        }
+        if headers:
+            req_headers.update(headers)
+
+        timeout_errors = builtins_timeout_errors()
+        try:
+            resp = await session.get(
+                norm_path,
+                headers=req_headers,
+                timeout=eff_timeout,
+                stream=True,
+            )
+        except timeout_errors as exc:
+            raise TimeoutError(
+                f"Redfish SSE GET {norm_path} timed out after {eff_timeout}s"
+            ) from exc
+        except Exception as exc:
+            raise ConnectionError(
+                f"Redfish SSE GET {norm_path} failed: {exc}"
+            ) from exc
+
+        status = int(getattr(resp, "status_code", 0) or 0)
+        if (
+            status == 401
+            and _retry_on_401
+            and self.auth_mode == "session"
+            and self.username
+        ):
+            await close_response_quietly(resp)
+            session.headers.pop("X-Auth-Token", None)
+            refreshed = await self.try_create_redfish_session(
+                session,
+                self.username,
+                self.password,
+                eff_timeout,
+            )
+            if refreshed:
+                return await self.open_stream(
+                    session,
+                    path,
+                    accept=accept,
+                    headers=headers,
+                    timeout=timeout,
+                    _retry_on_401=False,
+                )
+
+        if status in (401, 403):
+            await close_response_quietly(resp)
+            raise AuthenticationError(
+                f"Redfish SSE GET {norm_path} unauthorized (HTTP {status})"
+            )
+
+        return resp
 
 
 __all__ = [

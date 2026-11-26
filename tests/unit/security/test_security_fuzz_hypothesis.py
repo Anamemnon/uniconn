@@ -175,7 +175,7 @@ def test_ps_encoded_command_rejects_lone_surrogate() -> None:
 )
 def test_fuzz_secret_masking_hides_credentials(secret: str, noise: str) -> None:
     """SecretMaskingFilter никогда не оставляет пароль в URI или Bearer-токен в открытом виде."""
-    assume(secret not in noise)
+    assume(secret not in noise and secret not in "Authorization: Bearer ")
     uri_line = f"{noise} ssh://admin:{secret}@10.0.0.5:22 {noise}"
     masked_uri = SecretMaskingFilter._mask_string(uri_line)
     assert secret not in masked_uri

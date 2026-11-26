@@ -7,6 +7,8 @@ import contextlib
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
+from ..transports.base import TunnelCapableTransport, require_capability
+
 if TYPE_CHECKING:
     from ..core.connection import Connection
 
@@ -18,6 +20,17 @@ class TunnelService:
         """Инициализировать сервис управления туннелями."""
         self._conn = conn
 
+    async def _get_ready_transport(self, capability_name: str) -> TunnelCapableTransport:
+        """Проверить поддержку туннелей и при необходимости подключить транспорт."""
+        transport = require_capability(
+            self._conn.transport,
+            TunnelCapableTransport,
+            capability_name,
+        )
+        if not self._conn.transport.is_connected:
+            await self._conn.transport.connect()
+        return transport
+
     @contextlib.asynccontextmanager
     async def forward_local_port(
         self,
@@ -27,10 +40,9 @@ class TunnelService:
         local_port: int = 0,
     ) -> AsyncIterator[int]:
         """Асинхронный контекстный менеджер прямого SSH-туннеля (Local Port Forwarding)."""
-        if not self._conn.transport.is_connected:
-            await self._conn.transport.connect()
+        transport = await self._get_ready_transport("forward_local_port")
 
-        async with self._conn.transport.forward_local_port(
+        async with transport.forward_local_port(
             remote_host=remote_host,
             remote_port=remote_port,
             local_host=local_host,
@@ -47,10 +59,9 @@ class TunnelService:
         local_port: int = 80,
     ) -> AsyncIterator[int]:
         """Асинхронный контекстный менеджер обратного SSH-туннеля (Remote Port Forwarding)."""
-        if not self._conn.transport.is_connected:
-            await self._conn.transport.connect()
+        transport = await self._get_ready_transport("forward_remote_port")
 
-        async with self._conn.transport.forward_remote_port(
+        async with transport.forward_remote_port(
             remote_host=remote_host,
             remote_port=remote_port,
             local_host=local_host,

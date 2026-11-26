@@ -1059,7 +1059,10 @@ class TestStreamingChecksumAndSyncDirArchive:
                 # Извлекаем реальный архив в remote_extract_dir для проверки целостности содержимого
                 arch_file = next(staged_dir.glob("*.tar.gz"))
                 with tarfile.open(arch_file, mode="r:gz") as tf:
-                    tf.extractall(remote_extract_dir, filter="data")
+                    if hasattr(tarfile, "data_filter"):
+                        tf.extractall(remote_extract_dir, filter="data")
+                    else:
+                        tf.extractall(remote_extract_dir)
                 return Result(exit_code=0, stdout="", stderr="", duration=0.02, command=cmd)
             return Result(exit_code=0, stdout="", stderr="", duration=0.01, command=cmd)
 

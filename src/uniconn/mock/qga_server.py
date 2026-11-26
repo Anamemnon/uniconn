@@ -7,6 +7,7 @@ import asyncio
 import base64
 import contextlib
 import json
+import re
 import shlex
 import tempfile
 from collections.abc import Callable
@@ -249,6 +250,30 @@ class MockQgaServer:
                     return handler(shell_cmd)
                 return handler
 
+        # Поддержка чанкового чтения: [test -r ... && ] tail -c +<off> <path> | head -c <cnt> | base64
+        chunk_read_match = re.match(
+            r"^(?:test\s+-r\s+.+?\s*&&\s*)?tail\s+-c\s+\+(\d+)\s+(.+?)\s*\|\s*head\s+-c\s+(\d+)\s*\|\s*base64$",
+            shell_cmd,
+        )
+        if chunk_read_match:
+            one_based_off = int(chunk_read_match.group(1))
+            target = shlex.split(chunk_read_match.group(2))[0]
+            count = int(chunk_read_match.group(3))
+            if target not in self.files:
+                return 1, "", "No such file"
+            start_idx = max(0, one_based_off - 1)
+            chunk = self.files[target][start_idx : start_idx + count]
+            return 0, base64.b64encode(chunk).decode("ascii") + "\n", ""
+
+        # Поддержка чанковой дозаписи: base64 -d >> <path>
+        if shell_cmd.startswith("base64 -d >> "):
+            tokens = shlex.split(shell_cmd[len("base64 -d >> ") :])
+            target = tokens[0]
+            decoded = base64.b64decode(self.last_input_data or b"")
+            self.files[target] = self.files.get(target, b"") + decoded
+            self.file_modes.setdefault(target, 0o644)
+            return 0, "", ""
+
         # Поддержка base64 fallback чтения
         if shell_cmd.startswith("base64 "):
             tokens = shlex.split(shell_cmd)
@@ -310,6 +335,24 @@ class MockQgaServer:
             if target in self.files:
                 return 0, base64.b64encode(self.files[target]).decode("ascii") + "\n", ""
             return 1, "", "File not found"
+
+        if "[IO.File]::Open(" in ps_cmd and "$fs.Seek(" in ps_cmd:
+            target = ps_cmd.split("$p = '", 1)[-1].split("'", 1)[0]
+            seek_m = re.search(r"\$fs\.Seek\((\d+),", ps_cmd)
+            read_m = re.search(r"\$fs\.Read\(\$buf,\s*0,\s*(\d+)\)", ps_cmd)
+            if target not in self.files:
+                return 1, "", "File not found"
+            off = int(seek_m.group(1)) if seek_m else 0
+            cnt = int(read_m.group(1)) if read_m else 65536
+            chunk = self.files[target][off : off + cnt]
+            return 0, base64.b64encode(chunk).decode("ascii") + "\n", ""
+
+        if "[IO.FileMode]::Append" in ps_cmd and "FromBase64String" in ps_cmd:
+            target = ps_cmd.split("$p = '", 1)[-1].split("'", 1)[0]
+            decoded = base64.b64decode(self.last_input_data or b"")
+            self.files[target] = self.files.get(target, b"") + decoded
+            self.file_modes.setdefault(target, 0o644)
+            return 0, "", ""
 
         # Поддержка встроенных файловых команд uniconn (stat, chmod, test -e, mkdir, rm, ls, sha256sum)
         if shell_cmd.startswith("stat -c"):

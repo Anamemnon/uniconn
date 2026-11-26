@@ -861,3 +861,31 @@ async def test_restconf_xml_transactions_and_sse_edge_cases() -> None:
             assert samples[0].metadata["sse_id"] == "1"
 
 
+async def test_gnmi_large_payload_early_rejection_and_restconf_polling_timeout() -> None:
+    """Ранний отказ gRPC при >64КБ upload сохраняет AuthenticationError, а RESTCONF polling уважает timeout."""
+    # 1. Большой payload gNMI Set с неверными учётными данными -> AuthenticationError, а не StreamClosedError
+    large_banner = "Y" * 90_000
+    async with MockGnmiServer() as server:
+        bad_uri = f"gnmi://admin:wrong@{server.host}:{server.port}?tls=false"
+        async with Connection.from_uri(bad_uri) as bad_conn:
+            with pytest.raises(AuthenticationError):
+                await bad_conn.net.edit(
+                    {"banner": large_banner},
+                    path="/system/config",
+                    operation="merge",
+                )
+
+    # 2. RESTCONF polling fallback (once=False) корректно завершается по общему timeout
+    async with MockRestconfServer(sse_enabled=False) as no_sse_srv:
+        async with Connection.from_uri(no_sse_srv.uri) as conn:
+            poll_samples: list[TelemetrySample] = []
+            async for sample in conn.net.subscribe(
+                ["/system"],
+                sample_interval=0.015,
+                once=False,
+                timeout=0.06,
+            ):
+                poll_samples.append(sample)
+
+            assert len(poll_samples) >= 1
+            assert all(s.metadata["transport_mode"] == "polling" for s in poll_samples)

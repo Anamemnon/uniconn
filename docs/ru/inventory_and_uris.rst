@@ -377,6 +377,10 @@
      - ``pve``
      - ``None``
      - Имя API-токена и его секретный UUID (рекомендуется для автоматизации вместо пароля).
+   * - ``chunk_size``
+     - ``pve``
+     - ``49152``
+     - Размер чанка в байтах для потоковой передачи файлов (``upload``, ``download``, ``iter_file_chunks``) и fallback при ``truncated=1``.
    * - ``backend``
      - ``qga``
      - ``"socket"``
@@ -441,10 +445,10 @@
      - Ключевые query-параметры
    * - ``redfish://``
      - ``redfish://admin:env://PASS@bmc:443``
-     - ``verify_ssl=false``, ``system_id=1``, ``chassis_id=1``, ``manager_id=1``, ``multiplexed=true`` (HTTP/2). Требует ``uniconn[bmc]``.
+     - ``verify_ssl=false``, ``system_id=1``, ``chassis_id=1``, ``manager_id=1``, ``multiplexed=true``, ``sse_uri=...`` (SSE EventService через ``stream("events")``). Требует ``uniconn[bmc]``.
    * - ``ipmi://``
-     - ``ipmi://admin:env://PASS@bmc:623``
-     - Команды: ``power on|off|cycle|reset|status``, ``sensors``, ``sel list|clear``, ``boot pxe|disk|bios``, ``raw``. Требует ``uniconn[bmc]``.
+     - ``ipmi://admin:env://PASS@bmc:623?reuse_session=true``
+     - ``reuse_session=true|false``; команды ``power on|off|cycle|reset|status``, ``sensors``, ``sel list|clear``, ``boot pxe|disk|bios``, ``raw``. Требует ``uniconn[bmc]``.
    * - ``serial://`` / ``uart://``
      - ``uart:///dev/ttyUSB0:115200``
      - ``baudrate=115200``, ``parity=N|E|O``, ``stopbits=1|2``, ``bytesize=8``, ``vid=10c4``, ``pid=ea60``. Требует ``uniconn[serial]``.

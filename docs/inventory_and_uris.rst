@@ -377,6 +377,10 @@ The following options can be passed as query parameters on **any** transport URI
      - ``pve``
      - ``None``
      - Proxmox API Token ID and UUID secret (for stateless non-ticket auth).
+   * - ``chunk_size``
+     - ``pve``
+     - ``49152``
+     - Chunk size in bytes for streaming ``upload`` / ``download`` / ``iter_file_chunks`` and ``truncated=1`` fallback reads.
    * - ``backend``
      - ``qga``
      - ``"socket"``
@@ -441,10 +445,10 @@ The following options can be passed as query parameters on **any** transport URI
      - Key Query Options
    * - ``redfish://``
      - ``redfish://admin:env://PASS@bmc:443``
-     - ``verify_ssl=false``, ``system_id=1``, ``chassis_id=1``, ``manager_id=1``, ``multiplexed=true`` (HTTP/2). Requires ``uniconn[bmc]``.
+     - ``verify_ssl=false``, ``system_id=1``, ``chassis_id=1``, ``manager_id=1``, ``multiplexed=true``, ``sse_uri=...`` (EventService SSE via ``stream("events")``). Requires ``uniconn[bmc]``.
    * - ``ipmi://``
-     - ``ipmi://admin:env://PASS@bmc:623``
-     - Supports ``power on|off|cycle|reset|status``, ``sensors``, ``sel list|clear``, ``boot pxe|disk|bios``, ``raw``. Requires ``uniconn[bmc]``.
+     - ``ipmi://admin:env://PASS@bmc:623?reuse_session=true``
+     - ``reuse_session=true|false``; supports ``power on|off|cycle|reset|status``, ``sensors``, ``sel list|clear``, ``boot pxe|disk|bios``, ``raw``. Requires ``uniconn[bmc]``.
    * - ``serial://`` / ``uart://``
      - ``uart:///dev/ttyUSB0:115200``
      - ``baudrate=115200``, ``parity=N|E|O``, ``stopbits=1|2``, ``bytesize=8``, ``vid=10c4``, ``pid=ea60``. Requires ``uniconn[serial]``.

@@ -253,9 +253,10 @@ Manage virtual machines and execute commands inside guests without requiring net
 
    from uniconn import Connection
 
-   # 1. Proxmox VE API + Guest Agent execution and snapshot lifecycle
+   # 1. Proxmox VE API + Guest Agent execution, streaming file transfer, and snapshot lifecycle
    async with Connection.from_uri("pve://root@pam!token:env://PVE_SECRET@pve-01:8006/105?node=pve1") as vm:
        await vm.run("pve snapshot create pre_upgrade")
+       await vm.files.upload("./bundle.tar.gz", "/tmp/bundle.tar.gz")
        res = await vm.run("apt-get update && apt-get -y upgrade")
        if not res.ok:
            await vm.run("pve snapshot rollback pre_upgrade")
@@ -274,10 +275,12 @@ Bare-Metal BMC Control & Firmware Flashing over UART (YMODEM)
 
    from uniconn import Connection
 
-   # Redfish HTTP/2 BMC telemetry & power control
+   # Redfish HTTP/2 BMC telemetry, EventService SSE streaming & power control
    async with Connection.from_uri("redfish://admin:env://BMC_PASS@192.168.1.100?verify_ssl=false") as bmc:
        print((await bmc.run("power status")).text)
        print((await bmc.run("sensors")).text)
+       async for event_json in bmc.stream("events", max_events=5):
+           print("BMC Event:", event_json)
 
    # Serial/UART hardware reset, U-Boot break, and YMODEM firmware upload
    async with Connection.from_uri("uart:///dev/ttyUSB0:115200") as board:

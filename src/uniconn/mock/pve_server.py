@@ -61,6 +61,8 @@ class MockPveServer:
         self.headers: dict[str, str] = {}
         self.verify: bool | str = True
         self.vm_state: str = "running"
+        self.force_truncate_reads: bool = False
+        self.max_file_read_bytes: int | None = None
         self.snapshots: list[dict[str, Any]] = [
             {"name": "initial", "description": "Initial clean state", "snaptime": 1700000000}
         ]
@@ -252,11 +254,29 @@ class MockPveServer:
             if file_path not in self.qga.files:
                 return MockPveResponse(500, {"errors": f"File not found: {file_path}"})
             raw_bytes = self.qga.files[file_path]
-            truncated = 1 if getattr(self, "force_truncate_reads", False) else 0
-            return MockPveResponse(
-                200,
-                {"data": {"content": raw_bytes.decode("utf-8", errors="replace"), "truncated": truncated}},
+            exceeded = self.max_file_read_bytes is not None and len(raw_bytes) > self.max_file_read_bytes
+            truncated = 1 if (self.force_truncate_reads or exceeded) else 0
+            out_bytes = (
+                raw_bytes[: self.max_file_read_bytes]
+                if exceeded and self.max_file_read_bytes is not None
+                else raw_bytes
             )
+            try:
+                return MockPveResponse(
+                    200,
+                    {"data": {"content": out_bytes.decode("utf-8"), "truncated": truncated}},
+                )
+            except UnicodeDecodeError:
+                return MockPveResponse(
+                    200,
+                    {
+                        "data": {
+                            "content": base64.b64encode(out_bytes).decode("ascii"),
+                            "encode": 1,
+                            "truncated": truncated,
+                        }
+                    },
+                )
 
         if sub_path == "/agent/file-write" and method.upper() == "POST":
             body = json_body or {}

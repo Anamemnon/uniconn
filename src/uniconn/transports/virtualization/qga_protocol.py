@@ -789,7 +789,8 @@ class QgaProtocolClient:
                 if isinstance(status, dict) and status.get("exited"):
                     sig = status.get("signal")
                     default_exit = (128 + int(sig)) if isinstance(sig, int) else (137 if sig else 0)
-                    exit_code = int(status.get("exitcode", default_exit))
+                    raw_exit = status.get("exitcode")
+                    exit_code = int(default_exit if raw_exit is None else raw_exit)
                     out_b64 = str(status.get("out-data") or "")
                     err_b64 = str(status.get("err-data") or "")
                     stdout = base64.b64decode(out_b64).decode("utf-8", errors="replace") if out_b64 else ""

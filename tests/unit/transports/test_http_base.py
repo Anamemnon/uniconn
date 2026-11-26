@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import contextlib
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -16,7 +17,9 @@ from uniconn.exceptions import TimeoutError as UniconnTimeoutError
 from uniconn.transports._http_base import (
     BaseAsyncHttpClient,
     builtins_timeout_errors,
+    close_response_quietly,
     extract_response_headers,
+    iter_sse_response,
     parse_json_dict,
     resolve_lazy_response,
     resolve_niquests_module,
@@ -230,3 +233,43 @@ class TestBaseAsyncHttpClient:
         fake_session.get.side_effect = _DummyRequestError("tls failure")
         with pytest.raises(UniconnConnectionError, match="PVE GET /tls failed: tls failure"):
             await client._send_session_request(fake_session, "GET", "/tls")
+
+    @pytest.mark.asyncio
+    async def test_close_response_quietly_and_iter_sse_response_cleanup(self) -> None:
+        async_resp = SimpleNamespace(close=AsyncMock())
+        await close_response_quietly(async_resp)
+        async_resp.close.assert_awaited_once()
+
+        failing_resp = SimpleNamespace(close=AsyncMock(side_effect=OSError("boom")))
+        await close_response_quietly(failing_resp)
+
+        # Синхронный генератор-итератор в iter_content
+        sync_resp = MagicMock()
+        sync_resp.close = MagicMock()
+        sync_resp.iter_content = MagicMock(
+            return_value=(c for c in [b'data: {"n":1}\n\n', b'data: {"n":2}\n\n'])
+        )
+        events = [ev async for ev in iter_sse_response(sync_resp)]
+        assert [ev["data"] for ev in events] == ['{"n":1}', '{"n":2}']
+        sync_resp.close.assert_called_once()
+
+        # Асинхронный генератор с досрочным выходом корректно закрывает поток и resp
+        closed_gen = {"done": False}
+
+        async def _async_chunks(chunk_size: int = 1024) -> Any:
+            _ = chunk_size
+            try:
+                yield b'data: {"n":1}\n\n'
+                yield b'data: {"n":2}\n\n'
+            finally:
+                closed_gen["done"] = True
+
+        async_stream_resp = MagicMock()
+        async_stream_resp.close = AsyncMock()
+        async_stream_resp.iter_content = _async_chunks
+
+        async with contextlib.aclosing(iter_sse_response(async_stream_resp)) as stream:
+            first = await anext(stream)
+            assert first["data"] == '{"n":1}'
+        assert closed_gen["done"] is True
+        async_stream_resp.close.assert_awaited_once()

@@ -25,6 +25,10 @@ except ImportError:
     niquests = None  # type: ignore[assignment]
 
 
+class PveFileTruncatedError(FileTransferError):
+    """Файл превысил лимит ``GET /agent/file-read`` (``truncated=1``)."""
+
+
 def get_pve_niquests_module() -> Any:
     """Получить модуль ``niquests`` с учётом возможного патчинга в тестах."""
     return resolve_niquests_module(
@@ -286,10 +290,11 @@ class PveHttpClient(BaseAsyncHttpClient):
                     timeout=min(remaining, 10.0),
                 )
                 st_data = st_body.get("data") if isinstance(st_body, dict) else None
-                if st_code == 200 and isinstance(st_data, dict) and int(st_data.get("exited", 0)) == 1:
+                if st_code == 200 and isinstance(st_data, dict) and int(st_data.get("exited") or 0) == 1:
                     sig = st_data.get("signal")
                     default_exit = (128 + int(sig)) if isinstance(sig, int) else (137 if sig else 0)
-                    exit_code = int(st_data.get("exitcode", default_exit))
+                    raw_exit = st_data.get("exitcode")
+                    exit_code = int(default_exit if raw_exit is None else raw_exit)
                     stdout = str(st_data.get("out-data") or "")
                     stderr = str(st_data.get("err-data") or "")
                     return exit_code, stdout, stderr
@@ -326,10 +331,12 @@ class PveHttpClient(BaseAsyncHttpClient):
                 f"PVE agent/file-read failed for {remote_path!r} (HTTP {status})"
             )
         if data.get("truncated") in (1, True, "1"):
-            raise FileTransferError(
+            raise PveFileTruncatedError(
                 f"PVE agent/file-read response was truncated for {remote_path!r}"
             )
-        raw_content = data.get("content", "")
+        raw_content = data.get("content")
+        if raw_content is None:
+            return b""
         if data.get("encode") in (1, True):
             return base64.b64decode(str(raw_content))
         if isinstance(raw_content, bytes):
@@ -488,4 +495,4 @@ class PveHttpClient(BaseAsyncHttpClient):
         return {"snapshot": snapname, "action": "deleted", "upid": upid}
 
 
-__all__ = ["PveHttpClient", "get_pve_niquests_module", "niquests"]
+__all__ = ["PveFileTruncatedError", "PveHttpClient", "get_pve_niquests_module", "niquests"]

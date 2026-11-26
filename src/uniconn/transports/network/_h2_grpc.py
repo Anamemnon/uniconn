@@ -143,11 +143,52 @@ def grpc_status_to_exception(
     )
 
 
+def _flush_h2_sync(h2_conn: Any, writer: asyncio.StreamWriter) -> bool:
+    """Синхронно сериализовать накопленные кадры ``h2`` в буфер сокета без точек ``await``."""
+    out = h2_conn.data_to_send()
+    if out:
+        writer.write(out)
+        return True
+    return False
+
+
+async def _wait_stream_window(
+    streams: Mapping[int, Any],
+    stream_id: int,
+    conn_window_event: asyncio.Event,
+) -> None:
+    """Дождаться ``WINDOW_UPDATE`` по конкретному потоку или по соединению."""
+    stream = streams.get(stream_id)
+    if stream is not None:
+        stream.window_event.clear()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(stream.window_event.wait(), timeout=0.02)
+    else:
+        conn_window_event.clear()
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(conn_window_event.wait(), timeout=0.02)
+
+
+def _notify_window_updated(
+    stream_id: int,
+    streams: Mapping[int, Any],
+    conn_window_event: asyncio.Event,
+) -> None:
+    """Разбудить ожидающие отправки задачи после получения ``WindowUpdated``."""
+    conn_window_event.set()
+    if stream_id == 0:
+        for stream in streams.values():
+            stream.window_event.set()
+    else:
+        stream = streams.get(stream_id)
+        if stream is not None:
+            stream.window_event.set()
+
+
 async def _send_h2_data_chunks(
     *,
     h2_conn: Any,
     writer: asyncio.StreamWriter,
-    write_lock: asyncio.Lock,
     is_closed: Callable[[], bool],
     stream_id: int,
     data: bytes,
@@ -166,17 +207,10 @@ async def _send_h2_data_chunks(
             return
 
         if total == 0:
-            async with write_lock:
-                if is_closed():
-                    err = on_closed()
-                    if err is not None:
-                        raise err
-                    return
-                h2_conn.send_data(stream_id, b"", end_stream=end_stream)
-                out = h2_conn.data_to_send()
-                if out:
-                    writer.write(out)
-                    await writer.drain()
+            h2_conn.send_data(stream_id, b"", end_stream=end_stream)
+            wrote = _flush_h2_sync(h2_conn, writer)
+            if wrote:
+                await writer.drain()
             return
 
         window = int(h2_conn.local_flow_control_window(stream_id))
@@ -188,17 +222,10 @@ async def _send_h2_data_chunks(
         chunk_end = min(total, offset + min(window, max_frame))
         chunk = data[offset:chunk_end]
         is_last = end_stream and chunk_end == total
-        async with write_lock:
-            if is_closed():
-                err = on_closed()
-                if err is not None:
-                    raise err
-                return
-            h2_conn.send_data(stream_id, chunk, end_stream=is_last)
-            out = h2_conn.data_to_send()
-            if out:
-                writer.write(out)
-                await writer.drain()
+        h2_conn.send_data(stream_id, chunk, end_stream=is_last)
+        wrote = _flush_h2_sync(h2_conn, writer)
+        if wrote:
+            await writer.drain()
         offset = chunk_end
         if chunk_end == total:
             return
@@ -362,7 +389,6 @@ class AsyncGrpcHttp2Client:
         self._h2: Any = None
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
-        self._write_lock = asyncio.Lock()
         self._streams: dict[int, _ClientStreamChannel] = {}
         self._conn_window_event = asyncio.Event()
         self._conn_window_event.set()
@@ -420,13 +446,8 @@ class AsyncGrpcHttp2Client:
     async def _flush_pending(self) -> None:
         if self._h2 is None or self._writer is None or self._closed:
             return
-        async with self._write_lock:
-            if self._h2 is None or self._writer is None or self._closed:
-                return
-            out = self._h2.data_to_send()
-            if out:
-                self._writer.write(out)
-                await self._writer.drain()
+        if _flush_h2_sync(self._h2, self._writer):
+            await self._writer.drain()
 
     async def _send_stream_bytes(
         self,
@@ -438,55 +459,74 @@ class AsyncGrpcHttp2Client:
         if self._closed or self._h2 is None or self._writer is None:
             raise UniconnConnectionError("HTTP/2 gRPC connection is closed", host=self.host)
 
-        async def _wait_window() -> None:
-            stream = self._streams.get(stream_id)
-            if stream is not None:
-                stream.window_event.clear()
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(stream.window_event.wait(), timeout=0.02)
-            else:
-                self._conn_window_event.clear()
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(self._conn_window_event.wait(), timeout=0.02)
+        def _is_stream_unavailable() -> bool:
+            return (
+                self._closed
+                or self._h2 is None
+                or self._writer is None
+                or stream_id not in self._streams
+            )
 
-        await _send_h2_data_chunks(
-            h2_conn=self._h2,
-            writer=self._writer,
-            write_lock=self._write_lock,
-            is_closed=lambda: self._closed or self._h2 is None or self._writer is None,
-            stream_id=stream_id,
-            data=data,
-            end_stream=end_stream,
-            wait_window=_wait_window,
-            on_closed=lambda: UniconnConnectionError("HTTP/2 gRPC connection is closed", host=self.host),
-        )
+        def _on_unavailable() -> Exception | None:
+            if self._closed or self._h2 is None or self._writer is None:
+                return UniconnConnectionError("HTTP/2 gRPC connection is closed", host=self.host)
+            # Поток уже удалён _recv_loop (StreamEnded / StreamReset) — возвращаемся в read_frame().
+            return None
+
+        try:
+            await _send_h2_data_chunks(
+                h2_conn=self._h2,
+                writer=self._writer,
+                is_closed=_is_stream_unavailable,
+                stream_id=stream_id,
+                data=data,
+                end_stream=end_stream,
+                wait_window=lambda: _wait_stream_window(
+                    self._streams, stream_id, self._conn_window_event
+                ),
+                on_closed=_on_unavailable,
+            )
+        except Exception as exc:
+            if self._closed:
+                raise UniconnConnectionError(
+                    "HTTP/2 gRPC connection is closed", host=self.host
+                ) from exc
+            stream = self._streams.get(stream_id)
+            if stream is None or stream.recv_closed or not stream.events.empty():
+                # Сервер успел закрыть/сбросить поток и положить статус/ошибку в очередь:
+                # позволяем read_frame() поднять точное gRPC-исключение.
+                return
+            if isinstance(exc, UniconnConnectionError | ExecutionError):
+                raise
+            if type(exc).__name__ in ("StreamClosedError", "NoSuchStreamError", "ProtocolError"):
+                return
+            raise UniconnConnectionError(
+                f"HTTP/2 gRPC send failed on stream {stream_id}: {exc}",
+                host=self.host,
+            ) from exc
 
     async def _end_stream(self, stream_id: int) -> None:
-        if self._closed or self._h2 is None:
+        if self._closed or self._h2 is None or self._writer is None:
             return
-        async with self._write_lock:
-            if self._h2 is None or self._writer is None or self._closed:
-                return
+        wrote = False
+        with contextlib.suppress(Exception):
+            self._h2.end_stream(stream_id)
+            wrote = _flush_h2_sync(self._h2, self._writer)
+        if wrote and self._writer is not None:
             with contextlib.suppress(Exception):
-                self._h2.end_stream(stream_id)
-                out = self._h2.data_to_send()
-                if out:
-                    self._writer.write(out)
-                    await self._writer.drain()
+                await self._writer.drain()
 
     async def _reset_stream(self, stream_id: int) -> None:
-        if self._closed or self._h2 is None:
+        if self._closed or self._h2 is None or self._writer is None:
             return
         self._streams.pop(stream_id, None)
-        async with self._write_lock:
-            if self._h2 is None or self._writer is None or self._closed:
-                return
+        wrote = False
+        with contextlib.suppress(Exception):
+            self._h2.reset_stream(stream_id)
+            wrote = _flush_h2_sync(self._h2, self._writer)
+        if wrote and self._writer is not None:
             with contextlib.suppress(Exception):
-                self._h2.reset_stream(stream_id)
-                out = self._h2.data_to_send()
-                if out:
-                    self._writer.write(out)
-                    await self._writer.drain()
+                await self._writer.drain()
 
     async def _recv_loop(self) -> None:
         ev_mod = self._events_mod
@@ -528,6 +568,7 @@ class AsyncGrpcHttp2Client:
                         stream = self._streams.pop(ev.stream_id, None)
                         if stream is not None:
                             stream.recv_closed = True
+                            stream.window_event.set()
                             code = int(getattr(ev, "error_code", 1) or 1)
                             stream.events.put_nowait(
                                 (
@@ -541,14 +582,9 @@ class AsyncGrpcHttp2Client:
                                 )
                             )
                     elif isinstance(ev, ev_mod.WindowUpdated):
-                        self._conn_window_event.set()
-                        if ev.stream_id == 0:
-                            for s in self._streams.values():
-                                s.window_event.set()
-                        else:
-                            stream = self._streams.get(ev.stream_id)
-                            if stream is not None:
-                                stream.window_event.set()
+                        _notify_window_updated(
+                            ev.stream_id, self._streams, self._conn_window_event
+                        )
                     elif isinstance(ev, ev_mod.ConnectionTerminated):
                         err_code = int(getattr(ev, "error_code", 0) or 0)
                         self._fail_all_streams(
@@ -618,22 +654,17 @@ class AsyncGrpcHttp2Client:
         if not self.is_connected:
             await self.connect()
 
-        if self._h2 is None:
-            raise UniconnConnectionError("HTTP/2 client not initialized", host=self.host)
+        if self._h2 is None or self._writer is None or self._closed:
+            raise UniconnConnectionError("HTTP/2 gRPC connection is closed", host=self.host)
 
         hdrs = self._build_grpc_headers(path, metadata=metadata)
-        async with self._write_lock:
-            if self._h2 is None or self._writer is None or self._closed:
-                raise UniconnConnectionError("HTTP/2 gRPC connection is closed", host=self.host)
-            stream_id = int(self._h2.get_next_available_stream_id())
-            stream = _ClientStreamChannel(stream_id, self)
-            self._streams[stream_id] = stream
-            headers_only_end = end_stream and initial_payload is None
-            self._h2.send_headers(stream_id, hdrs, end_stream=headers_only_end)
-            out = self._h2.data_to_send()
-            if out:
-                self._writer.write(out)
-                await self._writer.drain()
+        stream_id = int(self._h2.get_next_available_stream_id())
+        stream = _ClientStreamChannel(stream_id, self)
+        self._streams[stream_id] = stream
+        headers_only_end = end_stream and initial_payload is None
+        self._h2.send_headers(stream_id, hdrs, end_stream=headers_only_end)
+        if _flush_h2_sync(self._h2, self._writer):
+            await self._writer.drain()
 
         if initial_payload is not None:
             await stream.send_message(initial_payload, end_stream=end_stream)
@@ -793,7 +824,6 @@ class _GrpcServerSession:
         self._events_mod = events_mod
         cfg = config_mod.H2Configuration(client_side=False, header_encoding="utf-8")
         self._h2 = conn_mod.H2Connection(config=cfg)
-        self._write_lock = asyncio.Lock()
         self._conn_window_event = asyncio.Event()
         self._conn_window_event.set()
         self._streams: dict[int, GrpcServerStream] = {}
@@ -803,9 +833,7 @@ class _GrpcServerSession:
     async def _flush(self) -> None:
         if self._closed:
             return
-        out = self._h2.data_to_send()
-        if out:
-            self._writer.write(out)
+        if _flush_h2_sync(self._h2, self._writer):
             await self._writer.drain()
 
     async def _send_headers(
@@ -817,12 +845,13 @@ class _GrpcServerSession:
     ) -> None:
         if self._closed:
             return
-        async with self._write_lock:
-            if self._closed:
-                return
+        wrote = False
+        with contextlib.suppress(Exception):
+            self._h2.send_headers(stream_id, headers, end_stream=end_stream)
+            wrote = _flush_h2_sync(self._h2, self._writer)
+        if wrote:
             with contextlib.suppress(Exception):
-                self._h2.send_headers(stream_id, headers, end_stream=end_stream)
-                await self._flush()
+                await self._writer.drain()
 
     async def _send_response_headers(self, stream_id: int) -> None:
         await self._send_headers(
@@ -835,27 +864,17 @@ class _GrpcServerSession:
         if self._closed:
             return
 
-        async def _wait_window() -> None:
-            stream = self._streams.get(stream_id)
-            if stream is not None:
-                stream.window_event.clear()
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(stream.window_event.wait(), timeout=0.02)
-            else:
-                self._conn_window_event.clear()
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(self._conn_window_event.wait(), timeout=0.02)
-
         with contextlib.suppress(Exception):
             await _send_h2_data_chunks(
                 h2_conn=self._h2,
                 writer=self._writer,
-                write_lock=self._write_lock,
-                is_closed=lambda: self._closed,
+                is_closed=lambda: self._closed or stream_id not in self._streams,
                 stream_id=stream_id,
                 data=data,
                 end_stream=False,
-                wait_window=_wait_window,
+                wait_window=lambda: _wait_stream_window(
+                    self._streams, stream_id, self._conn_window_event
+                ),
                 on_closed=lambda: None,
             )
 
@@ -863,8 +882,7 @@ class _GrpcServerSession:
         """Запустить цикл обработки HTTP/2 кадров до закрытия соединения."""
         ev_mod = self._events_mod
         self._h2.initiate_connection()
-        async with self._write_lock:
-            await self._flush()
+        await self._flush()
 
         try:
             while not self._closed:
@@ -900,19 +918,13 @@ class _GrpcServerSession:
                             stream.window_event.set()
                             stream._rx_queue.put_nowait(("end", None))
                     elif isinstance(ev, ev_mod.WindowUpdated):
-                        self._conn_window_event.set()
-                        if ev.stream_id == 0:
-                            for s in self._streams.values():
-                                s.window_event.set()
-                        else:
-                            stream = self._streams.get(ev.stream_id)
-                            if stream is not None:
-                                stream.window_event.set()
+                        _notify_window_updated(
+                            ev.stream_id, self._streams, self._conn_window_event
+                        )
                     elif isinstance(ev, ev_mod.ConnectionTerminated):
                         return
 
-                async with self._write_lock:
-                    await self._flush()
+                await self._flush()
         except (ConnectionResetError, BrokenPipeError, EOFError):
             pass
         except Exception as exc:

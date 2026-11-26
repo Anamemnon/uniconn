@@ -70,8 +70,8 @@ Model-driven network management supporting ``conn.net.get()``, ``conn.net.set()`
 Execute commands and manage files inside virtual machines via hypervisor guest agents without requiring in-guest network connectivity.
 
 - **Proxmox VE API + Guest Agent (``pve://``)**:
-  ``pve://[user[@realm][!token_id][:password]@]pve-host[:8006]/<vmid>[?node=pve1&token_id=uniconn&secret=env://PVE_SECRET&verify_ssl=false]``
-  Supports guest exec/file I/O plus hypervisor commands: ``pve power status|start|stop|shutdown|reboot|reset`` and ``pve snapshot list|create|rollback|delete``.
+  ``pve://[user[@realm][!token_id][:password]@]pve-host[:8006]/<vmid>[?node=pve1&token_id=uniconn&secret=env://PVE_SECRET&verify_ssl=false&chunk_size=49152]``
+  Supports guest exec, streaming chunked file transfers (``iter_file_chunks()``, ``upload()``/``download()`` with automatic ``truncated=1`` chunked fallback), plus hypervisor commands: ``pve power status|start|stop|shutdown|reboot|reset`` and ``pve snapshot list|create|rollback|delete``.
 - **QEMU Guest Agent (``qga://`` / ``qemu-ga://``)**:
   ``qga:///var/lib/libvirt/qemu/channel/target/domain-1-vm1/org.qemu.guest_agent.0`` or ``qga://root@kvm-host-01/vm-prod-01[?backend=socket|virsh&libvirt_uri=qemu:///system]``.
 
@@ -99,9 +99,9 @@ Execute commands, stream logs, open PTY shells, and synchronize files directly i
 
 Out-of-band chassis power management, thermal/fan sensor inspection, System Event Log (SEL) auditing, and PXE boot device configuration.
 
-- **DMTF Redfish HTTP/2**: ``redfish://[user[:password]@]bmc-host[:443][?verify_ssl=false&system_id=1&chassis_id=1&manager_id=1&multiplexed=true]``
-- **IPMI v2.0 LAN+**: ``ipmi://[user[:password]@]bmc-host[:623]``
-- **Supported Commands**: ``power on|off|cycle|reset|shutdown|status``, ``sensors`` / ``health``, ``sel list|clear``, ``boot pxe|disk|bios|cdrom [once|continuous] [uefi|legacy]``, ``raw <netfn> <cmd>``.
+- **DMTF Redfish HTTP/2**: ``redfish://[user[:password]@]bmc-host[:443][?verify_ssl=false&system_id=1&chassis_id=1&manager_id=1&multiplexed=true&sse_uri=...]`` (also supports ``stream("events")`` EventService SSE with ``LogServices`` polling fallback and ``strict=True``)
+- **IPMI v2.0 LAN+**: ``ipmi://[user[:password]@]bmc-host[:623][?reuse_session=true|false]`` (reuses persistent RMCP+ sessions under ``asyncio.Lock`` with auto-reconnect and ``logout()`` on ``disconnect()``)
+- **Supported Commands**: ``power on|off|cycle|reset|shutdown|status``, ``sensors`` / ``health``, ``sel list|clear``, ``events``, ``boot pxe|disk|bios|cdrom [once|continuous] [uefi|legacy]``, ``raw <netfn> <cmd>``.
 
 7. Serial / UART & Bootloader Flashing (``serial://``, ``uart://``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

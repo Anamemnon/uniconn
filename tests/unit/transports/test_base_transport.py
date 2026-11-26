@@ -150,3 +150,36 @@ class TestBaseTransportContextManager:
             assert transport.connected_calls == 1
         assert transport.disconnected_calls == 1
         assert not transport.is_connected
+
+
+class TestTunnelServiceCapabilityCheck:
+    """TunnelService должен проверять TunnelCapableTransport до подключения к транспорту."""
+
+    @pytest.mark.asyncio
+    async def test_tunnels_raise_capability_error_before_connect(self, config) -> None:
+        from uniconn.core.connection import Connection
+        from uniconn.exceptions import CapabilityNotSupportedError
+
+        transport = DummyTransport(config)
+        conn = Connection(transport, config)
+
+        with pytest.raises(CapabilityNotSupportedError, match="forward_local_port"):
+            async with conn.tunnels.forward_local_port("127.0.0.1", 8080):
+                pass
+        assert transport.connected_calls == 0
+
+        with pytest.raises(CapabilityNotSupportedError, match="forward_remote_port"):
+            async with conn.tunnels.forward_remote_port("127.0.0.1", 9090):
+                pass
+        assert transport.connected_calls == 0
+
+    @pytest.mark.asyncio
+    async def test_local_transport_tunnels_raise_capability_error(self) -> None:
+        from uniconn.core.connection import Connection
+        from uniconn.exceptions import CapabilityNotSupportedError
+
+        conn = Connection.local()
+        with pytest.raises(CapabilityNotSupportedError, match="forward_local_port"):
+            async with conn.tunnels.forward_local_port("127.0.0.1", 80):
+                pass
+

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import shlex
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +17,7 @@ from ...core._shell_quoting import (
     validate_env_key,
 )
 from ...exceptions import FileTransferError
-from ..base import BaseTransport, FileStat
+from ..base import BaseTransport, FileStat, _save_chunk_stream_to_file
 
 
 def parse_qga_network_interfaces(raw_interfaces: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -169,6 +169,34 @@ class GuestAgentTransportBase(BaseTransport):
         if not src.is_file():
             raise FileTransferError(f"Local file not found: {local_path}", host=self.config.host)
         await self.write_file(remote_path, src.read_bytes())
+
+    async def _download_via_chunks(
+        self,
+        remote_path: str,
+        local_path: str,
+        *,
+        chunk_size: int,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> None:
+        """Общий потоковый загрузчик файла с гостевой ВМ поверх ``iter_file_chunks``."""
+        import contextlib
+
+        total_size: int | None = None
+        if callable(progress_callback):
+            with contextlib.suppress(Exception):
+                st = await self.stat(remote_path)
+                total_size = int(st.get("size", 0))
+
+        async def _chunks_with_total() -> AsyncIterator[tuple[bytes, int | None]]:
+            async for chunk in self.iter_file_chunks(remote_path, chunk_size=chunk_size):
+                yield chunk, total_size
+
+        await _save_chunk_stream_to_file(
+            Path(local_path),
+            _chunks_with_total(),
+            progress_callback=progress_callback,
+            empty_total=total_size if total_size is not None else 0,
+        )
 
     async def download(
         self,

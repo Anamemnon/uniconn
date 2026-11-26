@@ -6,10 +6,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
+from ...core._shell_quoting import parse_bool
 from ...exceptions import BMCCapabilityError
 from ...exceptions import TimeoutError as UniconnTimeoutError
 from ...result import Result
@@ -611,19 +613,57 @@ class IPMITransport(BaseTransport):
         if ipmi_cmd is None:
             raise ImportError("pyghmi not installed. Run: pip install uniconn[bmc]")
         super().__init__(config)
-        self._bmc = None
+        self._reuse_session: bool = parse_bool(
+            config.options.get("reuse_session"), default=True
+        )
+        self._session_lock: asyncio.Lock = asyncio.Lock()
+        self._bmc: Any = None
+        self._disconnect_epoch: int = 0
 
     @property
     def name(self) -> str:
         return "ipmi"
 
+    @property
+    def reuse_session(self) -> bool:
+        """Флаг переиспользования RMCP+ сессии ``pyghmi`` между вызовами."""
+        return self._reuse_session
+
+    def _create_command_client(self) -> Any:
+        if ipmi_cmd is None:
+            raise ImportError("pyghmi is required for IPMITransport")
+        return ipmi_cmd.Command(
+            bmc=self.config.host,
+            userid=self.config.username,
+            password=(
+                self.config.password.get_secret_value()
+                if self.config.password
+                else None
+            ),
+            port=self.config.port or 623,
+        )
+
+    @staticmethod
+    def _logout_command_client(cmd: Any) -> None:
+        session = getattr(cmd, "ipmi_session", None)
+        logout = getattr(session, "logout", None)
+        if callable(logout):
+            with contextlib.suppress(Exception):
+                logout()
+
     async def connect(self) -> None:
-        """IPMI не требует постоянного TCP-соединения (stateless RMCP+)."""
+        """Отметить транспорт как готовый (RMCP+ сессия открывается лениво при первом запросе)."""
         self._connected = True
 
     async def disconnect(self) -> None:
-        """Отметить транспорт как отключённый."""
+        """Закрыть активную RMCP+ сессию IPMI (``logout()``) и сбросить статус подключения."""
         self._connected = False
+        self._disconnect_epoch += 1
+        async with self._session_lock:
+            cmd = self._bmc
+            self._bmc = None
+        if cmd is not None:
+            await asyncio.to_thread(self._logout_command_client, cmd)
 
     async def ping(self, timeout: float | None = None) -> bool:
         """Проверить доступность BMC через лёгкую IPMI команду ``power status``."""
@@ -667,50 +707,176 @@ class IPMITransport(BaseTransport):
             f"Available: {list(self.SUPPORTED_COMMANDS)}"
         )
 
+    def _execute_ephemeral_command(self, command: str) -> Any:
+        """Выполнить одну IPMI-команду в изолированной RMCP+ сессии с гарантированным ``logout()``."""
+        cmd = self._create_command_client()
+        try:
+            return self._dispatch_command(cmd, command)
+        finally:
+            self._logout_command_client(cmd)
+
+    def _execute_reused_command(
+        self,
+        command: str,
+        state_lock: threading.Lock,
+        state: dict[str, Any],
+    ) -> Any:
+        """Выполнить IPMI-команду в потоке, переиспользуя RMCP+ клиент с 1 авто-повтором при сбое."""
+        try:
+            with state_lock:
+                if state["aborted"]:
+                    return None
+                cmd = state["cmd"]
+                reused = cmd is not None
+
+            if not reused:
+                created = self._create_command_client()
+                with state_lock:
+                    if state["aborted"]:
+                        self._logout_command_client(created)
+                        return None
+                    state["cmd"] = created
+                cmd = created
+
+            try:
+                return self._dispatch_command(cmd, command)
+            except BMCCapabilityError:
+                raise
+            except Exception as err:
+                with state_lock:
+                    if state["cmd"] is cmd:
+                        state["cmd"] = None
+                    aborted_now = state["aborted"]
+                self._logout_command_client(cmd)
+                if not reused or aborted_now:
+                    raise
+
+                fresh_cmd = self._create_command_client()
+                with state_lock:
+                    if state["aborted"]:
+                        self._logout_command_client(fresh_cmd)
+                        raise UniconnTimeoutError(
+                            f"IPMI command timed out: {command}",
+                            command=command,
+                            host=self.config.host,
+                        ) from err
+                    state["cmd"] = fresh_cmd
+                try:
+                    return self._dispatch_command(fresh_cmd, command)
+                except BMCCapabilityError:
+                    raise
+                except Exception:
+                    with state_lock:
+                        if state["cmd"] is fresh_cmd:
+                            state["cmd"] = None
+                    self._logout_command_client(fresh_cmd)
+                    raise
+        finally:
+            with state_lock:
+                state["finished"] = True
+                if state["aborted"] and state["cmd"] is not None:
+                    stale_cmd = state["cmd"]
+                    state["cmd"] = None
+                else:
+                    stale_cmd = None
+            if stale_cmd is not None:
+                self._logout_command_client(stale_cmd)
+
+    async def _finalize_reused_client(
+        self,
+        state_lock: threading.Lock,
+        state: dict[str, Any],
+        start_epoch: int,
+        *,
+        force_abort: bool = False,
+    ) -> None:
+        """Сохранить годный ``pyghmi.Command`` в ``self._bmc`` или безопасно завершить его."""
+        logout_target: Any = None
+        with state_lock:
+            still_running = not state["finished"]
+            if force_abort or still_running:
+                # Рабочий поток ещё не завершился (TimeoutError / CancelledError):
+                # запрещаем сохранение _bmc, поток сам вызовет logout() в своём finally.
+                state["aborted"] = True
+                rem_cmd = None
+            else:
+                rem_cmd = state["cmd"]
+                state["cmd"] = None
+
+        if rem_cmd is not None:
+            if self._disconnect_epoch == start_epoch:
+                self._bmc = rem_cmd
+            else:
+                logout_target = rem_cmd
+
+        if logout_target is not None:
+            await asyncio.to_thread(self._logout_command_client, logout_target)
+
     async def run(
         self,
         command: str,
         timeout: float | None = None,
         **kwargs: Any,
     ) -> Result:
-        """Выполнить IPMI-команду в пуле потоков и вернуть JSON-сериализованный ``Result``."""
+        """Выполнить IPMI-команду в пуле потоков с переиспользованием RMCP+ сессии."""
+        _ = kwargs
         start_time = time.monotonic()
-        loop = asyncio.get_running_loop()
+        eff_timeout = timeout or self.config.timeout
 
-        def _execute() -> Any:
-            if ipmi_cmd is None:
-                raise ImportError("pyghmi is required for IPMITransport")
-            cmd = ipmi_cmd.Command(
-                bmc=self.config.host,
-                userid=self.config.username,
-                password=(
-                    self.config.password.get_secret_value()
-                    if self.config.password
-                    else None
-                ),
-                port=self.config.port or 623,
-            )
-            try:
-                return self._dispatch_command(cmd, command)
-            finally:
-                if type(cmd).__module__.startswith("pyghmi"):
-                    session = getattr(cmd, "ipmi_session", None)
-                    logout = getattr(session, "logout", None)
-                    if callable(logout):
-                        with contextlib.suppress(Exception):
-                            logout()
+        async with self._session_lock:
+            start_epoch = self._disconnect_epoch
+            existing_cmd = self._bmc
+            self._bmc = None
 
-        try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(None, _execute),
-                timeout=timeout or self.config.timeout,
-            )
-        except TimeoutError as exc:
-            raise UniconnTimeoutError(
-                f"IPMI command timed out: {command}",
-                command=command,
-                host=self.config.host,
-            ) from exc
+            if not self._reuse_session:
+                if existing_cmd is not None:
+                    await asyncio.to_thread(self._logout_command_client, existing_cmd)
+                try:
+                    result = await asyncio.wait_for(
+                        asyncio.to_thread(self._execute_ephemeral_command, command),
+                        timeout=eff_timeout,
+                    )
+                except TimeoutError as exc:
+                    raise UniconnTimeoutError(
+                        f"IPMI command timed out: {command}",
+                        command=command,
+                        host=self.config.host,
+                    ) from exc
+            else:
+                state_lock = threading.Lock()
+                state: dict[str, Any] = {
+                    "cmd": existing_cmd,
+                    "aborted": False,
+                    "finished": False,
+                }
+                timed_out = False
+                try:
+                    result = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self._execute_reused_command, command, state_lock, state
+                        ),
+                        timeout=eff_timeout,
+                    )
+                except TimeoutError as exc:
+                    timed_out = True
+                    await self._finalize_reused_client(
+                        state_lock, state, start_epoch, force_abort=True
+                    )
+                    raise UniconnTimeoutError(
+                        f"IPMI command timed out: {command}",
+                        command=command,
+                        host=self.config.host,
+                    ) from exc
+                except BaseException:
+                    if not timed_out:
+                        await self._finalize_reused_client(
+                            state_lock, state, start_epoch, force_abort=False
+                        )
+                    raise
+                else:
+                    await self._finalize_reused_client(
+                        state_lock, state, start_epoch, force_abort=False
+                    )
 
         duration = time.monotonic() - start_time
         stdout_str = (

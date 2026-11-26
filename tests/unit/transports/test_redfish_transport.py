@@ -1288,3 +1288,295 @@ class TestRedfishAuditEnhancements:
             assert json.loads(wait_res.stdout)["task_state"] == "Completed"
 
 
+class TestRedfishEventServiceSSE:
+    """Тесты Redfish EventService SSE streaming, 401-рефреша, fallback на LogServices и live HTTP."""
+
+    @staticmethod
+    def _make_sse_response(
+        chunks: list[bytes],
+        *,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+    ) -> MagicMock:
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.headers = (
+            headers if headers is not None else {"Content-Type": "text/event-stream"}
+        )
+        resp.close = AsyncMock(return_value=None)
+
+        async def _iter_chunks(chunk_size: int = 1024) -> Any:
+            _ = chunk_size
+            for c in chunks:
+                yield c
+
+        resp.iter_content = _iter_chunks
+        return resp
+
+    @pytest.mark.asyncio
+    async def test_redfish_events_run_and_sse_streaming_with_401_refresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Команда events и stream('events') с EventService SSE, разбиением Events[] и 401 refresh."""
+        fake_session = _build_fake_redfish_session(session_auth_supported=True)
+        orig_get = fake_session.get.side_effect
+        sse_calls: list[str] = []
+        first_sse_401 = {"flag": True}
+
+        sse_chunk_1 = (
+            b"id: 101\r\nevent: Alert\r\n"
+            b'data: {"@odata.type":"#Event.v1_7_0.Event","Events":['
+        )
+        sse_chunk_2 = (
+            b'{"EventId":"evt-1","EventType":"Alert","Severity":"Critical",'
+            b'"MessageId":"TMP0101","Message":"CPU1 Temp exceeded threshold"},'
+            b'{"EventId":"evt-2","EventType":"ResourceUpdated","Severity":"OK",'
+            b'"Message":"Fan recovered"}]}\r\n\r\n'
+            b': keep-alive comment\n'
+            b'data: {"Message":"Power supply redundancy restored"}\n\n'
+        )
+
+        async def _sse_get(path: str, **kw: Any) -> MagicMock:
+            if path == "/redfish/v1/EventService":
+                return _make_niq_response(
+                    200,
+                    {
+                        "@odata.id": "/redfish/v1/EventService",
+                        "ServiceEnabled": True,
+                        "ServerSentEventUri": "/redfish/v1/EventService/SSE",
+                        "SSEFilterPropertiesSupported": {"EventFormatType": True},
+                        "DeliveryRetryAttempts": 3,
+                        "Status": {"State": "Enabled", "Health": "OK"},
+                    },
+                )
+            if path.startswith("/redfish/v1/EventService/SSE"):
+                sse_calls.append(path)
+                if first_sse_401["flag"]:
+                    first_sse_401["flag"] = False
+                    return self._make_sse_response([], status_code=401, headers={})
+                return self._make_sse_response([sse_chunk_1, sse_chunk_2])
+            return await orig_get(path, **kw)
+
+        fake_session.get = AsyncMock(side_effect=_sse_get)
+        conn = Connection.from_uri("redfish://admin:calvin@10.0.0.100")
+        monkeypatch.setattr(conn._transport, "_create_async_session", lambda: fake_session)
+
+        async with conn:
+            es_res = await conn.run("events")
+            assert es_res.ok
+            es_data = json.loads(es_res.stdout)
+            assert es_data["ServerSentEventUri"] == "/redfish/v1/EventService/SSE"
+            assert es_data["ServiceEnabled"] is True
+
+            lines = [
+                line
+                async for line in conn.stream(
+                    "events", filter="Severity eq 'Critical'"
+                )
+            ]
+            assert len(lines) == 3
+            ev0 = json.loads(lines[0])
+            ev1 = json.loads(lines[1])
+            ev2 = json.loads(lines[2])
+            assert ev0["transport_mode"] == "sse"
+            assert ev0["event_id"] == "evt-1"
+            assert ev0["severity"] == "Critical"
+            assert ev0["message_id"] == "TMP0101"
+            assert ev1["event_id"] == "evt-2"
+            assert ev2["transport_mode"] == "sse"
+            assert ev2["message"] == "Power supply redundancy restored"
+            assert any("$filter=" in call for call in sse_calls)
+            assert fake_session.post.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_redfish_events_fallback_to_logservices_and_strict_mode(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """При отсутствии ServerSentEventUri или HTTP 404/406 включается polling LogServices или BMCCapabilityError при strict."""
+        fake_session = _build_fake_redfish_session()
+        orig_get = fake_session.get.side_effect
+
+        async def _no_sse_get(path: str, **kw: Any) -> MagicMock:
+            if path == "/redfish/v1/EventService":
+                return _make_niq_response(
+                    200,
+                    {"ServiceEnabled": True},
+                )
+            return await orig_get(path, **kw)
+
+        fake_session.get = AsyncMock(side_effect=_no_sse_get)
+        conn = Connection.from_uri("redfish://admin:calvin@10.0.0.100")
+        monkeypatch.setattr(conn._transport, "_create_async_session", lambda: fake_session)
+
+        async with conn:
+            lines = [line async for line in conn.stream("sse", once=True)]
+            assert len(lines) == 2
+            first = json.loads(lines[0])
+            assert first["transport_mode"] == "polling"
+            assert first["message"] == "System Chassis Intrusion cleared."
+
+            # Дедупликация при многократном polling и ограничение max_events
+            multi_lines = [
+                line
+                async for line in conn.stream(
+                    "events", poll_interval=0.01, timeout=0.05
+                )
+            ]
+            assert len(multi_lines) == 2
+
+            # strict=True должен бросать BMCCapabilityError
+            with pytest.raises(BMCCapabilityError, match="EventService SSE"):
+                async for _ in conn.stream("events strict"):
+                    pass
+        _ = caplog
+
+        # Проверка fallback при наличии ServerSentEventUri, но HTTP 406/non-SSE ответа
+        fake_session_406 = _build_fake_redfish_session()
+        orig_get_406 = fake_session_406.get.side_effect
+
+        async def _sse_406_get(path: str, **kw: Any) -> MagicMock:
+            if path == "/redfish/v1/EventService":
+                return _make_niq_response(
+                    200,
+                    {"ServerSentEventUri": "/redfish/v1/EventService/SSE"},
+                )
+            if path == "/redfish/v1/EventService/SSE":
+                return self._make_sse_response(
+                    [b"{}"],
+                    status_code=200,
+                    headers={"Content-Type": "application/json"},
+                )
+            return await orig_get_406(path, **kw)
+
+        fake_session_406.get = AsyncMock(side_effect=_sse_406_get)
+        conn2 = Connection.from_uri("redfish://admin:calvin@10.0.0.100")
+        monkeypatch.setattr(conn2._transport, "_create_async_session", lambda: fake_session_406)
+
+        async with conn2:
+            fallback_lines = [line async for line in conn2.stream("events", once=True)]
+            assert len(fallback_lines) == 2
+            assert json.loads(fallback_lines[0])["transport_mode"] == "polling"
+
+    def test_redfish_live_http_sse_server_and_sync_parity(self) -> None:
+        """Реальный ThreadingHTTPServer SSE + niquests.AsyncSession для async и SyncConnection."""
+
+        class _RedfishSseHandler(BaseHTTPRequestHandler):
+            def log_message(self, format: str, *args: Any) -> None:
+                _ = (format, args)
+
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0"))
+                _ = self.rfile.read(length) if length else b""
+                raw = json.dumps(
+                    {"Id": "1", "@odata.id": "/redfish/v1/SessionService/Sessions/1"}
+                ).encode("utf-8")
+                self.send_response(201)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.send_header("X-Auth-Token", "sse-live-tok")
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_GET(self) -> None:
+                if self.path == "/redfish/v1/EventService":
+                    raw = json.dumps(
+                        {
+                            "ServiceEnabled": True,
+                            "ServerSentEventUri": "/redfish/v1/EventService/SSE",
+                        }
+                    ).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
+                    return
+
+                if self.path == "/redfish/v1/EventService/SSE":
+                    payload = (
+                        b'id: 501\nevent: StatusChange\ndata: {"Events":[{"EventId":"s1","Message":"NIC link up","Severity":"OK"}]}\n\n'
+                        b'id: 502\nevent: Alert\ndata: {"Events":[{"EventId":"s2","Message":"PSU2 warning","Severity":"Warning"}]}\n\n'
+                    )
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.end_headers()
+                    self.wfile.write(payload)
+                    return
+
+                raw = json.dumps({"Ok": True}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_DELETE(self) -> None:
+                raw = b"{}"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _RedfishSseHandler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+
+        try:
+            uri = f"redfish://admin:calvin@127.0.0.1:{port}?scheme=http&multiplexed=false"
+            sync_conn = SyncConnection.from_uri(uri)
+            with sync_conn:
+                events = [json.loads(line) for line in sync_conn.stream("events", max_events=2)]
+                assert len(events) == 2
+                assert events[0]["transport_mode"] == "sse"
+                assert events[0]["event_id"] == "s1"
+                assert events[1]["event_id"] == "s2"
+                assert events[1]["severity"] == "Warning"
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @pytest.mark.asyncio
+    async def test_redfish_sse_max_events_empty_heartbeat_and_cleanup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """max_events=0 не открывает поток, Events:[] игнорируется, max_events закрывает resp."""
+        fake_session = _build_fake_redfish_session()
+        orig_get = fake_session.get.side_effect
+        sse_resp = self._make_sse_response(
+            [
+                b'data: {"Events":[]}\n\n',
+                b'data: {"Events":[{"EventId":"e1","Message":"First"}]}\n\n',
+                b'data: {"Events":[{"EventId":"e2","Message":"Second"}]}\n\n',
+            ]
+        )
+
+        async def _sse_get(path: str, **kw: Any) -> MagicMock:
+            if path == "/redfish/v1/EventService":
+                return _make_niq_response(
+                    200,
+                    {"ServiceEnabled": True, "ServerSentEventUri": "/redfish/v1/EventService/SSE"},
+                )
+            if path.startswith("/redfish/v1/EventService/SSE"):
+                return sse_resp
+            return await orig_get(path, **kw)
+
+        fake_session.get = AsyncMock(side_effect=_sse_get)
+        conn = Connection.from_uri("redfish://admin:calvin@10.0.0.100")
+        monkeypatch.setattr(conn._transport, "_create_async_session", lambda: fake_session)
+
+        async with conn:
+            zero_events = [line async for line in conn.stream("events", max_events=0)]
+            assert zero_events == []
+            assert not any(
+                call.args[0] == "/redfish/v1/EventService"
+                for call in fake_session.get.await_args_list
+            )
+
+            one_event = [json.loads(line) async for line in conn.stream("events", max_events=1)]
+            assert len(one_event) == 1
+            assert one_event[0]["event_id"] == "e1"
+            sse_resp.close.assert_awaited_once()
+

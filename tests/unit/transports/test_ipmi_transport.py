@@ -492,3 +492,245 @@ class TestIPMIStream:
 
             assert len(lines) >= 1
 
+
+class TestIPMISessionReuse:
+    """Тесты переиспользования RMCP+ сессии pyghmi, asyncio.Lock и автопереподключения."""
+
+    @pytest.mark.asyncio
+    async def test_reuse_session_default_creates_command_once_and_logouts_on_disconnect(
+        self, ipmi_config: ConnectionConfig
+    ) -> None:
+        """По умолчанию reuse_session=True: Command создаётся 1 раз, logout() при disconnect()."""
+        mock_cmd = MagicMock()
+        mock_cmd.get_power = MagicMock(return_value={"powerstate": "on"})
+        mock_cmd.ipmi_session = MagicMock()
+        mock_cmd.ipmi_session.logout = MagicMock()
+
+        mock_ipmi_module = MagicMock()
+        mock_ipmi_module.Command = MagicMock(return_value=mock_cmd)
+
+        with patch("uniconn.transports.bmc._ipmi.ipmi_cmd", mock_ipmi_module):
+            from uniconn.transports.bmc._ipmi import IPMITransport
+
+            transport = IPMITransport(ipmi_config)
+            assert transport.reuse_session is True
+            await transport.connect()
+
+            r1 = await transport.run("power status")
+            r2 = await transport.run("power status")
+            assert r1.ok and r2.ok
+            assert mock_ipmi_module.Command.call_count == 1
+            assert mock_cmd.get_power.call_count == 2
+            mock_cmd.ipmi_session.logout.assert_not_called()
+
+            await transport.disconnect()
+            mock_cmd.ipmi_session.logout.assert_called_once()
+            assert transport._bmc is None
+
+    @pytest.mark.asyncio
+    async def test_reuse_session_false_creates_and_closes_per_command(self) -> None:
+        """При reuse_session=False на каждую команду открывается и закрывается новая сессия."""
+        cfg = ConnectionConfig.from_uri("ipmi://admin:password@bmc.local:623?reuse_session=false")
+        created: list[MagicMock] = []
+
+        def _make_cmd(**kwargs: object) -> MagicMock:
+            _ = kwargs
+            c = MagicMock()
+            c.get_power = MagicMock(return_value={"powerstate": "on"})
+            c.ipmi_session = MagicMock()
+            c.ipmi_session.logout = MagicMock()
+            created.append(c)
+            return c
+
+        mock_ipmi_module = MagicMock()
+        mock_ipmi_module.Command = MagicMock(side_effect=_make_cmd)
+
+        with patch("uniconn.transports.bmc._ipmi.ipmi_cmd", mock_ipmi_module):
+            from uniconn.transports.bmc._ipmi import IPMITransport
+
+            transport = IPMITransport(cfg)
+            assert transport.reuse_session is False
+            await transport.connect()
+            await transport.run("power status")
+            await transport.run("power status")
+
+            assert len(created) == 2
+            created[0].ipmi_session.logout.assert_called_once()
+            created[1].ipmi_session.logout.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reuse_session_retries_once_on_stale_transport_error(
+        self, ipmi_config: ConnectionConfig
+    ) -> None:
+        """При сбое переиспользованной сессии клиент закрывается и создаётся заново для 1 повтора."""
+        stale_cmd = MagicMock()
+        stale_cmd.ipmi_session = MagicMock()
+        stale_cmd.ipmi_session.logout = MagicMock()
+        call_num = {"n": 0}
+
+        def _flaky_power() -> dict[str, str]:
+            call_num["n"] += 1
+            if call_num["n"] == 2:
+                raise OSError("RMCP+ session expired")
+            return {"powerstate": "on"}
+
+        stale_cmd.get_power = MagicMock(side_effect=_flaky_power)
+
+        fresh_cmd = MagicMock()
+        fresh_cmd.ipmi_session = MagicMock()
+        fresh_cmd.ipmi_session.logout = MagicMock()
+        fresh_cmd.get_power = MagicMock(return_value={"powerstate": "standby"})
+
+        mock_ipmi_module = MagicMock()
+        mock_ipmi_module.Command = MagicMock(side_effect=[stale_cmd, fresh_cmd])
+
+        with patch("uniconn.transports.bmc._ipmi.ipmi_cmd", mock_ipmi_module):
+            from uniconn.transports.bmc._ipmi import IPMITransport
+
+            transport = IPMITransport(ipmi_config)
+            await transport.connect()
+            res1 = await transport.run("power status")
+            assert res1.json()["powerstate"] == "on"
+
+            res2 = await transport.run("power status")
+            assert res2.json()["powerstate"] == "standby"
+            assert mock_ipmi_module.Command.call_count == 2
+            stale_cmd.ipmi_session.logout.assert_called_once()
+
+            await transport.disconnect()
+            fresh_cmd.ipmi_session.logout.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_runs_serialized_by_session_lock(
+        self, ipmi_config: ConnectionConfig
+    ) -> None:
+        """Конкурентные вызовы run() сериализуются _session_lock без гонок в pyghmi."""
+        import asyncio
+        import threading
+        import time
+
+        active_calls = {"count": 0, "max_concurrent": 0}
+        guard = threading.Lock()
+
+        def _slow_power() -> dict[str, str]:
+            with guard:
+                active_calls["count"] += 1
+                active_calls["max_concurrent"] = max(
+                    active_calls["max_concurrent"], active_calls["count"]
+                )
+            time.sleep(0.02)
+            with guard:
+                active_calls["count"] -= 1
+            return {"powerstate": "on"}
+
+        mock_cmd = MagicMock()
+        mock_cmd.get_power = MagicMock(side_effect=_slow_power)
+        mock_cmd.ipmi_session = MagicMock()
+        mock_cmd.ipmi_session.logout = MagicMock()
+
+        mock_ipmi_module = MagicMock()
+        mock_ipmi_module.Command = MagicMock(return_value=mock_cmd)
+
+        with patch("uniconn.transports.bmc._ipmi.ipmi_cmd", mock_ipmi_module):
+            from uniconn.transports.bmc._ipmi import IPMITransport
+
+            transport = IPMITransport(ipmi_config)
+            await transport.connect()
+            results = await asyncio.gather(
+                transport.run("power status"),
+                transport.run("power status"),
+                transport.run("power status"),
+            )
+            assert all(r.ok for r in results)
+            assert active_calls["max_concurrent"] == 1
+            await transport.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_timeout_prevents_resurrection_and_logs_out_orphaned_session(
+        self, ipmi_config: ConnectionConfig
+    ) -> None:
+        """При таймауте run() _bmc не воскрешается фоновым потоком, а зависшая сессия получает logout."""
+        import asyncio
+        import threading
+
+        from uniconn.exceptions import TimeoutError as UniconnTimeoutError
+
+        release_worker = threading.Event()
+        worker_entered = threading.Event()
+
+        def _hanging_power() -> dict[str, str]:
+            worker_entered.set()
+            release_worker.wait(timeout=2.0)
+            raise OSError("slow failure after timeout")
+
+        mock_cmd = MagicMock()
+        mock_cmd.get_power = MagicMock(side_effect=_hanging_power)
+        mock_cmd.ipmi_session = MagicMock()
+        mock_cmd.ipmi_session.logout = MagicMock()
+
+        mock_ipmi_module = MagicMock()
+        mock_ipmi_module.Command = MagicMock(return_value=mock_cmd)
+
+        with patch("uniconn.transports.bmc._ipmi.ipmi_cmd", mock_ipmi_module):
+            from uniconn.transports.bmc._ipmi import IPMITransport
+
+            transport = IPMITransport(ipmi_config)
+            await transport.connect()
+
+            with pytest.raises(UniconnTimeoutError, match="IPMI command timed out"):
+                await transport.run("power status", timeout=0.05)
+
+            assert worker_entered.is_set()
+            release_worker.set()
+            await asyncio.sleep(0.05)
+
+            # Второй Command не должен создаваться в фоне, а зависший должен получить logout()
+            assert mock_ipmi_module.Command.call_count == 1
+            mock_cmd.ipmi_session.logout.assert_called_once()
+            assert transport._bmc is None
+
+    @pytest.mark.asyncio
+    async def test_cancelled_error_prevents_resurrection_and_logs_out_orphaned_session(
+        self, ipmi_config: ConnectionConfig
+    ) -> None:
+        """При отмене задачи (CancelledError) во время выполнения _bmc не сохраняется, а worker вызывает logout."""
+        import asyncio
+        import threading
+
+        loop = asyncio.get_running_loop()
+        release_worker = threading.Event()
+        worker_entered = asyncio.Event()
+
+        def _blocking_power() -> dict[str, str]:
+            loop.call_soon_threadsafe(worker_entered.set)
+            release_worker.wait(timeout=2.0)
+            return {"powerstate": "on"}
+
+        mock_cmd = MagicMock()
+        mock_cmd.get_power = MagicMock(side_effect=_blocking_power)
+        mock_cmd.ipmi_session = MagicMock()
+        mock_cmd.ipmi_session.logout = MagicMock()
+
+        mock_ipmi_module = MagicMock()
+        mock_ipmi_module.Command = MagicMock(return_value=mock_cmd)
+
+        with patch("uniconn.transports.bmc._ipmi.ipmi_cmd", mock_ipmi_module):
+            from uniconn.transports.bmc._ipmi import IPMITransport
+
+            transport = IPMITransport(ipmi_config)
+            await transport.connect()
+
+            task = asyncio.create_task(transport.run("power status", timeout=5.0))
+            await asyncio.wait_for(worker_entered.wait(), timeout=2.0)
+
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            assert transport._bmc is None
+            release_worker.set()
+            await asyncio.sleep(0.05)
+
+            mock_cmd.ipmi_session.logout.assert_called_once()
+            assert transport._bmc is None
+

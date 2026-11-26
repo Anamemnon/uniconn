@@ -95,6 +95,8 @@ SUPPORTED_COMMANDS: tuple[str, ...] = (
     "tasks",
     "task status <task_id_or_uri>",
     "task wait <task_id_or_uri> [timeout]",
+    "events",
+    "sse",
     "GET /redfish/v1/...",
     "POST /redfish/v1/... {json}",
     "PATCH /redfish/v1/... {json}",

@@ -3,17 +3,21 @@
 
 from __future__ import annotations
 
-import asyncio
 import builtins
+import codecs
+import contextlib
+import inspect
 import json
 import logging
 import sys
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Iterable, Mapping
 from typing import Any
 
 from ..exceptions import ConnectionError as UniconnConnectionError
 from ..exceptions import OptionalDependencyError
 from ..exceptions import TimeoutError as UniconnTimeoutError
+
+SSE_MIME = "text/event-stream"
 
 try:
     import niquests
@@ -150,7 +154,7 @@ class BaseAsyncHttpClient:
             return
         try:
             res = close_fn()
-            if asyncio.iscoroutine(res):
+            if inspect.isawaitable(res):
                 await res
         except (OSError, RuntimeError) as exc:
             logger.debug("%s session close failed: %s", self._error_prefix, exc)
@@ -200,10 +204,170 @@ class BaseAsyncHttpClient:
             ) from exc
 
 
+class SseEventParser:
+    """Инкрементальный парсер событий Server-Sent Events (RFC 8040 / WHATWG / DMTF Redfish)."""
+
+    def __init__(self) -> None:
+        self._line_buf = ""
+        self._ev_name = ""
+        self._ev_id = ""
+        self._data_lines: list[str] = []
+
+    def _emit_ready(self) -> dict[str, str] | None:
+        if not self._data_lines:
+            self._ev_name = ""
+            return None
+        ev = {
+            "event": self._ev_name or "message",
+            "data": "\n".join(self._data_lines),
+            "id": self._ev_id,
+        }
+        self._ev_name = ""
+        self._data_lines = []
+        return ev
+
+    def _process_line(self, raw_line: str) -> dict[str, str] | None:
+        line = raw_line.rstrip("\r\n")
+        if line == "":
+            return self._emit_ready()
+        if line.startswith(":"):
+            return None
+        if ":" in line:
+            field_name, value = line.split(":", 1)
+            if value.startswith(" "):
+                value = value[1:]
+        else:
+            field_name, value = line, ""
+
+        if field_name == "event":
+            self._ev_name = value
+        elif field_name == "data":
+            self._data_lines.append(value)
+        elif field_name == "id" and "\x00" not in value:
+            self._ev_id = value
+        return None
+
+    def feed(self, text_chunk: str) -> list[dict[str, str]]:
+        """Добавить очередной текстовый фрагмент и вернуть все завершённые SSE-события."""
+        if not text_chunk:
+            return []
+        combined = self._line_buf + text_chunk
+        if combined.endswith("\r"):
+            prefix, trailing_cr = combined[:-1], "\r"
+        else:
+            prefix, trailing_cr = combined, ""
+        self._line_buf = prefix.replace("\r\n", "\n").replace("\r", "\n") + trailing_cr
+
+        events: list[dict[str, str]] = []
+        while "\n" in self._line_buf:
+            sep_idx = self._line_buf.index("\n")
+            one_line = self._line_buf[: sep_idx + 1]
+            self._line_buf = self._line_buf[sep_idx + 1 :]
+            ready = self._process_line(one_line)
+            if ready is not None:
+                events.append(ready)
+        return events
+
+    def finish(self) -> list[dict[str, str]]:
+        """Завершить разбор при закрытии потока и вернуть оставшиеся события."""
+        events: list[dict[str, str]] = []
+        if self._line_buf:
+            for one_line in self._line_buf.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+                ready = self._process_line(one_line)
+                if ready is not None:
+                    events.append(ready)
+            self._line_buf = ""
+        tail = self._emit_ready()
+        if tail is not None:
+            events.append(tail)
+        return events
+
+
+async def close_response_quietly(resp: Any) -> None:
+    """Безопасно закрыть HTTP-ответ ``niquests`` (поддерживает sync и awaitable ``close()``)."""
+    close_fn = getattr(resp, "close", None)
+    if callable(close_fn):
+        with contextlib.suppress(Exception):
+            res_close = close_fn()
+            if inspect.isawaitable(res_close):
+                await res_close
+
+
+def _decode_sse_chunk(chunk: Any, decoder: codecs.IncrementalDecoder) -> str:
+    """Декодировать очередной фрагмент SSE-потока в текст UTF-8."""
+    if isinstance(chunk, bytes | bytearray):
+        return decoder.decode(bytes(chunk), final=False)
+    return str(chunk)
+
+
+async def iter_sse_response(
+    resp: Any,
+    *,
+    timeout: float | None = None,
+    timeout_errors: tuple[type[BaseException], ...] = (),
+    error_prefix: str = "HTTP SSE",
+) -> AsyncIterator[dict[str, str]]:
+    """Потоково декодировать HTTP-ответ ``text/event-stream`` в последовательность SSE-событий."""
+    parser = SseEventParser()
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    eff_timeout_errors = timeout_errors or builtins_timeout_errors()
+    content_iter: Any = None
+
+    try:
+        iter_fn = getattr(resp, "iter_content", None)
+        content_iter = iter_fn(chunk_size=1024) if callable(iter_fn) else None
+        if inspect.isawaitable(content_iter):
+            content_iter = await content_iter
+
+        if isinstance(content_iter, AsyncIterator):
+            async for chunk in content_iter:
+                if not chunk:
+                    continue
+                for ready in parser.feed(_decode_sse_chunk(chunk, decoder)):
+                    yield ready
+        elif isinstance(content_iter, Iterable) and not isinstance(content_iter, str | bytes | bytearray):
+            for chunk in content_iter:
+                if not chunk:
+                    continue
+                for ready in parser.feed(_decode_sse_chunk(chunk, decoder)):
+                    yield ready
+        else:
+            raw_content = getattr(resp, "content", None)
+            raw_text = getattr(resp, "text", None)
+            if isinstance(raw_content, bytes | bytearray) and raw_content:
+                for ready in parser.feed(decoder.decode(bytes(raw_content), final=False)):
+                    yield ready
+            elif isinstance(raw_text, str) and raw_text:
+                for ready in parser.feed(raw_text):
+                    yield ready
+
+        tail = decoder.decode(b"", final=True)
+        for ready in parser.feed(tail):
+            yield ready
+        for final_ev in parser.finish():
+            yield final_ev
+    except eff_timeout_errors as exc:
+        timeout_hint = f" after {timeout}s" if timeout is not None else ""
+        raise UniconnTimeoutError(f"{error_prefix} stream timed out{timeout_hint}") from exc
+    finally:
+        if isinstance(content_iter, AsyncIterator):
+            aclose_fn = getattr(content_iter, "aclose", None)
+            if callable(aclose_fn):
+                with contextlib.suppress(Exception):
+                    res_aclose = aclose_fn()
+                    if inspect.isawaitable(res_aclose):
+                        await res_aclose
+        await close_response_quietly(resp)
+
+
 __all__ = [
+    "SSE_MIME",
     "BaseAsyncHttpClient",
+    "SseEventParser",
     "builtins_timeout_errors",
+    "close_response_quietly",
     "extract_response_headers",
+    "iter_sse_response",
     "niquests",
     "parse_json_dict",
     "resolve_lazy_response",

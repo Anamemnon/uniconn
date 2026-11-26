@@ -12,7 +12,7 @@ from typing import Any
 from ...config.models import ConnectionConfig
 from ...exceptions import ConfigurationError, ConnectionError, FileTransferError
 from ...result import Result
-from ..base import _iter_local_file_chunks, _save_chunk_stream_to_file
+from ..base import _iter_local_file_chunks
 from ..ssh.config_parser import OpenSSHConfigParser
 from .guest_base import GuestAgentTransportBase, parse_qga_network_interfaces
 from .qga_protocol import (
@@ -313,24 +313,11 @@ class QgaTransport(GuestAgentTransportBase):
         """Потоково скачать файл из гостевой ВМ на локальный диск без полной буферизации."""
         if not self._connected or self.client is None:
             raise ConnectionError("QGA transport is not connected", host=self.config.host)
-        progress_cb: Callable[[int, int], None] | None = kwargs.get("progress_callback")
-        total_size: int | None = None
-        if callable(progress_cb):
-            with contextlib.suppress(Exception):
-                st = await self.stat(remote_path)
-                total_size = int(st.get("size", 0))
-
-        chunk_size = self.client.chunk_size
-
-        async def _qga_chunks_with_total() -> AsyncIterator[tuple[bytes, int | None]]:
-            async for chunk in self.iter_file_chunks(remote_path, chunk_size=chunk_size):
-                yield chunk, total_size
-
-        await _save_chunk_stream_to_file(
-            Path(local_path),
-            _qga_chunks_with_total(),
-            progress_callback=progress_cb,
-            empty_total=total_size if total_size is not None else 0,
+        await self._download_via_chunks(
+            remote_path,
+            local_path,
+            chunk_size=self.client.chunk_size,
+            progress_callback=kwargs.get("progress_callback"),
         )
 
     async def gather_qga_native_facts(self, timeout: float = 5.0) -> dict[str, Any]:
