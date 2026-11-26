@@ -147,7 +147,7 @@ uv add "uniconn[all]"
 | **Proxmox VE** | `uv add "uniconn[pve]"` | API Proxmox VE и гостевой агент QEMU (`niquests`) |
 | **NETCONF** | `uv add "uniconn[netconf]"` | NETCONF поверх SSH (`asyncssh`) |
 | **RESTCONF** | `uv add "uniconn[restconf]"` | HTTP/2-клиент RESTCONF (`niquests`) |
-| **gNMI** | `uv add "uniconn[gnmi]"` | Телеметрия и конфигурация gNMI (`niquests`) |
+| **gNMI** | `uv add "uniconn[gnmi]"` | gNMI HTTP/2 gRPC телеметрия и конфигурация (`jh2` / `h2`) |
 | **Serial** | `uv add "uniconn[serial]"` | Serial/UART консоль (`pyserial-asyncio`) и X/Y/ZMODEM |
 | **Telnet** | `uv add "uniconn[telnet]"` | Telnet транспорт (`telnetlib3`) |
 | **Templates** | `uv add "uniconn[templates]"` | Шаблонизатор Jinja2 для `write_template()` |

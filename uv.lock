@@ -2123,6 +2123,7 @@ all = [
     { name = "cryptography" },
     { name = "cyclopts" },
     { name = "jc" },
+    { name = "jh2" },
     { name = "jinja2" },
     { name = "niquests" },
     { name = "ntc-templates" },
@@ -2155,6 +2156,7 @@ dev = [
     { name = "httpx" },
     { name = "hypothesis" },
     { name = "jc" },
+    { name = "jh2" },
     { name = "jinja2" },
     { name = "niquests" },
     { name = "ntc-templates" },
@@ -2185,7 +2187,7 @@ dev = [
     { name = "uvicorn" },
 ]
 gnmi = [
-    { name = "niquests" },
+    { name = "jh2" },
 ]
 mcp-http = [
     { name = "cryptography" },
@@ -2250,13 +2252,15 @@ requires-dist = [
     { name = "jc", marker = "extra == 'all'", specifier = ">=1.25.0" },
     { name = "jc", marker = "extra == 'dev'", specifier = ">=1.25.0" },
     { name = "jc", marker = "extra == 'parsing'", specifier = ">=1.25.0" },
+    { name = "jh2", marker = "extra == 'all'", specifier = ">=5.0" },
+    { name = "jh2", marker = "extra == 'dev'", specifier = ">=5.0" },
+    { name = "jh2", marker = "extra == 'gnmi'", specifier = ">=5.0" },
     { name = "jinja2", marker = "extra == 'all'", specifier = ">=3.1" },
     { name = "jinja2", marker = "extra == 'dev'", specifier = ">=3.1" },
     { name = "jinja2", marker = "extra == 'templates'", specifier = ">=3.1" },
     { name = "niquests", marker = "extra == 'all'", specifier = ">=3.5" },
     { name = "niquests", marker = "extra == 'bmc'", specifier = ">=3.5" },
     { name = "niquests", marker = "extra == 'dev'", specifier = ">=3.5" },
-    { name = "niquests", marker = "extra == 'gnmi'", specifier = ">=3.5" },
     { name = "niquests", marker = "extra == 'pve'", specifier = ">=3.5" },
     { name = "niquests", marker = "extra == 'restconf'", specifier = ">=3.5" },
     { name = "ntc-templates", marker = "extra == 'all'", specifier = ">=7.0.0" },

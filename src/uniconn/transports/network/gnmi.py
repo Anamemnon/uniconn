@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import json
+import logging
 import ssl
 import time
 from collections.abc import AsyncIterator, Mapping, Sequence
@@ -14,116 +14,31 @@ from typing import Any, Literal
 from ...config.models import ConnectionConfig
 from ...core._shell_quoting import parse_bool
 from ...exceptions import (
-    AuthenticationError,
-    ExecutionError,
-)
-from ...exceptions import (
     ConnectionError as UniconnConnectionError,
 )
 from ...exceptions import (
-    TimeoutError as UniconnTimeoutError,
+    ExecutionError,
 )
 from ...result import NetResult, Result, TelemetrySample
 from ..base import BaseTransport
+from ._h2_grpc import AsyncGrpcHttp2Client
 from .base import extract_yang_interfaces_and_system
 from .gnmi_proto import (
     GnmiPath,
     GnmiWireCodec,
-    encode_bytes_field,
-    iter_proto_fields,
-    pack_grpc_frame,
     parse_gnmi_path,
-    read_grpc_frame,
 )
 
-# Конверт wire-вызова RPC для gNMI транспорта и MockGnmiServer:
-# field 1: method ("Capabilities" | "Get" | "Set" | "Subscribe")
-# field 2: auth_user
-# field 3: auth_token_or_password
-# field 4: protobuf payload (GetRequest / SetRequest / SubscribeRequest)
-# Ответ:
-# field 1: status_code (0 = OK, 16 = UNAUTHENTICATED, 3 = INVALID_ARGUMENT и т.д.)
-# field 2: error_message
-# field 3: protobuf payload (CapabilitiesResponse / GetResponse / SetResponse / SubscribeResponse)
-
-
-def pack_gnmi_rpc_envelope(
-    method: str,
-    payload: bytes,
-    *,
-    username: str | None = None,
-    secret: str | None = None,
-) -> bytes:
-    """Упаковать gNMI-вызов в бинарный конверт Protobuf и 5-байтовый gRPC фрейм."""
-    env = bytearray()
-    env.extend(encode_bytes_field(1, method))
-    if username:
-        env.extend(encode_bytes_field(2, username))
-    if secret:
-        env.extend(encode_bytes_field(3, secret))
-    if payload:
-        env.extend(encode_bytes_field(4, payload))
-    return pack_grpc_frame(bytes(env))
-
-
-def unpack_gnmi_rpc_envelope(buf: bytes) -> tuple[str, str, str, bytes]:
-    """Распаковать бинарный конверт запроса gNMI -> ``(method, username, secret, payload)``."""
-    method = ""
-    username = ""
-    secret = ""
-    payload = b""
-    for fnum, _wtype, val in iter_proto_fields(buf):
-        if fnum == 1 and isinstance(val, bytes):
-            method = val.decode("utf-8", errors="replace")
-        elif fnum == 2 and isinstance(val, bytes):
-            username = val.decode("utf-8", errors="replace")
-        elif fnum == 3 and isinstance(val, bytes):
-            secret = val.decode("utf-8", errors="replace")
-        elif fnum == 4 and isinstance(val, bytes):
-            payload = val
-    return method, username, secret, payload
-
-
-def pack_gnmi_reply_envelope(
-    payload: bytes = b"",
-    *,
-    status_code: int = 0,
-    error_message: str = "",
-) -> bytes:
-    """Упаковать ответ сервера gNMI в бинарный конверт и 5-байтовый gRPC фрейм."""
-    from .gnmi_proto import encode_varint_field
-
-    env = bytearray()
-    if status_code:
-        env.extend(encode_varint_field(1, status_code))
-    if error_message:
-        env.extend(encode_bytes_field(2, error_message))
-    if payload:
-        env.extend(encode_bytes_field(3, payload))
-    return pack_grpc_frame(bytes(env))
-
-
-def unpack_gnmi_reply_envelope(buf: bytes) -> tuple[int, str, bytes]:
-    """Распаковать ответный конверт gNMI -> ``(status_code, error_message, payload)``."""
-    status_code = 0
-    error_message = ""
-    payload = b""
-    for fnum, _wtype, val in iter_proto_fields(buf):
-        if fnum == 1 and isinstance(val, int):
-            status_code = val
-        elif fnum == 2 and isinstance(val, bytes):
-            error_message = val.decode("utf-8", errors="replace")
-        elif fnum == 3 and isinstance(val, bytes):
-            payload = val
-    return status_code, error_message, payload
+_GNMI_SERVICE_PREFIX = "/gnmi.gNMI"
 
 
 class GnmiTransport(BaseTransport):
-    """Асинхронный транспорт gNMI (OpenConfig) для транзакций ``Get``/``Set`` и стриминга ``Subscribe``."""
+    """Асинхронный транспорт OpenConfig gNMI поверх стандартного HTTP/2 gRPC (``/gnmi.gNMI/*``)."""
 
     def __init__(self, config: ConnectionConfig) -> None:
         """Инициализировать транспорт gNMI."""
         super().__init__(config)
+        AsyncGrpcHttp2Client.ensure_dependency()
         opts = config.options
         self._encoding = str(opts.get("encoding", "json_ietf")).lower()
         self._target = str(opts.get("target", ""))
@@ -137,9 +52,7 @@ class GnmiTransport(BaseTransport):
             self._insecure = not parse_bool(opts["verify_ssl"], default=True)
         else:
             self._insecure = False
-        self._reader: asyncio.StreamReader | None = None
-        self._writer: asyncio.StreamWriter | None = None
-        self._rpc_lock = asyncio.Lock()
+        self._client: AsyncGrpcHttp2Client | None = None
 
     @property
     def name(self) -> str:
@@ -168,6 +81,7 @@ class GnmiTransport(BaseTransport):
         cert_file = self.config.options.get("cert") or self.config.options.get("cert_file")
         if cert_file:
             ctx.load_verify_locations(cafile=str(cert_file))
+        ctx.set_alpn_protocols(["h2"])
         return ctx
 
     def _auth_secret(self) -> str | None:
@@ -177,50 +91,56 @@ class GnmiTransport(BaseTransport):
             return self.config.password.get_secret_value()
         return None
 
-    async def _open_stream(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    def _grpc_metadata(self) -> dict[str, str]:
+        meta: dict[str, str] = {}
+        if self.config.username:
+            meta["username"] = self.config.username
+        if "token" in self.config.options and self.config.options["token"] is not None:
+            tok = str(self.config.options["token"])
+            meta["token"] = tok
+            meta["authorization"] = f"Bearer {tok}"
+        elif self.config.password is not None:
+            meta["password"] = self.config.password.get_secret_value()
+        return meta
+
+    async def _ensure_client(self) -> AsyncGrpcHttp2Client:
+        if self._client is not None and self._client.is_connected:
+            return self._client
+        await self.connect()
+        if self._client is None:
+            raise UniconnConnectionError("gNMI HTTP/2 client is not connected", host=self.config.host)
+        return self._client
+
+    async def connect(self) -> None:
+        """Установить мультиплексированное HTTP/2 gRPC соединение с gNMI-сервером."""
+        if self._connected and self._client is not None and self._client.is_connected:
+            return
         host = self.config.host or "127.0.0.1"
         port = self.config.port or 9339
         ssl_ctx = self._build_ssl_context()
         if ssl_ctx is None and (self.config.username or self._auth_secret()):
-            import logging
-
             logging.getLogger(__name__).warning(
-                "Connecting to gNMI endpoint %s:%s in cleartext (tls=false) with credentials",
+                "Connecting to gNMI endpoint %s:%s in cleartext HTTP/2 (tls=false) with credentials",
                 host,
                 port,
             )
-        try:
-            return await asyncio.wait_for(
-                asyncio.open_connection(host, port, ssl=ssl_ctx),
-                timeout=self.config.timeout,
-            )
-        except TimeoutError as exc:
-            raise UniconnTimeoutError(
-                f"gNMI connection to {host}:{port} timed out after {self.config.timeout}s",
-                host=self.config.host,
-            ) from exc
-        except Exception as exc:
-            raise UniconnConnectionError(
-                f"Failed to connect to gNMI endpoint {host}:{port}: {exc}",
-                host=self.config.host,
-            ) from exc
-
-    async def connect(self) -> None:
-        """Установить TCP/TLS соединение с gNMI-сервером."""
-        if self._connected and self._writer is not None:
-            return
-        self._reader, self._writer = await self._open_stream()
+        client = AsyncGrpcHttp2Client(
+            host=host,
+            port=port,
+            ssl_context=ssl_ctx,
+            timeout=self.config.timeout,
+        )
+        await client.connect()
+        self._client = client
         self._connected = True
 
     async def disconnect(self) -> None:
-        """Закрыть соединение с gNMI-сервером."""
-        if self._writer is not None:
-            with contextlib.suppress(Exception):
-                self._writer.close()
-                await self._writer.wait_closed()
-        self._reader = None
-        self._writer = None
+        """Закрыть HTTP/2 gRPC соединение с gNMI-сервером."""
+        client = self._client
+        self._client = None
         self._connected = False
+        if client is not None:
+            await client.close()
 
     async def _call_unary(
         self,
@@ -229,45 +149,15 @@ class GnmiTransport(BaseTransport):
         *,
         timeout: float | None = None,
     ) -> bytes:
-        if not self._connected or self._writer is None or self._reader is None:
-            await self.connect()
-
+        client = await self._ensure_client()
         eff_timeout = timeout if timeout is not None else self.config.timeout
-        frame = pack_gnmi_rpc_envelope(
-            method,
+        rpc_path = f"{_GNMI_SERVICE_PREFIX}/{method}"
+        return await client.unary_call(
+            rpc_path,
             req_payload,
-            username=self.config.username,
-            secret=self._auth_secret(),
+            metadata=self._grpc_metadata(),
+            timeout=eff_timeout,
         )
-        async with self._rpc_lock:
-            if self._writer is None or self._reader is None:
-                raise UniconnConnectionError("gNMI transport stream is not connected", host=self.config.host)
-            try:
-                self._writer.write(frame)
-                await self._writer.drain()
-                raw_reply = await read_grpc_frame(self._reader, timeout=eff_timeout)
-            except TimeoutError as exc:
-                raise UniconnTimeoutError(
-                    f"gNMI {method} timed out after {eff_timeout}s",
-                    command=f"gnmi.{method}",
-                    host=self.config.host,
-                ) from exc
-
-        status_code, err_msg, resp_payload = unpack_gnmi_reply_envelope(raw_reply)
-        if status_code == 16:
-            raise AuthenticationError(
-                err_msg or "gNMI authentication failed (UNAUTHENTICATED)",
-                host=self.config.host,
-            )
-        if status_code != 0:
-            raise ExecutionError(
-                err_msg or f"gNMI {method} failed with status={status_code}",
-                command=f"gnmi.{method}",
-                exit_code=status_code,
-                stderr=err_msg,
-                host=self.config.host,
-            )
-        return resp_payload
 
     def _make_path(self, path_str: str) -> GnmiPath:
         return parse_gnmi_path(path_str or "/", origin=self._origin, target=self._target)
@@ -644,37 +534,24 @@ class GnmiTransport(BaseTransport):
         )
         eff_timeout = timeout if timeout is not None else self.config.timeout
 
-        # Открываем выделенный поток для стриминга телеметрии, чтобы не блокировать параллельные Get/Set
-        reader, writer = await self._open_stream()
+        # Открываем мультиплексированный HTTP/2 поток на том же соединении,
+        # не блокируя параллельные unary Get/Set вызовы.
+        client = await self._ensure_client()
+        stream = await client.open_stream(
+            f"{_GNMI_SERVICE_PREFIX}/Subscribe",
+            initial_payload=req_bytes,
+            metadata=self._grpc_metadata(),
+            end_stream=once,
+        )
         try:
-            frame = pack_gnmi_rpc_envelope(
-                "Subscribe",
-                req_bytes,
-                username=self.config.username,
-                secret=self._auth_secret(),
-            )
-            writer.write(frame)
-            await writer.drain()
-
             while True:
-                try:
-                    raw_reply = await read_grpc_frame(reader, timeout=eff_timeout)
-                except (UniconnConnectionError, asyncio.CancelledError):
+                raw_reply = await stream.read_frame(
+                    command="gnmi.Subscribe",
+                    timeout=eff_timeout,
+                )
+                if raw_reply is None:
                     break
-                status_code, err_msg, resp_payload = unpack_gnmi_reply_envelope(raw_reply)
-                if status_code == 16:
-                    raise AuthenticationError(
-                        err_msg or "gNMI Subscribe authentication failed",
-                        host=self.config.host,
-                    )
-                if status_code != 0:
-                    raise ExecutionError(
-                        err_msg or f"gNMI Subscribe error (status={status_code})",
-                        command="gnmi.Subscribe",
-                        exit_code=status_code,
-                        host=self.config.host,
-                    )
-                decoded = GnmiWireCodec.decode_subscribe_response(resp_payload)
+                decoded = GnmiWireCodec.decode_subscribe_response(raw_reply)
                 notif = decoded.get("notification")
                 sync_resp = bool(decoded.get("sync_response", False))
                 if notif is not None:
@@ -709,8 +586,10 @@ class GnmiTransport(BaseTransport):
                     break
         finally:
             with contextlib.suppress(Exception):
-                writer.close()
-                await writer.wait_closed()
+                if not stream.recv_closed:
+                    await stream.cancel()
+                elif not stream.send_closed:
+                    await stream.close_send()
 
     async def gather_network_native_facts(
         self,
@@ -832,8 +711,4 @@ class GnmiTransport(BaseTransport):
 
 __all__ = [
     "GnmiTransport",
-    "pack_gnmi_reply_envelope",
-    "pack_gnmi_rpc_envelope",
-    "unpack_gnmi_reply_envelope",
-    "unpack_gnmi_rpc_envelope",
 ]

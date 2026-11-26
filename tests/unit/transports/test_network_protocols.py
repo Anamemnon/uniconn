@@ -10,6 +10,7 @@ import pytest
 
 from uniconn import (
     AuthenticationError,
+    CapabilityNotSupportedError,
     Connection,
     ConnectionPool,
     ExecutionError,
@@ -626,4 +627,237 @@ async def test_restconf_yang_patch_list_and_gnmi_multipath_edit() -> None:
         missing_res = await gnmi_conn.net.get_config(path="/non-existent-subtree")
         assert missing_res.ok is False
         assert missing_res.errors
+
+
+# ─── 9. Тесты Шага 3B: HTTP/2 gRPC gNMI, RESTCONF capabilities & SSE ────
+
+
+async def test_gnmi_http2_grpc_wire_auth_and_multiplexing() -> None:
+    """GnmiTransport использует стандартный HTTP/2 gRPC, мапит grpc-status=16 и мультиплексирует RPC."""
+    async with MockGnmiServer() as server:
+        # 1. Неверные учётные данные -> Trailers-Only grpc-status=16 -> AuthenticationError
+        bad_uri = f"gnmi://admin:wrong@{server.host}:{server.port}?tls=false"
+        async with Connection.from_uri(bad_uri) as bad_conn:
+            with pytest.raises(AuthenticationError):
+                await bad_conn.net.capabilities()
+
+        # 2. Мультиплексирование Get/Set внутри активного потока Subscribe по одному HTTP/2 соединению
+        async with Connection.from_uri(server.uri) as conn:
+            caps = await conn.net.capabilities()
+            assert caps.ok
+            h2_client = conn.transport._client  # type: ignore[attr-defined]
+            assert h2_client is not None and h2_client.is_connected
+
+            samples: list[TelemetrySample] = []
+            concurrent_get_ok = False
+            concurrent_set_ok = False
+            async for sample in conn.net.subscribe(
+                ["/interfaces/interface[name=Ethernet1/1]/state/counters"],
+                mode="sample",
+                sample_interval=0.02,
+            ):
+                samples.append(sample)
+                if len(samples) == 1:
+                    get_res = await conn.net.get("/system")
+                    edit_res = await conn.net.edit(
+                        {"config": {"hostname": "mux-updated"}},
+                        path="/system",
+                        operation="merge",
+                    )
+                    concurrent_get_ok = get_res.ok
+                    concurrent_set_ok = edit_res.ok and (conn.transport._client is h2_client)  # type: ignore[attr-defined]
+                if len(samples) >= 2:
+                    break
+
+            assert len(samples) >= 2
+            assert concurrent_get_ok is True
+            assert concurrent_set_ok is True
+
+            after = await conn.net.get("/system")
+            assert after.data["config"]["hostname"] == "mux-updated"
+
+        # Проверяем реальные HTTP/2 gRPC пути и content-type на стороне сервера
+        assert any(not e["authenticated"] for e in server.history)
+        valid_entries = [e for e in server.history if e["authenticated"] and e["path"].startswith("/gnmi.gNMI/")]
+        paths_seen = {e["path"] for e in valid_entries}
+        assert "/gnmi.gNMI/Capabilities" in paths_seen
+        assert "/gnmi.gNMI/Subscribe" in paths_seen
+        assert "/gnmi.gNMI/Get" in paths_seen
+        assert "/gnmi.gNMI/Set" in paths_seen
+        assert all(e["content_type"] == "application/grpc" for e in valid_entries)
+        stream_ids = [e["stream_id"] for e in valid_entries]
+        assert len(set(stream_ids)) == len(stream_ids)
+        assert all(sid % 2 == 1 for sid in stream_ids)
+
+
+async def test_restconf_transaction_capability_checks() -> None:
+    """RestconfTransport проверяет /restconf/operations и честно бросает CapabilityNotSupportedError."""
+    # 1. Обычный RFC 8040 сервер без ietf-netconf:* -> CapabilityNotSupportedError на всех 6 методах
+    async with MockRestconfServer(support_netconf_ops=False) as plain_srv:
+        async with Connection.from_uri(plain_srv.uri) as conn:
+            for call in (
+                lambda: conn.net.commit(),
+                lambda: conn.net.commit_confirm(),
+                lambda: conn.net.discard_changes(),
+                lambda: conn.net.validate(source="candidate"),
+                lambda: conn.net.lock("candidate"),
+                lambda: conn.net.unlock("candidate"),
+            ):
+                with pytest.raises(CapabilityNotSupportedError):
+                    await call()
+
+    # 2. Сервер с поддержкой ietf-netconf:* -> полноценная транзакция candidate -> validate -> commit + откат
+    async with MockRestconfServer(support_netconf_ops=True) as netconf_srv:
+        async with Connection.from_uri(netconf_srv.uri) as conn:
+            async with conn.net.transaction(datastore="candidate"):
+                edit_res = await conn.net.edit(
+                    {"hostname": "tx-committed-rc"},
+                    path="/system",
+                    datastore="candidate",
+                    operation="merge",
+                )
+                assert edit_res.ok
+
+            running = await conn.net.get("/system")
+            assert running.data["hostname"] == "tx-committed-rc"
+
+            # Исключение внутри transaction откатывает candidate без изменения running
+            with pytest.raises(RuntimeError, match="tx abort"):
+                async with conn.net.transaction(datastore="candidate"):
+                    await conn.net.edit(
+                        {"hostname": "should-be-rolled-back"},
+                        path="/system",
+                        datastore="candidate",
+                        operation="merge",
+                    )
+                    raise RuntimeError("tx abort")
+
+            still_committed = await conn.net.get("/system")
+            assert still_committed.data["hostname"] == "tx-committed-rc"
+
+
+async def test_restconf_subscribe_sse_and_polling_fallback(caplog: pytest.LogCaptureFixture) -> None:
+    """RestconfTransport.net_subscribe использует RFC 8040 SSE и откатывается на polling с меткой в metadata."""
+    # 1. Реальный SSE поток text/event-stream
+    async with MockRestconfServer(sse_enabled=True) as sse_srv:
+        async with Connection.from_uri(sse_srv.uri) as conn:
+            sse_samples: list[TelemetrySample] = []
+            async for sample in conn.net.subscribe(["/system"], mode="on_change"):
+                sse_samples.append(sample)
+
+            assert len(sse_samples) == 2
+            assert sse_samples[0].protocol == "restconf"
+            assert sse_samples[0].metadata["transport_mode"] == "sse"
+            assert sse_samples[0].metadata["sse_id"] == "1"
+            assert sse_samples[1].metadata["sse_id"] == "2"
+            assert "system" in sse_samples[0].values
+
+            # Round-trip сериализация metadata в TelemetrySample
+            roundtrip = TelemetrySample.from_dict(sse_samples[0].to_dict())
+            assert roundtrip.metadata["transport_mode"] == "sse"
+            assert roundtrip.metadata["sse_id"] == "1"
+
+    # 2. SSE отключён -> явное предупреждение в логе и fallback на GET polling
+    async with MockRestconfServer(sse_enabled=False) as no_sse_srv:
+        async with Connection.from_uri(no_sse_srv.uri) as conn:
+            caplog.clear()
+            poll_samples: list[TelemetrySample] = []
+            async for sample in conn.net.subscribe(["/system"], once=True):
+                poll_samples.append(sample)
+
+            assert len(poll_samples) == 1
+            assert poll_samples[0].protocol == "restconf"
+            assert poll_samples[0].metadata["transport_mode"] == "polling"
+            assert "fallback_reason" in poll_samples[0].metadata
+            assert poll_samples[0].values["hostname"] == "mock-edge-rtr-01"
+            assert any("falling back" in rec.message.lower() for rec in caplog.records)
+
+
+async def test_gnmi_http2_flow_control_large_payload_and_frame_buffer() -> None:
+    """_GrpcFrameBuffer и HTTP/2 flow-control корректно обрабатывают пакеты > 64 КБ."""
+    from uniconn.exceptions import ExecutionError
+    from uniconn.transports.network._h2_grpc import _GrpcFrameBuffer
+    from uniconn.transports.network.gnmi_proto import pack_grpc_frame
+
+    buf = _GrpcFrameBuffer()
+    buf.feed(pack_grpc_frame(b"one") + pack_grpc_frame(b"two") + pack_grpc_frame(b"three")[:3])
+    assert buf.pop_frame() == b"one"
+    assert buf.pop_frame() == b"two"
+    assert buf.pop_frame() is None
+    assert buf.trailing_bytes == 3
+    buf.feed(pack_grpc_frame(b"three")[3:])
+    assert buf.pop_frame() == b"three"
+    assert buf.trailing_bytes == 0
+
+    # Проверка неверного флага сжатия в gRPC заголовке
+    with pytest.raises(ExecutionError, match="compression"):
+        buf.feed(b"\x02\x00\x00\x00\x01a")
+
+    # Реальная передача > 80 КБ по HTTP/2 gRPC с flow-control WindowUpdated
+    large_blob = "X" * 85_000
+    async with MockGnmiServer() as server:
+        async with Connection.from_uri(server.uri) as conn:
+            set_res = await conn.net.edit(
+                {"banner": large_blob},
+                path="/system/config",
+                operation="merge",
+            )
+            assert set_res.ok
+            get_res = await conn.net.get("/system/config/banner")
+            assert get_res.ok
+            assert get_res.data == large_blob
+
+
+async def test_restconf_xml_transactions_and_sse_edge_cases() -> None:
+    """RESTCONF XML capabilities/commit, инкрементальный SSE CRLF парсер и _http_handler SSE."""
+    from uniconn.transports.network.restconf import _SseEventParser
+
+    # 1. Инкрементальный парсер SSE с разрывом \r\n на границе чанков
+    parser = _SseEventParser()
+    assert parser.feed(": keep-alive comment\r") == []
+    assert parser.feed("\nid: 42\r\nevent: update\r") == []
+    assert parser.feed("\ndata: line1\r\ndata: line2\r") == []
+    evs = parser.feed("\n\r\n")
+    assert evs == [{"event": "update", "data": "line1\nline2", "id": "42"}]
+    assert parser.finish() == []
+
+    # 2. RESTCONF в формате XML с проверкой capabilities и транзакцией
+    async with MockRestconfServer(support_netconf_ops=True) as netconf_srv:
+        xml_uri = f"{netconf_srv.uri}&format=xml"
+        async with Connection.from_uri(xml_uri) as conn:
+            async with conn.net.transaction(datastore="candidate"):
+                edit_res = await conn.net.edit(
+                    {"hostname": "xml-tx-host"},
+                    path="/system",
+                    datastore="candidate",
+                    operation="merge",
+                )
+                assert edit_res.ok
+            check_res = await conn.net.get("/system")
+            assert check_res.ok
+            assert check_res.data["hostname"] == "xml-tx-host"
+
+    # 3. SSE через _http_handler и корректное завершение при once=True на потоке из 2 событий
+    async with MockRestconfServer(sse_enabled=True) as sse_srv:
+        handler_conn = Connection.from_dict(
+            {
+                "transport": "restconf",
+                "host": "127.0.0.1",
+                "port": 8443,
+                "options": {
+                    "_http_handler": sse_srv.handle_request,
+                    "allow_any_auth": True,
+                },
+            }
+        )
+        # Разрешаем анонимный/handler тест с заголовком auth от сервера
+        sse_srv.allow_any_auth = True
+        async with handler_conn:
+            samples: list[TelemetrySample] = []
+            async for s in handler_conn.net.subscribe(["/system"], once=True):
+                samples.append(s)
+            assert len(samples) == 1
+            assert samples[0].metadata["transport_mode"] == "sse"
+            assert samples[0].metadata["sse_id"] == "1"
+
 

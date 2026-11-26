@@ -17,13 +17,7 @@ from .base import (
     xml_to_data,
     yang_subset_matches,
 )
-from .gnmi import (
-    GnmiTransport,
-    pack_gnmi_reply_envelope,
-    pack_gnmi_rpc_envelope,
-    unpack_gnmi_reply_envelope,
-    unpack_gnmi_rpc_envelope,
-)
+from .gnmi import GnmiTransport
 from .gnmi_proto import (
     GnmiPath,
     GnmiPathElem,
@@ -88,8 +82,6 @@ __all__ = [
     "extract_yang_interfaces_and_system",
     "format_gnmi_path",
     "normalize_yang_structure",
-    "pack_gnmi_reply_envelope",
-    "pack_gnmi_rpc_envelope",
     "pack_grpc_frame",
     "parse_gnmi_path",
     "parse_rpc_reply",
@@ -99,8 +91,6 @@ __all__ = [
     "safe_parse_xml",
     "strip_xml_ns",
     "strip_yang_prefix",
-    "unpack_gnmi_reply_envelope",
-    "unpack_gnmi_rpc_envelope",
     "xml_to_data",
     "yang_subset_matches",
 ]

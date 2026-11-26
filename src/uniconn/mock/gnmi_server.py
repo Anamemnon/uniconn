@@ -4,22 +4,15 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import copy
 import time
 from collections.abc import Mapping, Sequence
 from typing import Any, Self
 
 from ..core.bridge import EventLoopPortal, SyncProxyMixin, sync_method
+from ..transports.network._h2_grpc import GrpcServerStream, serve_grpc_http2_client
 from ..transports.network.base import apply_yang_edit, query_yang_tree
-from ..transports.network.gnmi import (
-    pack_gnmi_reply_envelope,
-    unpack_gnmi_rpc_envelope,
-)
-from ..transports.network.gnmi_proto import (
-    GnmiWireCodec,
-    read_grpc_frame,
-)
+from ..transports.network.gnmi_proto import GnmiWireCodec
 
 DEFAULT_GNMI_MODELS: tuple[dict[str, str], ...] = (
     {
@@ -81,7 +74,7 @@ def _default_gnmi_tree() -> dict[str, Any]:
 
 
 class MockGnmiServer:
-    """Асинхронный сервер протокола OpenConfig gNMI (``Capabilities``, ``Get``, ``Set``, ``Subscribe``)."""
+    """Асинхронный сервер HTTP/2 gRPC OpenConfig gNMI (``Capabilities``, ``Get``, ``Set``, ``Subscribe``)."""
 
     def __init__(
         self,
@@ -138,122 +131,136 @@ class MockGnmiServer:
             return True
         return user == (self.username or "") and secret == (self.password or "")
 
+    def _extract_auth_from_headers(self, headers: Mapping[str, str]) -> tuple[str, str]:
+        user = headers.get("username", "")
+        secret = headers.get("password", "") or headers.get("token", "")
+        auth_hdr = headers.get("authorization", "")
+        if not secret and auth_hdr.lower().startswith("bearer "):
+            secret = auth_hdr[7:].strip()
+        return user, secret
+
+    async def _handle_grpc_stream(self, stream: GrpcServerStream) -> None:
+        rpc_path = stream.path
+        method = rpc_path.rsplit("/", 1)[-1] if "/" in rpc_path else rpc_path
+        user, secret = self._extract_auth_from_headers(stream.headers)
+        auth_ok = self._check_auth(user, secret)
+        self.history.append(
+            {
+                "method": method,
+                "path": rpc_path,
+                "username": user,
+                "authenticated": auth_ok,
+                "stream_id": stream.stream_id,
+                "content_type": stream.headers.get("content-type", ""),
+            }
+        )
+
+        if not auth_ok:
+            await stream.finish(
+                grpc_status=16,
+                grpc_message="gNMI authentication failed: invalid credentials",
+            )
+            return
+
+        payload = await stream.read_frame(timeout=30.0) or b""
+
+        if rpc_path == "/gnmi.gNMI/Capabilities":
+            cap_bytes = GnmiWireCodec.encode_capabilities_response(self.models)
+            await stream.send_frame(cap_bytes)
+            await stream.finish(grpc_status=0)
+            return
+
+        if rpc_path == "/gnmi.gNMI/Get":
+            req = GnmiWireCodec.decode_get_request(payload)
+            paths = req.get("paths") or ["/"]
+            enc = str(req.get("encoding", "json_ietf"))
+            notifs: list[bytes] = []
+            now_ns = int(time.time() * 1e9)
+            for p in paths:
+                val = query_yang_tree(self.datastore, p)
+                if val is None:
+                    await stream.finish(
+                        grpc_status=5,
+                        grpc_message=f"gNMI path not found: {p}",
+                    )
+                    return
+                notifs.append(
+                    GnmiWireCodec.encode_notification(
+                        timestamp=now_ns,
+                        updates=[(p, val)],
+                        encoding=enc,
+                    )
+                )
+            resp_bytes = GnmiWireCodec.encode_get_response(notifs)
+            await stream.send_frame(resp_bytes)
+            await stream.finish(grpc_status=0)
+            return
+
+        if rpc_path == "/gnmi.gNMI/Set":
+            req = GnmiWireCodec.decode_set_request(payload)
+            results_meta: list[tuple[str, Any]] = []
+            for del_path in req.get("deletes", []):
+                apply_yang_edit(self.datastore, del_path, {}, operation="delete")
+                results_meta.append((del_path, "delete"))
+            for rep_path, rep_val in req.get("replaces", []):
+                apply_yang_edit(self.datastore, rep_path, rep_val, operation="replace")
+                results_meta.append((rep_path, "replace"))
+            for up_path, up_val in req.get("updates", []):
+                apply_yang_edit(self.datastore, up_path, up_val, operation="merge")
+                results_meta.append((up_path, "update"))
+            resp_bytes = GnmiWireCodec.encode_set_response(
+                results_meta,
+                timestamp=int(time.time() * 1e9),
+            )
+            await stream.send_frame(resp_bytes)
+            await stream.finish(grpc_status=0)
+            return
+
+        if rpc_path == "/gnmi.gNMI/Subscribe":
+            sub_req = GnmiWireCodec.decode_subscribe_request(payload)
+            paths = sub_req.get("paths") or ["/"]
+            list_mode = sub_req.get("list_mode", "stream")
+            enc = str(sub_req.get("encoding", "json_ietf"))
+            interval_ns = int(sub_req.get("sample_interval_ns") or 10_000_000)
+            sleep_sec = min(0.05, max(0.005, interval_ns / 1e9))
+            count = 1 if list_mode == "once" else self.max_stream_samples
+
+            for i in range(count):
+                if stream.finished:
+                    break
+                now_ns = int(time.time() * 1e9) + i * 1000
+                for p in paths:
+                    val = query_yang_tree(self.datastore, p)
+                    if isinstance(val, dict) and "in-octets" in val:
+                        val = dict(val)
+                        val["in-octets"] = int(val["in-octets"]) + i * 1024
+                        val["out-octets"] = int(val.get("out-octets", 0)) + i * 2048
+                    notif_bytes = GnmiWireCodec.encode_notification(
+                        timestamp=now_ns,
+                        updates=[(p, val if val is not None else {})],
+                        encoding=enc,
+                    )
+                    sub_resp = GnmiWireCodec.encode_subscribe_response(
+                        notification=notif_bytes,
+                        sync_response=(i == 0),
+                    )
+                    await stream.send_frame(sub_resp)
+                if i + 1 < count and not stream.finished:
+                    await asyncio.sleep(sleep_sec)
+            await stream.finish(grpc_status=0)
+            return
+
+        await stream.finish(
+            grpc_status=12,
+            grpc_message=f"Unimplemented gRPC method: {rpc_path}",
+        )
+
     async def _handle_client(
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
     ) -> None:
-        try:
-            while True:
-                try:
-                    raw_frame = await read_grpc_frame(reader, timeout=30.0)
-                except Exception:
-                    break
-
-                method, user, secret, payload = unpack_gnmi_rpc_envelope(raw_frame)
-                self.history.append({"method": method, "username": user})
-
-                if not self._check_auth(user, secret):
-                    err_env = pack_gnmi_reply_envelope(
-                        status_code=16,
-                        error_message="gNMI authentication failed: invalid credentials",
-                    )
-                    writer.write(err_env)
-                    await writer.drain()
-                    continue
-
-                if method == "Capabilities":
-                    cap_bytes = GnmiWireCodec.encode_capabilities_response(self.models)
-                    writer.write(pack_gnmi_reply_envelope(cap_bytes))
-                    await writer.drain()
-                    continue
-
-                if method == "Get":
-                    req = GnmiWireCodec.decode_get_request(payload)
-                    paths = req.get("paths") or ["/"]
-                    enc = str(req.get("encoding", "json_ietf"))
-                    notifs: list[bytes] = []
-                    now_ns = int(time.time() * 1e9)
-                    for p in paths:
-                        val = query_yang_tree(self.datastore, p)
-                        if val is None:
-                            err_env = pack_gnmi_reply_envelope(
-                                status_code=5,
-                                error_message=f"gNMI path not found: {p}",
-                            )
-                            writer.write(err_env)
-                            await writer.drain()
-                            break
-                        notifs.append(
-                            GnmiWireCodec.encode_notification(
-                                timestamp=now_ns,
-                                updates=[(p, val)],
-                                encoding=enc,
-                            )
-                        )
-                    else:
-                        resp_bytes = GnmiWireCodec.encode_get_response(notifs)
-                        writer.write(pack_gnmi_reply_envelope(resp_bytes))
-                        await writer.drain()
-                    continue
-
-                if method == "Set":
-                    req = GnmiWireCodec.decode_set_request(payload)
-                    results_meta: list[tuple[str, Any]] = []
-                    for del_path in req.get("deletes", []):
-                        apply_yang_edit(self.datastore, del_path, {}, operation="delete")
-                        results_meta.append((del_path, "delete"))
-                    for rep_path, rep_val in req.get("replaces", []):
-                        apply_yang_edit(self.datastore, rep_path, rep_val, operation="replace")
-                        results_meta.append((rep_path, "replace"))
-                    for up_path, up_val in req.get("updates", []):
-                        apply_yang_edit(self.datastore, up_path, up_val, operation="merge")
-                        results_meta.append((up_path, "update"))
-                    resp_bytes = GnmiWireCodec.encode_set_response(
-                        results_meta,
-                        timestamp=int(time.time() * 1e9),
-                    )
-                    writer.write(pack_gnmi_reply_envelope(resp_bytes))
-                    await writer.drain()
-                    continue
-
-                if method == "Subscribe":
-                    sub_req = GnmiWireCodec.decode_subscribe_request(payload)
-                    paths = sub_req.get("paths") or ["/"]
-                    list_mode = sub_req.get("list_mode", "stream")
-                    enc = str(sub_req.get("encoding", "json_ietf"))
-                    interval_ns = int(sub_req.get("sample_interval_ns") or 10_000_000)
-                    sleep_sec = min(0.05, max(0.005, interval_ns / 1e9))
-                    count = 1 if list_mode == "once" else self.max_stream_samples
-
-                    for i in range(count):
-                        now_ns = int(time.time() * 1e9) + i * 1000
-                        for p in paths:
-                            val = query_yang_tree(self.datastore, p)
-                            if isinstance(val, dict) and "in-octets" in val:
-                                val = dict(val)
-                                val["in-octets"] = int(val["in-octets"]) + i * 1024
-                                val["out-octets"] = int(val.get("out-octets", 0)) + i * 2048
-                            notif_bytes = GnmiWireCodec.encode_notification(
-                                timestamp=now_ns,
-                                updates=[(p, val if val is not None else {})],
-                                encoding=enc,
-                            )
-                            sub_resp = GnmiWireCodec.encode_subscribe_response(
-                                notification=notif_bytes,
-                                sync_response=(i == 0),
-                            )
-                            writer.write(pack_gnmi_reply_envelope(sub_resp))
-                            await writer.drain()
-                        if i + 1 < count:
-                            await asyncio.sleep(sleep_sec)
-                    break
-        except Exception:
-            pass
-        finally:
-            with contextlib.suppress(Exception):
-                writer.close()
-                await writer.wait_closed()
+        await serve_grpc_http2_client(reader, writer, self._handle_grpc_stream)
 
     async def start(self) -> Self:
         """Запустить сокетный сервер gNMI."""

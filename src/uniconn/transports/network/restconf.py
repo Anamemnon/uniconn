@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import json
 import re
 import time
@@ -11,13 +12,17 @@ import xml.etree.ElementTree as ET
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import Any, Literal
 
+from ..._logging import get_logger
 from ...config.models import ConnectionConfig
 from ...exceptions import (
     AuthenticationError,
+    CapabilityNotSupportedError,
     ExecutionError,
 )
+from ...exceptions import ConnectionError as UniconnConnectionError
+from ...exceptions import TimeoutError as UniconnTimeoutError
 from ...result import NetResult, Result, TelemetrySample
-from .._http_base import BaseAsyncHttpClient, resolve_niquests_module
+from .._http_base import BaseAsyncHttpClient, builtins_timeout_errors, resolve_niquests_module
 from ..base import BaseTransport
 from .base import (
     data_to_xml,
@@ -26,15 +31,107 @@ from .base import (
     xml_to_data,
 )
 
+_logger = get_logger("uniconn.transports.network.restconf")
+
 YANG_JSON_MIME = "application/yang-data+json"
 YANG_XML_MIME = "application/yang-data+xml"
 YANG_PATCH_JSON_MIME = "application/yang-patch+json"
 YANG_PATCH_XML_MIME = "application/yang-patch+xml"
+SSE_MIME = "text/event-stream"
 
 _HOST_META_LINK_RE = re.compile(
     r"""<Link[^>]+rel=['"]restconf['"][^>]+href=['"]([^'"]+)['"]""",
     re.IGNORECASE,
 )
+
+
+class _SseUnsupportedError(Exception):
+    """Внутреннее исключение о недоступности или отклонении SSE-потока RESTCONF."""
+
+    def __init__(self, reason: str, *, status: int | None = None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.status = status
+
+
+class _SseEventParser:
+    """Инкрементальный парсер событий Server-Sent Events (RFC 8040 / WHATWG)."""
+
+    def __init__(self) -> None:
+        self._line_buf = ""
+        self._ev_name = ""
+        self._ev_id = ""
+        self._data_lines: list[str] = []
+
+    def _emit_ready(self) -> dict[str, str] | None:
+        if not self._data_lines:
+            self._ev_name = ""
+            return None
+        ev = {
+            "event": self._ev_name or "message",
+            "data": "\n".join(self._data_lines),
+            "id": self._ev_id,
+        }
+        self._ev_name = ""
+        self._data_lines = []
+        return ev
+
+    def _process_line(self, raw_line: str) -> dict[str, str] | None:
+        line = raw_line.rstrip("\r\n")
+        if line == "":
+            return self._emit_ready()
+        if line.startswith(":"):
+            return None
+        if ":" in line:
+            field_name, value = line.split(":", 1)
+            if value.startswith(" "):
+                value = value[1:]
+        else:
+            field_name, value = line, ""
+
+        if field_name == "event":
+            self._ev_name = value
+        elif field_name == "data":
+            self._data_lines.append(value)
+        elif field_name == "id" and "\x00" not in value:
+            self._ev_id = value
+        return None
+
+    def feed(self, text_chunk: str) -> list[dict[str, str]]:
+        """Добавить очередной текстовый фрагмент и вернуть все завершённые SSE-события."""
+        if not text_chunk:
+            return []
+        combined = self._line_buf + text_chunk
+        # Придерживаем хвостовой '\r' до следующего куска, чтобы корректно склеить '\r\n' на стыке чанков
+        if combined.endswith("\r"):
+            prefix, trailing_cr = combined[:-1], "\r"
+        else:
+            prefix, trailing_cr = combined, ""
+        self._line_buf = prefix.replace("\r\n", "\n").replace("\r", "\n") + trailing_cr
+
+        events: list[dict[str, str]] = []
+        while "\n" in self._line_buf:
+            sep_idx = self._line_buf.index("\n")
+            one_line = self._line_buf[: sep_idx + 1]
+            self._line_buf = self._line_buf[sep_idx + 1 :]
+            ready = self._process_line(one_line)
+            if ready is not None:
+                events.append(ready)
+        return events
+
+    def finish(self) -> list[dict[str, str]]:
+        """Завершить разбор при закрытии потока и вернуть оставшиеся события."""
+        events: list[dict[str, str]] = []
+        if self._line_buf:
+            for one_line in self._line_buf.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+                ready = self._process_line(one_line)
+                if ready is not None:
+                    events.append(ready)
+            self._line_buf = ""
+        tail = self._emit_ready()
+        if tail is not None:
+            events.append(tail)
+        return events
 
 
 class RestconfClient(BaseAsyncHttpClient):
@@ -148,6 +245,46 @@ class RestconfClient(BaseAsyncHttpClient):
         await super().close()
         self._connected = False
 
+    def _resolve_url(self, url_path: str) -> str:
+        return (
+            url_path
+            if url_path.startswith(("http://", "https://"))
+            else f"{self.base_url}/{url_path.lstrip('/')}"
+        )
+
+    async def _invoke_http_handler(
+        self,
+        method: str,
+        url_path: str,
+        *,
+        data: bytes | None = None,
+        params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str],
+    ) -> tuple[int, dict[str, str], Any]:
+        handler = self._http_handler
+        if handler is None:
+            raise RuntimeError("HTTP handler is not configured")
+        res = handler(
+            method.upper(),
+            url_path,
+            data=data,
+            params=dict(params or {}),
+            headers=dict(headers),
+        )
+        if asyncio.iscoroutine(res):
+            res = await res
+        if isinstance(res, tuple) and len(res) == 3:
+            status_raw, middle, resp_body = res
+            if isinstance(middle, str):
+                resp_hdrs = {"content-type": middle}
+            elif isinstance(middle, Mapping):
+                resp_hdrs = {str(k).lower(): str(v) for k, v in middle.items()}
+            else:
+                resp_hdrs = {}
+            return int(status_raw), resp_hdrs, resp_body
+        status_raw, resp_body = res
+        return int(status_raw), {}, resp_body
+
     async def raw_request(
         self,
         method: str,
@@ -167,11 +304,7 @@ class RestconfClient(BaseAsyncHttpClient):
         if headers:
             req_headers.update(headers)
 
-        full_url = (
-            url_path
-            if url_path.startswith(("http://", "https://"))
-            else f"{self.base_url}/{url_path.lstrip('/')}"
-        )
+        full_url = self._resolve_url(url_path)
         body_bytes = (
             data.encode("utf-8")
             if isinstance(data, str)
@@ -179,22 +312,19 @@ class RestconfClient(BaseAsyncHttpClient):
         )
 
         if self._http_handler is not None:
-            res = self._http_handler(
-                method.upper(),
+            status_code, _hdrs, resp_body = await self._invoke_http_handler(
+                method,
                 url_path,
                 data=body_bytes,
-                params=dict(params or {}),
+                params=params,
                 headers=req_headers,
             )
-            if asyncio.iscoroutine(res):
-                res = await res
-            status_code, resp_body = res
             if isinstance(resp_body, bytes):
-                return int(status_code), resp_body.decode("utf-8", errors="replace"), resp_body
+                return status_code, resp_body.decode("utf-8", errors="replace"), resp_body
             if isinstance(resp_body, str):
-                return int(status_code), resp_body, resp_body.encode("utf-8")
+                return status_code, resp_body, resp_body.encode("utf-8")
             serialized = json.dumps(resp_body, ensure_ascii=False)
-            return int(status_code), serialized, serialized.encode("utf-8")
+            return status_code, serialized, serialized.encode("utf-8")
 
         resp = await self._send_session_request(
             self.session,
@@ -210,9 +340,118 @@ class RestconfClient(BaseAsyncHttpClient):
         text_content = resp.text or raw_content.decode("utf-8", errors="replace")
         return int(resp.status_code), text_content, raw_content
 
+    async def stream_sse(
+        self,
+        url_path: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> AsyncIterator[dict[str, str]]:
+        """Открыть поток Server-Sent Events (``text/event-stream``) и выдавать события."""
+        if not self._connected:
+            await self.connect()
+
+        eff_timeout = timeout if timeout is not None else self.timeout
+        req_headers = self._default_headers()
+        req_headers.pop("Content-Type", None)
+        req_headers["Accept"] = SSE_MIME
+        req_headers["Cache-Control"] = "no-cache"
+        if headers:
+            req_headers.update(headers)
+
+        full_url = self._resolve_url(url_path)
+        parser = _SseEventParser()
+
+        if self._http_handler is not None:
+            status_code, resp_hdrs, resp_body = await self._invoke_http_handler(
+                "GET",
+                url_path,
+                data=None,
+                params=params,
+                headers=req_headers,
+            )
+            if status_code in (401, 403):
+                raise AuthenticationError(f"RESTCONF SSE authentication failed (HTTP {status_code})")
+            if not (200 <= status_code < 300):
+                raise _SseUnsupportedError(f"HTTP {status_code}", status=status_code)
+            ctype = resp_hdrs.get("content-type", SSE_MIME).lower()
+            if SSE_MIME not in ctype:
+                raise _SseUnsupportedError(f"Unexpected Content-Type {ctype!r}")
+            text_body = (
+                resp_body.decode("utf-8", errors="replace")
+                if isinstance(resp_body, bytes | bytearray)
+                else str(resp_body)
+            )
+            for ev in parser.feed(text_body):
+                yield ev
+            for ev in parser.finish():
+                yield ev
+            return
+
+        timeout_errors = builtins_timeout_errors(self._get_niquests())
+        try:
+            resp = await self.session.get(
+                full_url,
+                params=dict(params) if params else None,
+                headers=req_headers,
+                timeout=eff_timeout,
+                stream=True,
+            )
+        except timeout_errors as exc:
+            raise UniconnTimeoutError(
+                f"RESTCONF SSE GET {full_url} timed out after {eff_timeout}s"
+            ) from exc
+        except Exception as exc:
+            raise UniconnConnectionError(f"RESTCONF SSE GET {full_url} failed: {exc}") from exc
+
+        try:
+            status_code = int(resp.status_code)
+            if status_code in (401, 403):
+                raise AuthenticationError(
+                    f"RESTCONF SSE authentication failed (HTTP {status_code})"
+                )
+            if status_code in (404, 405, 406, 501) or status_code >= 400:
+                raise _SseUnsupportedError(f"HTTP {status_code}", status=status_code)
+
+            content_type = str(getattr(resp, "headers", {}).get("content-type", "")).lower()
+            if SSE_MIME not in content_type:
+                raise _SseUnsupportedError(f"Unexpected Content-Type {content_type!r}")
+
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            content_iter = resp.iter_content(chunk_size=1024)
+            if asyncio.iscoroutine(content_iter):
+                content_iter = await content_iter
+            async for chunk in content_iter:
+                if not chunk:
+                    continue
+                text_part = (
+                    decoder.decode(bytes(chunk), final=False)
+                    if isinstance(chunk, bytes | bytearray)
+                    else str(chunk)
+                )
+                for ready in parser.feed(text_part):
+                    yield ready
+
+            tail = decoder.decode(b"", final=True)
+            for ready in parser.feed(tail):
+                yield ready
+            for final_ev in parser.finish():
+                yield final_ev
+        except timeout_errors as exc:
+            raise UniconnTimeoutError(
+                f"RESTCONF SSE stream timed out after {eff_timeout}s"
+            ) from exc
+        finally:
+            close_fn = getattr(resp, "close", None)
+            if callable(close_fn):
+                res_close = close_fn()
+                if asyncio.iscoroutine(res_close):
+                    await res_close
+
 
 class RestconfTransport(BaseTransport):
-    """Транспорт RESTCONF (RFC 8040 / RFC 8072) с поддержкой JSON и XML кодирования YANG-моделей."""
+    """Транспорт RESTCONF (RFC 8040 / RFC 8072) с поддержкой JSON/XML, проверкой операций и SSE-телеметрией."""
 
     def __init__(self, config: ConnectionConfig) -> None:
         """Инициализировать транспорт RESTCONF."""
@@ -255,6 +494,7 @@ class RestconfTransport(BaseTransport):
             discover_root=discover_root,
             http_handler=opts.get("_http_handler"),
         )
+        self._supported_operations: set[str] | None = None
 
     @property
     def name(self) -> str:
@@ -377,12 +617,94 @@ class RestconfTransport(BaseTransport):
     async def connect(self) -> None:
         """Установить сессию RESTCONF."""
         await self._client.connect()
+        self._supported_operations = None
         self._connected = True
 
     async def disconnect(self) -> None:
         """Закрыть сессию RESTCONF."""
+        self._supported_operations = None
         await self._client.close()
         self._connected = False
+
+    async def _discover_operations(
+        self,
+        *,
+        timeout: float | None = None,
+        refresh: bool = False,
+    ) -> set[str]:
+        """Запросить и закэшировать поддерживаемые RPC в ``/restconf/operations``."""
+        if self._supported_operations is not None and not refresh:
+            return self._supported_operations
+
+        ops: set[str] = set()
+        status, text, raw = await self._client.raw_request(
+            "GET",
+            self._operations_path(""),
+            timeout=timeout,
+        )
+        res = self._parse_response(status, text, raw, operation="discover-operations")
+        if res.ok and isinstance(res.data, Mapping):
+            container = (
+                res.data.get("ietf-restconf:operations")
+                or res.data.get("operations")
+                or res.data
+            )
+            if isinstance(container, Mapping):
+                for raw_key in container:
+                    k = str(raw_key).strip().lower()
+                    if not k or k in ("ietf-restconf:operations", "operations"):
+                        continue
+                    ops.add(k)
+                    if ":" in k:
+                        ops.add(k.split(":", 1)[1])
+
+        self._supported_operations = ops
+        return ops
+
+    async def _supports_operation(self, op_name: str, *, timeout: float | None = None) -> bool:
+        ops = await self._discover_operations(timeout=timeout)
+        norm = op_name.strip().lower()
+        return f"ietf-netconf:{norm}" in ops or norm in ops
+
+    async def _exec_netconf_operation(
+        self,
+        op_name: str,
+        *,
+        payload: Mapping[str, Any] | None = None,
+        datastore: str = "running",
+        result_operation: str | None = None,
+        timeout: float | None = None,
+    ) -> NetResult:
+        """Выполнить операцию ``ietf-netconf:*`` с проверкой capability сервера."""
+        if not await self._supports_operation(op_name, timeout=timeout):
+            raise CapabilityNotSupportedError(
+                f"RESTCONF server {self.config.host or 'endpoint'} does not support "
+                f"operation 'ietf-netconf:{op_name}'",
+                command=f"restconf.{op_name}",
+                host=self.config.host,
+            )
+
+        start_ts = time.perf_counter()
+        status, text, raw = await self._client.raw_request(
+            "POST",
+            self._operations_path(f"ietf-netconf:{op_name}"),
+            data=self._encode_payload(payload),
+            timeout=timeout,
+        )
+        if status in (404, 405, 501):
+            raise CapabilityNotSupportedError(
+                f"RESTCONF server rejected operation 'ietf-netconf:{op_name}' (HTTP {status})",
+                command=f"restconf.{op_name}",
+                host=self.config.host,
+            )
+        return self._parse_response(
+            status,
+            text,
+            raw,
+            operation=result_operation or op_name,
+            datastore=datastore,
+            duration=time.perf_counter() - start_ts,
+        )
 
     # ─── Реализация StructuredNetworkTransport ──────────────────────
 
@@ -400,6 +722,8 @@ class RestconfTransport(BaseTransport):
         params: dict[str, Any] = {}
         if depth is not None:
             params["depth"] = depth
+        if datastore == "candidate" and await self._supports_operation("commit", timeout=timeout):
+            params["datastore"] = "candidate"
         start_ts = time.perf_counter()
         status, text, raw = await self._client.raw_request(
             "GET",
@@ -426,11 +750,14 @@ class RestconfTransport(BaseTransport):
     ) -> NetResult:
         """Получить только конфигурационные узлы (``content=config``) через RESTCONF ``GET``."""
         _ = filter_type
+        params: dict[str, Any] = {"content": "config"}
+        if datastore == "candidate" and await self._supports_operation("commit", timeout=timeout):
+            params["datastore"] = "candidate"
         start_ts = time.perf_counter()
         status, text, raw = await self._client.raw_request(
             "GET",
             self._data_path(path),
-            params={"content": "config"},
+            params=params,
             timeout=timeout,
         )
         return self._parse_response(
@@ -456,8 +783,18 @@ class RestconfTransport(BaseTransport):
     ) -> NetResult:
         """Применить изменения конфигурации через HTTP ``PATCH`` / ``PUT`` / ``POST`` / ``DELETE``."""
         _ = (default_operation, test_option, error_option)
+        params: dict[str, Any] = {}
+        if datastore == "candidate" and await self._supports_operation("commit", timeout=timeout):
+            params["datastore"] = "candidate"
+
         if isinstance(config, Sequence) and not isinstance(config, str | bytes):
-            return await self.yang_patch(path, config, timeout=timeout)
+            return await self.yang_patch(
+                path,
+                config,
+                datastore=datastore,
+                params=params or None,
+                timeout=timeout,
+            )
         op = operation.lower()
         method_map = {
             "merge": "PATCH",
@@ -479,6 +816,7 @@ class RestconfTransport(BaseTransport):
             http_method,
             self._data_path(path),
             data=body,
+            params=params or None,
             headers=headers,
             timeout=timeout,
         )
@@ -498,6 +836,8 @@ class RestconfTransport(BaseTransport):
         *,
         patch_id: str = "uniconn-patch-1",
         comment: str | None = None,
+        datastore: str | None = None,
+        params: Mapping[str, Any] | None = None,
         timeout: float | None = None,
     ) -> NetResult:
         """Выполнить атомарный RFC 8072 YANG-Patch запрос (``application/yang-patch+json``)."""
@@ -508,12 +848,22 @@ class RestconfTransport(BaseTransport):
                 "edit": list(edits),
             }
         }
+        eff_params = dict(params or {})
+        eff_datastore = datastore or str(eff_params.get("datastore") or "running")
+        if (
+            datastore == "candidate"
+            and "datastore" not in eff_params
+            and await self._supports_operation("commit", timeout=timeout)
+        ):
+            eff_params["datastore"] = "candidate"
+
         headers = self._client._default_headers(is_patch=True)
         start_ts = time.perf_counter()
         status, text, raw = await self._client.raw_request(
             "PATCH",
             self._data_path(path),
             data=json.dumps(patch_body, ensure_ascii=False).encode("utf-8"),
+            params=eff_params or None,
             headers=headers,
             timeout=timeout,
         )
@@ -522,7 +872,7 @@ class RestconfTransport(BaseTransport):
             text,
             raw,
             operation="yang-patch",
-            datastore="running",
+            datastore=eff_datastore,
             duration=time.perf_counter() - start_ts,
         )
 
@@ -535,17 +885,22 @@ class RestconfTransport(BaseTransport):
         persist_id: str | None = None,
         timeout: float | None = None,
     ) -> NetResult:
-        """В RESTCONF изменения применяются сразу (или вызывается ``/operations/ietf-netconf:commit``)."""
-        _ = (confirmed, confirm_timeout, persist, persist_id, timeout)
-        return NetResult(
-            ok=True,
-            data={"status": "committed"},
-            text='{"status": "committed"}',
-            raw=b'{"status": "committed"}',
-            operation="commit",
+        """Выполнить ``POST /restconf/operations/ietf-netconf:commit`` или бросить ``CapabilityNotSupportedError``."""
+        inp: dict[str, Any] = {}
+        if confirmed:
+            inp["confirmed"] = [None]
+            inp["confirm-timeout"] = int(confirm_timeout)
+        if persist:
+            inp["persist"] = persist
+        if persist_id:
+            inp["persist-id"] = persist_id
+        payload = {"ietf-netconf:input": inp} if inp else None
+        return await self._exec_netconf_operation(
+            "commit",
+            payload=payload,
             datastore="running",
-            protocol="restconf",
-            host=self.config.host,
+            result_operation="commit",
+            timeout=timeout,
         )
 
     async def net_commit_confirm(
@@ -554,17 +909,14 @@ class RestconfTransport(BaseTransport):
         persist_id: str | None = None,
         timeout: float | None = None,
     ) -> NetResult:
-        """Подтверждение коммита в RESTCONF."""
-        _ = (persist_id, timeout)
-        return NetResult(
-            ok=True,
-            data={"status": "confirmed"},
-            text='{"status": "confirmed"}',
-            raw=b'{"status": "confirmed"}',
-            operation="commit-confirm",
+        """Подтвердить confirmed-commit через ``ietf-netconf:commit`` или бросить ``CapabilityNotSupportedError``."""
+        payload = {"ietf-netconf:input": {"persist-id": persist_id}} if persist_id else None
+        return await self._exec_netconf_operation(
+            "commit",
+            payload=payload,
             datastore="running",
-            protocol="restconf",
-            host=self.config.host,
+            result_operation="commit-confirm",
+            timeout=timeout,
         )
 
     async def net_discard_changes(
@@ -572,17 +924,12 @@ class RestconfTransport(BaseTransport):
         *,
         timeout: float | None = None,
     ) -> NetResult:
-        """Откат незафиксированных изменений в RESTCONF."""
-        _ = timeout
-        return NetResult(
-            ok=True,
-            data={"status": "discarded"},
-            text='{"status": "discarded"}',
-            raw=b'{"status": "discarded"}',
-            operation="discard-changes",
+        """Выполнить ``POST /restconf/operations/ietf-netconf:discard-changes``."""
+        return await self._exec_netconf_operation(
+            "discard-changes",
             datastore="candidate",
-            protocol="restconf",
-            host=self.config.host,
+            result_operation="discard-changes",
+            timeout=timeout,
         )
 
     async def net_validate(
@@ -591,17 +938,13 @@ class RestconfTransport(BaseTransport):
         source: str = "candidate",
         timeout: float | None = None,
     ) -> NetResult:
-        """Проверка валидности хранилища в RESTCONF."""
-        _ = timeout
-        return NetResult(
-            ok=True,
-            data={"status": "valid", "source": source},
-            text=json.dumps({"status": "valid", "source": source}),
-            raw=b'{"status": "valid"}',
-            operation="validate",
+        """Выполнить ``POST /restconf/operations/ietf-netconf:validate``."""
+        return await self._exec_netconf_operation(
+            "validate",
+            payload={"ietf-netconf:input": {"source": {source: [None]}}},
             datastore=source,
-            protocol="restconf",
-            host=self.config.host,
+            result_operation="validate",
+            timeout=timeout,
         )
 
     async def net_lock(
@@ -610,17 +953,13 @@ class RestconfTransport(BaseTransport):
         *,
         timeout: float | None = None,
     ) -> NetResult:
-        """Установить логическую блокировку в RESTCONF."""
-        _ = timeout
-        return NetResult(
-            ok=True,
-            data={"locked": datastore},
-            text=json.dumps({"locked": datastore}),
-            raw=b'{"locked": true}',
-            operation="lock",
+        """Выполнить ``POST /restconf/operations/ietf-netconf:lock``."""
+        return await self._exec_netconf_operation(
+            "lock",
+            payload={"ietf-netconf:input": {"target": {datastore: [None]}}},
             datastore=datastore,
-            protocol="restconf",
-            host=self.config.host,
+            result_operation="lock",
+            timeout=timeout,
         )
 
     async def net_unlock(
@@ -629,17 +968,13 @@ class RestconfTransport(BaseTransport):
         *,
         timeout: float | None = None,
     ) -> NetResult:
-        """Снять логическую блокировку в RESTCONF."""
-        _ = timeout
-        return NetResult(
-            ok=True,
-            data={"unlocked": datastore},
-            text=json.dumps({"unlocked": datastore}),
-            raw=b'{"unlocked": true}',
-            operation="unlock",
+        """Выполнить ``POST /restconf/operations/ietf-netconf:unlock``."""
+        return await self._exec_netconf_operation(
+            "unlock",
+            payload={"ietf-netconf:input": {"target": {datastore: [None]}}},
             datastore=datastore,
-            protocol="restconf",
-            host=self.config.host,
+            result_operation="unlock",
+            timeout=timeout,
         )
 
     async def net_capabilities(
@@ -696,6 +1031,90 @@ class RestconfTransport(BaseTransport):
             duration=time.perf_counter() - start_ts,
         )
 
+    async def _discover_sse_stream_url(
+        self,
+        *,
+        timeout: float | None = None,
+    ) -> str:
+        explicit_url = self.config.options.get("stream_url")
+        if explicit_url:
+            return str(explicit_url)
+
+        root = self._client.root.rstrip("/")
+        streams_res = await self.net_get(
+            "ietf-restconf-monitoring:restconf-state/streams",
+            timeout=timeout,
+        )
+        if streams_res.ok and isinstance(streams_res.data, Mapping):
+            container = (
+                streams_res.data.get("ietf-restconf-monitoring:streams")
+                or streams_res.data.get("streams")
+                or streams_res.data
+            )
+            if isinstance(container, Mapping):
+                stream_list = container.get("stream")
+                if isinstance(stream_list, Mapping):
+                    stream_list = [stream_list]
+                if isinstance(stream_list, list):
+                    for item in stream_list:
+                        if not isinstance(item, Mapping):
+                            continue
+                        access_list = item.get("access")
+                        if isinstance(access_list, Mapping):
+                            access_list = [access_list]
+                        if isinstance(access_list, list):
+                            for acc in access_list:
+                                if isinstance(acc, Mapping) and acc.get("location"):
+                                    return str(acc["location"])
+        return f"{root}/streams/NETCONF"
+
+    def _parse_sse_notification(
+        self,
+        sse_event: Mapping[str, str],
+        *,
+        default_path: str,
+        stream_url: str,
+    ) -> TelemetrySample:
+        raw_data = sse_event.get("data", "").strip()
+        parsed: Any = {}
+        if raw_data:
+            if raw_data.startswith("<"):
+                parsed = xml_to_data(safe_parse_xml(raw_data))
+            else:
+                try:
+                    parsed = json.loads(raw_data)
+                except ValueError:
+                    parsed = {"raw": raw_data}
+
+        ev_path = default_path or "/"
+        vals: dict[str, Any] = parsed if isinstance(parsed, dict) else {"value": parsed}
+        if isinstance(parsed, Mapping):
+            notif = parsed.get("ietf-restconf:notification") or parsed.get("notification")
+            if isinstance(notif, Mapping):
+                if notif.get("path"):
+                    ev_path = str(notif["path"])
+                elif notif.get("event"):
+                    ev_path = default_path or "/"
+                vals = dict(notif)
+
+        meta: dict[str, Any] = {
+            "transport_mode": "sse",
+            "stream_url": stream_url,
+        }
+        if sse_event.get("event"):
+            meta["event"] = sse_event["event"]
+        if sse_event.get("id"):
+            meta["sse_id"] = sse_event["id"]
+
+        return TelemetrySample(
+            path=ev_path,
+            values=vals,
+            timestamp=int(time.time() * 1e9),
+            protocol="restconf",
+            host=self.config.host,
+            metadata=meta,
+        )
+
     async def net_subscribe(
         self,
         paths: Sequence[str],
@@ -708,9 +1127,59 @@ class RestconfTransport(BaseTransport):
         encoding: str | None = None,
         timeout: float | None = None,
     ) -> AsyncIterator[TelemetrySample]:
-        """Потоковый сбор состояния по путям RESTCONF."""
-        _ = (mode, suppress_redundant, heartbeat_interval, encoding)
+        """Подписаться на телеметрию: сначала RFC 8040/8639 SSE, затем fallback на HTTP polling."""
+        _ = (suppress_redundant, heartbeat_interval, encoding)
         target_paths = list(paths) or [""]
+        forced_mode = str(self.config.options.get("subscribe_mode", "auto")).lower()
+        fallback_reason: str | None = None
+
+        if forced_mode != "polling":
+            default_stream_url = f"{self._client.root.rstrip('/')}/streams/NETCONF"
+            stream_url = default_stream_url
+            sse_params: dict[str, Any] = {"mode": mode}
+            non_empty_paths = [p for p in target_paths if p and p != "/"]
+            if non_empty_paths:
+                sse_params["filter"] = ",".join(non_empty_paths)
+
+            yielded_sse = False
+            try:
+                stream_url = await self._discover_sse_stream_url(timeout=timeout)
+                async for sse_ev in self._client.stream_sse(
+                    stream_url,
+                    params=sse_params,
+                    timeout=timeout,
+                ):
+                    yielded_sse = True
+                    sample = self._parse_sse_notification(
+                        sse_ev,
+                        default_path=target_paths[0] or "/",
+                        stream_url=stream_url,
+                    )
+                    yield sample
+                    if once:
+                        return
+                if yielded_sse:
+                    return
+                fallback_reason = "SSE stream ended without events"
+            except _SseUnsupportedError as exc:
+                fallback_reason = exc.reason
+            except UniconnConnectionError as exc:
+                if yielded_sse:
+                    raise
+                fallback_reason = str(exc)
+
+            _logger.warning(
+                "RESTCONF SSE subscription unavailable at %s (%s); falling back to periodic GET polling",
+                stream_url,
+                fallback_reason,
+            )
+        else:
+            fallback_reason = "Explicitly configured subscribe_mode=polling"
+
+        poll_meta: dict[str, Any] = {
+            "transport_mode": "polling",
+            "fallback_reason": fallback_reason or "sse_unavailable",
+        }
         while self._connected:
             for p in target_paths:
                 res = await self.net_get(p, timeout=timeout)
@@ -722,7 +1191,10 @@ class RestconfTransport(BaseTransport):
                         timestamp=int(time.time() * 1e9),
                         protocol="restconf",
                         host=self.config.host,
+                        metadata=dict(poll_meta),
                     )
+                else:
+                    _logger.debug("RESTCONF polling GET %s failed: %s", p or "/", res.text)
             if once:
                 break
             await asyncio.sleep(max(0.01, sample_interval))

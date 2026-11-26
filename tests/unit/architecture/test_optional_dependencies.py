@@ -72,6 +72,12 @@ def test_optional_dependencies_contain_required_extras() -> None:
     assert any("pyjwt" in dep for dep in extras["mcp-http"])
     assert any("cryptography" in dep for dep in extras["mcp-http"])
 
+    assert "restconf" in extras
+    assert any("niquests" in dep for dep in extras["restconf"])
+
+    assert "gnmi" in extras
+    assert any("jh2" in dep for dep in extras["gnmi"])
+
     assert "all" in extras
     assert extras["all"] == [
         "uniconn[bmc,pve,restconf,netconf,gnmi,serial,telnet,winrm,cli,templates,parsing,otel,security,mcp-http]"
@@ -145,6 +151,26 @@ def test_redfish_transport_missing_dependency_hint() -> None:
         cfg = ConnectionConfig(transport="redfish", host="10.0.0.1", username="admin", password="pwd")
         with pytest.raises(ImportError, match=r"uniconn\[bmc\]"):
             RedfishTransport(cfg)
+
+
+def test_gnmi_transport_missing_dependency_hint() -> None:
+    """При отсутствии h2 и jh2 выдаётся понятный ImportError с подсказкой uniconn[gnmi]."""
+    from uniconn.transports.network.gnmi import GnmiTransport
+
+    blocked_modules = {
+        "h2": None,
+        "h2.config": None,
+        "h2.connection": None,
+        "h2.events": None,
+        "jh2": None,
+        "jh2.config": None,
+        "jh2.connection": None,
+        "jh2.events": None,
+    }
+    with patch.dict("sys.modules", blocked_modules):
+        cfg = ConnectionConfig(transport="gnmi", host="10.0.0.1", port=9339)
+        with pytest.raises(ImportError, match=r"uniconn\[gnmi\]"):
+            GnmiTransport(cfg)
 
 
 def test_jinja2_template_missing_dependency_hint() -> None:

@@ -590,10 +590,11 @@ class TelemetrySample:
     sync_response: bool = False
     protocol: str = ""
     host: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Преобразовать сэмпл телеметрии в сериализуемый словарь."""
-        return {
+        payload: dict[str, Any] = {
             "path": self.path,
             "values": _serialize_parsed_value(self.values),
             "timestamp": self.timestamp,
@@ -603,6 +604,9 @@ class TelemetrySample:
             "protocol": self.protocol,
             "host": self.host,
         }
+        if self.metadata:
+            payload["metadata"] = _serialize_parsed_value(self.metadata)
+        return payload
 
     def to_json(self) -> str:
         """Сериализовать сэмпл телеметрии в компактную JSON-строку."""
@@ -612,6 +616,7 @@ class TelemetrySample:
     def from_dict(cls, payload: dict[str, Any]) -> "TelemetrySample":
         """Восстановить ``TelemetrySample`` из словаря."""
         raw_vals = payload.get("values")
+        raw_meta = payload.get("metadata")
         return cls(
             path=str(payload.get("path") or ""),
             values=dict(raw_vals) if isinstance(raw_vals, dict) else {},
@@ -621,6 +626,7 @@ class TelemetrySample:
             sync_response=bool(payload.get("sync_response", False)),
             protocol=str(payload.get("protocol") or ""),
             host=payload.get("host"),
+            metadata=dict(raw_meta) if isinstance(raw_meta, dict) else {},
         )
 
 

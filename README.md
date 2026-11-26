@@ -147,7 +147,7 @@ Or pick only what you need:
 | **Proxmox VE** | `uv add "uniconn[pve]"` | Proxmox VE API & QEMU Guest Agent (`niquests`) |
 | **NETCONF** | `uv add "uniconn[netconf]"` | NETCONF over SSH (`asyncssh`) |
 | **RESTCONF** | `uv add "uniconn[restconf]"` | RESTCONF HTTP/2 client (`niquests`) |
-| **gNMI** | `uv add "uniconn[gnmi]"` | gNMI HTTP/2 telemetry & config (`niquests`) |
+| **gNMI** | `uv add "uniconn[gnmi]"` | gNMI HTTP/2 gRPC telemetry & config (`jh2` / `h2`) |
 | **Serial** | `uv add "uniconn[serial]"` | Serial/UART console (`pyserial-asyncio`) & X/Y/ZMODEM |
 | **Telnet** | `uv add "uniconn[telnet]"` | Telnet transport (`telnetlib3`) |
 | **Templates** | `uv add "uniconn[templates]"` | Jinja2 templating engine for `write_template()` |
