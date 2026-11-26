@@ -254,6 +254,8 @@ class CassetteInteractionMatcher:
         if marker_match is not None:
             inner_cmd = marker_match.group(1)
             marker_prefix = marker_match.group(2)
+            if inner_cmd.strip() == ":" and not self.config.strict_mode:
+                return f"{marker_prefix}0\n", 0, True
             out_text, code, matched = self._find_dialog_or_exec(
                 inner_cmd, shell_interaction, consumed_steps
             )

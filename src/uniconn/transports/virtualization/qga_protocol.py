@@ -10,6 +10,8 @@ import contextlib
 import json
 import random
 import shlex
+import sys
+import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterable
 from typing import Any, Protocol, runtime_checkable
@@ -207,6 +209,198 @@ class LocalUnixSocketChannel(StreamQgaChannelBase):
         except Exception as exc:
             await self.close()
             raise ConnectionError(f"Cannot open QGA UNIX socket {self.socket_path!r}: {exc}") from exc
+
+
+def is_windows_pipe_path(path: str | None) -> bool:
+    r"""Проверить, является ли путь именем Windows Named Pipe (``\\.\pipe\...`` или ``//./pipe/...``)."""
+    if not path:
+        return False
+    lower = path.strip().lower()
+    return lower.startswith(("\\\\.\\pipe\\", "//./pipe/"))
+
+
+def normalize_windows_pipe_path(pipe_path: str) -> str:
+    r"""Нормализовать путь Windows Named Pipe в канонический вид ``\\.\pipe\<name>``."""
+    raw = pipe_path.strip()
+    if not raw:
+        raise ConnectionError("Windows Named Pipe path must not be empty")
+    lower = raw.lower()
+    if lower.startswith("\\\\.\\pipe\\"):
+        return "\\\\.\\pipe\\" + raw[len("\\\\.\\pipe\\") :]
+    if lower.startswith("//./pipe/"):
+        return "\\\\.\\pipe\\" + raw[len("//./pipe/") :].replace("/", "\\")
+    name = raw.lstrip("\\/").replace("/", "\\")
+    return f"\\\\.\\pipe\\{name}"
+
+
+class TcpQgaChannel(StreamQgaChannelBase):
+    """Канал прямого TCP-подключения к QEMU Guest Agent (``-chardev socket,host=...,port=...``)."""
+
+    def __init__(self, host: str = "127.0.0.1", port: int = 4444) -> None:
+        super().__init__()
+        if not host:
+            raise ConnectionError("TCP host is required for TcpQgaChannel")
+        if not isinstance(port, int) or port <= 0 or port > 65535:
+            raise ConnectionError(f"Invalid TCP port for QGA channel: {port!r}")
+        self.host = host
+        self.port = port
+
+    async def open(self, timeout: float = 10.0) -> None:
+        """Открыть TCP-соединение с QGA и выполнить ``guest-sync-delimited``."""
+        try:
+            self._reader, self._writer = await asyncio.wait_for(
+                asyncio.open_connection(self.host, self.port, limit=_STREAM_LIMIT),
+                timeout=timeout,
+            )
+            self._open = True
+            await self._sync_stream(timeout=timeout)
+        except (ConnectionError, TimeoutError):
+            await self.close()
+            raise
+        except builtins.TimeoutError as exc:
+            await self.close()
+            raise TimeoutError(
+                f"Timed out connecting to QGA TCP endpoint {self.host}:{self.port}"
+            ) from exc
+        except Exception as exc:
+            await self.close()
+            raise ConnectionError(
+                f"Cannot connect to QGA TCP endpoint {self.host}:{self.port}: {exc}"
+            ) from exc
+
+
+class _PipeStreamReader:
+    """Асинхронная обёртка чтения строк поверх синхронного бинарного дескриптора Named Pipe."""
+
+    def __init__(self, handle: Any, *, chunk_size: int = 4096) -> None:
+        self._handle = handle
+        self._chunk_size = chunk_size
+        self._buf = bytearray()
+
+    def _readline_sync(self) -> bytes:
+        nl_idx = self._buf.find(b"\n")
+        if nl_idx != -1:
+            line = bytes(self._buf[: nl_idx + 1])
+            del self._buf[: nl_idx + 1]
+            return line
+
+        while True:
+            chunk = self._handle.read(self._chunk_size)
+            if not chunk:
+                if self._buf:
+                    rem = bytes(self._buf)
+                    self._buf.clear()
+                    return rem
+                return b""
+            self._buf.extend(chunk)
+            nl_idx = self._buf.find(b"\n")
+            if nl_idx != -1:
+                line = bytes(self._buf[: nl_idx + 1])
+                del self._buf[: nl_idx + 1]
+                return line
+
+    async def readline(self) -> bytes:
+        return await asyncio.to_thread(self._readline_sync)
+
+
+class _PipeStreamWriter:
+    """Асинхронная обёртка записи поверх синхронного бинарного дескриптора Named Pipe."""
+
+    def __init__(self, handle: Any) -> None:
+        self._handle = handle
+        self._pending = bytearray()
+        self._closed = False
+
+    def write(self, data: bytes | bytearray | memoryview) -> None:
+        if self._closed:
+            raise OSError("Named pipe writer is closed")
+        self._pending.extend(data)
+
+    def _write_sync(self, payload: bytes) -> None:
+        if not payload:
+            return
+        self._handle.write(payload)
+        flush_fn = getattr(self._handle, "flush", None)
+        if callable(flush_fn):
+            flush_fn()
+
+    async def drain(self) -> None:
+        if not self._pending:
+            return
+        payload = bytes(self._pending)
+        self._pending.clear()
+        await asyncio.to_thread(self._write_sync, payload)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        with contextlib.suppress(Exception):
+            self._handle.close()
+
+    async def wait_closed(self) -> None:
+        if not self._closed:
+            self._closed = True
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(self._handle.close)
+
+
+class NamedPipeQgaChannel(StreamQgaChannelBase):
+    r"""Канал подключения к QEMU Guest Agent через Windows Named Pipe (``\\.\pipe\<name>``)."""
+
+    def __init__(
+        self,
+        pipe_path: str,
+        *,
+        opener: Callable[[str], Any] | None = None,
+    ) -> None:
+        super().__init__()
+        self.pipe_path = normalize_windows_pipe_path(pipe_path)
+        self._opener = opener
+
+    @staticmethod
+    def _default_open_pipe(path: str) -> Any:
+        return open(path, "r+b", buffering=0)
+
+    async def open(self, timeout: float = 10.0) -> None:
+        """Открыть Windows Named Pipe и синхронизировать поток QGA."""
+        if self._opener is None and sys.platform != "win32":
+            raise ConnectionError(
+                f"Windows Named Pipe QGA channel ({self.pipe_path!r}) is only supported on Windows (win32). "
+                "Use TCP (?backend=tcp) or UNIX socket on POSIX hosts."
+            )
+        open_fn = self._opener or self._default_open_pipe
+        aborted = threading.Event()
+
+        def _guarded_open() -> Any:
+            handle = open_fn(self.pipe_path)
+            if aborted.is_set():
+                with contextlib.suppress(Exception):
+                    handle.close()
+                raise OSError("Named pipe open aborted after timeout")
+            return handle
+
+        try:
+            handle = await asyncio.wait_for(
+                asyncio.to_thread(_guarded_open),
+                timeout=timeout,
+            )
+            self._reader = _PipeStreamReader(handle)  # type: ignore[assignment]
+            self._writer = _PipeStreamWriter(handle)
+            self._open = True
+            await self._sync_stream(timeout=timeout)
+        except (ConnectionError, TimeoutError):
+            aborted.set()
+            await self.close()
+            raise
+        except builtins.TimeoutError as exc:
+            aborted.set()
+            await self.close()
+            raise TimeoutError(f"Timed out opening QGA named pipe {self.pipe_path!r}") from exc
+        except Exception as exc:
+            aborted.set()
+            await self.close()
+            raise ConnectionError(f"Cannot open QGA named pipe {self.pipe_path!r}: {exc}") from exc
 
 
 class SshUnixSocketChannel(StreamQgaChannelBase):
@@ -762,9 +956,13 @@ class QgaProtocolClient:
 
 __all__ = [
     "LocalUnixSocketChannel",
+    "NamedPipeQgaChannel",
     "QgaChannelProtocol",
     "QgaProtocolClient",
     "SshUnixSocketChannel",
     "StreamQgaChannelBase",
+    "TcpQgaChannel",
     "VirshCommandChannel",
+    "is_windows_pipe_path",
+    "normalize_windows_pipe_path",
 ]

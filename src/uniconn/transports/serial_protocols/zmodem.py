@@ -37,8 +37,15 @@ class ZmodemSubprocessAdapter:
     """Асинхронный адаптер ZMODEM (вызов ``sz`` и ``rz`` с привязкой к дескриптору порта)."""
 
     @staticmethod
-    def is_available() -> bool:
-        """Проверить доступность утилит ``sz`` и ``rz`` в операционной системе."""
+    def is_platform_supported() -> bool:
+        """Проверить, поддерживается ли ZMODEM subprocess-адаптер на текущей ОС (только POSIX)."""
+        return sys.platform != "win32"
+
+    @classmethod
+    def is_available(cls) -> bool:
+        """Проверить поддержку платформы (POSIX) и доступность утилит ``sz`` и ``rz``."""
+        if not cls.is_platform_supported():
+            return False
         return shutil.which("sz") is not None and shutil.which("rz") is not None
 
     @classmethod
@@ -53,6 +60,13 @@ class ZmodemSubprocessAdapter:
         timeout: float = 120.0,
     ) -> int:
         """Отправить файл по протоколу ZMODEM с использованием утилиты ``sz``."""
+        if not cls.is_platform_supported():
+            raise CapabilityNotSupportedError(
+                "ZMODEM subprocess adapter relies on POSIX file descriptors and 'lrzsz' (sz/rz) "
+                "and is not supported on Windows. Use cross-platform upload_xmodem() or "
+                "upload_ymodem() instead.",
+                host=port_path,
+            )
         if not cls.is_available():
             raise CapabilityNotSupportedError(
                 "ZMODEM requires 'sz' and 'rz' binaries from lrzsz package. "
@@ -112,6 +126,13 @@ class ZmodemSubprocessAdapter:
         timeout: float = 120.0,
     ) -> Path:
         """Принять файл(ы) по протоколу ZMODEM с использованием утилиты ``rz``."""
+        if not cls.is_platform_supported():
+            raise CapabilityNotSupportedError(
+                "ZMODEM subprocess adapter relies on POSIX file descriptors and 'lrzsz' (sz/rz) "
+                "and is not supported on Windows. Use cross-platform download_xmodem() or "
+                "download_ymodem() instead.",
+                host=port_path,
+            )
         if not cls.is_available():
             raise CapabilityNotSupportedError(
                 "ZMODEM requires 'sz' and 'rz' binaries from lrzsz package. "

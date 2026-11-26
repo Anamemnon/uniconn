@@ -10,27 +10,32 @@ from pathlib import Path
 from typing import Any
 
 from ...config.models import ConnectionConfig
-from ...exceptions import ConnectionError, FileTransferError
+from ...exceptions import ConfigurationError, ConnectionError, FileTransferError
 from ...result import Result
 from ..base import _iter_local_file_chunks, _save_chunk_stream_to_file
 from ..ssh.config_parser import OpenSSHConfigParser
 from .guest_base import GuestAgentTransportBase, parse_qga_network_interfaces
 from .qga_protocol import (
     LocalUnixSocketChannel,
+    NamedPipeQgaChannel,
     QgaChannelProtocol,
     QgaProtocolClient,
     SshUnixSocketChannel,
+    TcpQgaChannel,
     VirshCommandChannel,
+    is_windows_pipe_path,
 )
 
 
 class QgaTransport(GuestAgentTransportBase):
-    """Out-of-band транспорт QEMU Guest Agent (``qga://``, ``qemu-ga://``).
+    r"""Out-of-band транспорт QEMU Guest Agent (``qga://``, ``qemu-ga://``).
 
-    Поддерживает три бэкенда канала:
+    Поддерживает пять бэкендов канала:
     - локальный UNIX-сокет (``qga:///var/lib/libvirt/qemu/.../org.qemu.guest_agent.0``);
     - удалённый UNIX-сокет через SSH-туннель (``qga://root@kvm-host/vm-name?socket=...``);
-    - обёртка поверх CLI ``virsh qemu-agent-command`` (``qga://root@kvm-host/vm-name?backend=virsh``).
+    - обёртка поверх CLI ``virsh qemu-agent-command`` (``qga://root@kvm-host/vm-name?backend=virsh``);
+    - прямой TCP-сокет локального/сетевого QEMU (``qga://127.0.0.1:4444?backend=tcp``);
+    - Windows Named Pipe (``qga://?backend=pipe&pipe=\\.\pipe\qga-vm1``).
     """
 
     def __init__(
@@ -42,15 +47,43 @@ class QgaTransport(GuestAgentTransportBase):
         super().__init__(config)
         opts = config.options
         self._transport_scheme = config.transport if config.transport in ("qga", "qemu-ga") else "qga"
-        self.backend = str(opts.get("backend", "socket")).lower()
-        self.socket_path: str | None = str(opts["socket"]) if "socket" in opts else (
+        raw_socket = str(opts["socket"]) if "socket" in opts else (
             config.host if (config.host and config.host.startswith("/")) else None
         )
+        raw_pipe = str(opts["pipe"]) if "pipe" in opts else (
+            raw_socket if is_windows_pipe_path(raw_socket) else (
+                config.host if is_windows_pipe_path(config.host) else None
+            )
+        )
+        self.socket_path: str | None = None if is_windows_pipe_path(raw_socket) else raw_socket
+        self.pipe_path: str | None = raw_pipe
         self.vm_name: str | None = str(opts.get("vm") or opts.get("domain") or "") or None
         self.libvirt_uri = str(opts.get("libvirt_uri", "qemu:///system"))
         self.poll_interval = float(opts.get("poll_interval", 0.05))
         self._custom_channel = channel
         self.client: QgaProtocolClient | None = None
+
+        _supported_backends = ("socket", "ssh", "virsh", "tcp", "pipe")
+        _local_hosts = ("localhost", "127.0.0.1", "::1")
+
+        if "backend" in opts:
+            self.backend = str(opts["backend"]).strip().lower()
+            if self.backend not in _supported_backends:
+                raise ConfigurationError(
+                    f"Unsupported QGA backend {self.backend!r}. "
+                    f"Supported: {', '.join(_supported_backends)}"
+                )
+        elif self.pipe_path:
+            self.backend = "pipe"
+        elif (
+            config.host in _local_hosts
+            and config.port is not None
+            and not self.socket_path
+            and not self.vm_name
+        ):
+            self.backend = "tcp"
+        else:
+            self.backend = "socket"
 
     @property
     def name(self) -> str:
@@ -62,18 +95,38 @@ class QgaTransport(GuestAgentTransportBase):
         if self._custom_channel is not None:
             return self._custom_channel
 
+        if self.backend == "tcp":
+            host = self.config.host or "127.0.0.1"
+            if self.config.port is None:
+                raise ConnectionError(
+                    "TCP port is required for QGA tcp backend. "
+                    "Provide qga://127.0.0.1:4444?backend=tcp"
+                )
+            return TcpQgaChannel(host=host, port=self.config.port)
+
+        if self.backend == "pipe":
+            pipe = self.pipe_path or self.socket_path
+            if not pipe:
+                raise ConnectionError(
+                    "Windows Named Pipe path is required for QGA pipe backend. "
+                    r"Provide qga://?backend=pipe&pipe=\\.\pipe\qga-vm1"
+                )
+            opener = self.config.options.get("_pipe_opener")
+            return NamedPipeQgaChannel(pipe, opener=opener)
+
         password_str = self.config.password.get_secret_value() if self.config.password else None
         passphrase_str = self.config.passphrase.get_secret_value() if self.config.passphrase else None
         known_hosts = OpenSSHConfigParser.resolve_known_hosts(
             self.config.options.get("known_hosts", "strict"),
             host=self.config.host,
         )
+        local_hosts = ("localhost", "127.0.0.1", "::1")
 
         if self.backend == "virsh":
-            domain = self.vm_name or (self.config.host if self.config.host not in ("localhost", "127.0.0.1") else "")
+            domain = self.vm_name or (self.config.host if self.config.host not in local_hosts else "")
             ssh_host = (
                 self.config.host
-                if (self.config.host and self.config.host not in ("localhost", "127.0.0.1") and self.vm_name)
+                if (self.config.host and self.config.host not in local_hosts and self.vm_name)
                 else None
             )
             return VirshCommandChannel(
@@ -87,10 +140,10 @@ class QgaTransport(GuestAgentTransportBase):
                 known_hosts=known_hosts,
             )
 
-        is_remote_ssh = bool(
+        is_remote_ssh = self.backend == "ssh" or bool(
             self.config.host
             and not self.config.host.startswith("/")
-            and self.config.host not in ("localhost", "127.0.0.1")
+            and self.config.host not in local_hosts
         )
         if is_remote_ssh:
             return SshUnixSocketChannel(

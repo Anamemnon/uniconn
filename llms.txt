@@ -36,11 +36,11 @@
 - `restconf://[user[:password]@]host[:443][/restconf][?scheme=https|http&root=auto|/restconf&verify_tls=false&format=json|xml]`
 - `gnmi://[user[:password]@]host[:9339][?insecure=true|false&encoding=json_ietf|json|proto&origin=openconfig&target=...]`
 - `winrm://[user[:password]@]windows-host[:5985][?transport=ntlm|kerberos|credssp|basic|ssl&server_cert_validation=ignore|validate&ssl=true&shell=ps|cmd&domain=CORP]` (or `wsman://...`; defaults to port `5985` or `5986` when `ssl=true` / `scheme=https` / `transport=ssl`)
-- `qga:///var/lib/libvirt/qemu/channel/target/domain-1-vm1/org.qemu.guest_agent.0` or `qga://root@kvm-host-01/vm-prod-01[?socket=/var/run/qemu/vm.sock&backend=socket|virsh&libvirt_uri=qemu:///system&poll_interval=0.05&exec_timeout=60]` (alias `qemu-ga://...`)
+- `qga:///var/lib/libvirt/qemu/channel/target/domain-1-vm1/org.qemu.guest_agent.0`, `qga://127.0.0.1:4444[?backend=tcp]`, `qga://?backend=pipe&pipe=\\.\pipe\qga-vm1`, or `qga://root@kvm-host-01/vm-prod-01[?socket=/var/run/qemu/vm.sock&backend=socket|ssh|virsh|tcp|pipe&libvirt_uri=qemu:///system&poll_interval=0.05&exec_timeout=60]` (alias `qemu-ga://...`)
 - `pve://[user[@realm][!token_id][:password]@]pve-host[:8006]/105[?node=pve1&token_id=uniconn&secret=env://PVE_SECRET&verify_ssl=false]` (supports guest agent exec/file I/O and hypervisor commands `pve power status|start|stop|shutdown|reboot|reset` and `pve snapshot list|create|rollback|delete`)
 - `local://[?timeout=30&rate_limit=10&circuit_breaker_threshold=5]`
-- `telnet://[user[:password]@]host[:23][?term_type=vt100]`
-- `serial:///dev/ttyUSB0[?baudrate=115200&parity=N&stopbits=1]` or `uart://COM3[:115200][?parity=even&stopbits=1.5&vid=10c4&pid=ea60]`
+- `telnet://[user[:password]@]host[:23][?term_type=vt100&shell_mode=auto|posix|cli&profile=generic|cisco|junos|linux|uboot&prompt_regex=...&pagination=true&strip_ansi=true]`
+- `serial:///dev/ttyUSB0[?baudrate=115200&parity=N&stopbits=1&io_backend=auto|threaded|asyncio]` or `uart://COM3[:115200][?parity=even&stopbits=1.5&vid=10c4&pid=ea60&io_backend=auto|threaded]`
 - `ipmi://admin:password@bmc-host[:623]` (commands: `power on|off|cycle|reset|shutdown|status`, `sensors`/`health` with SDR units & critical thresholds, `sel`/`sel list`/`sel clear`, `boot device`/`boot pxe|disk|bios|cdrom [once|continuous] [uefi|legacy]`, `raw <netfn> <cmd> [data...]`)
 - `redfish://admin:password@bmc-host[:443][?verify_ssl=false&system_id=1&chassis_id=1&manager_id=1&auth=auto&multiplexed=true]`
 - `replay://host[?cassette=path/to/cassette.yaml&mode=none&normalize_temp=true&allow_playback_repeats=true]`

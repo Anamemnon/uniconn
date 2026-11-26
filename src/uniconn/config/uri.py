@@ -37,6 +37,20 @@ if TYPE_CHECKING:
 _INLINE_SECRET_URI_RE = re.compile(
     r"^([a-zA-Z][a-zA-Z0-9+.-]*://[^/?#:]*:)([a-zA-Z][a-zA-Z0-9+.-]*)://([^@#]+)(@[^/?#@]+(?:[/?#].*)?)$"
 )
+_WINDOWS_PIPE_PREFIXES = ("\\\\.\\pipe\\", "//./pipe/")
+_LOCAL_QGA_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
+def _is_windows_pipe_path(path: str | None) -> bool:
+    return bool(path and path.strip().lower().startswith(_WINDOWS_PIPE_PREFIXES))
+
+
+def _format_uri_host(host: str | None) -> str:
+    if not host:
+        return ""
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host
 
 
 class URIParser:
@@ -322,13 +336,35 @@ class URIParser:
                 raw_ssh_cfg if isinstance(raw_ssh_cfg, bool) else str(raw_ssh_cfg)
             )
 
-        # Случай 1: qga:///path/to/socket.sock (без сетевого хоста гипервизора)
+        # Случай 1: qga:///path/to/socket.sock или qga://?backend=pipe&pipe=\\.\pipe\qga-vm1
         if not parsed.netloc:
-            socket_path = unquote(parsed.path) if parsed.path else ""
+            raw_path = unquote(parsed.path) if parsed.path else ""
+            raw_pipe = str(options.get("pipe", "")) if "pipe" in options else ""
+            raw_socket = raw_path or (str(options["socket"]) if "socket" in options else "")
+            is_pipe_target = (
+                bool(raw_pipe)
+                or str(options.get("backend", "")).strip().lower() == "pipe"
+                or _is_windows_pipe_path(raw_socket)
+            )
+            if is_pipe_target:
+                pipe_val = raw_pipe or raw_socket
+                if pipe_val:
+                    options["pipe"] = pipe_val
+                    if "socket" in options and str(options["socket"]) == pipe_val:
+                        options.pop("socket", None)
+                options["backend"] = "pipe"
+                return ConnectionConfig(
+                    transport=transport,
+                    host=pipe_val or "localhost",
+                    port=None,
+                    username=None,
+                    password=None,
+                    options=options,
+                )
+
+            socket_path = raw_socket
             if socket_path:
                 options.setdefault("socket", socket_path)
-            elif "socket" in options:
-                socket_path = str(options["socket"])
             options.setdefault("backend", "socket")
             return ConnectionConfig(
                 transport=transport,
@@ -339,14 +375,24 @@ class URIParser:
                 options=options,
             )
 
-        # Случай 2: qga://[user@]hypervisor[:port]/vm-name[?socket=...&backend=...]
+        # Случай 2: qga://[user@]hypervisor[:port][/vm-name][?socket=...&backend=...]
         path_trimmed = unquote(parsed.path.strip("/")) if parsed.path else ""
         if path_trimmed:
             options.setdefault("vm", path_trimmed)
             options.setdefault("domain", path_trimmed)
 
+        explicit_backend = str(options.get("backend", "")).strip().lower()
         port = parsed.port
-        if port is None and parsed.hostname not in (None, "", "localhost", "127.0.0.1"):
+        is_local_tcp = (
+            not explicit_backend
+            and parsed.hostname in _LOCAL_QGA_HOSTS
+            and port is not None
+            and not path_trimmed
+            and "socket" not in options
+        )
+        if explicit_backend == "tcp" or is_local_tcp:
+            options["backend"] = "tcp"
+        elif port is None and parsed.hostname not in (None, "", *_LOCAL_QGA_HOSTS):
             port = cls.DEFAULT_PORTS.get(transport, 22)
 
         return ConnectionConfig(
@@ -495,6 +541,13 @@ class URIParser:
 
         if transport in ("qga", "qemu-ga"):
             opts = dict(merged_opts)
+            backend_val = str(opts.get("backend", "")).strip().lower()
+            is_pipe_host = _is_windows_pipe_path(host)
+            if backend_val == "pipe" or "pipe" in opts or is_pipe_host:
+                if "pipe" not in opts and is_pipe_host and host:
+                    opts["pipe"] = host
+                opts["backend"] = "pipe"
+                return f"{transport}://?{cls._build_query_string(opts)}"
             if (host and host.startswith("/")) or (not host and "socket" in opts):
                 sock_path = host if (host and host.startswith("/")) else str(opts.pop("socket", ""))
                 opts.pop("socket", None)
@@ -512,7 +565,7 @@ class URIParser:
                 auth = f"{quote(username, safe='')}@"
             port_str = f":{port}" if port else ""
             vm_suffix = f"/{vm_name}" if vm_name else ""
-            uri = f"{transport}://{auth}{host or ''}{port_str}{vm_suffix}"
+            uri = f"{transport}://{auth}{_format_uri_host(host)}{port_str}{vm_suffix}"
             if opts:
                 uri = f"{uri}?{cls._build_query_string(opts)}"
             return uri

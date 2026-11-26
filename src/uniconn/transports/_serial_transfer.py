@@ -28,7 +28,7 @@ class _SerialTransferMixin:
     config: Any
     _connected: bool
     _reader: asyncio.StreamReader | None
-    _writer: asyncio.StreamWriter | None
+    _writer: Any
     _device: str
 
     @property

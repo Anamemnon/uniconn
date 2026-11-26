@@ -49,10 +49,21 @@ from ._serial_models import (
     _SerialShellStdout,
     list_serial_ports,
 )
+from ._serial_threaded import (
+    ThreadedSerialWriter,
+    open_threaded_serial_connection,
+    should_use_threaded_serial,
+)
 from ._serial_transfer import _SerialTransferMixin
 from .base import BaseTransport
+from .serial_protocols import ZmodemSubprocessAdapter
 
 # Импорт опциональный (extra dependency)
+try:
+    import serial as pyserial
+except ImportError:
+    pyserial = None  # type: ignore
+
 try:
     import serial_asyncio
 except ImportError:
@@ -71,14 +82,25 @@ class SerialTransport(_SerialTransferMixin, BaseTransport):
     DEFAULT_INTER_BYTE_TIMEOUT = 0.05
 
     def __init__(self, config: Any) -> None:
-        if serial_asyncio is None:
+        opts = getattr(config, "options", {}) or {}
+        io_backend = str(opts.get("io_backend", "auto")).strip().lower() or "auto"
+        want_threaded = should_use_threaded_serial(io_backend)
+        if want_threaded:
+            if pyserial is None and opts.get("serial_factory") is None:
+                raise ImportError(
+                    "pyserial not installed. "
+                    "Run: pip install uniconn[serial]"
+                )
+        elif serial_asyncio is None:
             raise ImportError(
                 "pyserial-asyncio not installed. "
                 "Run: pip install uniconn[serial]"
             )
         super().__init__(config)
+        self._io_backend_mode: str = io_backend
+        self._active_io_backend: str = "threaded" if want_threaded else "asyncio"
         self._reader: asyncio.StreamReader | None = None
-        self._writer: asyncio.StreamWriter | None = None
+        self._writer: asyncio.StreamWriter | ThreadedSerialWriter | None = None
         self._device: str = self._get_device()
 
     @property
@@ -86,6 +108,24 @@ class SerialTransport(_SerialTransferMixin, BaseTransport):
         """Название транспорта (serial или uart)."""
         cfg_transport = getattr(self.config, "transport", "serial")
         return cfg_transport if cfg_transport in ("serial", "uart") else "serial"
+
+    @property
+    def capabilities(self) -> dict[str, Any]:
+        """Словарь поддерживаемых возможностей SerialTransport на текущей платформе."""
+        zmodem_platform = ZmodemSubprocessAdapter.is_platform_supported()
+        zmodem_available = ZmodemSubprocessAdapter.is_available()
+        return {
+            "commands": True,
+            "binary": True,
+            "stream": True,
+            "shell": True,
+            "hardware_lines": True,
+            "xmodem": True,
+            "ymodem": True,
+            "zmodem": zmodem_available,
+            "zmodem_platform_supported": zmodem_platform,
+            "io_backend": self._active_io_backend,
+        }
 
     @property
     def is_connected(self) -> bool:
@@ -322,14 +362,17 @@ class SerialTransport(_SerialTransferMixin, BaseTransport):
         self.set_rts(not rts)
 
     def _flush_input_buffer(self) -> None:
-        """Очистить входной системный буфер от старых данных."""
+        """Очистить входной системный буфер (и буфер StreamReader в threaded-режиме) от старых данных."""
+        if isinstance(self._writer, ThreadedSerialWriter):
+            self._writer.flush_input()
+            return
         s = self.serial_instance
         if s is not None and hasattr(s, "reset_input_buffer"):
             with contextlib.suppress(Exception):
                 s.reset_input_buffer()
 
     async def connect(self) -> None:
-        """Открыть serial порт."""
+        """Открыть serial порт (через ``pyserial-asyncio`` на POSIX или thread-backed адаптер на Windows/Proactor)."""
         try:
             self._device = self._get_device()
             kwargs = self._get_serial_kwargs()
@@ -338,14 +381,27 @@ class SerialTransport(_SerialTransferMixin, BaseTransport):
                 "Serial — незашифрованное соединение: данные передаются в открытом виде."
             )
 
-            if serial_asyncio is None:
-                raise ImportError("pyserial-asyncio is required for SerialTransport")
             loop = asyncio.get_running_loop()
-            self._reader, self._writer = await serial_asyncio.open_serial_connection(
-                url=self._device,
-                loop=loop,
-                **kwargs,
-            )
+            use_threaded = should_use_threaded_serial(self._io_backend_mode, loop=loop)
+
+            if use_threaded:
+                self._active_io_backend = "threaded"
+                serial_factory = self.config.options.get("serial_factory")
+                self._reader, self._writer = await open_threaded_serial_connection(
+                    url=self._device,
+                    loop=loop,
+                    serial_factory=serial_factory,
+                    **kwargs,
+                )
+            else:
+                self._active_io_backend = "asyncio"
+                if serial_asyncio is None:
+                    raise ImportError("pyserial-asyncio is required for SerialTransport")
+                self._reader, self._writer = await serial_asyncio.open_serial_connection(
+                    url=self._device,
+                    loop=loop,
+                    **kwargs,
+                )
 
             self._connected = True
 
@@ -738,9 +794,12 @@ class SerialTransport(_SerialTransferMixin, BaseTransport):
 __all__ = [
     "SerialPortInfo",
     "SerialTransport",
+    "ThreadedSerialWriter",
     "_SerialShellProcess",
     "_SerialShellStdin",
     "_SerialShellStdout",
     "_parse_vid_pid",
     "list_serial_ports",
+    "open_threaded_serial_connection",
+    "should_use_threaded_serial",
 ]
