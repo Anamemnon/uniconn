@@ -99,13 +99,32 @@ def test_winrm_transport_missing_dependency_hint() -> None:
 
 
 def test_serial_transport_missing_dependency_hint() -> None:
-    """При отсутствии serial_asyncio выдаётся понятный ImportError с подсказкой uniconn[serial]."""
-    with patch("uniconn.transports._serial.serial_asyncio", None):
-        from uniconn.transports._serial import SerialTransport
+    """При отсутствии pyserial / serial_asyncio выдаётся понятный ImportError с подсказкой uniconn[serial]."""
+    from uniconn.transports._serial import SerialTransport
 
+    with (
+        patch("uniconn.transports._serial.pyserial", None),
+        patch("uniconn.transports._serial.serial_asyncio", None),
+    ):
         cfg = ConnectionConfig(transport="serial", options={"device": "/dev/ttyUSB0"})
         with pytest.raises(ImportError, match=r"uniconn\[serial\]"):
             SerialTransport(cfg)
+
+    with patch("uniconn.transports._serial.serial_asyncio", None):
+        cfg_asyncio = ConnectionConfig(
+            transport="serial",
+            options={"device": "/dev/ttyUSB0", "io_backend": "asyncio"},
+        )
+        with pytest.raises(ImportError, match=r"uniconn\[serial\]"):
+            SerialTransport(cfg_asyncio)
+
+    with patch("uniconn.transports._serial.pyserial", None):
+        cfg_threaded = ConnectionConfig(
+            transport="serial",
+            options={"device": "COM3", "io_backend": "threaded"},
+        )
+        with pytest.raises(ImportError, match=r"uniconn\[serial\]"):
+            SerialTransport(cfg_threaded)
 
 
 def test_ipmi_transport_missing_dependency_hint() -> None:

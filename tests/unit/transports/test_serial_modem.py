@@ -371,7 +371,10 @@ async def test_serial_transport_trigger_command_and_upload(tmp_path: Path) -> No
     pair.b_to_a.feed_data(CRC_CHR + ACK + CRC_CHR + ACK + NAK + ACK + CRC_CHR + ACK)
 
     with patch("uniconn.transports._serial.serial_asyncio", serial_mock):
-        cfg = ConnectionConfig(transport="serial", options={"device": "/dev/ttyUSB0", "baudrate": 115200})
+        cfg = ConnectionConfig(
+            transport="serial",
+            options={"device": "/dev/ttyUSB0", "baudrate": 115200, "io_backend": "asyncio"},
+        )
         transport = SerialTransport(cfg)
         await transport.connect()
 
@@ -400,7 +403,7 @@ def test_sync_connection_parity_and_pool_fan_out(tmp_path: Path) -> None:
     serial_mock.open_serial_connection = AsyncMock(side_effect=_fake_open_serial)
 
     with patch("uniconn.transports._serial.serial_asyncio", serial_mock):
-        with SyncConnection.from_uri("serial:///dev/ttyUSB0?baudrate=115200") as sync_conn:
+        with SyncConnection.from_uri("serial:///dev/ttyUSB0?baudrate=115200&io_backend=asyncio") as sync_conn:
             sent = sync_conn.files.upload_xmodem(
                 fw_file,
                 mode="crc",
@@ -458,7 +461,10 @@ async def test_zmodem_adapter_missing_binary_and_mocked_exec(tmp_path: Path) -> 
     fw = tmp_path / "z.bin"
     fw.write_bytes(b"ZMODEM_TEST")
 
-    with patch("shutil.which", return_value=None):
+    with (
+        patch("uniconn.transports.serial_protocols.zmodem.sys.platform", "linux"),
+        patch("shutil.which", return_value=None),
+    ):
         assert ZmodemSubprocessAdapter.is_available() is False
         with pytest.raises(CapabilityNotSupportedError, match="lrzsz"):
             await ZmodemSubprocessAdapter.send_file("/dev/ttyUSB0", 115200, fw)
@@ -468,6 +474,7 @@ async def test_zmodem_adapter_missing_binary_and_mocked_exec(tmp_path: Path) -> 
     mock_proc.communicate = AsyncMock(return_value=(b"", b""))
 
     with (
+        patch("uniconn.transports.serial_protocols.zmodem.sys.platform", "linux"),
         patch("shutil.which", return_value="/usr/bin/sz"),
         patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)),
     ):
@@ -479,6 +486,7 @@ async def test_zmodem_adapter_missing_binary_and_mocked_exec(tmp_path: Path) -> 
     mock_proc.returncode = 1
     mock_proc.communicate = AsyncMock(return_value=(b"", b"Transfer aborted"))
     with (
+        patch("uniconn.transports.serial_protocols.zmodem.sys.platform", "linux"),
         patch("shutil.which", return_value="/usr/bin/sz"),
         patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)),
         pytest.raises(ModemTransferError, match="Transfer aborted"),
@@ -497,7 +505,10 @@ async def test_serial_transport_generic_upload_and_download_routing(tmp_path: Pa
     serial_mock.open_serial_connection = AsyncMock(return_value=(pair.b_to_a, pair.writer_a))
 
     with patch("uniconn.transports._serial.serial_asyncio", serial_mock):
-        cfg = ConnectionConfig(transport="serial", options={"device": "/dev/ttyUSB0"})
+        cfg = ConnectionConfig(
+            transport="serial",
+            options={"device": "/dev/ttyUSB0", "io_backend": "asyncio"},
+        )
         transport = SerialTransport(cfg)
         await transport.connect()
 

@@ -20,7 +20,7 @@ def serial_config():
         username=None,
         password=None,
         timeout=5.0,
-        options={"device": "/dev/ttyUSB0", "baudrate": 9600},
+        options={"device": "/dev/ttyUSB0", "baudrate": 9600, "io_backend": "asyncio"},
     )
 
 
@@ -47,9 +47,10 @@ class TestSerialTransportCreation:
     """Тесты создания транспорта"""
 
     def test_serial_without_pyserial(self):
-        """Ошибка при отсутствии pyserial_asyncio"""
-        with patch(
-            "uniconn.transports._serial.serial_asyncio", None
+        """Ошибка при отсутствии pyserial / pyserial_asyncio"""
+        with (
+            patch("uniconn.transports._serial.pyserial", None),
+            patch("uniconn.transports._serial.serial_asyncio", None),
         ):
             config = ConnectionConfig(
                 transport="serial",
