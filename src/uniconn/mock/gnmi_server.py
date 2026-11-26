@@ -10,7 +10,11 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Self
 
 from ..core.bridge import EventLoopPortal, SyncProxyMixin, sync_method
-from ..transports.network._h2_grpc import GrpcServerStream, serve_grpc_http2_client
+from ..transports.network._h2_grpc import (
+    AsyncGrpcHttp2Client,
+    GrpcServerStream,
+    serve_grpc_http2_client,
+)
 from ..transports.network.base import apply_yang_edit, query_yang_tree
 from ..transports.network.gnmi_proto import GnmiWireCodec
 
@@ -266,6 +270,7 @@ class MockGnmiServer:
         """Запустить сокетный сервер gNMI."""
         if self._server is not None:
             return self
+        AsyncGrpcHttp2Client.ensure_dependency()
         self._server = await asyncio.start_server(
             self._handle_client,
             host=self.host,
