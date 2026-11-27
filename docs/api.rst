@@ -35,7 +35,7 @@ Domain Services (Files, RemotePath, State, Network & Tunnels)
    :members: ensure_package, ensure_service, ensure_file, ensure_directory, ensure_line, ensure_user, ensure_authorized_key, ensure_systemd_unit, ensure_sysctl, ensure_windows_service, ensure_registry_key, ensure_windows_feature, ensure_yang, batch_notifications
 
 .. autoclass:: uniconn.NetworkOperationsService
-   :members: get, set, rpc, subscribe
+   :members: get, get_config, edit, commit, commit_confirm, discard_changes, validate, lock, unlock, capabilities, rpc, subscribe, transaction
 
 .. autoclass:: uniconn.TunnelService
    :members: forward_local_port, forward_remote_port

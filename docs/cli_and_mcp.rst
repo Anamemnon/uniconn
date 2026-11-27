@@ -18,7 +18,7 @@ Execution, Waiting & Multi-Host Rollouts
    uniconn run-multi --inventory fleet.yaml --group web -c "nginx -t" --batch-size 2 --max-fail-ratio 0.0
 
    # Concurrent latency probe across heterogeneous transports
-   uniconn ping "ssh://node-01" "winrm://win-01" "kubectl://prod/api-pod-0"
+   uniconn ping "ssh://node-01" "winrm://win-01" "redfish://bmc-01"
 
    # Wait primitives (connection readiness, TCP port state, file regex)
    uniconn wait-for connection "ssh://node-01" --timeout 120
@@ -156,3 +156,5 @@ Programmatic Python Usage
    )
    result = await engine.evaluate(ctx)
    print(result.decision.value, result.reasons)  # REQUIRE_APPROVAL
+
+See also :doc:`examples/security_telemetry` for runnable hooks, sensitive mode, and OpenTelemetry examples.

@@ -41,6 +41,27 @@ jobs:
       - name: Core Overhead SLA Check
         if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
         run: uv run python -m benchmarks.overhead_bench -n 100 -w 10 --check-thresholds
+      - name: Verify Sphinx Documentation Build (Strict -W)
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        run: uv run poe docs-check
+      - name: Build and Verify PyPI Distribution Artifacts
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.11'
+        run: |
+          rm -rf dist
+          uv build
+          uv run python -c "
+          import glob, tarfile, zipfile
+          forbidden = ('package.json', 'metadata.json', 'main.py', '.claude/', '.cursor/', 'docs/_build/')
+          w = sorted(glob.glob('dist/*.whl'))[-1]
+          s = sorted(glob.glob('dist/*.tar.gz'))[-1]
+          with zipfile.ZipFile(w) as zf:
+              whl_bad = [n for n in zf.namelist() if any(f in n for f in forbidden)]
+          with tarfile.open(s, 'r:gz') as tf:
+              tar_bad = [n for n in tf.getnames() if any(f in n for f in forbidden)]
+          assert not whl_bad, f'Forbidden files in wheel: {whl_bad}'
+          assert not tar_bad, f'Forbidden files in sdist: {tar_bad}'
+          print('Artifacts verified:', w, s)
+          "
 
   integration:
     name: Real Protocol Integration (OpenSSH, OPA, NETCONF, gNMI)

@@ -283,7 +283,7 @@ if TYPE_CHECKING:
         parse_qga_network_interfaces,
     )
 
-__version__ = "0.24.0"
+__version__ = "0.25.0"
 
 _LAZY_MODULE_GROUPS: dict[str, tuple[str, ...]] = {
     ".result": (

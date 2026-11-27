@@ -1,7 +1,7 @@
 Руководство по отладке, иерархии исключений и решению частых проблем
 ====================================================================
 
-**Язык:** `English <../troubleshooting.rst>`_ | **[ Русский ]**
+**Язык:** :doc:`English </troubleshooting>` | **[ Русский ]**
 
 Это руководство поможет быстро локализовать и устранить любую ошибку при работе с ``uniconn``: от разбора атрибутов исключений ``UniconnError`` и включения автодиагностики ``diagnose=True`` до решения проблем с ``sudo``, SSH jump-хостами, ``RemotePythonWorker`` и контрактными кассетами.
 
@@ -230,7 +230,15 @@
 
   - ``winrm://`` / ``wsman://``: ``uv add "uniconn[winrm]"``
   - ``redfish://`` / ``ipmi://``: ``uv add "uniconn[bmc]"``
+  - ``pve://``: ``uv add "uniconn[pve]"``
+  - ``netconf://``: ``uv add "uniconn[netconf]"``
+  - ``restconf://``: ``uv add "uniconn[restconf]"``
+  - ``gnmi://``: ``uv add "uniconn[gnmi]"``
   - ``serial://`` / ``uart://``: ``uv add "uniconn[serial]"``
   - ``telnet://``: ``uv add "uniconn[telnet]"``
   - Парсеры ``jc`` / ``textfsm`` / ``ttp``: ``uv add "uniconn[parsing]"``
+  - AST-политики безопасности: ``uv add "uniconn[security]"``
+  - Сетевой HTTP/SSE MCP-сервер: ``uv add "uniconn[mcp-http]"``
   - Все пакеты сразу: ``uv add "uniconn[all]"``
+
+См. также русскоязычный каталог примеров :doc:`examples` (кассеты, отказоустойчивость, телеметрия и диагностика).

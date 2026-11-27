@@ -1,5 +1,6 @@
 # Sphinx configuration for uniconn.
 
+import os
 import sys
 from pathlib import Path
 
@@ -39,12 +40,15 @@ autodoc_default_options = {
 }
 autodoc_typehints = "description"
 
-# Intersphinx
-intersphinx_mapping = {
-    "python": ("https://docs.python.org/3", None),
-    "pydantic": ("https://docs.pydantic.dev/latest/", None),
-    "asyncssh": ("https://asyncssh.readthedocs.io/en/latest/", None),
-}
+# Intersphinx (set UNICONN_DOCS_OFFLINE=1 for strict offline -W builds)
+if os.environ.get("UNICONN_DOCS_OFFLINE", "").strip().lower() in ("1", "true", "yes"):
+    intersphinx_mapping: dict[str, tuple[str, str | None]] = {}
+else:
+    intersphinx_mapping = {
+        "python": ("https://docs.python.org/3", None),
+        "pydantic": ("https://docs.pydantic.dev/latest/", None),
+        "asyncssh": ("https://asyncssh.readthedocs.io/en/latest/", None),
+    }
 
 # Napoleon settings (Google/Numpy docstrings)
 napoleon_google_docstring = True

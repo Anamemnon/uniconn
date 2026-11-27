@@ -1,14 +1,14 @@
 5-Minute Quickstart Guide
 =========================
 
-**Language:** **[ English ]** | `Русский <ru/quickstart.rst>`_
+**Language:** **[ English ]** | :doc:`Русский <ru/quickstart>`
 
 This guide walks you through installing ``uniconn``, choosing between the **Async** and **Sync** APIs, running your first commands (even without a remote server), and browsing the local Sphinx documentation server.
 
 1. Installation
 ---------------
 
-Install the lightweight core package (includes SSH, Local, NETCONF, RESTCONF, gNMI, Proxmox VE, QEMU Guest Agent, Replay cassettes, resilience pipeline, and structured logging):
+Install the lightweight core package (includes SSH/SFTP, Local, QEMU Guest Agent, Replay cassettes, resilience pipeline, and structured logging with ~11 ms cold startup):
 
 .. code-block:: bash
 
@@ -32,7 +32,7 @@ Install everything at once with ``uv add "uniconn[all]"``, or pick only the extr
      - Included Capabilities
    * - **all**
      - ``uv add "uniconn[all]"``
-     - All optional transports, parsers, templates, telemetry, and CLI
+     - All optional transports, parsers, templates, telemetry, security, and CLI
    * - **cli**
      - ``uv add "uniconn[cli]"``
      - Full CLI (``cyclopts``, ``rich``) including ``uniconn run``, ``flow``, ``mcp``, ``policy``
@@ -42,12 +42,24 @@ Install everything at once with ``uv add "uniconn[all]"``, or pick only the extr
    * - **bmc**
      - ``uv add "uniconn[bmc]"``
      - IPMI (``pyghmi``) and DMTF Redfish HTTP/2 (``niquests``)
+   * - **pve**
+     - ``uv add "uniconn[pve]"``
+     - Proxmox VE REST API & Guest Agent (``niquests``)
+   * - **netconf**
+     - ``uv add "uniconn[netconf]"``
+     - NETCONF over SSH (``asyncssh``)
+   * - **restconf**
+     - ``uv add "uniconn[restconf]"``
+     - RESTCONF HTTP/2 client & SSE streaming (``niquests``)
+   * - **gnmi**
+     - ``uv add "uniconn[gnmi]"``
+     - gNMI HTTP/2 gRPC telemetry & configuration (``jh2``)
    * - **serial**
      - ``uv add "uniconn[serial]"``
-     - Serial/UART console (``pyserial-asyncio``) and XMODEM/YMODEM/ZMODEM flashing
+     - Serial/UART console (``pyserial-asyncio`` / threaded adapter) and X/Y/ZMODEM flashing
    * - **telnet**
      - ``uv add "uniconn[telnet]"``
-     - RFC 854 Telnet transport with IAC NAWS resize (``telnetlib3``)
+     - RFC 854 Telnet transport with POSIX markers & CLI profiles (``telnetlib3``)
    * - **parsing**
      - ``uv add "uniconn[parsing]"``
      - Semantic CLI parsers (``jc``, ``textfsm``, ``ttp``, ``ntc-templates``)
@@ -57,6 +69,12 @@ Install everything at once with ``uv add "uniconn[all]"``, or pick only the extr
    * - **otel**
      - ``uv add "uniconn[otel]"``
      - OpenTelemetry distributed tracing via ``otel_tracing_hook``
+   * - **security**
+     - ``uv add "uniconn[security]"``
+     - Tree-sitter Bash grammar backend for Policy-as-Code (``tree-sitter``, ``tree-sitter-bash``)
+   * - **mcp-http**
+     - ``uv add "uniconn[mcp-http]"``
+     - Remote Streamable HTTP/SSE MCP server with OAuth/JWT auth (``starlette``, ``uvicorn``, ``pyjwt``)
 
 2. Zero-Setup Sandbox: Try ``uniconn`` Without a Remote Server
 --------------------------------------------------------------
@@ -157,4 +175,4 @@ When developing from source, you can build and browse the complete Sphinx docume
 
    python main.py --serve
 
-Open ``http://localhost:3000`` in your browser to explore the bilingual (English & Russian) guides, runnable example scripts in ``examples/``, and API reference. Pass ``--rebuild`` to force a fresh Sphinx HTML build.
+Open ``http://localhost:3000`` in your browser to explore the bilingual (English & Russian) guides, runnable example scripts in :doc:`examples` (starting with :doc:`examples/basic`), and API reference. Pass ``--rebuild`` to force a fresh Sphinx HTML build.

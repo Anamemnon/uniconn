@@ -206,6 +206,8 @@ def test_bilingual_documentation_structure_and_coverage() -> None:
         "inventory_and_uris.rst",
         "cookbook.rst",
         "troubleshooting.rst",
+        "transports.rst",
+        "examples.rst",
     )
     for name in expected_guides:
         en_file = docs_dir / name
@@ -232,15 +234,29 @@ def test_bilingual_documentation_structure_and_coverage() -> None:
             assert symbol in arch_text, f"{symbol} missing in {arch_path}"
 
 
+def _iter_example_py_files(root_dir):
+    """Вернуть отсортированный список исполняемых Python-примеров в examples/."""
+    examples_dir = root_dir / "examples"
+    return sorted(p for p in examples_dir.glob("*.py") if p.name != "__init__.py")
+
+
+def _iter_example_assets(root_dir):
+    """Вернуть отсортированный список Python-скриптов и YAML-профилей в examples/."""
+    examples_dir = root_dir / "examples"
+    return sorted(
+        p for p in examples_dir.iterdir()
+        if p.is_file() and p.name != "__init__.py" and p.suffix in {".py", ".yaml"}
+    )
+
+
 def test_examples_use_only_public_uniconn_imports() -> None:
     """Все скрипты в examples/*.py импортируют только актуальные публичные модули без изолированных корней."""
     import ast
     from pathlib import Path
 
     root_dir = Path(__file__).resolve().parents[3]
-    examples_dir = root_dir / "examples"
-    py_files = sorted(p for p in examples_dir.glob("*.py") if p.name != "__init__.py")
-    assert len(py_files) >= 13
+    py_files = _iter_example_py_files(root_dir)
+    assert len(py_files) >= 17
 
     allowed_root = set(uniconn.__all__) | set(uniconn._LAZY_EXPORTS) | {"__version__"}
     for py_path in py_files:
@@ -262,8 +278,7 @@ async def test_all_examples_execute_main_cleanly() -> None:
     from pathlib import Path
 
     root_dir = Path(__file__).resolve().parents[3]
-    examples_dir = root_dir / "examples"
-    py_files = sorted(p for p in examples_dir.glob("*.py") if p.name != "__init__.py")
+    py_files = _iter_example_py_files(root_dir)
 
     for py_path in py_files:
         spec = importlib.util.spec_from_file_location(f"examples.{py_path.stem}", py_path)
@@ -491,11 +506,7 @@ def test_readmes_document_all_extras_transports_mcp_and_valid_links() -> None:
         name for name in pyproject["project"]["optional-dependencies"] if name not in {"all", "dev"}
     }
     transport_schemes = sorted(pyproject["project"]["entry-points"]["uniconn.transports"].keys())
-    example_files = sorted(
-        f"examples/{p.name}"
-        for p in (root_dir / "examples").iterdir()
-        if p.is_file() and p.name != "__init__.py" and p.suffix in {".py", ".yaml"}
-    )
+    example_files = [f"examples/{p.name}" for p in _iter_example_assets(root_dir)]
 
     mcp_server = MCPServer(registry=MCPHostRegistry())
     tools_resp = asyncio.run(mcp_server.handle_message({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
@@ -526,6 +537,83 @@ def test_readmes_document_all_extras_transports_mcp_and_valid_links() -> None:
             clean_target = raw_target.split("#", 1)[0].lstrip("./")
             target_path = root_dir / clean_target
             assert target_path.exists(), f"Broken relative link {raw_target!r} in {readme_name}"
+
+
+def test_all_examples_covered_in_sphinx_docs_without_cyrillic_leak() -> None:
+    """Каждый скрипт/YAML в examples/ должен быть подключён через literalinclude в docs/examples/ (на EN) и в ru/examples.rst."""
+    import re
+    from pathlib import Path
+
+    root_dir = Path(__file__).resolve().parents[3]
+    docs_examples_dir = root_dir / "docs" / "examples"
+
+    example_files = [p.name for p in _iter_example_assets(root_dir)]
+    assert len(example_files) >= 21
+
+    docs_examples_rst = sorted(docs_examples_dir.glob("*.rst"))
+    en_examples_index = (root_dir / "docs" / "examples.rst").read_text(encoding="utf-8")
+    ru_examples_index = (root_dir / "docs" / "ru" / "examples.rst").read_text(encoding="utf-8")
+
+    cyrillic_re = re.compile(r"[\u0400-\u04FF]")
+    combined_literalincludes: list[str] = []
+    for rst_path in docs_examples_rst:
+        content = rst_path.read_text(encoding="utf-8")
+        assert not cyrillic_re.search(content), f"Unexpected Cyrillic text in English doc {rst_path.name}"
+        combined_literalincludes.append(content)
+        stem = rst_path.stem
+        assert f"examples/{stem}" in en_examples_index, f"Missing examples/{stem} in docs/examples.rst"
+        assert f"/examples/{stem}" in ru_examples_index, f"Missing /examples/{stem} in docs/ru/examples.rst"
+
+    all_examples_docs_text = "\n".join(combined_literalincludes)
+    for fname in example_files:
+        assert f".. literalinclude:: ../../examples/{fname}" in all_examples_docs_text, (
+            f"Orphaned example examples/{fname} is not included via literalinclude in docs/examples/*.rst"
+        )
+        assert fname in ru_examples_index, f"Example {fname} missing in docs/ru/examples.rst"
+
+
+def test_docs_and_metadata_have_no_removed_transports_or_dashboard() -> None:
+    """Документация Sphinx и файлы метаданных не содержат удалённых контейнерных транспортов и dashboard."""
+    from pathlib import Path
+
+    root_dir = Path(__file__).resolve().parents[3]
+    targets = [
+        *(root_dir / "docs").rglob("*.rst"),
+        root_dir / "AGENTS.md",
+        root_dir / "FEATURES.md",
+        root_dir / "llms.txt",
+    ]
+    forbidden_lower = (
+        "docker://",
+        "podman://",
+        "kubectl://",
+        "dockertransport",
+        "podmantransport",
+        "kubectltransport",
+        "containerdiagnosticstrategy",
+        "examples/dashboard",
+    )
+    for path in targets:
+        raw_text = path.read_text(encoding="utf-8")
+        if path.suffix == ".rst":
+            assert ".rst>" not in raw_text, (
+                f"Broken raw .rst> hyperlink in {path.relative_to(root_dir)}; use Sphinx :doc: role instead"
+            )
+        text_lower = raw_text.lower()
+        for token in forbidden_lower:
+            assert token not in text_lower, f"Stale reference {token!r} found in {path.relative_to(root_dir)}"
+
+
+def test_version_synced_across_docs_and_package() -> None:
+    """Текущая версия пакета синхронизирована с AGENTS.md, llms.txt и FEATURES.md."""
+    from pathlib import Path
+
+    root_dir = Path(__file__).resolve().parents[3]
+    version_tag = f"v{uniconn.__version__}"
+    for doc_name in ("AGENTS.md", "llms.txt", "FEATURES.md"):
+        content = (root_dir / doc_name).read_text(encoding="utf-8")
+        assert version_tag in content, f"Expected {version_tag} in {doc_name}"
+
 
 
 

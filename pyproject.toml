@@ -157,6 +157,8 @@ exclude = [
     ".coverage",
     "docs/_build",
     "public",
+    ".github",
+    "dist",
 ]
 
 [dependency-groups]
@@ -225,6 +227,7 @@ ignore = [
 [tool.poe.tasks]
 lint = "ruff check src/ benchmarks/ examples/ tests/"
 typecheck = "pyright"
+docs-check = "sphinx-build -b html -W docs docs/_build/html"
 bench = "python -m benchmarks.overhead_bench -n 100 -w 10 --check-thresholds"
 test = "pytest tests/unit -m 'not integration' -q"
 test-core = "pytest tests/unit/core -m 'not integration' -q"

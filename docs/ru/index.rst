@@ -75,8 +75,10 @@
 
 - **Системный администратор Linux / Windows и DevOps**: Начните с :doc:`quickstart`, изучите рецепты в :doc:`cookbook` и полный справочник инвентаря в :doc:`inventory_and_uris`.
 - **Разработчик Python и Архитектор**: Изучите внутреннее устройство ``CommandPipeline``, порядок мидлварей и ``EventLoopPortal`` в :doc:`architecture`.
-- **Сетевой инженер (NETCONF / RESTCONF / gNMI)**: Посмотрите примеры ``conn.net.get``, ``conn.state.ensure_yang`` и парсинга ``textfsm`` / ``ttp`` в :doc:`cookbook` и параметры схем в :doc:`inventory_and_uris`.
+- **Сетевой инженер (NETCONF / RESTCONF / gNMI)**: Посмотрите обзор :doc:`transports`, примеры ``conn.net.get``, ``conn.state.ensure_yang`` и парсинга ``textfsm`` / ``ttp`` в :doc:`cookbook` и параметры схем в :doc:`inventory_and_uris`.
+- **Инженер по железу, Bare-Metal и Embedded (BMC / UART / QEMU)**: Изучите Redfish HTTP/2, IPMI, Serial/UART (DTR/RTS, X/YMODEM на Linux и Windows), QGA (TCP / Named Pipe) и реактивный ``diagnostic_session`` в :doc:`transports`, :doc:`cookbook` и :doc:`examples`.
 - **Инженер по отладке, QA / SDET**: Изучите дерево исключений ``UniconnError``, автодиагностику ``diagnose=True`` и решение частых проблем в :doc:`troubleshooting`.
+- **AI / Platform инженер**: Настройте ``uniconn mcp``, подтверждения HITL и AST-политики безопасности в :doc:`/cli_and_mcp`.
 
 Содержание русскоязычной документации
 -------------------------------------
@@ -90,6 +92,8 @@
    inventory_and_uris
    cookbook
    troubleshooting
+   transports
+   examples
 
 Справочники на английском (EN)
 ------------------------------

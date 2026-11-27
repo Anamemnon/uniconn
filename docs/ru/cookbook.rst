@@ -1,7 +1,7 @@
 Пошаговая кулинарная книга (Рецепты по задачам)
 ===============================================
 
-**Язык:** `English <../cookbook.rst>`_ | **[ Русский ]**
+**Язык:** :doc:`English </cookbook>` | **[ Русский ]**
 
 В этом разделе собраны готовые к копированию боевые рецепты, сгруппированные по инженерным задачам. Каждый рецепт одинаково работает как с асинхронным ``Connection``, так и с синхронным ``SyncConnection``.
 
@@ -199,3 +199,12 @@
    async with ConnectionPool.from_file("inventory.yaml", group="web") as pool:
        report = await pool.run_flow(flow, vars={"version": "2.4.0", "port": 9000})
        report.raise_for_status()
+
+6. Сетевая автоматизация (NETCONF, RESTCONF, gNMI), виртуализация, Windows и железо
+-------------------------------------------------------------------------------------
+
+Для кроссплатформенного управления сетевыми устройствами (YANG / SSE / HTTP/2 gRPC), Windows-узлами (``winrm://``), гостевыми агентами QEMU (``qga://`` TCP/Named Pipe), контроллерами BMC (``redfish://``, ``ipmi://``) и последовательными портами (``serial://``, ``uart://``) изучите подробный обзор :doc:`transports` и готовые скрипты в разделе :doc:`examples`:
+
+- Базовые операции, инвентарь и PTY shell: :doc:`/examples/basic`, :doc:`/examples/inventory`, :doc:`/examples/file_transfer`, :doc:`/examples/shell`
+- Windows, QGA/PVE, сеть YANG и железо: :doc:`/examples/winrm`, :doc:`/examples/qemu_qga`, :doc:`/examples/network_yang`, :doc:`/examples/bmc`, :doc:`/examples/serial_uart`
+- Фоновые сессии, диагностика SCT/NVMe, безопасность и кассеты: :doc:`/examples/background`, :doc:`/examples/provisioning`, :doc:`/examples/security_telemetry`, :doc:`/examples/cassettes`

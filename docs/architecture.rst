@@ -1,7 +1,7 @@
 Core Architecture, Middleware Pipeline & Call Lifecycle
 =======================================================
 
-**Language:** **[ English ]** | `Русский <ru/architecture.rst>`_
+**Language:** **[ English ]** | :doc:`Русский <ru/architecture>`
 
 This guide explains how ``uniconn`` works under the hood: how ``Connection`` and ``SyncConnection`` maintain 100% API parity with sub-millisecond overhead, the exact execution order of middlewares inside ``CommandPipeline``, how ``conn.run_python()`` achieves ``< 2 ms`` latency without SSH process forks, and how to extend the engine with custom middlewares or transports.
 
@@ -104,7 +104,7 @@ Exact Middleware Execution Order
      - Binds ``host``, ``transport``, and ``uri_safe`` to ``structlog`` context, logs ``command.start`` and ``command.finish`` (redacting command text if ``sensitive=True``), invokes ``on_error`` hooks on exception, and calls ``result.raise_for_status()`` if ``raise_on_error=True``.
    * - **8**
      - ``AutoDiagnosticMiddleware``
-     - If ``result.exit_code != 0`` and ``diagnose=True`` (or ``conn.auto_diagnostics=True``), runs bounded root-cause probes (within ``timeout_budget=2.0s``) using the platform strategy (Linux, Container, Windows, or Passive) and attaches ``DiagnosticSummary`` to ``result.diagnostic``.
+     - If ``result.exit_code != 0`` and ``diagnose=True`` (or ``conn.auto_diagnostics=True``), runs bounded root-cause probes (within ``timeout_budget=2.0s``) using the platform strategy (Linux, Windows, or Passive) and attaches ``DiagnosticSummary`` to ``result.diagnostic``.
    * - **9**
      - ``CircuitBreakerMiddleware``
      - Checks ``conn.circuit_breaker``. If the circuit is ``OPEN``, immediately raises ``CircuitOpenError`` without network I/O. Records ``record_success()`` on completion or ``record_failure()`` on ``ConnectionError`` / ``TimeoutError``.
@@ -189,3 +189,5 @@ You can inject custom cross-cutting logic (such as custom metrics, ticket valida
        conn.pipeline.insert_middleware(0, SlowCommandAlertMiddleware(threshold_sec=1.0))
        res = await conn.run("echo hello")
        assert res.ok
+
+See also :doc:`examples/security_telemetry`, :doc:`examples/custom_transport`, and :doc:`examples/resilience` for complete runnable pipeline and extension scripts.

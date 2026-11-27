@@ -1,9 +1,9 @@
-Transports & Secret Resolution (16+ Schemes)
+Transports & Secret Resolution (13+ Schemes)
 ============================================
 
-**Language:** **[ English ]** | `Русский <ru/inventory_and_uris.rst>`_
+**Language:** **[ English ]** | :doc:`Русский <ru/transports>`
 
-Every connection in ``uniconn`` is described by a standardized URI scheme or a ``ConnectionConfig`` object. All schemes support dynamic secret resolution via ``SecretResolver``. For complete YAML/TOML/JSON inventory schemas and exhaustive query parameter tables, see :doc:`inventory_and_uris`.
+Every connection in ``uniconn`` is described by a standardized URI scheme or a ``ConnectionConfig`` object. All schemes support dynamic secret resolution via ``SecretResolver``. For complete YAML/TOML/JSON inventory schemas and exhaustive query parameter tables, see :doc:`inventory_and_uris`. For runnable scripts covering these transports, see :doc:`examples`.
 
 Dynamic Secret Resolution (``env://`` & ``file://``)
 ----------------------------------------------------
@@ -46,17 +46,19 @@ Agentless Windows PowerShell Remoting and CMD execution, file transfer, fact col
 
    conn = Connection.from_uri("winrm://Administrator:env://WIN_PASS@win-srv-01:5986?ssl=true&transport=ntlm&shell=ps")
 
+See :doc:`examples/winrm` for WinRM and Windows Server state provisioning examples.
+
 3. Structured Network Protocols (``netconf://``, ``restconf://``, ``gnmi://``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Model-driven network management supporting ``conn.net.get()``, ``conn.net.set()``, ``conn.net.rpc()``, ``conn.net.subscribe()``, and idempotent ``conn.state.ensure_yang()`` with candidate locking and unified YANG diffs.
+Model-driven network management supporting ``conn.net.get()``, ``conn.net.edit()``, ``conn.net.rpc()``, ``conn.net.subscribe()``, and idempotent ``conn.state.ensure_yang()`` with candidate locking and unified YANG diffs:
 
 - **NETCONF (RFC 6241 over SSH)**:
   ``netconf://[user[:password]@]host[:830][?vendor=default|junos|iosxr|iosxe|eos|sros|huawei&version=1.1|1.0&verify_host_key=false]``
 - **RESTCONF (RFC 8040 over HTTP/HTTPS)**:
-  ``restconf://[user[:password]@]host[:443][/restconf][?scheme=https|http&root=auto|/restconf&verify_tls=false&format=json|xml]``
-- **gNMI (gRPC Network Management Interface)**:
-  ``gnmi://[user[:password]@]host[:9339][?insecure=true|false&encoding=json_ietf|json|proto&origin=openconfig&target=...]``
+  ``restconf://[user[:password]@]host[:443][/restconf][?scheme=https|http&root=auto|/restconf&verify_tls=false&format=json|xml&subscribe_mode=auto|polling]`` (uses RFC 8040/8639 SSE with polling fallback and capability checks on ``/restconf/operations``)
+- **gNMI (HTTP/2 gRPC Network Management Interface)**:
+  ``gnmi://[user[:password]@]host[:9339][?tls=true|false&insecure=true|false&encoding=json_ietf|json|proto&origin=openconfig&target=...]`` (multiplexed HTTP/2 gRPC ``/gnmi.gNMI/*`` via ``jh2``)
 
 .. code-block:: python
 
@@ -64,55 +66,51 @@ Model-driven network management supporting ``conn.net.get()``, ``conn.net.set()`
    restconf_conn = Connection.from_uri("restconf://admin:env://NET_PASS@edge-sw-01?verify_tls=false&format=json")
    gnmi_conn = Connection.from_uri("gnmi://admin:env://NET_PASS@spine-01:9339?origin=openconfig")
 
-4. Virtualization & Hypervisors (``pve://``, ``qga://`` / ``qemu-ga://``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+See :doc:`examples/network_yang` for a runnable end-to-end NETCONF/RESTCONF/gNMI showcase.
 
-Execute commands and manage files inside virtual machines via hypervisor guest agents without requiring in-guest network connectivity.
+4. Virtualization & Emulators (``pve://``, ``qga://`` / ``qemu-ga://``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Execute commands and manage files inside virtual machines and QEMU emulators without requiring in-guest network connectivity:
 
 - **Proxmox VE API + Guest Agent (``pve://``)**:
   ``pve://[user[@realm][!token_id][:password]@]pve-host[:8006]/<vmid>[?node=pve1&token_id=uniconn&secret=env://PVE_SECRET&verify_ssl=false&chunk_size=49152]``
   Supports guest exec, streaming chunked file transfers (``iter_file_chunks()``, ``upload()``/``download()`` with automatic ``truncated=1`` chunked fallback), plus hypervisor commands: ``pve power status|start|stop|shutdown|reboot|reset`` and ``pve snapshot list|create|rollback|delete``.
 - **QEMU Guest Agent (``qga://`` / ``qemu-ga://``)**:
-  ``qga:///var/lib/libvirt/qemu/channel/target/domain-1-vm1/org.qemu.guest_agent.0`` or ``qga://root@kvm-host-01/vm-prod-01[?backend=socket|virsh&libvirt_uri=qemu:///system]``.
+  Supports POSIX UNIX sockets (``qga:///var/lib/libvirt/qemu/channel/target/domain-1-vm1/org.qemu.guest_agent.0``), SSH/virsh channels (``qga://root@kvm-host-01/vm-prod-01[?backend=socket|virsh]``), TCP sockets for local emulators (``qga://127.0.0.1:4444?backend=tcp``), and Windows Named Pipes (``qga://?backend=pipe&pipe=\\.\pipe\qga-vm1``).
 
 .. code-block:: python
 
    pve_vm = Connection.from_uri("pve://root@pam!automation:env://PVE_TOKEN@pve-cluster:8006/105?node=pve1")
-   qga_vm = Connection.from_uri("qga://root@kvm-node-01/vm-db-01?backend=virsh")
+   qga_vm = Connection.from_uri("qga://127.0.0.1:4444?backend=tcp")
 
-5. Containers & Kubernetes (``docker://``, ``podman://``, ``kubectl://``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+See :doc:`examples/qemu_qga` for runnable QGA examples across in-memory and TCP channels.
 
-Execute commands, stream logs, open PTY shells, and synchronize files directly inside containers and Kubernetes pods.
-
-- **Docker**: ``docker://[user@]container_name_or_id[?workdir=/app&shell=/bin/sh&context=...]``
-- **Podman**: ``podman://[user@]container_name_or_id[?workdir=/srv&shell=/bin/sh]``
-- **Kubernetes**: ``kubectl://[namespace/]pod_name[?container=api&context=prod-cluster&kubeconfig=/path/config&workdir=/app]``
-
-.. code-block:: python
-
-   docker_conn = Connection.from_uri("docker://root@redis-cache?workdir=/data")
-   k8s_conn = Connection.from_uri("kubectl://production/api-deployment-7f8b9-x2k?container=api")
-
-6. Bare-Metal BMC Controllers (``redfish://``, ``ipmi://``)
+5. Bare-Metal BMC Controllers (``redfish://``, ``ipmi://``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Out-of-band chassis power management, thermal/fan sensor inspection, System Event Log (SEL) auditing, and PXE boot device configuration.
+Out-of-band chassis power management, thermal/fan sensor inspection, System Event Log (SEL) auditing, Virtual Media, UEFI SecureBoot, and PXE boot device configuration:
 
-- **DMTF Redfish HTTP/2**: ``redfish://[user[:password]@]bmc-host[:443][?verify_ssl=false&system_id=1&chassis_id=1&manager_id=1&multiplexed=true&sse_uri=...]`` (also supports ``stream("events")`` EventService SSE with ``LogServices`` polling fallback and ``strict=True``)
+- **DMTF Redfish HTTP/2**: ``redfish://[user[:password]@]bmc-host[:443][?verify_ssl=false&system_id=1&chassis_id=1&manager_id=1&multiplexed=true&sse_uri=...]`` (supports ``stream("events")`` EventService SSE with ``LogServices`` polling fallback and ``strict=True``)
 - **IPMI v2.0 LAN+**: ``ipmi://[user[:password]@]bmc-host[:623][?reuse_session=true|false]`` (reuses persistent RMCP+ sessions under ``asyncio.Lock`` with auto-reconnect and ``logout()`` on ``disconnect()``)
-- **Supported Commands**: ``power on|off|cycle|reset|shutdown|status``, ``sensors`` / ``health``, ``sel list|clear``, ``events``, ``boot pxe|disk|bios|cdrom [once|continuous] [uefi|legacy]``, ``raw <netfn> <cmd>``.
+- **Supported Commands**: ``power on|off|cycle|reset|shutdown|status``, ``sensors`` / ``health``, ``sel list|clear``, ``events``, ``boot pxe|disk|bios|cdrom [once|continuous] [uefi|legacy]``, ``virtual_media status|mount|unmount``, ``boot secureboot status|on|off``, ``raw <netfn> <cmd>``.
 
-7. Serial / UART & Bootloader Flashing (``serial://``, ``uart://``)
+See :doc:`examples/bmc` for runnable Redfish and IPMI examples.
+
+6. Serial / UART & Bootloader Flashing (``serial://``, ``uart://``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Direct RS-232 / UART communication with hardware DTR/RTS pin pulsing, BREAK signal generation, binary Modbus RTU framing, and XMODEM/YMODEM/ZMODEM file transfers.
+Cross-platform RS-232 / UART communication (``pyserial-asyncio`` on POSIX and thread-backed ``io_backend=auto|threaded`` for Windows ``ProactorEventLoop``) with hardware DTR/RTS pin pulsing, BREAK signal generation, VID/PID auto-discovery, binary framing, and XMODEM/YMODEM/ZMODEM file transfers:
 
-- **URI Format**: ``uart:///dev/ttyUSB0[:115200][?parity=N&stopbits=1]`` or ``uart://COM3[?vid=10c4&pid=ea60]``
+- **URI Format**: ``uart:///dev/ttyUSB0:115200[?parity=N&stopbits=1]`` or ``uart://COM3:115200[?vid=10c4&pid=ea60&io_backend=auto]``
 
-8. Telnet (``telnet://``), Replay Cassettes (``replay://``) & Local (``local://``)
+See :doc:`examples/serial_uart` for runnable UART hardware control and XMODEM flashing.
+
+7. Telnet (``telnet://``), Replay Cassettes (``replay://``) & Local (``local://``)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- **Telnet**: ``telnet://[user[:password]@]switch.local[:23][?term_type=vt100]``
-- **Replay (Contract Testing)**: ``replay://node-01[?cassette=tests/cassettes/node.yaml&mode=none&normalize_temp=true]``
+- **Telnet**: ``telnet://[user[:password]@]switch.local[:23][?term_type=vt100&shell_mode=auto|posix|cli&profile=generic|cisco|junos|linux|uboot&pagination=true]`` (uses ``PosixMarkerProtocol`` for real exit codes in POSIX mode and CLI prompt/pager profiles for OOB consoles)
+- **Replay (Contract Testing)**: ``replay://node-01[?cassette=tests/cassettes/node.yaml&mode=none&normalize_temp=true]`` (see :doc:`examples/cassettes`)
 - **Local Subprocess / PTY**: ``local://[?timeout=30&rate_limit=50]`` (or ``Connection.local()``)
+
+For building third-party transport plugins (including external plugins loaded via ``uniconn.transports`` ``entry_points``), see :doc:`examples/custom_transport`.

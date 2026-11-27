@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code Style: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Type Checker: Pyright](https://img.shields.io/badge/type%20checking-pyright-brightgreen.svg)](https://github.com/microsoft/pyright)
-[![Tests Passing](https://img.shields.io/badge/tests-1%2C475%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-1%2C484%2B-brightgreen.svg)](tests/)
 [![Cold Import](https://img.shields.io/badge/import-~11ms-brightgreen.svg)](benchmarks/overhead_bench.py)
 [![Poe Tasks](https://img.shields.io/badge/tasks-poethepoet-blueviolet.svg)](https://github.com/nat-n/poethepoet)
 
@@ -14,7 +14,7 @@
 
 ### Language: **[ English ]** &nbsp;|&nbsp; **[Русский](README.ru.md)** &nbsp;
 
-**📚 Documentation:** **[Overview & Cheat Sheet](docs/index.rst)** · **[5-Min Quickstart](docs/quickstart.rst)** · **[Core Architecture & Pipeline](docs/architecture.rst)** · **[Inventory & URI Reference](docs/inventory_and_uris.rst)** · **[Cookbook Recipes](docs/cookbook.rst)** · **[Debugging & Troubleshooting](docs/troubleshooting.rst)** · **[Migration Guides](docs/migration.rst)** · **[CLI, MCP & Policy](docs/cli_and_mcp.rst)** · **[API Reference](docs/api.rst)**
+**📚 Documentation:** **[Overview & Cheat Sheet](docs/index.rst)** · **[5-Min Quickstart](docs/quickstart.rst)** · **[Transports (13+)](docs/transports.rst)** · **[Core Architecture & Pipeline](docs/architecture.rst)** · **[Inventory & URI Reference](docs/inventory_and_uris.rst)** · **[Cookbook Recipes](docs/cookbook.rst)** · **[Examples](docs/examples.rst)** · **[Debugging & Troubleshooting](docs/troubleshooting.rst)** · **[Migration Guides](docs/migration.rst)** · **[CLI, MCP & Policy](docs/cli_and_mcp.rst)** · **[API Reference](docs/api.rst)**
 
 ---
 
@@ -551,9 +551,10 @@ Full user guides, task-to-solution matrices, architectural deep dives, and refer
 | **[Step-by-Step Cookbook](docs/cookbook.rst)** | **[Кулинарная книга (Cookbook)](docs/ru/cookbook.rst)** | Production recipes for auto-parsing, Zero-Fork RPC (`run_python`), `RemotePath`, `ensure_*`, `Flow`, NETCONF/YANG, BMC/UART, and cassettes |
 | **[Debugging & Troubleshooting](docs/troubleshooting.rst)** | **[Отладка и исключения](docs/ru/troubleshooting.rst)** | Full `UniconnError` inheritance tree, `diagnose=True` root-cause strategies, debug logging, and Symptom → Fix matrix |
 | **[Migration Guides](docs/migration.rst)** | **[Гайд по миграции](docs/migration.rst)** | Side-by-side translation tables from **Ansible**, **Paramiko**, **Fabric**, and **Netmiko / Scrapli** |
-| **[Transports Overview](docs/transports.rst)** | **[Обзор 13+ транспортов](docs/transports.rst)** | Quick summary of all 13+ transport URI schemes |
+| **[Transports Overview](docs/transports.rst)** | **[Обзор 13+ транспортов](docs/ru/transports.rst)** | Quick summary of all 13+ transport URI schemes |
 | **[CLI, MCP & Security](docs/cli_and_mcp.rst)** | **[CLI, MCP и Policy](docs/cli_and_mcp.rst)** | Modular CLI commands, `uniconn mcp` AI server, HITL approvals, and `CommandASTParser` Policy-as-Code |
 | **[API Reference](docs/api.rst)** | **[Справочник API](docs/api.rst)** | Complete class and function reference synchronized with `llms.txt` |
+| **[Runnable Examples Hub](docs/examples.rst)** | **[Каталог примеров (RU)](docs/ru/examples.rst)** | Sphinx pages embedding every self-contained script from `examples/` |
 
 ---
 
@@ -571,7 +572,11 @@ Every script in [`examples/`](examples/) is self-contained and verified in our C
 | **Fleet Parallelism & Wave Rollout** | `ConnectionPool.map`, `batch_size`, `max_fail_ratio`, `select`, `pool.stream` | [examples/parallel_execution.py](examples/parallel_execution.py) |
 | **Idempotent State & Drift Detection** | `conn.state.ensure_*`, `gather_facts`, `diff_facts`, `diagnostic_session` | [examples/provisioning_and_facts.py](examples/provisioning_and_facts.py) |
 | **Resilience, Pools & SSH Tunnels** | `CircuitBreaker`, `RateLimiter`, `SSHSessionPool`, `conn.tunnels` | [examples/resilience_rollout_and_waiters.py](examples/resilience_rollout_and_waiters.py) |
-| **Bare-Metal BMC (Redfish & IPMI)** | `redfish://`, `ipmi://`, power control, sensors, cassette replay | [examples/bmc_management.py](examples/bmc_management.py) |
+| **Windows Remote (WinRM & State)** | `winrm://`, `wsman://`, `ensure_windows_service`, `ensure_registry_key`, `ensure_windows_feature` | [examples/windows_winrm_management.py](examples/windows_winrm_management.py) |
+| **QEMU Guest Agent (`qga://`)** | `MockQgaServer`, `backend=tcp` (`127.0.0.1:port`), Named Pipe, UNIX socket, `gather_facts` | [examples/qemu_guest_agent.py](examples/qemu_guest_agent.py) |
+| **Network YANG & Telemetry** | `netconf://`, `restconf://` (SSE), `gnmi://` (HTTP/2 gRPC `jh2`), `conn.net`, `ensure_yang` | [examples/network_yang_telemetry.py](examples/network_yang_telemetry.py) |
+| **Bare-Metal BMC (Redfish & IPMI)** | `redfish://`, `ipmi://`, power, sensors, VirtualMedia, SecureBoot, `raw`, cassette replay | [examples/bmc_management.py](examples/bmc_management.py) |
+| **Serial / UART & XMODEM Flashing** | `serial://`, `uart://`, Windows `io_backend=threaded`, `pulse_dtr_rts`, `send_break`, `upload_xmodem` | [examples/serial_uart_hardware.py](examples/serial_uart_hardware.py) |
 | **Background Task Monitoring** | `BackgroundPool.from_file`, `tmux`/`screen`/`nohup` auto-backend, log polling | [examples/screen_monitoring.py](examples/screen_monitoring.py) · [YAML](examples/screen_pool_config.yaml) |
 | **NVMe / RAM Stress Diagnostics** | `diagnostic_session`, `fsync_realtime=True`, pre/post `facts_diff`, `.tar.gz` | [examples/stress_test_diagnostics.py](examples/stress_test_diagnostics.py) · [YAML](examples/stress_test_diagnostics.yaml) |
 | **Reactive Log Watchdog (SCT / BBU)** | `PatternTriggerHandler`, `LogWatchRule`, Stream Silence Watchdog | [examples/reactive_log_watchdog_sct.py](examples/reactive_log_watchdog_sct.py) · [YAML](examples/telecom_bs_sct_diagnostics.yaml) |

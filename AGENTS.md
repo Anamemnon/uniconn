@@ -8,11 +8,11 @@
 
 ## Структура модулей (`src/uniconn/`)
 
-- `__init__.py` — публичная витрина пакета (`v0.24.0`): быстрый импорт базового ядра (`Connection`, `SyncConnection`, `ConnectionPool`, `SyncConnectionPool`, `Result`, базовые исключения) и ленивая загрузка второстепенных модулей по стандарту PEP 562 (`__getattr__` + `__dir__`) с сохранением полной статической типизации `if TYPE_CHECKING:`. Изолированные подсистемы (`mcp`, `mock`, `orchestration`, `security`, `background`, стратегии/планер `services/provisioning`) импортируются только из своих канонических подпакетов.
+- `__init__.py` — публичная витрина пакета (`v0.25.0`): быстрый импорт базового ядра (`Connection`, `SyncConnection`, `ConnectionPool`, `SyncConnectionPool`, `Result`, базовые исключения) и ленивая загрузка второстепенных модулей по стандарту PEP 562 (`__getattr__` + `__dir__`) с сохранением полной статической типизации `if TYPE_CHECKING:`. Изолированные подсистемы (`mcp`, `mock`, `orchestration`, `security`, `background`, стратегии/планер `services/provisioning`) импортируются только из своих канонических подпакетов.
 - `core/connection.py` — `Connection` и `OperationObserver`: тонкий фасад ядра, предоставляющий фабрики (`from_uri`, `from_config`, `from_dict`, `from_file`, `from_inventory`, `local`), доменные сервисы (`conn.files`, `conn.state`, `conn.tunnels`, `conn.net`), конвейер выполнения (`conn.pipeline`) и методы выполнения/ожидания/инспекции (`run`, `run_bytes`, `run_commands`, `run_script`, `run_python`, `run_flow`, `ping`, `wait_for_connection`, `wait_for_port`, `wait_for_path`, `stream`, `expect`, `open_shell`, `gather_facts`, `diagnostic_session`, `use_cassette` и др.).
 - `core/` — ядро выполнения:
   - `pipeline.py` — `CommandRequest`, `CommandPipeline`, типизированные хуки (`BeforeRunHook`, `AfterRunHook`, `OnErrorHook`) и цепочка `CommandMiddleware` (`ContextMiddleware`, `HITLApprovalMiddleware`, `SudoMiddleware`, `HookMiddleware`, `DryRunMiddleware`, `ObservabilityMiddleware`, `AutoDiagnosticMiddleware`, `CircuitBreakerMiddleware`, `RateLimitMiddleware`, `RetryMiddleware`).
-  - `auto_diagnostics.py` — `AutoDiagnosticMiddleware`, `ErrorClassifier`, стратегии автодиагностики сбоев (`LinuxDiagnosticStrategy`, `ContainerDiagnosticStrategy`, `WindowsDiagnosticStrategy`, `PassiveDiagnosticStrategy`).
+  - `auto_diagnostics.py` — `AutoDiagnosticMiddleware`, `ErrorClassifier`, стратегии автодиагностики сбоев (`LinuxDiagnosticStrategy`, `WindowsDiagnosticStrategy`, `PassiveDiagnosticStrategy`).
   - `python_worker.py` — `RemotePythonWorker` и `CallableSerializer` (постоянный zero-fork RPC-воркер для `conn.run_python()`).
   - `resilience.py` — `CircuitBreaker`, `CircuitState` (`CLOSED` / `OPEN` / `HALF_OPEN`) и `RateLimiter` (async Token Bucket).
   - `context.py` — `ExecutionContext` и контекстные менеджеры `CwdContext`, `EnvContext`, `TempDirContext`.
@@ -30,7 +30,7 @@
   - `provisioning/` (`packages.py`, `service_managers.py`, `files.py`, `system.py`, `windows.py`, `yang.py`, `_notify.py`, `facade.py`, `_plan.py`, `__init__.py`) — модульный пакет идемпотентного управления состоянием (`conn.state`): фасад `StateManagementService`, отложенные обработчики `NotificationBatch` (`notify=`), аккумулятор изменений `ChangePlan`, стратегии пакетных менеджеров (`Apt`, `Apk`, `DnfYum`, `Pacman`, `Zypper`, `Winget`, `Choco`, `Scoop`), стратегии сервисов (`Systemd`, `OpenRC`, `SysV`), файловые обработчики (`ensure_file`, `ensure_directory`, `ensure_line`), системные примитивы (`ensure_user`, `ensure_authorized_key`, `ensure_systemd_unit`, `ensure_sysctl`), Windows-примитивы (`ensure_windows_service`, `ensure_registry_key`, `ensure_windows_feature`) и YANG (`ensure_yang`).
   - `tunnels.py` — `TunnelService` (`conn.tunnels`: `forward_local_port`, `forward_remote_port`).
 - `config/` — `models.py` (`ConnectionConfig`), `secrets.py` (`SecretResolver` для `env://` и `file://` с `?default=`), `uri.py` (`URIParser`) и `inventory.py` (`InventoryLoader` — парсинг YAML/TOML/JSON инвентарей).
-- `transports/` — протоколы возможностей ISP (`BaseTransport`, `CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `TunnelCapableTransport`, `StructuredNetworkTransport`, `require_capability` в `base.py`), пакеты `transports/replay/`, `transports/ssh/`, `transports/network/` (`NetconfTransport`, `RestconfTransport`, `GnmiTransport`), `transports/virtualization/` (`QgaTransport`, `PveTransport`), `transports/serial_protocols/` (XMODEM/YMODEM/ZMODEM), `transports/bmc/` (`IPMITransport`, `RedfishTransport`) и реализации `_ssh.py`, `_winrm.py`, `_telnet.py`, `_serial.py`, `_local.py`, `_docker.py` (`DockerTransport`, `PodmanTransport`), `_kubectl.py` (`KubectlTransport`).
+- `transports/` — протоколы возможностей ISP (`BaseTransport`, `CommandTransport`, `FileCapableTransport`, `FileStat`, `ShellCapableTransport`, `ShellProcessProtocol`, `TunnelCapableTransport`, `StructuredNetworkTransport`, `require_capability` в `base.py`), пакеты `transports/replay/`, `transports/ssh/`, `transports/network/` (`NetconfTransport`, `RestconfTransport`, `GnmiTransport`), `transports/virtualization/` (`QgaTransport`, `PveTransport`), `transports/serial_protocols/` (XMODEM/YMODEM/ZMODEM), `transports/bmc/` (`IPMITransport`, `RedfishTransport`) и реализации `_ssh.py`, `_winrm.py`, `_telnet.py`, `_serial.py`, `_local.py`.
 - `shell/` — `ShellSession` (`shell/session.py`), `PosixMarkerProtocol` (`shell/marker_protocol.py`), `ExpectStateMachine` (`shell/expect_engine.py`).
 - `sync/` — `connection.py` (`SyncConnection`), `shell.py` (`SyncShellSession`), `pool.py` (`SyncConnectionPool` с `.files`, `.state`, `.net`, `.expect` и поддержкой sync/async функций в `apply()`) и `services.py` на базе `EventLoopPortal`, `SyncProxyMixin` и однострочных `ParamSpec`-дескрипторов.
 - `pool/` — `connection_pool.py` (`ConnectionPool` с `.files`, `.state`, `.net`, `expect`, `_fan_out_list` / `_fan_out_dict`, батчевой раскаткой `batch_size` / `max_fail_ratio`, `select()`, `from_file(..., dry_run, auto_diagnostics)` и `use_cassette`), `services.py` (`PoolFileOperationsService`, `PoolStateManagementService`, `PoolNetworkOperationsService`), `session_pool.py` (`SSHSessionPool` с адаптивным авто-понижением лимитов и `resize()`) и `stream_mux.py` (`PoolStreamMultiplexer`).
@@ -43,22 +43,21 @@
 - `cli/` — модульный CLI на базе `cyclopts` и `rich` (`app.py`, `renderers.py`, `cmd_exec.py`, `cmd_files.py`, `cmd_ops.py`, `cmd_bg.py`, `cmd_cassette.py`, `cmd_flow.py`, `cmd_mock.py`, `cmd_mcp.py`).
 - `result.py` (`Result`, `PingResult`, `SyncResult`, `EnsureResult`, `NetResult`, `DiagnosticSummary`), `hooks.py`, `telemetry.py`, `pytest_plugin.py`, `_logging.py`, `exceptions.py`, `py.typed`.
 
-## Точка входа и веб-панель (`main.py` и `examples/dashboard/`)
+## Точка входа и сервер документации (`main.py`)
 
-- `main.py` — точка входа: без аргументов запускает CLI-демонстрацию, с флагом `--serve` запускает HTTP-сервер предпросмотра на `0.0.0.0:3000`.
-- `examples/dashboard/server.py` и `examples/dashboard/index.html` — веб-интерфейс и API для интерактивного тестирования `uniconn`.
+- `main.py` — точка входа: без аргументов запускает CLI-демонстрацию, с флагом `--serve` (и опциональным `--rebuild`) собирает и раздаёт двуязычную HTML-документацию Sphinx (`docs/_build/html`) на `0.0.0.0:3000`.
 
 ## Структура тестов (`tests/`)
 
-Unit-тесты (`tests/unit/`, 914 тестов) сгруппированы строго по доменным пакетам (зеркало `src/uniconn/`):
+Unit-тесты (`tests/unit/`, 1 484+ тестов) сгруппированы строго по доменным пакетам (зеркало `src/uniconn/`):
 - `tests/unit/core/` — базовые абстракции (`Connection`, `SyncConnection`, `Result`, `ShellSession`, `ExpectStateMachine`, `PosixMarkerProtocol`, `wait_for_*`, `CircuitBreaker`, `RateLimiter`, `SecretResolver`, URI, конфиги, хуки, плагины, исключения, `structlog`-логирование и OpenTelemetry).
 - `tests/unit/services/` — доменные сервисы (`FileOperationsService`, `checksum`, `atomic=True`, `sync_dir`, `write_template`, `FactCollector`, `diff_facts`, `StateManagementService` и системные примитивы `ensure_*`).
-- `tests/unit/transports/` — тесты транспортов (`SSH`, `Telnet`, `Serial`, `Local`, `IPMI`, `Redfish`, `Docker`, `Podman`, `Kubectl`, `Replay`/`Cassette`, `BaseTransport`), SFTP и `pytest_plugin`.
+- `tests/unit/transports/` — тесты транспортов (`SSH`, `Telnet`, `Serial`, `Local`, `IPMI`, `Redfish`, `WinRM`, `QGA`, `PVE`, `NETCONF`, `RESTCONF`, `gNMI`, `Replay`/`Cassette`, `BaseTransport`), SFTP и `pytest_plugin`.
 - `tests/unit/pools/` — `ConnectionPool` (включая батчинг `batch_size`/`max_fail_ratio`, `BatchAbortedError` и `select()`) и `SSHSessionPool`.
-- `tests/unit/background/` — `BackgroundPool`, `BackgroundSession`, стратегии (`tmux`, `screen`, `nohup`), `LogPipeline`, `DiagnosticSession`, `BackgroundPoolConfig`, cleanup.
+- `tests/unit/background/` — `BackgroundPool`, `BackgroundSession`, стратегии (`tmux`, `screen`, `nohup`, `WindowsJob`), `LogPipeline`, `DiagnosticSession`, `BackgroundPoolConfig`, cleanup.
 - `tests/unit/mcp/` — `MCPServer`, `MCPHostRegistry`, `MCPSecurityPolicy`, JSON-RPC 2.0 (`stdio`/batch), MCP Tools & Resources и guardrails безопасности.
-- `tests/unit/cli/` — CLI-команды (`cyclopts` + `rich`), `uniconn mcp`, фоновые `bg-*` команды и интерактивная веб-панель (`examples/dashboard/`).
-- `tests/unit/architecture/` — архитектурные инварианты и чистота публичного API (`__all__`).
+- `tests/unit/cli/` — CLI-команды (`cyclopts` + `rich`), `uniconn mcp`, фоновые `bg-*` команды и сервер предпросмотра документации (`main.py`).
+- `tests/unit/architecture/` — архитектурные инварианты, чистота публичного API (`__all__`), время холодного старта, паритет EN/RU документации и покрытие каталога `examples/`.
 - `tests/integration/` — интеграционные тесты с Docker/testcontainers.
 
 ## Архитектурные инварианты и правила тестирования для ИИ-агентов

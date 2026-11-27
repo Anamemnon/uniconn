@@ -1,14 +1,14 @@
 Быстрый старт за 5 минут
 ========================
 
-**Язык:** `English <../quickstart.rst>`_ | **[ Русский ]**
+**Язык:** :doc:`English </quickstart>` | **[ Русский ]**
 
 Это руководство поможет за 5 минут установить ``uniconn``, выбрать между **Async**, **Sync** и **CLI** режимами, выполнить первые команды (даже без внешнего сервера) и безопасно подключить секреты из окружения или инвентаря.
 
 1. Установка и опциональные пакеты (Extras)
 -------------------------------------------
 
-Базовая установка включает ядро библиотеки (транспорты SSH, Local, NETCONF, RESTCONF, gNMI, Proxmox VE, QEMU Guest Agent, Replay-кассеты, конвейер отказоустойчивости и структурированное логирование):
+Базовая установка включает легковесное ядро библиотеки (транспорты SSH/SFTP, Local, QEMU Guest Agent, Replay-кассеты, конвейер отказоустойчивости и структурированное логирование с холодным стартом ~11 мс):
 
 .. code-block:: bash
 
@@ -32,7 +32,7 @@
      - Что входит в состав
    * - **all**
      - ``uv add "uniconn[all]"``
-     - Все транспорты, парсеры, шаблонизатор, телеметрия и CLI
+     - Все транспорты, парсеры, шаблонизатор, телеметрия, безопасность и CLI
    * - **cli**
      - ``uv add "uniconn[cli]"``
      - Модульный CLI (``cyclopts``, ``rich``): ``uniconn run``, ``flow``, ``mcp``, ``policy``
@@ -42,12 +42,24 @@
    * - **bmc**
      - ``uv add "uniconn[bmc]"``
      - Контроллеры IPMI (``pyghmi``) и DMTF Redfish HTTP/2 (``niquests``)
+   * - **pve**
+     - ``uv add "uniconn[pve]"``
+     - REST API Proxmox VE и гостевой агент (``niquests``)
+   * - **netconf**
+     - ``uv add "uniconn[netconf]"``
+     - Сетевой транспорт NETCONF поверх SSH (``asyncssh``)
+   * - **restconf**
+     - ``uv add "uniconn[restconf]"``
+     - HTTP/2-клиент RESTCONF и потоковые SSE-уведомления (``niquests``)
+   * - **gnmi**
+     - ``uv add "uniconn[gnmi]"``
+     - gNMI HTTP/2 gRPC телеметрия и конфигурация (``jh2``)
    * - **serial**
      - ``uv add "uniconn[serial]"``
-     - Консоли Serial/UART (``pyserial-asyncio``) и прошивка по XMODEM/YMODEM/ZMODEM
+     - Консоли Serial/UART (``pyserial-asyncio`` / threaded-адаптер) и прошивка по X/Y/ZMODEM
    * - **telnet**
      - ``uv add "uniconn[telnet]"``
-     - Транспорт RFC 854 Telnet с поддержкой IAC NAWS (``telnetlib3``)
+     - Транспорт RFC 854 Telnet с POSIX-маркерами и CLI-профилями (``telnetlib3``)
    * - **parsing**
      - ``uv add "uniconn[parsing]"``
      - Семантические парсеры вывода (``jc``, ``textfsm``, ``ttp``, ``ntc-templates``)
@@ -57,6 +69,12 @@
    * - **otel**
      - ``uv add "uniconn[otel]"``
      - Распределённая трассировка OpenTelemetry через ``otel_tracing_hook``
+   * - **security**
+     - ``uv add "uniconn[security]"``
+     - Грамматический AST-парсер Bash для Policy-as-Code (``tree-sitter``, ``tree-sitter-bash``)
+   * - **mcp-http**
+     - ``uv add "uniconn[mcp-http]"``
+     - Сетевой HTTP/SSE шлюз MCP-сервера с OAuth/JWT (``starlette``, ``uvicorn``, ``pyjwt``)
 
 2. Песочница без настройки: пробуем ``uniconn`` на локальном хосте
 ------------------------------------------------------------------
@@ -146,3 +164,14 @@
        pings = await pool.ping()
        for host, status in pings.items():
            print(f"{host}: alive={status.alive} ({status.latency_ms:.1f} мс)")
+
+5. Локальный сервер документации Sphinx
+---------------------------------------
+
+При работе из исходников вы можете собрать и просматривать полную двуязычную HTML-документацию Sphinx локально:
+
+.. code-block:: bash
+
+   python main.py --serve
+
+Откройте ``http://localhost:3000`` в браузере, чтобы изучить англо- и русскоязычные руководства, каталог примеров из :doc:`examples` и справочник API. Передайте ``--rebuild`` для принудительной пересборки HTML.

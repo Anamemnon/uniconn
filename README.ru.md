@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code Style: Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Type Checker: Pyright](https://img.shields.io/badge/type%20checking-pyright-brightgreen.svg)](https://github.com/microsoft/pyright)
-[![Tests Passing](https://img.shields.io/badge/tests-1%2C475%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-1%2C484%2B-brightgreen.svg)](tests/)
 [![Cold Import](https://img.shields.io/badge/import-~11ms-brightgreen.svg)](benchmarks/overhead_bench.py)
 [![Poe Tasks](https://img.shields.io/badge/tasks-poethepoet-blueviolet.svg)](https://github.com/nat-n/poethepoet)
 
@@ -14,7 +14,7 @@
 
 ### Язык: **[English](README.md)** &nbsp;|&nbsp; **[ Русский ]** &nbsp;
 
-**📚 Документация (`docs/ru/`):** **[Обзор и шпаргалка](docs/ru/index.rst)** · **[Быстрый старт за 5 мин](docs/ru/quickstart.rst)** · **[Архитектура и пайплайн](docs/ru/architecture.rst)** · **[Инвентарь YAML/TOML и URI](docs/ru/inventory_and_uris.rst)** · **[Кулинарная книга](docs/ru/cookbook.rst)** · **[Отладка и исключения](docs/ru/troubleshooting.rst)** · **[Гайд по миграции](docs/migration.rst)** · **[CLI, MCP и Policy](docs/cli_and_mcp.rst)** · **[API Reference](docs/api.rst)**
+**📚 Документация (`docs/ru/`):** **[Обзор и шпаргалка](docs/ru/index.rst)** · **[Быстрый старт за 5 мин](docs/ru/quickstart.rst)** · **[Транспорты (13+)](docs/ru/transports.rst)** · **[Архитектура и пайплайн](docs/ru/architecture.rst)** · **[Инвентарь YAML/TOML и URI](docs/ru/inventory_and_uris.rst)** · **[Кулинарная книга](docs/ru/cookbook.rst)** · **[Примеры](docs/ru/examples.rst)** · **[Отладка и исключения](docs/ru/troubleshooting.rst)** · **[Гайд по миграции](docs/migration.rst)** · **[CLI, MCP и Policy](docs/cli_and_mcp.rst)** · **[API Reference](docs/api.rst)**
 
 ---
 
@@ -551,9 +551,10 @@ python main.py
 | **[Кулинарная книга (`docs/ru/cookbook.rst`)](docs/ru/cookbook.rst)** | **[Step-by-Step Cookbook](docs/cookbook.rst)** | Рецепты: автопарсинг, Zero-Fork RPC (`run_python`), `RemotePath`, `ensure_*`, `Flow`, NETCONF/YANG, BMC/UART и кассеты |
 | **[Отладка и исключения (`docs/ru/troubleshooting.rst`)](docs/ru/troubleshooting.rst)** | **[Debugging & Troubleshooting](docs/troubleshooting.rst)** | Полное дерево `UniconnError`, автодиагностика `diagnose=True`, отладочные логи и матрица «Симптом → Решение» |
 | **[Гайд по миграции (`docs/migration.rst`)](docs/migration.rst)** | **[Migration Guides](docs/migration.rst)** | Таблицы перехода «Было → Стало» с **Ansible**, **Paramiko**, **Fabric** и **Netmiko / Scrapli** |
-| **[Обзор 13+ транспортов (`docs/transports.rst`)](docs/transports.rst)** | **[Transports Overview](docs/transports.rst)** | Краткая сводка по всем 13+ схемам URI и динамическим секретам |
+| **[Обзор 13+ транспортов (`docs/ru/transports.rst`)](docs/ru/transports.rst)** | **[Transports Overview](docs/transports.rst)** | Краткая сводка по всем 13+ схемам URI и динамическим секретам |
 | **[CLI, MCP и Безопасность (`docs/cli_and_mcp.rst`)](docs/cli_and_mcp.rst)** | **[CLI, MCP & Security](docs/cli_and_mcp.rst)** | Команды CLI, MCP-сервер для ИИ-агентов, HITL-подтверждения и AST Policy-as-Code |
 | **[API Reference (`docs/api.rst`)](docs/api.rst)** | **[API Reference](docs/api.rst)** | Полный справочник классов, методов и исключений библиотеки |
+| **[Каталог примеров (`docs/ru/examples.rst`)](docs/ru/examples.rst)** | **[Runnable Examples Hub](docs/examples.rst)** | Sphinx-страницы со всеми самодостаточными скриптами из `examples/` |
 
 ---
 
@@ -571,7 +572,11 @@ python main.py
 | **Параллелизм и волновой роллаут** | `ConnectionPool.map`, `batch_size`, `max_fail_ratio`, `select`, `pool.stream` | [examples/parallel_execution.py](examples/parallel_execution.py) |
 | **Идемпотентный стейт и поиск дрейфа** | `conn.state.ensure_*`, `gather_facts`, `diff_facts`, `diagnostic_session` | [examples/provisioning_and_facts.py](examples/provisioning_and_facts.py) |
 | **Отказоустойчивость, пулы и SSH-туннели** | `CircuitBreaker`, `RateLimiter`, `SSHSessionPool`, `conn.tunnels` | [examples/resilience_rollout_and_waiters.py](examples/resilience_rollout_and_waiters.py) |
-| **Bare-Metal BMC (Redfish и IPMI)** | `redfish://`, `ipmi://`, питание, сенсоры, локальное воспроизведение кассеты | [examples/bmc_management.py](examples/bmc_management.py) |
+| **Windows (WinRM и State Provisioning)** | `winrm://`, `wsman://`, `ensure_windows_service`, `ensure_registry_key`, `ensure_windows_feature` | [examples/windows_winrm_management.py](examples/windows_winrm_management.py) |
+| **QEMU Guest Agent (`qga://`)** | `MockQgaServer`, `backend=tcp` (`127.0.0.1:port`), Named Pipe, UNIX-сокет, `gather_facts` | [examples/qemu_guest_agent.py](examples/qemu_guest_agent.py) |
+| **Сетевая автоматизация YANG и телеметрия** | `netconf://`, `restconf://` (SSE), `gnmi://` (HTTP/2 gRPC `jh2`), `conn.net`, `ensure_yang` | [examples/network_yang_telemetry.py](examples/network_yang_telemetry.py) |
+| **Bare-Metal BMC (Redfish и IPMI)** | `redfish://`, `ipmi://`, питание, сенсоры, `VirtualMedia`, `SecureBoot`, `raw`, кассеты | [examples/bmc_management.py](examples/bmc_management.py) |
+| **Serial / UART и прошивка по XMODEM** | `serial://`, `uart://`, Windows `io_backend=threaded`, `pulse_dtr_rts`, `send_break`, `upload_xmodem` | [examples/serial_uart_hardware.py](examples/serial_uart_hardware.py) |
 | **Мониторинг фоновых процессов** | `BackgroundPool.from_file`, автовыбор `tmux`/`screen`/`nohup`, стриминг логов | [examples/screen_monitoring.py](examples/screen_monitoring.py) · [YAML](examples/screen_pool_config.yaml) |
 | **Нагрузочная диагностика NVMe / ОЗУ** | `diagnostic_session`, `fsync_realtime=True`, `facts_diff` до/после, `.tar.gz` | [examples/stress_test_diagnostics.py](examples/stress_test_diagnostics.py) · [YAML](examples/stress_test_diagnostics.yaml) |
 | **Реактивный Watchdog логов (SCT / BBU)** | `PatternTriggerHandler`, `LogWatchRule`, детектор тихого зависания потоков | [examples/reactive_log_watchdog_sct.py](examples/reactive_log_watchdog_sct.py) · [YAML](examples/telecom_bs_sct_diagnostics.yaml) |

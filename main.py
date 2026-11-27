@@ -108,7 +108,7 @@ def _build_fallback_handler(reason: str) -> type[BaseHTTPRequestHandler]:
 
         version = uniconn.__version__
     except Exception:
-        version = "0.22.0"
+        version = "0.25.0"
 
     escaped_reason = html.escape(reason)
     body = (

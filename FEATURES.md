@@ -1,6 +1,6 @@
 # Реализованные возможности и архитектура библиотеки uniconn
 
-> **Версия**: v0.24.0 | **1 475+ unit- и fuzz-тестов** | 13 транспортов (`ssh`, `winrm`/`wsman`, `netconf`, `restconf`, `gnmi`, `qga`/`qemu-ga`, `pve`, `telnet`, `serial`/`uart`, `ipmi`, `redfish`, `replay`, `local`) | Модульный CLI (`cyclopts` + `rich`) | Встроенный MCP-сервер (`uniconn mcp`) | PEP 561 (`py.typed`) + PEP 562 Lazy Exports
+> **Версия**: v0.25.0 | **1 484+ unit- и fuzz-тестов** | 13 транспортов (`ssh`, `winrm`/`wsman`, `netconf`, `restconf`, `gnmi`, `qga`/`qemu-ga`, `pve`, `telnet`, `serial`/`uart`, `ipmi`, `redfish`, `replay`, `local`) | Модульный CLI (`cyclopts` + `rich`) | Встроенный MCP-сервер (`uniconn mcp`) | PEP 561 (`py.typed`) + PEP 562 Lazy Exports
 >
 > **Для ИИ-агентов**: этот файл (`FEATURES.md`) является полным каталогом реализованных фич и архитектурных решений библиотеки `uniconn`. **Не загружайте его в контекст при каждом запросе** — используйте `llms.txt` для быстрого обзора сигнатур API, а к `FEATURES.md` обращайтесь только по требованию (on-demand), когда нужно сверить наличие конкретной функциональности или обновить список возможностей после релиза.
 >
@@ -10,7 +10,7 @@
 
 | Область | Статус | Детали |
 |---------|--------|--------|
-| Транспорты | ✅ 16+ | SSH (`~/.ssh/config`, `SSHJumpChainManager`, `ProxyCommand`), WinRM/WSMan (`winrm://`, `pywinrm`), NETCONF (`netconf://`), RESTCONF (`restconf://`, SSE + capabilities), gNMI (`gnmi://` на HTTP/2 gRPC `jh2`/`h2`), QEMU Guest Agent (`qga://`), Proxmox VE (`pve://`, потоковая передача файлов с `truncated=1` fallback), Docker (`docker://`), Podman (`podman://`), Kubernetes (`kubectl://`), Telnet, Serial/UART (X/Y/ZMODEM), Local, IPMI (`ipmi://`, reuse RMCP+ сессии), Redfish BMC (`redfish://` на `niquests`, EventService SSE), Replay (`replay://`) |
+| Транспорты | ✅ 13 | SSH (`~/.ssh/config`, `SSHJumpChainManager`, `ProxyCommand`), WinRM/WSMan (`winrm://`, `pywinrm`), NETCONF (`netconf://`), RESTCONF (`restconf://`, SSE + capabilities), gNMI (`gnmi://` на HTTP/2 gRPC `jh2`), QEMU Guest Agent (`qga://` — UNIX/SSH/virsh/TCP/Named Pipe), Proxmox VE (`pve://`, потоковая передача файлов с `truncated=1` fallback), Telnet (`PosixMarkerProtocol` + CLI-профили), Serial/UART (threaded Windows + X/Y/ZMODEM), Local, IPMI (`ipmi://`, reuse RMCP+ сессии), Redfish BMC (`redfish://` на `niquests`, EventService SSE), Replay (`replay://`) |
 | Протоколы ISP | ✅ `transports.base` | `CommandTransport`, `FileCapableTransport`, `ShellCapableTransport`, `TunnelCapableTransport`, `StructuredNetworkTransport`, `require_capability()` |
 | Конвейер команд | ✅ `CommandPipeline` | Цепочка `CommandMiddleware`: `Context`, `HITLApproval`, `PolicyGuardrail`, `Sudo`, `Hook`, `DryRun`, `Observability`, `AutoDiagnostic`, `CircuitBreaker`, `RateLimit`, `Retry` (`conn.pipeline`) |
 | Отказоустойчивость и раскатка | ✅ `CircuitBreaker` + `RateLimiter` + Waves | Состояния `CLOSED` → `OPEN` → `HALF_OPEN` (`CircuitOpenError`), Token Bucket `RateLimiter`, волновая раскатка `batch_size` / `max_fail_ratio` (`BatchAbortedError`), bounded LRU `connection_window` в `run_barrier_fleet` |
@@ -165,15 +165,10 @@
 - ✅ `LogPipeline` и `DiagnosticSession` со стратегиями сбора логов (`realtime`, `periodic`, `on_finish`), санитизацией путей и фильтрацией по регулярным выражениям
 - ✅ Многоуровневый cleanup: обработчики `atexit`/сигналов, sentinel-файл, фоновый cleanup-скрипт и загрузка из YAML/JSON (`BackgroundPoolConfig.from_file`)
 
-### 20. Документация, примеры и интерактивная веб-панель (`examples/dashboard/`)
-- ✅ Документация Sphinx с RTD theme (`docs/index.rst`, `docs/api.rst`, `docs/transports.rst`, `docs/examples.rst`)
-- ✅ Примеры использования в `examples/` и точка входа `main.py` (CLI-демонстрация и флаг `--serve`)
-- ✅ Интерактивная веб-панель `examples/dashboard/` (`server.py` + `index.html`) на порту `3000`:
-  - Вкладка **Shell & Local Runner**: интерактивный запуск в `ShellSession` и `LocalTransport` с визуальным инспектором `Result`
-  - Вкладка **Hooks, Security & Telemetry**: песочница `CommandPipeline`, `allowlist_hook`, `blocklist_hook`, `audit_log_hook`, `structured_log_hook`, `MetricsCollector`, `sudo`, `sensitive`, `dry_run` и просмотр `structlog` JSONL
-  - Вкладка **Pool, Inventory & Screen**: оркестратор `ConnectionPool` с YAML-инвентарём, пресетами `Fleet Presets`, групповыми операциями (`map_safe`, `apply`, `gather_facts`, `ensure_line`, `sync_dir`, `write_template`, `stream`), симулятором `ScreenPool` и песочницами релизов `v0.7.0` / `v0.8.0`
-  - Вкладка **URI Builder & Codegen**: конструктор и валидатор URI с маскированием паролей и генератором кода (Async Python, Sync Python, CLI)
-  - Вкладка **Unit Test Runner**: запуск тестовых пакетов `pytest` из веб-интерфейса
+### 20. Двуязычная документация Sphinx, каталог `examples/` и сервер предпросмотра (`v0.25.0`)
+- ✅ Документация Sphinx с RTD theme (`docs/` на EN и `docs/ru/` на RU, включая `docs/ru/transports.rst` и `docs/ru/examples.rst`), автоматическая проверка `sphinx-build -b html -W` (0 предупреждений)
+- ✅ Самодостаточный каталог из 22+ примеров (`examples/*.py` + YAML-профили) с 100% подключением через `.. literalinclude::` в `docs/examples/*.rst` (включая `serial_uart_hardware.py`, `qemu_guest_agent.py`, `windows_winrm_management.py`, `network_yang_telemetry.py`) и прямой связкой из обоих `README`
+- ✅ Точка входа `main.py` (локальный CLI-показ и `python main.py --serve` для сборки и раздачи HTML-документации Sphinx на `0.0.0.0:3000`)
 - ✅ Полный комплект документации для ИИ-агентов (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.claude/skills/`, `.cursor/rules/`, `llms.txt`, `FEATURES.md`)
 
 ---

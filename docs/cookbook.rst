@@ -1,7 +1,7 @@
 Step-by-Step Cookbook (Recipes by Use Case)
 ===========================================
 
-**Language:** **[ English ]** | `Русский <ru/cookbook.rst>`_
+**Language:** **[ English ]** | :doc:`Русский <ru/cookbook>`
 
 This cookbook provides copy-pasteable, production-ready recipes organized by engineering task. Every recipe works with both ``Connection`` (async) and ``SyncConnection`` (sync).
 
@@ -239,7 +239,7 @@ Configure routers and switches using structured YANG data models with automatic 
        # Idempotent YANG configuration with unified XML/JSON diff
        ens = await rtr.state.ensure_yang(
            "/interfaces/interface[name='ge-0/0/0']",
-           config={"interface": {"name": "ge-0/0/0", "description": "Uplink to Core"}},
+           data={"interface": {"name": "ge-0/0/0", "description": "Uplink to Core"}},
            validate=True,
        )
        print("Changed:", ens.changed, ens.diff)
@@ -342,3 +342,13 @@ Test real socket clients (even external tools or ``AsyncSSH``) against an in-mem
    async with MockSSHServer.from_cassette(cassette) as server:
        async with Connection.from_uri(server.uri) as conn:
            assert (await conn.run("uptime")).text == "up 10 days"
+
+Further Runnable Examples
+-------------------------
+
+Explore complete runnable scripts for every subsystem in :doc:`examples`:
+
+- Basics, Inventory & File Sync: :doc:`examples/basic`, :doc:`examples/inventory`, :doc:`examples/file_transfer`, :doc:`examples/shell`
+- Provisioning, Pools, Resilience & Background Tasks: :doc:`examples/provisioning`, :doc:`examples/parallel`, :doc:`examples/resilience`, :doc:`examples/health_check`, :doc:`examples/background`
+- Windows, Virtualization, Network & Bare-Metal Hardware: :doc:`examples/winrm`, :doc:`examples/qemu_qga`, :doc:`examples/network_yang`, :doc:`examples/bmc`, :doc:`examples/serial_uart`
+- Security, Telemetry, Cassettes & Plugins: :doc:`examples/security_telemetry`, :doc:`examples/cassettes`, :doc:`examples/custom_transport`

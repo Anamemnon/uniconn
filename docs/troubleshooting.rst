@@ -1,7 +1,7 @@
 Debugging, Exception Hierarchy & Troubleshooting Guide
 ======================================================
 
-**Language:** **[ English ]** | `Русский <ru/troubleshooting.rst>`_
+**Language:** **[ English ]** | :doc:`Русский <ru/troubleshooting>`
 
 This guide covers everything you need to diagnose failures, handle exceptions cleanly, enable structured debug logging or OpenTelemetry traces, and resolve common operational issues across SSH, WinRM, ``sudo``, ``RemotePythonWorker``, ``ConnectionPool``, and contract cassettes.
 
@@ -230,7 +230,15 @@ By default, ``conn.run()`` returns a ``Result`` without throwing an exception wh
 
   - ``winrm://`` / ``wsman://``: ``uv add "uniconn[winrm]"``
   - ``redfish://`` / ``ipmi://``: ``uv add "uniconn[bmc]"``
+  - ``pve://``: ``uv add "uniconn[pve]"``
+  - ``netconf://``: ``uv add "uniconn[netconf]"``
+  - ``restconf://``: ``uv add "uniconn[restconf]"``
+  - ``gnmi://``: ``uv add "uniconn[gnmi]"``
   - ``serial://`` / ``uart://``: ``uv add "uniconn[serial]"``
   - ``telnet://``: ``uv add "uniconn[telnet]"``
   - ``jc`` / ``textfsm`` / ``ttp`` parsers: ``uv add "uniconn[parsing]"``
+  - ``tree-sitter`` AST guardrails: ``uv add "uniconn[security]"``
+  - Remote HTTP/SSE MCP server: ``uv add "uniconn[mcp-http]"``
   - Everything at once: ``uv add "uniconn[all]"``
+
+See also :doc:`examples/cassettes`, :doc:`examples/resilience`, and :doc:`examples/security_telemetry`.

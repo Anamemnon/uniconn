@@ -1,9 +1,9 @@
 Complete Inventory Schema (YAML/TOML/JSON) & Transport URI Reference
 ====================================================================
 
-**Language:** **[ English ]** | `Русский <ru/inventory_and_uris.rst>`_
+**Language:** **[ English ]** | :doc:`Русский <ru/inventory_and_uris>`
 
-This reference manual documents every supported structure for inventory files (``.yaml`` / ``.yml``, ``.toml``, ``.json``), the exact merge precedence rules used by ``InventoryLoader``, dynamic secret resolution (``env://`` and ``file://``), global ``ConnectionConfig`` pipeline parameters, and all **16+ transport URI schemes**.
+This reference manual documents every supported structure for inventory files (``.yaml`` / ``.yml``, ``.toml``, ``.json``), the exact merge precedence rules used by ``InventoryLoader``, dynamic secret resolution (``env://`` and ``file://``), global ``ConnectionConfig`` pipeline parameters, and all **13+ transport URI schemes** (see :doc:`examples/inventory` for runnable inventory loading).
 
 1. Inventory File Formats & Schema Reference
 --------------------------------------------
@@ -216,7 +216,7 @@ The following options can be passed as query parameters on **any** transport URI
      - ``False``
      - Marks the host as production for ``HITLApprovalMiddleware`` and ``PolicyGuardrailMiddleware`` (e.g., ``prod-guard`` preset).
 
-4. Complete Transport URI Reference (16+ Schemes)
+4. Complete Transport URI Reference (13+ Schemes)
 -------------------------------------------------
 
 4.1. SSH (``ssh://``)
@@ -334,6 +334,10 @@ The following options can be passed as query parameters on **any** transport URI
      - ``restconf``
      - ``False``
      - Verify HTTPS server certificate.
+   * - ``subscribe_mode``
+     - ``restconf``
+     - ``"auto"``
+     - Subscription mode: ``auto`` (RFC 8040/8639 SSE with polling fallback) or ``polling``.
    * - ``encoding``
      - ``gnmi``
      - ``"json_ietf"``
@@ -347,11 +351,11 @@ The following options can be passed as query parameters on **any** transport URI
      - ``False``
      - Use plaintext gRPC channel or skip TLS certificate verification.
 
-4.4. Virtualization & Hypervisors (``pve://``, ``qga://``, ``qemu-ga://``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+4.4. Virtualization & Emulators (``pve://``, ``qga://``, ``qemu-ga://``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - **Proxmox VE Syntax**: ``pve://[user[@realm][!token_id][:secret]@]host[:8006]/<vmid>[?node=pve1&verify_ssl=false]``
-- **QEMU Guest Agent Syntax**: ``qga:///path/to/qga.sock`` or ``qga://[user@]kvm-host[:22]/<vm_name>[?backend=socket|virsh]``
+- **QEMU Guest Agent Syntax**: ``qga:///path/to/qga.sock``, ``qga://127.0.0.1:4444?backend=tcp``, ``qga://?backend=pipe&pipe=\\.\pipe\qga-vm1``, or ``qga://[user@]kvm-host[:22]/<vm_name>[?backend=socket|ssh|virsh]``
 
 .. list-table::
    :widths: 24 16 16 44
@@ -384,56 +388,17 @@ The following options can be passed as query parameters on **any** transport URI
    * - ``backend``
      - ``qga``
      - ``"socket"``
-     - Transport channel: ``socket`` (Unix socket local or over SSH) or ``virsh`` (``virsh qemu-agent-command``).
-   * - ``socket``
+     - Transport channel: ``socket`` (POSIX Unix socket), ``ssh``, ``virsh``, ``tcp`` (QEMU chardev TCP), or ``pipe`` (Windows Named Pipe).
+   * - ``socket`` / ``pipe``
      - ``qga``
      - ``None``
-     - Explicit Unix domain socket path for the guest agent channel.
+     - Explicit POSIX Unix domain socket path or Windows Named Pipe path (``\\.\pipe\<name>``).
    * - ``libvirt_uri``
      - ``qga``
      - ``"qemu:///system"``
      - Connection URI passed to ``virsh -c`` when ``backend=virsh``.
 
-4.5. Containers & Kubernetes (``docker://``, ``podman://``, ``kubectl://``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-- **Container Syntax**: ``docker://[user@]container_name[/workdir][?shell=/bin/sh]`` (same for ``podman://``)
-- **Kubernetes Syntax**: ``kubectl://[namespace/]pod_name[?container=app&context=prod&kubeconfig=/path]``
-
-.. list-table::
-   :widths: 24 20 16 40
-   :header-rows: 1
-
-   * - Option
-     - Transport
-     - Default
-     - Description
-   * - ``workdir``
-     - ``docker``, ``podman``, ``kubectl``
-     - Container default
-     - Working directory inside the container or pod.
-   * - ``shell``
-     - ``docker``, ``podman``, ``kubectl``
-     - ``"/bin/sh"``
-     - Shell executable used to wrap command strings.
-   * - ``namespace``
-     - ``kubectl``
-     - ``"default"``
-     - Kubernetes namespace (can also be specified in URI path ``kubectl://ns/pod``).
-   * - ``container``
-     - ``kubectl``
-     - Default container
-     - Target container name in a multi-container Pod (``kubectl exec -c``).
-   * - ``context``
-     - ``docker``, ``kubectl``
-     - Active context
-     - Docker CLI context or Kubernetes kubeconfig context name.
-   * - ``kubeconfig``
-     - ``kubectl``
-     - ``~/.kube/config``
-     - Path to kubeconfig file.
-
-4.6. Bare-Metal BMC, Serial/UART, Telnet, Replay & Local
+4.5. Bare-Metal BMC, Serial/UART, Telnet, Replay & Local
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. list-table::
@@ -450,11 +415,11 @@ The following options can be passed as query parameters on **any** transport URI
      - ``ipmi://admin:env://PASS@bmc:623?reuse_session=true``
      - ``reuse_session=true|false``; supports ``power on|off|cycle|reset|status``, ``sensors``, ``sel list|clear``, ``boot pxe|disk|bios``, ``raw``. Requires ``uniconn[bmc]``.
    * - ``serial://`` / ``uart://``
-     - ``uart:///dev/ttyUSB0:115200``
-     - ``baudrate=115200``, ``parity=N|E|O``, ``stopbits=1|2``, ``bytesize=8``, ``vid=10c4``, ``pid=ea60``. Requires ``uniconn[serial]``.
+     - ``uart:///dev/ttyUSB0:115200`` or ``uart://COM3:115200``
+     - ``baudrate=115200``, ``parity=N|E|O``, ``stopbits=1|1.5|2``, ``bytesize=8``, ``vid=10c4``, ``pid=ea60``, ``io_backend=auto|threaded|asyncio``. Requires ``uniconn[serial]``.
    * - ``telnet://``
      - ``telnet://admin:pass@switch:23``
-     - ``term_type=vt100``, ``login_prompt=login:``, ``password_prompt=Password:``, ``prompt=#``. Requires ``uniconn[telnet]``.
+     - ``term_type=vt100``, ``shell_mode=auto|posix|cli``, ``profile=generic|cisco|junos|linux|uboot``, ``prompt_regex=...``, ``pagination=true``, ``strip_ansi=true``. Requires ``uniconn[telnet]``.
    * - ``replay://``
      - ``replay://node-01?cassette=test.yaml``
      - ``cassette=/path.yaml``, ``mode=none|once|new_episodes|all``, ``normalize_temp=true``.

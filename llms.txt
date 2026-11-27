@@ -13,7 +13,7 @@
 - Local Sphinx docs server: `uv run python main.py --serve` (listens on `0.0.0.0:3000`)
 - Documentation & Feature Matrix: `AGENTS.md` (architecture & rules), `FEATURES.md` (full catalog of implemented features — consult on-demand only)
 
-## Public Exports (`from uniconn import ...` — Core SemVer Contract v0.24.0)
+## Public Exports (`from uniconn import ...` — Core SemVer Contract v0.25.0)
 - **Core Facade, Pools & Sync (`from uniconn import ...`)**: `Connection`, `SyncConnection`, `ConnectionPool`, `SyncConnectionPool`, `SSHSessionPool`
 - **Config, Secrets & Plugins (`from uniconn import ...`)**: `ConnectionConfig`, `URIParser`, `InventoryLoader`, `SecretResolver`, `PluginLoader`
 - **Results & Host Facts (`from uniconn import ...`)**: `Result`, `PingResult`, `SyncResult`, `EnsureResult`, `NetResult`, `TelemetrySample`, `DiagnosticSummary`, `SystemVitals`, `PortConflictInfo`, `ErrorCategory`, `HostFacts`, `FactsDiffReport`, `diff_facts`

@@ -155,6 +155,6 @@ Instead of debugging YAML indentation, Jinja2-in-YAML quoting issues, and slow 1
    * - ``ncclient.manager.connect(host=..., port=830, device_params={'name': 'junos'})``
      - ``Connection.from_uri("netconf://admin:env://PASS@rtr:830?vendor=junos")``
    * - Manual ``lock("candidate")`` $\rightarrow$ ``edit_config`` $\rightarrow$ ``validate`` $\rightarrow$ ``commit``
-     - ``await conn.state.ensure_yang("/interfaces", config={...}, validate=True)``
+     - ``await conn.state.ensure_yang("/interfaces", data={...}, validate=True)``
    * - Custom gNMI protobuf stubs
      - ``Connection.from_uri("gnmi://admin:env://PASS@leaf-01:9339?origin=openconfig")`` with ``conn.net.get()`` / ``conn.net.subscribe()``

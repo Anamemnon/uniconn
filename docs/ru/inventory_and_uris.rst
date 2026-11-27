@@ -1,9 +1,9 @@
 Полный справочник схем инвентаря (YAML/TOML/JSON) и параметров URI
 ==================================================================
 
-**Язык:** `English <../inventory_and_uris.rst>`_ | **[ Русский ]**
+**Язык:** :doc:`English </inventory_and_uris>` | **[ Русский ]**
 
-Этот справочник содержит полное описание всех поддерживаемых форматов инвентаря (``.yaml`` / ``.yml``, ``.toml``, ``.json``), правил приоритета при слиянии полей в ``InventoryLoader``, динамических ссылок на секреты (``env://`` и ``file://``), глобальных параметров ``ConnectionConfig`` и всех **16+ схем транспортных URI**.
+Этот справочник содержит полное описание всех поддерживаемых форматов инвентаря (``.yaml`` / ``.yml``, ``.toml``, ``.json``), правил приоритета при слиянии полей в ``InventoryLoader``, динамических ссылок на секреты (``env://`` и ``file://``), глобальных параметров ``ConnectionConfig`` и всех **13+ схем транспортных URI** (см. также пример ``ergonomics_and_inventory.py`` в :doc:`examples`).
 
 1. Форматы и схемы файлов инвентаря
 -----------------------------------
@@ -216,7 +216,7 @@
      - ``False``
      - Помечает узел как продакшен-окружение для ``HITLApprovalMiddleware`` и ``PolicyGuardrailMiddleware``.
 
-4. Справочник параметров всех 16+ схем транспортов
+4. Справочник параметров всех 13+ схем транспортов
 --------------------------------------------------
 
 4.1. SSH (``ssh://``)
@@ -334,6 +334,10 @@
      - ``restconf``
      - ``False``
      - Проверять ли TLS-сертификат HTTPS-устройства.
+   * - ``subscribe_mode``
+     - ``restconf``
+     - ``"auto"``
+     - Режим подписки: ``auto`` (RFC 8040/8639 SSE с fallback на polling) или ``polling``.
    * - ``encoding``
      - ``gnmi``
      - ``"json_ietf"``
@@ -347,11 +351,11 @@
      - ``False``
      - Использовать незашифрованный канал gRPC или отключить валидацию сертификата.
 
-4.4. Виртуализация и гипервизоры (``pve://``, ``qga://``, ``qemu-ga://``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+4.4. Виртуализация и эмуляторы (``pve://``, ``qga://``, ``qemu-ga://``)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - **Proxmox VE**: ``pve://[user[@realm][!token_id][:secret]@]host[:8006]/<vmid>[?node=pve1&verify_ssl=false]``
-- **QEMU Guest Agent**: ``qga:///path/to/qga.sock`` или ``qga://[user@]kvm-host[:22]/<vm_name>[?backend=socket|virsh]``
+- **QEMU Guest Agent**: ``qga:///path/to/qga.sock``, ``qga://127.0.0.1:4444?backend=tcp``, ``qga://?backend=pipe&pipe=\\.\pipe\qga-vm1`` или ``qga://[user@]kvm-host[:22]/<vm_name>[?backend=socket|ssh|virsh]``
 
 .. list-table::
    :widths: 24 16 16 44
@@ -384,56 +388,17 @@
    * - ``backend``
      - ``qga``
      - ``"socket"``
-     - Канал связи с агентом: ``socket`` (Unix-сокет локально или по SSH) или ``virsh`` (``virsh qemu-agent-command``).
-   * - ``socket``
+     - Канал связи с агентом: ``socket`` (POSIX Unix-сокет), ``ssh``, ``virsh``, ``tcp`` (QEMU chardev TCP) или ``pipe`` (Windows Named Pipe).
+   * - ``socket`` / ``pipe``
      - ``qga``
      - ``None``
-     - Явный путь к Unix-сокету гостевого агента.
+     - Явный путь к POSIX Unix-сокету или Windows Named Pipe (``\\.\pipe\<name>``).
    * - ``libvirt_uri``
      - ``qga``
      - ``"qemu:///system"``
      - URI гипервизора для вызова ``virsh -c`` при ``backend=virsh``.
 
-4.5. Контейнеры и Kubernetes (``docker://``, ``podman://``, ``kubectl://``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-- **Docker / Podman**: ``docker://[user@]container_name[/workdir][?shell=/bin/sh]``
-- **Kubernetes**: ``kubectl://[namespace/]pod_name[?container=app&context=prod&kubeconfig=/path]``
-
-.. list-table::
-   :widths: 24 20 16 40
-   :header-rows: 1
-
-   * - Параметр
-     - Транспорт
-     - По умолч.
-     - Описание
-   * - ``workdir``
-     - ``docker``, ``podman``, ``kubectl``
-     - Дефолт образа
-     - Рабочая директория внутри контейнера или пода.
-   * - ``shell``
-     - ``docker``, ``podman``, ``kubectl``
-     - ``"/bin/sh"``
-     - Оболочка для запуска строковых команд.
-   * - ``namespace``
-     - ``kubectl``
-     - ``"default"``
-     - Пространство имён Kubernetes (также задаётся в пути ``kubectl://ns/pod``).
-   * - ``container``
-     - ``kubectl``
-     - Основной контейнер
-     - Имя целевого контейнера внутри мультиконтейнерного пода (``kubectl exec -c``).
-   * - ``context``
-     - ``docker``, ``kubectl``
-     - Текущий контекст
-     - Имя контекста Docker CLI или кластера в ``kubeconfig``.
-   * - ``kubeconfig``
-     - ``kubectl``
-     - ``~/.kube/config``
-     - Путь к файлу конфигурации Kubernetes.
-
-4.6. Контроллеры BMC, Serial/UART, Telnet, Replay и Local
+4.5. Контроллеры BMC, Serial/UART, Telnet, Replay и Local
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. list-table::
@@ -450,11 +415,11 @@
      - ``ipmi://admin:env://PASS@bmc:623?reuse_session=true``
      - ``reuse_session=true|false``; команды ``power on|off|cycle|reset|status``, ``sensors``, ``sel list|clear``, ``boot pxe|disk|bios``, ``raw``. Требует ``uniconn[bmc]``.
    * - ``serial://`` / ``uart://``
-     - ``uart:///dev/ttyUSB0:115200``
-     - ``baudrate=115200``, ``parity=N|E|O``, ``stopbits=1|2``, ``bytesize=8``, ``vid=10c4``, ``pid=ea60``. Требует ``uniconn[serial]``.
+     - ``uart:///dev/ttyUSB0:115200`` или ``uart://COM3:115200``
+     - ``baudrate=115200``, ``parity=N|E|O``, ``stopbits=1|1.5|2``, ``bytesize=8``, ``vid=10c4``, ``pid=ea60``, ``io_backend=auto|threaded|asyncio``. Требует ``uniconn[serial]``.
    * - ``telnet://``
      - ``telnet://admin:pass@switch:23``
-     - ``term_type=vt100``, ``login_prompt=login:``, ``password_prompt=Password:``, ``prompt=#``. Требует ``uniconn[telnet]``.
+     - ``term_type=vt100``, ``shell_mode=auto|posix|cli``, ``profile=generic|cisco|junos|linux|uboot``, ``prompt_regex=...``, ``pagination=true``, ``strip_ansi=true``. Требует ``uniconn[telnet]``.
    * - ``replay://``
      - ``replay://node-01?cassette=test.yaml``
      - ``cassette=/path.yaml``, ``mode=none|once|new_episodes|all``, ``normalize_temp=true``.
