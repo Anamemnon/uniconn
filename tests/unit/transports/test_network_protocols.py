@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -881,11 +882,64 @@ async def test_gnmi_large_payload_early_rejection_and_restconf_polling_timeout()
             poll_samples: list[TelemetrySample] = []
             async for sample in conn.net.subscribe(
                 ["/system"],
-                sample_interval=0.015,
+                sample_interval=0.02,
                 once=False,
-                timeout=0.06,
+                timeout=0.15,
             ):
                 poll_samples.append(sample)
 
             assert len(poll_samples) >= 1
             assert all(s.metadata["transport_mode"] == "polling" for s in poll_samples)
+
+
+async def test_restconf_polling_timeout_mid_request_vs_first_poll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Таймаут последующего polling GET по дедлайну завершает подписку штатно, а первого — пробрасывается."""
+    from uniconn.exceptions import TimeoutError as UniconnTimeoutError
+    from uniconn.transports.network.restconf import RestconfTransport
+
+    async with MockRestconfServer(sse_enabled=False) as no_sse_srv:
+        async with Connection.from_uri(no_sse_srv.uri) as conn:
+            transport = conn.transport
+            assert isinstance(transport, RestconfTransport)
+
+            # 1. Первый poll успешен, второй падает по UniconnTimeoutError на малом остатке дедлайна -> штатный выход
+            calls = 0
+
+            async def _get_then_timeout(path: str = "", **kwargs: Any) -> NetResult:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return NetResult(ok=True, protocol="restconf", data={"hostname": "r1"})
+                raise UniconnTimeoutError(f"RESTCONF GET {path} timed out after {kwargs.get('timeout')}s")
+
+            monkeypatch.setattr(transport, "net_get", _get_then_timeout)
+            samples: list[TelemetrySample] = []
+            async for sample in conn.net.subscribe(
+                ["/system"],
+                sample_interval=0.01,
+                once=False,
+                timeout=0.2,
+            ):
+                samples.append(sample)
+
+            assert calls == 2
+            assert len(samples) == 1
+            assert samples[0].values == {"hostname": "r1"}
+            assert samples[0].metadata["transport_mode"] == "polling"
+
+            # 2. Если самый первый poll сразу падает по UniconnTimeoutError -> исключение не проглатывается
+            async def _always_timeout(path: str = "", **kwargs: Any) -> NetResult:
+                raise UniconnTimeoutError(f"RESTCONF GET {path} timed out after {kwargs.get('timeout')}s")
+
+            monkeypatch.setattr(transport, "net_get", _always_timeout)
+            with pytest.raises(UniconnTimeoutError):
+                async for _ in conn.net.subscribe(
+                    ["/system"],
+                    sample_interval=0.01,
+                    once=False,
+                    timeout=0.2,
+                ):
+                    pass
+

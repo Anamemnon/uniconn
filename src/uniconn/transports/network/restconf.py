@@ -1098,6 +1098,7 @@ class RestconfTransport(BaseTransport):
             else None
         )
         interval = max(0.01, sample_interval)
+        completed_polls = 0
         while self._connected:
             for p in target_paths:
                 req_timeout = timeout
@@ -1106,7 +1107,13 @@ class RestconfTransport(BaseTransport):
                     if rem <= 0:
                         return
                     req_timeout = rem if timeout is None else min(timeout, rem)
-                res = await self.net_get(p, timeout=req_timeout)
+                try:
+                    res = await self.net_get(p, timeout=req_timeout)
+                except UniconnTimeoutError:
+                    if deadline is not None and not once and completed_polls > 0:
+                        return
+                    raise
+                completed_polls += 1
                 if res.ok:
                     vals = res.data if isinstance(res.data, dict) else {"value": res.data}
                     yield TelemetrySample(
@@ -1125,7 +1132,10 @@ class RestconfTransport(BaseTransport):
                 rem = deadline - time.monotonic()
                 if rem <= 0:
                     break
-                await asyncio.sleep(min(interval, rem))
+                if rem <= interval:
+                    await asyncio.sleep(rem)
+                    break
+                await asyncio.sleep(interval)
             else:
                 await asyncio.sleep(interval)
 
