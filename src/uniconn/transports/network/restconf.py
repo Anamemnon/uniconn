@@ -948,9 +948,16 @@ class RestconfTransport(BaseTransport):
             return str(explicit_url)
 
         root = self._client.root.rstrip("/")
-        streams_res = await self.net_get(
-            "ietf-restconf-monitoring:restconf-state/streams",
+        status, text, raw = await self._client.raw_request(
+            "GET",
+            self._data_path("ietf-restconf-monitoring:restconf-state/streams"),
             timeout=timeout,
+        )
+        streams_res = self._parse_response(
+            status,
+            text,
+            raw,
+            operation="discover-streams",
         )
         if streams_res.ok and isinstance(streams_res.data, Mapping):
             container = (
